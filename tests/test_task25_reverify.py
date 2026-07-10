@@ -249,3 +249,40 @@ def test_batch_exiftool_stay_open_una_sola_invocacion(tmp_path, logger, make_dji
     batch_cmd = exif_calls[0]
     joined = " ".join(batch_cmd) if isinstance(batch_cmd, (list, tuple)) else str(batch_cmd)
     assert "-stay_open" in joined
+
+
+def test_batch_exif_se_drena_aunque_una_imagen_falle(tmp_path, logger, make_dji_jpeg, monkeypatch):
+    """_run_exif_batch debe ejecutarse (en el finally) aunque una imagen del bucle
+    lance una excepción no capturada a media, para no perder el EXIF de los tiffs
+    ya escritos hasta ese punto."""
+    import pipeline as split_images
+
+    input_folder = tmp_path / "TERMICA"
+    input_folder.mkdir()
+    for i in range(3):
+        make_dji_jpeg(str(input_folder / f"DJI_000{i}_T.JPG"))
+
+    obj = split_images.SplitImages(logger)
+    obj.total_images_number = 3
+    obj.current_image_number = 0
+
+    drained = {}
+    def fake_batch(pairs, exiftool_exe, progress_callback=None):
+        drained["pairs"] = list(pairs)
+    obj._run_exif_batch = fake_batch
+
+    calls = {"n": 0}
+    def fake_convert(inp, outp, image_name, *a, defer_exif=False, **k):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("imagen corrupta a media")
+        return (os.path.join(inp, image_name), os.path.join(outp, image_name.removesuffix(".JPG") + ".tiff"))
+    obj.convert_dji_image_to_tif = fake_convert
+
+    progress = _noop_progress()
+    with pytest.raises(RuntimeError):
+        obj.convert_dji_images_to_tif(str(input_folder), "exiftool", "dji_utility", progress, progress)
+
+    # el drenaje debe haber corrido con el par ya acumulado (imagen 1) pese al fallo en la 2
+    assert "pairs" in drained, "_run_exif_batch debe ejecutarse en finally aunque una imagen falle"
+    assert len(drained["pairs"]) == 1

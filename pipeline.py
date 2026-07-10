@@ -37,8 +37,13 @@ import PIL.Image
 from PIL import Image
 from matplotlib import cm
 
+import utils  # acceso diferido (utils.X) para evitar ciclo de import con utils.py, que hace `import pipeline`.
+
+import exif as exif_management
+import exif as em
+
 _LUT_SIZE = 1024
-_LUT_CACHE: dict = {}
+_LUT_CACHE: dict[str, np.ndarray] = {}
 
 
 def _get_thermal_lut(colormap_name: str) -> np.ndarray:
@@ -54,11 +59,6 @@ def _get_thermal_lut(colormap_name: str) -> np.ndarray:
         lut = (cm.get_cmap(colormap_name)(np.linspace(0, 1, _LUT_SIZE, endpoint=False))[:, :3] * 255).astype(np.uint8)
         _LUT_CACHE[colormap_name] = lut
     return lut
-
-import utils  # acceso diferido (utils.X) para evitar ciclo de import con utils.py, que hace `import pipeline`.
-
-import exif as exif_management
-import exif as em
 
 
 @dataclass(frozen=True)
@@ -1830,18 +1830,20 @@ class SplitImages:
         #     output_folder = os.path.join(input_folder, "TIFF")
         if not just_atom_selection or (just_atom_selection and os.path.basename(input_folder)== "Seleccion_ATOM"):
             pending_exif = []
-            for image in images:
-                if not self.stop:
-                    self.current_image_number += 1
-                    p = utils.safe_pct(self.current_image_number, self.total_images_number) # Se calcula el porcentaje que queda teniendo en cuenta la cantidad total de imágenes a procesar
-                    # y la cantidad actual de imágenes procesadas.
-                    progress_callback.emit(".") # Por cada imagen que se va a procesar, se emite un "." a la ventana de log.
-                    progress_bar.emit(p) # Por cada imagen que se va a procesar, se emite el procentaje de imágenes procesadas para mostrar en la barra de progreso.
-                    # El parámetro input_folder y el output_folder tienen el mismo valor para que la imagen tif se guarde en la misma carpeta.
-                    pair = self.convert_dji_image_to_tif(input_folder, input_folder, image, exiftool_exe, dji_utility, progress_callback, progress_bar, emissivity, humidity, auto_temp, up_threshold_temperature, low_threshold_temperature, rotate_90, rotate_minus_90, auto_rotate, just_atom_selection, generate_gray_scale_images, generate_colormap_images, defer_exif=True)
-                    if pair:
-                        pending_exif.append(pair)
-            self._run_exif_batch(pending_exif, exiftool_exe, progress_callback)
+            try:
+                for image in images:
+                    if not self.stop:
+                        self.current_image_number += 1
+                        p = utils.safe_pct(self.current_image_number, self.total_images_number) # Se calcula el porcentaje que queda teniendo en cuenta la cantidad total de imágenes a procesar
+                        # y la cantidad actual de imágenes procesadas.
+                        progress_callback.emit(".") # Por cada imagen que se va a procesar, se emite un "." a la ventana de log.
+                        progress_bar.emit(p) # Por cada imagen que se va a procesar, se emite el procentaje de imágenes procesadas para mostrar en la barra de progreso.
+                        # El parámetro input_folder y el output_folder tienen el mismo valor para que la imagen tif se guarde en la misma carpeta.
+                        pair = self.convert_dji_image_to_tif(input_folder, input_folder, image, exiftool_exe, dji_utility, progress_callback, progress_bar, emissivity, humidity, auto_temp, up_threshold_temperature, low_threshold_temperature, rotate_90, rotate_minus_90, auto_rotate, just_atom_selection, generate_gray_scale_images, generate_colormap_images, defer_exif=True)
+                        if pair:
+                            pending_exif.append(pair)
+            finally:
+                self._run_exif_batch(pending_exif, exiftool_exe, progress_callback)
 
     def _run_exif_batch(self, pairs, exiftool_exe, progress_callback=None):
         """Copia los tags EXIF de todos los (src_jpg, dst_tiff) con UN solo proceso
@@ -1857,8 +1859,10 @@ class SplitImages:
                 for src, dst in pairs:
                     f.write("-tagsfromfile\n{0}\n-overwrite_original_in_place\n{1}\n-execute\n".format(src, dst))
                 f.write("-stay_open\nFalse\n-execute\n")  # cierre: sin esto exiftool cuelga
-            cmd = '"{0}" -stay_open True -@ "{1}"'.format(exiftool_exe, argfile)
-            result = subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            result = subprocess.run(
+                [exiftool_exe, "-stay_open", "True", "-@", argfile],
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            )
             if result.returncode != 0 and progress_callback is not None:
                 progress_callback.emit("\nAviso: exiftool batch devolvió código {0}.\n".format(result.returncode))
         finally:
