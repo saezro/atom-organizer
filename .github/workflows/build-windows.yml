@@ -1,0 +1,44 @@
+name: build-windows
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller==5.13.2
+
+      - name: Build (PyInstaller onedir)
+        run: pyinstaller --clean --noconfirm atom_organizer.spec
+
+      - name: Inject ipaddress into base_library.zip
+        run: python inject_ipaddress.py
+
+      - name: Smoke import check
+        run: |
+          if (-not (Test-Path "dist/atom_organizer/atom_organizer.exe")) {
+            Write-Error "no se generó atom_organizer.exe"; exit 1
+          }
+          Write-Host "exe OK:"; Get-Item dist/atom_organizer/atom_organizer.exe | Select-Object Length
+
+      - name: Package zip
+        run: Compress-Archive -Path dist/atom_organizer/* -DestinationPath ATOM_Organizer-v3-win-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATOM_Organizer-v3-win-x64
+          path: ATOM_Organizer-v3-win-x64.zip
+          retention-days: 14
