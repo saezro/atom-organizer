@@ -206,3 +206,83 @@ def test_rgb_rotates_with_same_degrees_param_as_thermal(tmp_path, logger, make_d
         "aplicar el MISMO transpose(degrees) que la rama térmica (:296) — confirma que RGB "
         "gira con los mismos grados que las térmicas."
     )
+
+
+def test_batch_exiftool_stay_open_una_sola_invocacion(tmp_path, logger, make_dji_jpeg, monkeypatch):
+    """convert_dji_images_to_tif debe copiar los tags de TODAS las imágenes con UN solo
+    pase exiftool -stay_open (no un proceso por imagen), preservando la salida."""
+    import pipeline as split_images
+
+    input_folder = tmp_path / "TERMICA"
+    input_folder.mkdir()
+    for i in range(3):
+        make_dji_jpeg(str(input_folder / f"DJI_000{i}_T.JPG"))
+
+    exif_calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+        exif_calls.append(cmd)
+        return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+    # convert_dji_image_to_tif genera el tiff pero difiere exiftool; mockeamos su cuerpo
+    # para aislar el batch: devuelve el par (src, dst) como hará la versión defer_exif.
+    obj = split_images.SplitImages(logger)
+    obj.total_images_number = 3
+    obj.current_image_number = 0
+
+    pairs = []
+    def fake_convert(inp, outp, image_name, *a, defer_exif=False, **k):
+        src = os.path.join(inp, image_name)
+        dst = os.path.join(outp, image_name.removesuffix(".JPG") + ".tiff")
+        # simula tiff en disco
+        from PIL import Image as _I
+        _I.new("I;16", (4, 4)).save(dst, format="TIFF")
+        assert defer_exif is True, "el bucle debe pasar defer_exif=True"
+        return (src, dst)
+    obj.convert_dji_image_to_tif = fake_convert
+
+    monkeypatch.setattr(split_images.subprocess, "run", fake_run)
+    progress = _noop_progress()
+    obj.convert_dji_images_to_tif(str(input_folder), "exiftool", "dji_utility", progress, progress)
+
+    assert len(exif_calls) == 1, "Se esperaba UNA sola invocación batch de exiftool para las 3 imágenes."
+    batch_cmd = exif_calls[0]
+    joined = " ".join(batch_cmd) if isinstance(batch_cmd, (list, tuple)) else str(batch_cmd)
+    assert "-stay_open" in joined
+
+
+def test_batch_exif_se_drena_aunque_una_imagen_falle(tmp_path, logger, make_dji_jpeg, monkeypatch):
+    """_run_exif_batch debe ejecutarse (en el finally) aunque una imagen del bucle
+    lance una excepción no capturada a media, para no perder el EXIF de los tiffs
+    ya escritos hasta ese punto."""
+    import pipeline as split_images
+
+    input_folder = tmp_path / "TERMICA"
+    input_folder.mkdir()
+    for i in range(3):
+        make_dji_jpeg(str(input_folder / f"DJI_000{i}_T.JPG"))
+
+    obj = split_images.SplitImages(logger)
+    obj.total_images_number = 3
+    obj.current_image_number = 0
+
+    drained = {}
+    def fake_batch(pairs, exiftool_exe, progress_callback=None):
+        drained["pairs"] = list(pairs)
+    obj._run_exif_batch = fake_batch
+
+    calls = {"n": 0}
+    def fake_convert(inp, outp, image_name, *a, defer_exif=False, **k):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("imagen corrupta a media")
+        return (os.path.join(inp, image_name), os.path.join(outp, image_name.removesuffix(".JPG") + ".tiff"))
+    obj.convert_dji_image_to_tif = fake_convert
+
+    progress = _noop_progress()
+    with pytest.raises(RuntimeError):
+        obj.convert_dji_images_to_tif(str(input_folder), "exiftool", "dji_utility", progress, progress)
+
+    # el drenaje debe haber corrido con el par ya acumulado (imagen 1) pese al fallo en la 2
+    assert "pairs" in drained, "_run_exif_batch debe ejecutarse en finally aunque una imagen falle"
+    assert len(drained["pairs"]) == 1

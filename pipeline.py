@@ -42,6 +42,24 @@ import utils  # acceso diferido (utils.X) para evitar ciclo de import con utils.
 import exif as exif_management
 import exif as em
 
+_LUT_SIZE = 1024
+_LUT_CACHE: dict[str, np.ndarray] = {}
+
+
+def _get_thermal_lut(colormap_name: str) -> np.ndarray:
+    """LUT uint8 (1024, 3) precomputada una sola vez por nombre de colormap.
+    Usa bin edges izquierdos (endpoint=False): matplotlib cuantiza sus colormaps
+    a N=256 niveles internamente, y 1024 = 4*256, por lo que cada uno de los 4
+    sub-bins de la LUT cae siempre dentro del mismo bin de 256 que usa la
+    referencia continua (cm.get_cmap(name)(normalized)), evitando saltos de
+    color >1/255 cerca de los límites de bin.
+    """
+    lut = _LUT_CACHE.get(colormap_name)
+    if lut is None:
+        lut = (cm.get_cmap(colormap_name)(np.linspace(0, 1, _LUT_SIZE, endpoint=False))[:, :3] * 255).astype(np.uint8)
+        _LUT_CACHE[colormap_name] = lut
+    return lut
+
 
 @dataclass(frozen=True)
 class ImageProcessConfig:
@@ -1397,12 +1415,10 @@ def apply_thermal_colormap(array: np.ndarray, temp_min: float, temp_max: float, 
     clipped = np.clip(array, temp_min, temp_max)
     if temp_max > temp_min:
         normalized = (clipped - temp_min) / (temp_max - temp_min)
+        idx = np.minimum((normalized * _LUT_SIZE).astype(np.uint16), _LUT_SIZE - 1)
     else:
-        normalized = np.zeros_like(clipped)
-    colormap = cm.get_cmap(colormap_name)
-    rgba = colormap(normalized)  # (H, W, 4) floats 0-1
-    rgb = (rgba[..., :3] * 255).astype(np.uint8)
-    return rgb
+        idx = np.zeros(clipped.shape, dtype=np.uint16)
+    return _get_thermal_lut(colormap_name)[idx]
 
 
 class SplitImages:
@@ -1813,17 +1829,50 @@ class SplitImages:
         #     self.utils_obj.prepare_output_folder(input_folder,["TIFF"])
         #     output_folder = os.path.join(input_folder, "TIFF")
         if not just_atom_selection or (just_atom_selection and os.path.basename(input_folder)== "Seleccion_ATOM"):
-            for image in images:
-                if not self.stop:
-                    self.current_image_number += 1
-                    p = utils.safe_pct(self.current_image_number, self.total_images_number) # Se calcula el porcentaje que queda teniendo en cuenta la cantidad total de imágenes a procesar
-                    # y la cantidad actual de imágenes procesadas.
-                    progress_callback.emit(".") # Por cada imagen que se va a procesar, se emite un "." a la ventana de log.
-                    progress_bar.emit(p) # Por cada imagen que se va a procesar, se emite el procentaje de imágenes procesadas para mostrar en la barra de progreso.
-                    # El parámetro input_folder y el output_folder tienen el mismo valor para que la imagen tif se guarde en la misma carpeta.
-                    self.convert_dji_image_to_tif(input_folder, input_folder, image, exiftool_exe, dji_utility, progress_callback, progress_bar, emissivity, humidity, auto_temp, up_threshold_temperature, low_threshold_temperature, rotate_90, rotate_minus_90, auto_rotate, just_atom_selection, generate_gray_scale_images, generate_colormap_images)
+            pending_exif = []
+            try:
+                for image in images:
+                    if not self.stop:
+                        self.current_image_number += 1
+                        p = utils.safe_pct(self.current_image_number, self.total_images_number) # Se calcula el porcentaje que queda teniendo en cuenta la cantidad total de imágenes a procesar
+                        # y la cantidad actual de imágenes procesadas.
+                        progress_callback.emit(".") # Por cada imagen que se va a procesar, se emite un "." a la ventana de log.
+                        progress_bar.emit(p) # Por cada imagen que se va a procesar, se emite el procentaje de imágenes procesadas para mostrar en la barra de progreso.
+                        # El parámetro input_folder y el output_folder tienen el mismo valor para que la imagen tif se guarde en la misma carpeta.
+                        pair = self.convert_dji_image_to_tif(input_folder, input_folder, image, exiftool_exe, dji_utility, progress_callback, progress_bar, emissivity, humidity, auto_temp, up_threshold_temperature, low_threshold_temperature, rotate_90, rotate_minus_90, auto_rotate, just_atom_selection, generate_gray_scale_images, generate_colormap_images, defer_exif=True)
+                        if pair:
+                            pending_exif.append(pair)
+            finally:
+                self._run_exif_batch(pending_exif, exiftool_exe, progress_callback)
 
-    def convert_dji_image_to_tif(self, input_folder: str, output_folder: str, image_name: str, exiftool_exe:str, dji_utility: str, progress_callback, progress_bar, emissivity: float = 0.9, humidity: float = 50.0, auto_temp = False, up_threshold_temperature = 20, low_threshold_temperature = 0, rotate_90: bool = False, rotate_minus_90: bool = False, auto_rotate: bool = False, just_atom_selection = False, generate_gray_scale_images: bool = False, generate_colormap_images: bool = False):
+    def _run_exif_batch(self, pairs, exiftool_exe, progress_callback=None):
+        """Copia los tags EXIF de todos los (src_jpg, dst_tiff) con UN solo proceso
+        exiftool -stay_open. Equivale a los N subprocess.run inline pero sin re-arrancar
+        el intérprete Perl por imagen (~5x)."""
+        if not pairs:
+            return
+        import tempfile
+        argfile = None
+        try:
+            fd, argfile = tempfile.mkstemp(suffix="_exifargs.txt", text=True)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                for src, dst in pairs:
+                    f.write("-tagsfromfile\n{0}\n-overwrite_original_in_place\n{1}\n-execute\n".format(src, dst))
+                f.write("-stay_open\nFalse\n-execute\n")  # cierre: sin esto exiftool cuelga
+            result = subprocess.run(
+                [exiftool_exe, "-stay_open", "True", "-@", argfile],
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            )
+            if result.returncode != 0 and progress_callback is not None:
+                progress_callback.emit("\nAviso: exiftool batch devolvió código {0}.\n".format(result.returncode))
+        finally:
+            if argfile and os.path.exists(argfile):
+                try:
+                    os.remove(argfile)
+                except OSError:
+                    pass
+
+    def convert_dji_image_to_tif(self, input_folder: str, output_folder: str, image_name: str, exiftool_exe:str, dji_utility: str, progress_callback, progress_bar, emissivity: float = 0.9, humidity: float = 50.0, auto_temp = False, up_threshold_temperature = 20, low_threshold_temperature = 0, rotate_90: bool = False, rotate_minus_90: bool = False, auto_rotate: bool = False, just_atom_selection = False, generate_gray_scale_images: bool = False, generate_colormap_images: bool = False, defer_exif: bool = False):
         """
         Función que convierte la imagen JPG dada por el parámetro image_name a formato TIFF.
         Arguments:
@@ -1977,9 +2026,13 @@ class SplitImages:
         # Intentamos eliminar el .raw de forma segura. En Windows puede dar PermissionError si
         # otro proceso aún mantiene el fichero abierto, así que reintentamos varias veces.
         self._safe_remove(os.path.join(input_folder, image_name + ".raw"), progress_callback)
-        subproceso_exiftool = '"{0}" -tagsfromfile "{1}" "{2}" -overwrite_original_in_place'.format(exiftool_exe,os.path.join(input_folder, image_name), os.path.join(output_folder, image_name.removesuffix(".JPG") + ".tiff"))
+        src_exif = os.path.join(input_folder, image_name)
+        dst_exif = os.path.join(output_folder, image_name.removesuffix(".JPG") + ".tiff")
+        if defer_exif:
+            return (src_exif, dst_exif)
+        subproceso_exiftool = '"{0}" -tagsfromfile "{1}" "{2}" -overwrite_original_in_place'.format(exiftool_exe, src_exif, dst_exif)
         subprocess.run(subproceso_exiftool)
-        
+
     def _safe_remove(self, path: str, progress_callback=None, attempts: int = 5, delay: float = 0.5):
         """
         Elimina un fichero intentando varios reintentos si hay PermissionError u OSError.
