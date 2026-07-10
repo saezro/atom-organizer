@@ -1860,6 +1860,9 @@ class SplitImages:
                 # Conversión DJI->TIFF en paralelo. Cada imagen escribe archivos con
                 # nombre propio (.raw, .tiff) -> sin colisión. El batch EXIF (H1) se
                 # mantiene secuencial al final, igual que antes.
+                # Nota cancelación: cada worker comprueba self.stop al arrancar; al pulsar
+                # "parar" pueden completarse hasta max_dji_workers imágenes ya en vuelo
+                # (antes, secuencial, era 1). No afecta al resultado, solo a la latencia de parada.
                 with ThreadPoolExecutor(max_workers=max(1, self.max_dji_workers)) as executor:
                     futures = [
                         executor.submit(
@@ -2145,8 +2148,7 @@ class SplitImages:
         if progress_callback is not None:
             try:
                 progress_callback.emit("\nError Convertir a TIF: no se pudo eliminar {0} tras {1} intentos.\n".format(path, attempts))
-                self.error_splitting_images += 1
-                self.images_error_splitting_images.append(path)            
+                self._register_image_error(path)  # thread-safe (bajo _stats_lock)
             except Exception:
                 pass
 
