@@ -1829,6 +1829,7 @@ class SplitImages:
         #     self.utils_obj.prepare_output_folder(input_folder,["TIFF"])
         #     output_folder = os.path.join(input_folder, "TIFF")
         if not just_atom_selection or (just_atom_selection and os.path.basename(input_folder)== "Seleccion_ATOM"):
+            pending_exif = []
             for image in images:
                 if not self.stop:
                     self.current_image_number += 1
@@ -1837,9 +1838,37 @@ class SplitImages:
                     progress_callback.emit(".") # Por cada imagen que se va a procesar, se emite un "." a la ventana de log.
                     progress_bar.emit(p) # Por cada imagen que se va a procesar, se emite el procentaje de imágenes procesadas para mostrar en la barra de progreso.
                     # El parámetro input_folder y el output_folder tienen el mismo valor para que la imagen tif se guarde en la misma carpeta.
-                    self.convert_dji_image_to_tif(input_folder, input_folder, image, exiftool_exe, dji_utility, progress_callback, progress_bar, emissivity, humidity, auto_temp, up_threshold_temperature, low_threshold_temperature, rotate_90, rotate_minus_90, auto_rotate, just_atom_selection, generate_gray_scale_images, generate_colormap_images)
+                    pair = self.convert_dji_image_to_tif(input_folder, input_folder, image, exiftool_exe, dji_utility, progress_callback, progress_bar, emissivity, humidity, auto_temp, up_threshold_temperature, low_threshold_temperature, rotate_90, rotate_minus_90, auto_rotate, just_atom_selection, generate_gray_scale_images, generate_colormap_images, defer_exif=True)
+                    if pair:
+                        pending_exif.append(pair)
+            self._run_exif_batch(pending_exif, exiftool_exe, progress_callback)
 
-    def convert_dji_image_to_tif(self, input_folder: str, output_folder: str, image_name: str, exiftool_exe:str, dji_utility: str, progress_callback, progress_bar, emissivity: float = 0.9, humidity: float = 50.0, auto_temp = False, up_threshold_temperature = 20, low_threshold_temperature = 0, rotate_90: bool = False, rotate_minus_90: bool = False, auto_rotate: bool = False, just_atom_selection = False, generate_gray_scale_images: bool = False, generate_colormap_images: bool = False):
+    def _run_exif_batch(self, pairs, exiftool_exe, progress_callback=None):
+        """Copia los tags EXIF de todos los (src_jpg, dst_tiff) con UN solo proceso
+        exiftool -stay_open. Equivale a los N subprocess.run inline pero sin re-arrancar
+        el intérprete Perl por imagen (~5x)."""
+        if not pairs:
+            return
+        import tempfile
+        argfile = None
+        try:
+            fd, argfile = tempfile.mkstemp(suffix="_exifargs.txt", text=True)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                for src, dst in pairs:
+                    f.write("-tagsfromfile\n{0}\n-overwrite_original_in_place\n{1}\n-execute\n".format(src, dst))
+                f.write("-stay_open\nFalse\n-execute\n")  # cierre: sin esto exiftool cuelga
+            cmd = '"{0}" -stay_open True -@ "{1}"'.format(exiftool_exe, argfile)
+            result = subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            if result.returncode != 0 and progress_callback is not None:
+                progress_callback.emit("\nAviso: exiftool batch devolvió código {0}.\n".format(result.returncode))
+        finally:
+            if argfile and os.path.exists(argfile):
+                try:
+                    os.remove(argfile)
+                except OSError:
+                    pass
+
+    def convert_dji_image_to_tif(self, input_folder: str, output_folder: str, image_name: str, exiftool_exe:str, dji_utility: str, progress_callback, progress_bar, emissivity: float = 0.9, humidity: float = 50.0, auto_temp = False, up_threshold_temperature = 20, low_threshold_temperature = 0, rotate_90: bool = False, rotate_minus_90: bool = False, auto_rotate: bool = False, just_atom_selection = False, generate_gray_scale_images: bool = False, generate_colormap_images: bool = False, defer_exif: bool = False):
         """
         Función que convierte la imagen JPG dada por el parámetro image_name a formato TIFF.
         Arguments:
@@ -1993,9 +2022,13 @@ class SplitImages:
         # Intentamos eliminar el .raw de forma segura. En Windows puede dar PermissionError si
         # otro proceso aún mantiene el fichero abierto, así que reintentamos varias veces.
         self._safe_remove(os.path.join(input_folder, image_name + ".raw"), progress_callback)
-        subproceso_exiftool = '"{0}" -tagsfromfile "{1}" "{2}" -overwrite_original_in_place'.format(exiftool_exe,os.path.join(input_folder, image_name), os.path.join(output_folder, image_name.removesuffix(".JPG") + ".tiff"))
+        src_exif = os.path.join(input_folder, image_name)
+        dst_exif = os.path.join(output_folder, image_name.removesuffix(".JPG") + ".tiff")
+        if defer_exif:
+            return (src_exif, dst_exif)
+        subproceso_exiftool = '"{0}" -tagsfromfile "{1}" "{2}" -overwrite_original_in_place'.format(exiftool_exe, src_exif, dst_exif)
         subprocess.run(subproceso_exiftool)
-        
+
     def _safe_remove(self, path: str, progress_callback=None, attempts: int = 5, delay: float = 0.5):
         """
         Elimina un fichero intentando varios reintentos si hay PermissionError u OSError.
