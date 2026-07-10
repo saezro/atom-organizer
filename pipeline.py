@@ -28,6 +28,8 @@ import pathlib
 import shutil
 import struct
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
 import numpy as np
@@ -1433,6 +1435,11 @@ class SplitImages:
         self.error_splitting_images = 0
         self.images_error_splitting_images = []
         self.organizer_logger = organizer_logger
+        # Nº de conversiones DJI->TIFF en paralelo. dji_irp.exe es un proceso
+        # externo (libera el GIL), así que threads valen. Default conservador.
+        self.max_dji_workers = min(8, os.cpu_count() or 4)
+        # Protege las mutaciones de contadores de error compartidos entre workers.
+        self._stats_lock = threading.Lock()
 
     def set_stop(self, stop: bool):
         """
@@ -1829,21 +1836,90 @@ class SplitImages:
         #     self.utils_obj.prepare_output_folder(input_folder,["TIFF"])
         #     output_folder = os.path.join(input_folder, "TIFF")
         if not just_atom_selection or (just_atom_selection and os.path.basename(input_folder)== "Seleccion_ATOM"):
+            # Pre-creamos las subcarpetas de salida ANTES del pool: prepare_output_folder
+            # no es thread-safe (os.listdir + makedirs sin exist_ok -> race entre workers).
+            # Al existir ya, la comprobación interna las ve y no intenta crearlas.
+            if generate_gray_scale_images:
+                self.utils_obj.prepare_output_folder(input_folder, ["Escala_de_grises"])
+            if generate_colormap_images:
+                self.utils_obj.prepare_output_folder(input_folder, ["Color_gradiente"])
+
+            # Los flags de conversión son idénticos para todas las imágenes del directorio.
+            convert_kwargs = dict(
+                emissivity=emissivity, humidity=humidity, auto_temp=auto_temp,
+                up_threshold_temperature=up_threshold_temperature,
+                low_threshold_temperature=low_threshold_temperature,
+                rotate_90=rotate_90, rotate_minus_90=rotate_minus_90, auto_rotate=auto_rotate,
+                just_atom_selection=just_atom_selection,
+                generate_gray_scale_images=generate_gray_scale_images,
+                generate_colormap_images=generate_colormap_images,
+            )
+            errors_before = self.error_splitting_images
             pending_exif = []
             try:
-                for image in images:
-                    if not self.stop:
-                        self.current_image_number += 1
-                        p = utils.safe_pct(self.current_image_number, self.total_images_number) # Se calcula el porcentaje que queda teniendo en cuenta la cantidad total de imágenes a procesar
-                        # y la cantidad actual de imágenes procesadas.
-                        progress_callback.emit(".") # Por cada imagen que se va a procesar, se emite un "." a la ventana de log.
-                        progress_bar.emit(p) # Por cada imagen que se va a procesar, se emite el procentaje de imágenes procesadas para mostrar en la barra de progreso.
-                        # El parámetro input_folder y el output_folder tienen el mismo valor para que la imagen tif se guarde en la misma carpeta.
-                        pair = self.convert_dji_image_to_tif(input_folder, input_folder, image, exiftool_exe, dji_utility, progress_callback, progress_bar, emissivity, humidity, auto_temp, up_threshold_temperature, low_threshold_temperature, rotate_90, rotate_minus_90, auto_rotate, just_atom_selection, generate_gray_scale_images, generate_colormap_images, defer_exif=True)
+                # Conversión DJI->TIFF en paralelo. Cada imagen escribe archivos con
+                # nombre propio (.raw, .tiff) -> sin colisión. El batch EXIF (H1) se
+                # mantiene secuencial al final, igual que antes.
+                with ThreadPoolExecutor(max_workers=max(1, self.max_dji_workers)) as executor:
+                    futures = [
+                        executor.submit(
+                            self._convert_one_safe, input_folder, image, exiftool_exe,
+                            dji_utility, progress_callback, progress_bar, convert_kwargs)
+                        for image in images
+                    ]
+                    for future in as_completed(futures):
+                        pair = future.result()  # _convert_one_safe nunca relanza
                         if pair:
                             pending_exif.append(pair)
             finally:
                 self._run_exif_batch(pending_exif, exiftool_exe, progress_callback)
+            # Reporte final: cuántas imágenes de ESTE directorio no se pudieron procesar.
+            nuevos_fallos = self.error_splitting_images - errors_before
+            if nuevos_fallos > 0:
+                progress_callback.emit(
+                    "\n{0} imagen(es) no se pudieron procesar en este directorio y se omitieron. "
+                    "El resto del vuelo continuó.\n".format(nuevos_fallos))
+
+    def _convert_one_safe(self, input_folder, image, exiftool_exe, dji_utility,
+                          progress_callback, progress_bar, convert_kwargs):
+        """
+        Worker de un solo item para el pool de conversión DJI->TIFF. Emite progreso,
+        llama a convert_dji_image_to_tif y AÍSLA cualquier excepción no controlada:
+        registra el fallo (mismo mecanismo que los except internos) y devuelve None,
+        para que una imagen problemática NO tumbe el vuelo entero. Devuelve el par
+        (src_jpg, dst_tiff) para el batch EXIF diferido, o None si se omitió/falló.
+        """
+        if self.stop:
+            return None
+        with self._stats_lock:
+            self.current_image_number += 1
+            p = utils.safe_pct(self.current_image_number, self.total_images_number)
+        progress_callback.emit(".")  # un "." por imagen a la ventana de log
+        progress_bar.emit(p)         # porcentaje a la barra de progreso
+        try:
+            # input_folder == output_folder para que el TIFF se guarde junto al JPG.
+            return self.convert_dji_image_to_tif(
+                input_folder, input_folder, image, exiftool_exe, dji_utility,
+                progress_callback, progress_bar, defer_exif=True, **convert_kwargs)
+        except Exception as e:
+            with self._stats_lock:
+                self.error_splitting_images += 1
+                self.images_error_splitting_images.append(os.path.join(input_folder, image))
+            self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
+            self.organizer_logger.logger.error(
+                "ERROR no controlado procesando {0}: {1}. Se omite la imagen y se continúa el vuelo.".format(
+                    os.path.join(input_folder, image), e))
+            self.organizer_logger.logger.exception(e)
+            self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
+            progress_callback.emit(
+                "\nERROR procesando {0}: se omite y se continúa el vuelo.\n".format(image))
+            return None
+
+    def _register_image_error(self, path):
+        """Registra una imagen fallida de forma thread-safe (contador + lista)."""
+        with self._stats_lock:
+            self.error_splitting_images += 1
+            self.images_error_splitting_images.append(path)
 
     def _run_exif_batch(self, pairs, exiftool_exe, progress_callback=None):
         """Copia los tags EXIF de todos los (src_jpg, dst_tiff) con UN solo proceso
@@ -1907,8 +1983,7 @@ class SplitImages:
             self.organizer_logger.logger.exception(f.__str__)
             self.organizer_logger.logger.exception(f)
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self.error_splitting_images += 1
-            self.images_error_splitting_images.append(os.path.join(input_folder, image_name)) 
+            self._register_image_error(os.path.join(input_folder, image_name))
             return 
         except Exception as e:
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
@@ -1917,8 +1992,7 @@ class SplitImages:
             self.organizer_logger.logger.exception(e.__str__)
             self.organizer_logger.logger.exception(e)
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self.error_splitting_images += 1
-            self.images_error_splitting_images.append(os.path.join(input_folder, image_name)) 
+            self._register_image_error(os.path.join(input_folder, image_name))
             return
         
         size = img.size
@@ -1939,8 +2013,7 @@ class SplitImages:
             self.organizer_logger.logger.exception(file_not_found.__str__)
             self.organizer_logger.logger.exception(file_not_found)
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self.error_splitting_images += 1
-            self.images_error_splitting_images.append(os.path.join(input_folder, image_name + ".raw")) 
+            self._register_image_error(os.path.join(input_folder, image_name + ".raw"))
             return
 
         data = f.read()
@@ -2002,8 +2075,7 @@ class SplitImages:
                 self.organizer_logger.logger.exception(file_not_found)
                 self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
                 progress_callback.emit("\nNo existe el archivo {0}. No se rota la imagen.\n".format(pb_v_name + "_Videofiles.csv"))
-                self.error_splitting_images += 1
-                self.images_error_splitting_images.append(os.path.join(miniaturas_folder, pb_v_name + "_Videofiles.csv")) 
+                self._register_image_error(os.path.join(miniaturas_folder, pb_v_name + "_Videofiles.csv"))
 
         if generate_gray_scale_images:
             normalizedData = (array_to_normalize-np.min(array_to_normalize))/(np.max(array_to_normalize)-np.min(array_to_normalize))*255 # Normalizamos datos para grabar la imagen en escala de grises. Da igual si con auto_temp o no, ya que se ajusta a los datos del array.
