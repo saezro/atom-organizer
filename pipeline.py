@@ -37,6 +37,24 @@ import PIL.Image
 from PIL import Image
 from matplotlib import cm
 
+_LUT_SIZE = 1024
+_LUT_CACHE: dict = {}
+
+
+def _get_thermal_lut(colormap_name: str) -> np.ndarray:
+    """LUT uint8 (1024, 3) precomputada una sola vez por nombre de colormap.
+    Usa bin edges izquierdos (endpoint=False): matplotlib cuantiza sus colormaps
+    a N=256 niveles internamente, y 1024 = 4*256, por lo que cada uno de los 4
+    sub-bins de la LUT cae siempre dentro del mismo bin de 256 que usa la
+    referencia continua (cm.get_cmap(name)(normalized)), evitando saltos de
+    color >1/255 cerca de los límites de bin.
+    """
+    lut = _LUT_CACHE.get(colormap_name)
+    if lut is None:
+        lut = (cm.get_cmap(colormap_name)(np.linspace(0, 1, _LUT_SIZE, endpoint=False))[:, :3] * 255).astype(np.uint8)
+        _LUT_CACHE[colormap_name] = lut
+    return lut
+
 import utils  # acceso diferido (utils.X) para evitar ciclo de import con utils.py, que hace `import pipeline`.
 
 import exif as exif_management
@@ -1397,12 +1415,10 @@ def apply_thermal_colormap(array: np.ndarray, temp_min: float, temp_max: float, 
     clipped = np.clip(array, temp_min, temp_max)
     if temp_max > temp_min:
         normalized = (clipped - temp_min) / (temp_max - temp_min)
+        idx = np.minimum((normalized * _LUT_SIZE).astype(np.uint16), _LUT_SIZE - 1)
     else:
-        normalized = np.zeros_like(clipped)
-    colormap = cm.get_cmap(colormap_name)
-    rgba = colormap(normalized)  # (H, W, 4) floats 0-1
-    rgb = (rgba[..., :3] * 255).astype(np.uint8)
-    return rgb
+        idx = np.zeros(clipped.shape, dtype=np.uint16)
+    return _get_thermal_lut(colormap_name)[idx]
 
 
 class SplitImages:
