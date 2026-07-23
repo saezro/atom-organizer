@@ -1,0 +1,124 @@
+name: release
+
+# Publica una release con AMBOS binarios de la UI webview por cada versión:
+#   - Linux:   ATOM_Organizer-<ver>-x86_64.AppImage   (Qt/QtWebEngine, atom_organizer_webview_linux.spec)
+#   - Windows: ATOM-Organizer-<ver>.exe               (WebView2, atom_organizer_webview.spec, onefile)
+#
+# Disparo:
+#   - push de un tag  vX.Y  → build + release con ese tag.
+#   - manual (workflow_dispatch) → indicar la versión; crea el tag en el sha actual.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versión/tag a publicar (p.ej. v3.3)'
+        required: true
+      prerelease:
+        description: 'Marcar como pre-release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-linux:
+    needs: meta
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build React UI (Vite)
+        working-directory: webui
+        run: |
+          npm ci
+          npm run build
+      - name: Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-webview.txt
+          # setuptools<81: PyInstaller 5.13.2 necesita pkg_resources (setuptools 83 lo quitó)
+          pip install "setuptools==80.10.2" "pyinstaller==5.13.2"
+      - name: PyInstaller (onedir Qt/QtWebEngine)
+        run: pyinstaller --clean --noconfirm atom_organizer_webview_linux.spec
+      - name: Inject ipaddress en base_library.zip
+        run: python inject_ipaddress.py
+      - name: Montar AppImage
+        run: bash scripts/build_appimage.sh "${{ needs.meta.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: ATOM_Organizer-*-x86_64.AppImage
+          if-no-files-found: error
+
+  build-windows:
+    needs: meta
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build React UI (Vite)
+        working-directory: webui
+        run: |
+          npm ci
+          npm run build
+      - name: Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-webview.txt
+          pip install pyinstaller==6.6.0
+      - name: PyInstaller (onefile WebView2)
+        run: pyinstaller --clean --noconfirm atom_organizer_webview.spec
+      - name: Renombrar exe con versión
+        shell: pwsh
+        run: Rename-Item dist/ATOM-Organizer.exe "ATOM-Organizer-${{ needs.meta.outputs.version }}.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: dist/ATOM-Organizer-*.exe
+          if-no-files-found: error
+
+  release:
+    needs: [meta, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-assets
+      - name: Publicar release con ambos binarios
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.version }}
+          name: ATOM Organizer ${{ needs.meta.outputs.version }}
+          prerelease: ${{ github.event_name == 'push' || inputs.prerelease }}
+          fail_on_unmatched_files: true
+          files: |
+            dist-assets/linux-appimage/ATOM_Organizer-*-x86_64.AppImage
+            dist-assets/windows-exe/ATOM-Organizer-*.exe

@@ -1,8 +1,8 @@
 name: build-windows
 
+# Build de la GUI PySide clásica (gui.py) — LEGACY. El app actual (webview,
+# ambos SO) se publica vía release.yml. Este workflow queda solo bajo demanda.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:

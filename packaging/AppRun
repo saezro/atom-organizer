@@ -1,0 +1,6 @@
+#!/bin/sh
+HERE="$(dirname "$(readlink -f "$0")")"
+# QtWebEngine dentro de AppImage: sandbox setuid no disponible → desactivarlo
+export QTWEBENGINE_DISABLE_SANDBOX=1
+export QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --enable-features=UseOzonePlatform"
+exec "$HERE/usr/lib/atom_organizer/ATOM-Organizer" "$@"
