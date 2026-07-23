@@ -56,7 +56,8 @@ jobs:
       - name: Python deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          # requirements-linux.txt (NO requirements.txt: esa lleva pywin32, solo-Windows)
+          pip install -r requirements-linux.txt
           pip install -r requirements-webview.txt
           # setuptools<81: PyInstaller 5.13.2 necesita pkg_resources (setuptools 83 lo quitó)
           pip install "setuptools==80.10.2" "pyinstaller==5.13.2"
