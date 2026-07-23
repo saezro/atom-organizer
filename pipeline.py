@@ -29,6 +29,7 @@ import shutil
 import struct
 import subprocess
 import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
@@ -43,6 +44,55 @@ import utils  # acceso diferido (utils.X) para evitar ciclo de import con utils.
 
 import exif as exif_management
 import exif as em
+
+import sys
+import external_tools
+
+
+def _is_windows() -> bool:
+    return sys.platform.startswith("win")
+
+
+# Ruta al helper de conversión térmica en Linux (equivalente a dji_irp.exe).
+# Vive junto a pipeline.py; se invoca como subproceso efímero por imagen.
+_DJI_IRP_LINUX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dji_irp_linux.py")
+
+# --- Copia rápida con reflink (Btrfs/XFS copy-on-write) ----------------------
+# En la separación copiamos cada imagen del origen al destino. En un filesystem
+# copy-on-write (Btrfs, el disco de trabajo) el reflink clona los extents al
+# instante SIN duplicar bytes, y es una COPIA independiente: el original queda
+# intacto (si luego se escribiera la copia, el CoW separa los extents). En
+# Windows/NTFS o si el clon falla (p. ej. cross-device) cae a shutil.copy2 sin
+# regresión. El origen SOLO se lee — nunca puede corromperse.
+try:
+    import fcntl as _fcntl
+    _FICLONE = 0x40049409  # _IOW(0x94, 9, int) en Linux x86_64
+except ImportError:  # Windows u otros sin fcntl
+    _fcntl = None
+    _FICLONE = None
+
+
+def _reflink_or_copy(src: str, dst: str) -> None:
+    """Copia src→dst conservando el original. Intenta reflink (CoW) y cae a
+    shutil.copy2. dst puede ser un directorio (igual que acepta shutil.copy2)."""
+    if os.path.isdir(dst):
+        dst = os.path.join(dst, os.path.basename(src))
+    if _fcntl is not None:
+        try:
+            with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
+                _fcntl.ioctl(fdst.fileno(), _FICLONE, fsrc.fileno())
+            shutil.copystat(src, dst)
+            return
+        except OSError:
+            # reflink no soportado (cross-device, FS sin CoW…): limpiamos el dst
+            # a medias y usamos la copia byte a byte normal.
+            try:
+                if os.path.exists(dst):
+                    os.remove(dst)
+            except OSError:
+                pass
+    shutil.copy2(src, dst)
+
 
 _LUT_SIZE = 1024
 _LUT_CACHE: dict[str, np.ndarray] = {}
@@ -538,6 +588,10 @@ class GenStructFolder:
         self.total_images_number = 0
         self.error_gen_struct_folder = 0
         self.errors_type_gen_struct_folder = []
+        # Avisos NO fatales (imágenes fuera de todo vuelo del estadillo -> SIN_ORDENAR).
+        # Se cuentan aparte de los errores para que el run termine en ámbar, no en rojo.
+        self.warning_gen_struct_folder = 0
+        self.warnings_type_gen_struct_folder = []
         self.organizer_logger = organizer_logger
         self.final_results = []
 
@@ -614,21 +668,47 @@ class GenStructFolder:
             summarize_dict["Sin Errores"] = "Sin errores durante el proceso"
         else:
             summarize_dict["ERROR"] = "HAN EXISTIDO ERRORES"
+
+        # Avisos NO fatales (SIN_ORDENAR). Marcador único para que el orquestador
+        # headless lo cuente una sola vez y ponga el run en ámbar. El texto NO
+        # contiene "error" para no disparar el conteo de errores.
+        if self.warning_gen_struct_folder > 0:
+            summarize_dict["Detalle avisos"] = self.warnings_type_gen_struct_folder
+            summarize_dict["AVISO"] = "HA HABIDO AVISOS"
         return summarize_dict
     
     def checking_results_gen_struct_folder(self, output_folder, progress_callback):
+        # Imágenes que quedaron en la raíz de TERMICA/RGB tras gen_folder_struct =
+        # no encajan en ningún vuelo del estadillo (p. ej. un clip huérfano cuyo
+        # rango horario no cubre el estadillo). Antes se contaban como ERROR FATAL
+        # (rojo). Decisión de Cas (2026-07-22): NO es fatal -> se apartan a la
+        # carpeta SIN_ORDENAR y el run termina en AVISO (ámbar), sin perder datos.
         thermal_folder = self.utils_obj.get_images_from_dir(os.path.join(output_folder, "TERMICA"))
         rgb_folder = self.utils_obj.get_images_from_dir(os.path.join(output_folder, "RGB"))
         thermal_folder_list_length = len(thermal_folder)
         rgb_folder_list_length = len(rgb_folder)
+        if thermal_folder_list_length > 0 or rgb_folder_list_length > 0:
+            self.utils_obj.prepare_output_folder(output_folder, ["SIN_ORDENAR"])
         if thermal_folder_list_length > 0:
-            self.error_gen_struct_folder += 1
-            self.errors_type_gen_struct_folder.append(f"Hay {thermal_folder_list_length} imágenes térmicas sin ordenar")
-            progress_callback.emit(f"Hay {thermal_folder_list_length} imágenes térmicas sin ordenar.\n")
+            self.utils_obj.prepare_output_folder(os.path.join(output_folder, "SIN_ORDENAR"), ["TERMICA"])
+            for imagen in thermal_folder:
+                utils.safe_move(os.path.join(output_folder, "TERMICA", imagen),
+                                os.path.join(output_folder, "SIN_ORDENAR", "TERMICA", imagen))
+            # Cuentan como procesadas (apartadas a SIN_ORDENAR): así current == total
+            # y no se dispara el falso "No hay correspondencia" que teñiría de rojo.
+            self.current_image_number += thermal_folder_list_length
+            self.warning_gen_struct_folder += 1
+            self.warnings_type_gen_struct_folder.append(f"{thermal_folder_list_length} imágenes térmicas fuera del estadillo movidas a SIN_ORDENAR")
+            progress_callback.emit(f"AVISO: {thermal_folder_list_length} imágenes térmicas fuera del estadillo movidas a SIN_ORDENAR.\n")
         if rgb_folder_list_length > 0:
-            self.error_gen_struct_folder += 1
-            self.errors_type_gen_struct_folder.append(f"Hay {rgb_folder_list_length} imágenes rgb sin ordenar")
-            progress_callback.emit(f"Hay {rgb_folder_list_length} imágenes rgb sin ordenar\n")
+            self.utils_obj.prepare_output_folder(os.path.join(output_folder, "SIN_ORDENAR"), ["RGB"])
+            for imagen in rgb_folder:
+                utils.safe_move(os.path.join(output_folder, "RGB", imagen),
+                                os.path.join(output_folder, "SIN_ORDENAR", "RGB", imagen))
+            self.current_image_number += rgb_folder_list_length
+            self.warning_gen_struct_folder += 1
+            self.warnings_type_gen_struct_folder.append(f"{rgb_folder_list_length} imágenes rgb fuera del estadillo movidas a SIN_ORDENAR")
+            progress_callback.emit(f"AVISO: {rgb_folder_list_length} imágenes rgb fuera del estadillo movidas a SIN_ORDENAR.\n")
 
     def checking_results_gen_thumbnails_and_rotate(self, progress_callback, progress_summarize) -> None:
         """
@@ -1724,10 +1804,10 @@ class SplitImages:
                         self.compress_image_obj.compress_image(image, input_folder,self._rgb_destination_folder(output_folder, image), quality, new_name, progress_callback=progress_callback)
                     else:
                         self.organizer_logger.logger.debug("Copiando la imagen RGB")
-                        shutil.copy2(os.path.join(input_folder, image),os.path.join(self._rgb_destination_folder(output_folder, image), new_name))
+                        _reflink_or_copy(os.path.join(input_folder, image),os.path.join(self._rgb_destination_folder(output_folder, image), new_name))
                 else:
                     self.organizer_logger.logger.debug("Copiando la imagen térmica")  # Las imágenes térmicas no las comprimimos.
-                    shutil.copy2(os.path.join(input_folder, image),os.path.join(os.path.join(output_folder,"TERMICA"), new_name))
+                    _reflink_or_copy(os.path.join(input_folder, image),os.path.join(os.path.join(output_folder,"TERMICA"), new_name))
             elif mode_size is False:  # Diferenciamos RGB de térmicas por terminación
                 self.organizer_logger.logger.debug("Dividiendo por sufijo")
                 image_no_extension = image.rsplit( ".", 1 )[ 0 ]
@@ -1751,10 +1831,10 @@ class SplitImages:
                         self.compress_image_obj.compress_image(image, input_folder,self._rgb_destination_folder(output_folder, image), quality, new_name, progress_callback=progress_callback)
                     else:
                         self.organizer_logger.logger.debug("Copiando la imagen RGB")
-                        shutil.copy2(os.path.join(input_folder, image),os.path.join(self._rgb_destination_folder(output_folder, image), new_name))
+                        _reflink_or_copy(os.path.join(input_folder, image),os.path.join(self._rgb_destination_folder(output_folder, image), new_name))
                 elif image_no_extension.endswith(tuple(thermal_sufix.rsplit(","))) and thermal_sufix != "" or (thermal_sufix == "" and not image_no_extension.endswith(tuple(rgb_sufix.rsplit(",")))):
                     self.organizer_logger.logger.debug("Copiando la imagen térmica")  # Las imágenes térmicas no las comprimimos.
-                    shutil.copy2(os.path.join(input_folder, image),os.path.join(os.path.join(output_folder,"TERMICA"), new_name))
+                    _reflink_or_copy(os.path.join(input_folder, image),os.path.join(os.path.join(output_folder,"TERMICA"), new_name))
                 else:
                     pass
         else:
@@ -1771,7 +1851,7 @@ class SplitImages:
                     self.compress_image_obj.compress_image(image, input_folder,os.path.join(output_folder,"RGB_Extra"), quality, new_name, progress_callback=progress_callback)
                 else:
                     self.organizer_logger.logger.debug("Copiando la imagen RGB Extra")
-                    shutil.copy2(os.path.join(input_folder, image),os.path.join(os.path.join(output_folder,"RGB_Extra"), new_name))                        
+                    _reflink_or_copy(os.path.join(input_folder, image),os.path.join(os.path.join(output_folder,"RGB_Extra"), new_name))
         
     def iterate_folders_for_DJI(self, input_folder: str, exiftool_exe:str, dji_utility: str, progress_callback, progress_bar, emissivity = 0.9, humidity = 50.0, auto_temp = False, up_threshold_temperature = 0, low_threshold_temperature = 500.0, rotate_90: bool = False, rotate_minus_90: bool = False, auto_rotate: bool = False, just_atom_selection = False, generate_gray_scale_images: bool = False, generate_colormap_images: bool = False) -> None:
         """
@@ -1907,6 +1987,7 @@ class SplitImages:
         except Exception as e:
             with self._stats_lock:
                 self.error_splitting_images += 1
+                _first = self.error_splitting_images == 1  # ¿la primera de la tanda? (bajo lock, sin race)
                 self.images_error_splitting_images.append(os.path.join(input_folder, image))
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
             self.organizer_logger.logger.error(
@@ -1914,8 +1995,17 @@ class SplitImages:
                     os.path.join(input_folder, image), e))
             self.organizer_logger.logger.exception(e)
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
+            # En headless el logger de fichero está desactivado (create_file_handler=False),
+            # así que la causa real solo llega si la metemos en el progress_callback (nuestro
+            # tee a /tmp + panel). Surfaceamos tipo + mensaje de la excepción, y para la
+            # PRIMERA de la tanda, además el traceback comprimido (dónde reventó).
+            _tb = ""
+            if _first:
+                _tb = " | traceback: " + " <- ".join(
+                    traceback.format_exc().strip().splitlines()[-4:])
             progress_callback.emit(
-                "\nERROR procesando {0}: se omite y se continúa el vuelo.\n".format(image))
+                "\nERROR procesando {0}: {1}: {2}. Se omite y se continúa el vuelo.{3}\n".format(
+                    image, type(e).__name__, e, _tb))
             return None
 
     def _register_image_error(self, path):
@@ -1938,8 +2028,9 @@ class SplitImages:
                 for src, dst in pairs:
                     f.write("-tagsfromfile\n{0}\n-overwrite_original_in_place\n{1}\n-execute\n".format(src, dst))
                 f.write("-stay_open\nFalse\n-execute\n")  # cierre: sin esto exiftool cuelga
+            exe = exiftool_exe if _is_windows() else external_tools.resolve_tool("exiftool")
             result = subprocess.run(
-                [exiftool_exe, "-stay_open", "True", "-@", argfile],
+                [exe, "-stay_open", "True", "-@", argfile],
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             )
             if result.returncode != 0 and progress_callback is not None:
@@ -1950,6 +2041,36 @@ class SplitImages:
                     os.remove(argfile)
                 except OSError:
                     pass
+
+    def _dji_measure_to_raw_linux(self, image_path: str, raw_path: str, humidity: float, emissivity: float, lib_dir: str):
+        """
+        Equivalente Linux de `dji_irp -s IMG -a measure --humidity H --emissivity E
+        --measurefmt float32 -o IMG.raw`. Genera el mismo .raw (buffer plano float32,
+        °C, row-major, resolución del sensor) que el ejecutable de Windows.
+
+        Se ejecuta en un SUBPROCESO EFÍMERO (dji_irp_linux.py), igual que Windows lanza
+        un dji_irp.exe por imagen: aísla el proceso y permite paralelizar sin dudas de
+        thread-safety de la librería nativa.
+
+        IMPORTANTE — el rc NO es fiable: los hilos nativos de libdirp segfaultean
+        SIEMPRE en el teardown del proceso (rc 139), pero es BENIGNO: la medida se
+        completa y el .raw se escribe de forma atómica (.part + fsync + rename) ANTES
+        del crash. Verificado: el .raw sale byte-idéntico en cada ejecución. Igual que
+        Windows, que ya ignora el rc de dji_irp.exe, validamos el .raw, no el rc: si
+        existe y su tamaño es un múltiplo de float32 no vacío, la conversión fue OK;
+        si falta (la escritura atómica nunca deja un .raw a medias), fue un fallo real.
+        """
+        result = subprocess.run(
+            [sys.executable, _DJI_IRP_LINUX, image_path, raw_path,
+             repr(float(humidity)), repr(float(emissivity)), lib_dir],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+        raw_ok = (os.path.exists(raw_path) and os.path.getsize(raw_path) > 0
+                  and os.path.getsize(raw_path) % 4 == 0)
+        if not raw_ok:
+            raise RuntimeError(
+                "Conversor térmico Linux falló (rc={0}) en {1}: {2}".format(
+                    result.returncode, image_path, (result.stderr or "").strip()))
 
     def convert_dji_image_to_tif(self, input_folder: str, output_folder: str, image_name: str, exiftool_exe:str, dji_utility: str, progress_callback, progress_bar, emissivity: float = 0.9, humidity: float = 50.0, auto_temp = False, up_threshold_temperature = 20, low_threshold_temperature = 0, rotate_90: bool = False, rotate_minus_90: bool = False, auto_rotate: bool = False, just_atom_selection = False, generate_gray_scale_images: bool = False, generate_colormap_images: bool = False, defer_exif: bool = False):
         """
@@ -1971,12 +2092,21 @@ class SplitImages:
         - rotate_minus_90 - booleano que indica que la imagen TIFF se rotará 90 grados en sentido contrario a las agujas del reloj.
         """ 
         
-        subproceso = '"{0}" -s "{1}" -a measure --humidity {2} --emissivity {3} --measurefmt float32 -o "{4}".raw'.format(dji_utility,os.path.join(input_folder, image_name), 
-                                                                                                                      humidity, emissivity, os.path.join(input_folder, image_name))
         # self.organizer_logger.logger.debug("Seleccion_ATOM: {0}".format(just_atom_selection))
         # self.organizer_logger.logger.debug("Girar auto: {0}".format(auto_rotate))
 
-        subprocess.run(subproceso)
+        raw_path = os.path.join(input_folder, image_name + ".raw")
+        if _is_windows():
+            # dji_utility apunta a programas_externos/<dron>/dji_irp.exe
+            subproceso = '"{0}" -s "{1}" -a measure --humidity {2} --emissivity {3} --measurefmt float32 -o "{4}"'.format(
+                dji_utility, os.path.join(input_folder, image_name), humidity, emissivity, raw_path)
+            subprocess.run(subproceso)
+        else:
+            # En Linux no hay ejecutable dji_irp: usamos libdirp.so vía ctypes.
+            # Las librerías del SDK viven junto al .exe teórico -> carpeta del dron.
+            lib_dir = os.path.dirname(dji_utility)
+            self._dji_measure_to_raw_linux(
+                os.path.join(input_folder, image_name), raw_path, humidity, emissivity, lib_dir)
         try:
             img = Image.open(os.path.join(input_folder, image_name))
         except FileNotFoundError as f:
@@ -2105,8 +2235,11 @@ class SplitImages:
         dst_exif = os.path.join(output_folder, image_name.removesuffix(".JPG") + ".tiff")
         if defer_exif:
             return (src_exif, dst_exif)
-        subproceso_exiftool = '"{0}" -tagsfromfile "{1}" "{2}" -overwrite_original_in_place'.format(exiftool_exe, src_exif, dst_exif)
-        subprocess.run(subproceso_exiftool)
+        if _is_windows():
+            subproceso_exiftool = '"{0}" -tagsfromfile "{1}" "{2}" -overwrite_original_in_place'.format(exiftool_exe, src_exif, dst_exif)
+            subprocess.run(subproceso_exiftool)
+        else:
+            subprocess.run([external_tools.resolve_tool("exiftool"), "-tagsfromfile", src_exif, dst_exif, "-overwrite_original_in_place"])
 
     def _safe_remove(self, path: str, progress_callback=None, attempts: int = 5, delay: float = 0.5):
         """
@@ -2348,7 +2481,7 @@ class RGBCropping:
         - percentage_cropping_manual - Valor entero con el porcentaje de recorte en el caso de que el recorte sea manual (Parámetro pecentage_cropping_auto a False)
         
         """
-        images = self.utils_obj.get_images_from_dir(input_folder)
+        images = self.utils_obj.get_images_from_dir(input_folder, ["_CROP"])  # excluir _CROP: el recorte nunca debe re-procesar sus propias salidas (evita _CROP_CROP y "image file is truncated" si el dir de salida venía sucio). Igual que renombrado (1058/1213).
         if(len(images) > 0):
             progress_callback.emit("\nAnalizando directorio: " + input_folder + "\n")
             progress_callback.emit("Procesando y recortando {0} imágenes".format(len(images)) + "\n") # Se envía información al iniciar el procesado de un directorio. Si no hay imágenes

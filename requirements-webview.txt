@@ -1,0 +1,9 @@
+# Capa UI React (pywebview) — se instala ADEMÁS de requirements(-linux).txt
+# En Windows el backend es WebView2 (nativo, sin deps extra).
+# En Linux se usa el backend Qt de pywebview → requiere qtpy + PySide6
+# (PySide6 ya está en el requirements principal).
+pywebview==6.2.1
+qtpy==2.4.3
+# deps transitivas de pywebview (fijadas por reproducibilidad):
+bottle==0.13.4
+proxy-tools==0.1.0

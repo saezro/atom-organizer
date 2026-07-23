@@ -16,7 +16,7 @@
  Versiones:  2.1.5
 -------------------------------------------------------------------------------'''
 
-from PySide6 import QtWidgets
+from PySide6 import QtWidgets, QtCore, QtGui
 from PySide6.QtGui import QTextCursor
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot, QThreadPool
 from qt_designer_files import atom_organizer as aero_gui
@@ -63,53 +63,151 @@ import logging
 
 import configparser
 
-# --- Tema oscuro global QSS para ATOM Organizer (estilo "SNOR") -----------------------------
-# Aplicado una única vez en MainWindow.__init__, sirve de base común; los ~80 setStyleSheet
-# puntuales existentes en este módulo (color: rgb(238,118,60) para acentos concretos) NO se
-# migran en esta task (follow-up).
+# --- Tema global QSS para ATOM Organizer — clonado del login de ATOM Suite -------------------
+# Paleta y componentes copiados del frontend de ATOM Suite (naranja marca #EE753A sobre negro
+# #0a0a0a, inputs/botones "glass"). El wordmark usa Space Grotesk 700 (cargada en _load_brand_font).
+# Follow-up (Fase B): neutralizar los ~80 setStyleSheet inline del .ui generado que aún pisan esto.
 
-BACKGROUND = "#0a0a0a"
-ACCENT = "#EE763C"
-TEXT = "#e6e6e6"
-PANEL = "#1c1c1d"
+APP_VERSION = "2.1.5"       # versión mostrada junto al wordmark en la cabecera
+BACKGROUND = "#0a0a0a"      # fondo login ATOM Suite
+ACCENT = "#EE753A"          # naranja marca (título "SUITE", acentos)
+ACCENT_SOFT = "rgba(238,117,58,0.6)"
+TEXT = "#f1f5f9"            # texto cuerpo ATOM Suite
+MUTED = "#6b7280"          # gris subtítulo (gray-500)
+
+# --- Escalado responsive (determinista, por tamaño de pantalla) -----------------------------
+# La UI se dimensiona en "píxeles lógicos" (device-independent) y las fuentes en puntos: el
+# escalado a cada monitor lo hace Qt vía el devicePixelRatio que reporta Wayland (portátil 1.25,
+# 4K 2.0), no un multiplicador propio. Por eso UI_SCALE se queda en 1.0 — S() es prácticamente
+# identidad y solo sigue existiendo para no tocar las ~200 llamadas del código. Al arrastrar la
+# ventana entre monitores, Qt la reescala sola. (En X11/xcb Qt no distingue DPI por monitor, así
+# que el arranque usa Wayland; ver bloque main.)
+UI_SCALE = 1.0
+
+def S(v: float) -> int:
+    """Tamaño en píxeles lógicos (Qt lo escala por DPI). Identidad salvo que se fuerce UI_SCALE."""
+    return max(1, round(v * UI_SCALE))
+
+def scale_qss(qss: str, k: float) -> str:
+    """Multiplica todos los valores `Npx` de una hoja QSS por el factor de escala."""
+    if abs(k - 1.0) < 1e-3:
+        return qss
+    import re
+    return re.sub(r"(\d+)px", lambda m: f"{max(1, round(int(m.group(1)) * k))}px", qss)
 
 DARK_QSS = f"""
 QMainWindow, QWidget {{
     background-color: {BACKGROUND};
     color: {TEXT};
+    font-size: 13px;
+}}
+QWidget#brand_header {{
+    background: transparent;
+    border: none;
+}}
+QTabWidget::pane {{
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    top: -1px;
+}}
+QTabBar::tab {{
+    background: rgba(255,255,255,0.04);
+    color: {MUTED};
+    border: 1px solid rgba(255,255,255,0.08);
+    border-bottom: none;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    padding: 7px 18px;
+    margin-right: 3px;
+    font-weight: 600;
+}}
+QTabBar::tab:selected {{
+    color: {ACCENT};
+    background: rgba(238,117,58,0.10);
+    border-color: rgba(238,117,58,0.35);
 }}
 QGroupBox {{
-    background-color: {PANEL};
-    border: 1px solid {ACCENT};
-    border-radius: 9px;
-    margin-top: 0.6em;
+    background-color: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 12px;
+    margin-top: 1.2em;
+    padding-top: 0.6em;
     color: {TEXT};
 }}
 QGroupBox::title {{
+    subcontrol-origin: margin;
+    left: 12px;
     color: {ACCENT};
+    font-weight: 600;
 }}
 QPushButton {{
-    background-color: {PANEL};
+    background-color: rgba(255,255,255,0.05);
     color: {TEXT};
-    border: 2px solid {ACCENT};
-    border-radius: 9px;
-    padding: 0.3em 0.6em;
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 10px;
+    padding: 7px 14px;
+    font-weight: 600;
 }}
 QPushButton:hover {{
-    background-color: {ACCENT};
-    color: {BACKGROUND};
+    border-color: {ACCENT_SOFT};
+    color: #ffffff;
 }}
-QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
-    background-color: {PANEL};
+QPushButton:disabled {{
+    color: rgba(255,255,255,0.35);
+    border-color: rgba(255,255,255,0.08);
+}}
+QLineEdit, QTextEdit, QPlainTextEdit {{
+    background-color: rgba(255,255,255,0.05);
+    color: rgba(255,255,255,0.92);
+    border: 2px solid rgba(255,255,255,0.20);
+    border-radius: 10px;
+    padding: 6px 10px;
+    selection-background-color: {ACCENT};
+}}
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
+    border: 2px solid {ACCENT_SOFT};
+    background-color: rgba(255,255,255,0.08);
+}}
+QSpinBox, QDoubleSpinBox, QComboBox {{
+    background-color: rgba(255,255,255,0.05);
+    color: rgba(255,255,255,0.92);
+    border: 2px solid rgba(255,255,255,0.18);
+    border-radius: 8px;
+    padding: 4px 8px;
+}}
+QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
+    border-color: {ACCENT_SOFT};
+}}
+QCheckBox, QRadioButton {{
     color: {TEXT};
-    border: 1px solid {ACCENT};
-    border-radius: 4px;
+    spacing: 8px;
+    background: transparent;
 }}
-QLabel {{
-    color: {TEXT};
+QCheckBox::indicator, QRadioButton::indicator {{
+    width: 18px; height: 18px;
+    border: 2px solid rgba(255,255,255,0.30);
+    border-radius: 5px;
+    background: rgba(255,255,255,0.04);
 }}
+QRadioButton::indicator {{
+    border-radius: 9px;
+}}
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
+    background: {ACCENT};
+    border-color: {ACCENT};
+}}
+QLabel {{ color: {TEXT}; background: transparent; }}
+QScrollArea {{ border: none; background: transparent; }}
+QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
+QScrollBar::handle:vertical {{ background: rgba(255,255,255,0.15); border-radius: 5px; min-height: 30px; }}
+QScrollBar::handle:vertical:hover {{ background: rgba(238,117,58,0.5); }}
+QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
+QMenuBar {{ background: {BACKGROUND}; color: {TEXT}; }}
+QMenuBar::item:selected {{ background: rgba(238,117,58,0.15); }}
+QMenu {{ background: #141414; color: {TEXT}; border: 1px solid rgba(255,255,255,0.1); }}
+QMenu::item:selected {{ background: rgba(238,117,58,0.15); }}
 """
-# --- fin tema oscuro global ---------------------------------------------------------------
+# --- fin tema global ----------------------------------------------------------------------
 
 
 class WorkerSignals(QObject):
@@ -388,6 +486,21 @@ class ConfigWindow(QtWidgets.QWidget, config_gui.Ui_Form):
             self.le_model.setText(model)
             self.le_percentage.setText(percentage)
 
+class DotGridWidget(QtWidgets.QWidget):
+    """Fondo negro con retícula de puntos sutil, como el login de ATOM Suite (DotGridBackground)."""
+    def paintEvent(self, event):
+        p = QtGui.QPainter(self)
+        p.fillRect(self.rect(), QtGui.QColor("#0a0a0a"))
+        p.setPen(QtCore.Qt.PenStyle.NoPen)
+        p.setBrush(QtGui.QColor(255, 255, 255, 22))
+        step = S(26)
+        dot = S(2)
+        for y in range(0, self.height(), step):
+            for x in range(0, self.width(), step):
+                p.drawEllipse(x, y, dot, dot)
+        p.end()
+
+
 class MainWindow(QtWidgets.QMainWindow, aero_gui.Ui_MainWindow):
     """
     Clase que representa el comportamiento de la ventana principal de la aplicación que representa el comportamiento de la ventana principal,
@@ -406,7 +519,9 @@ class MainWindow(QtWidgets.QMainWindow, aero_gui.Ui_MainWindow):
     def __init__(self, *args, obj=None, **kwargs) -> None:
         super(MainWindow, self).__init__(*args, **kwargs)
         self.setupUi(self)
-        self.setStyleSheet(DARK_QSS)
+        self._load_brand_font()
+        self.setStyleSheet(scale_qss(DARK_QSS + self._extra_qss(), UI_SCALE))
+        self._build_brand_header()
 
         self.threadpool = QThreadPool()
         # print("Multithreading with maximum %d threads" % self.threadpool.maxThreadCount())
@@ -443,7 +558,8 @@ class MainWindow(QtWidgets.QMainWindow, aero_gui.Ui_MainWindow):
         self.bt_gb_manual_geotagging_select_logs_folder.clicked.connect(self.select_logs_folder_for_manual_geotagging)
 
         self.bt_do_compress.clicked.connect(lambda: self.run_thread("compress_image"))
-        self.bt_do_split.clicked.connect(lambda: self.run_thread("split_images"))
+        # bt_do_split (botón "Separar" original) quedó oculto tras el rediseño; su disparo directo
+        # saltaría el volcado de _run_main_organize → NO se reconecta. El botón visible es self.main_run.
         self.bt_do_gen_meta_location.clicked.connect(lambda: self.run_thread("gen_meta_location"))
         self.bt_do_generate_thumbnails.clicked.connect(lambda: self.run_thread("gen_thumbnails"))
         self.bt_do_rename_images.clicked.connect(lambda: self.run_thread("rename_images"))
@@ -458,9 +574,10 @@ class MainWindow(QtWidgets.QMainWindow, aero_gui.Ui_MainWindow):
 
         # Botones que lanzan un procesado vía run_thread: se deshabilitan mientras hay un Worker en curso
         # para evitar lanzar dos a la vez (ver run_guard.can_start).
+        # self.main_run (botón visible de "Ejecutar organización") se añade en _build_main_screen,
+        # una vez creado, para que también se deshabilite mientras hay un Worker en curso.
         self._launch_buttons = [
             self.bt_do_compress,
-            self.bt_do_split,
             self.bt_do_gen_meta_location,
             self.bt_do_generate_thumbnails,
             self.bt_do_rename_images,
@@ -546,7 +663,820 @@ class MainWindow(QtWidgets.QMainWindow, aero_gui.Ui_MainWindow):
         # self.init_logger()
         self.init_new_logger()
         self.organizer_logger_obj.logger.info("Multithreading with maximum %d threads" % self.threadpool.maxThreadCount())
+
+        # Pantalla principal rediseñada (estética ATOM Suite): card con los 4 controles + Modo avanzado.
+        self._build_main_screen()
+        self._install_dot_backdrop()
+        if os.environ.get("ATOM_DEBUG_ADV"):
+            self.main_adv_btn.setChecked(True)
+            QtCore.QTimer.singleShot(600, lambda: self.page_scroll.verticalScrollBar().setValue(int(os.environ["ATOM_DEBUG_ADV"])))
     
+    #%% Marca / estética ATOM Suite
+    def _load_brand_font(self) -> None:
+        """Carga Space Grotesk (OFL) empaquetada para el wordmark, igual que el login de ATOM Suite."""
+        from PySide6.QtGui import QFontDatabase
+        self._brand_family = "Space Grotesk"
+        path = resource_path("assets", "fonts", "SpaceGrotesk-VariableFont.ttf")
+        if os.path.exists(path):
+            fid = QFontDatabase.addApplicationFont(path)
+            fams = QFontDatabase.applicationFontFamilies(fid)
+            if fams:
+                self._brand_family = fams[0]
+
+    def _build_brand_header(self) -> None:
+        """Inserta la cabecera de marca (icono + 'ATOM ORGANIZER') encima del QTabWidget, estilo ATOM Suite."""
+        from PySide6 import QtGui
+        header = QtWidgets.QWidget()
+        header.setObjectName("brand_header")
+        h = QtWidgets.QHBoxLayout(header)
+        h.setContentsMargins(S(16), S(12), S(16), S(12))
+        h.setSpacing(S(12))
+
+        icon_path = resource_path("assets", "atom-icon.svg")
+        if os.path.exists(icon_path):
+            try:
+                from PySide6.QtSvgWidgets import QSvgWidget
+                svg = QSvgWidget(icon_path)
+                svg.setFixedSize(S(72), S(72))
+                h.addWidget(svg)
+            except Exception:
+                pass
+
+        title = QtWidgets.QLabel(
+            '<span style="color:#F4F4F5;">ATOM</span>'
+            '<span style="color:#EE753A;"> ORGANIZER</span>'
+        )
+        f = QtGui.QFont(self._brand_family, S(48))
+        f.setWeight(QtGui.QFont.Weight.Bold)
+        f.setLetterSpacing(QtGui.QFont.SpacingType.PercentageSpacing, 106)
+        title.setFont(f)
+        h.addWidget(title)
+
+        # Versión en pequeño, alineada a la base del wordmark.
+        ver = QtWidgets.QLabel(f"v{APP_VERSION}")
+        ver.setObjectName("brand_version")
+        vf = QtGui.QFont(self._brand_family, S(13))
+        vf.setWeight(QtGui.QFont.Weight.Medium)
+        ver.setFont(vf)
+        ver.setStyleSheet(f"color: {MUTED};")
+        h.addSpacing(S(8))
+        h.addWidget(ver, 0, QtCore.Qt.AlignmentFlag.AlignBottom)
+
+        h.addStretch(1)
+
+        # Segmented control (píldoras) para conmutar sección, en vez de la barra de menús.
+        seg = QtWidgets.QFrame()
+        seg.setObjectName("seg_control")
+        sl = QtWidgets.QHBoxLayout(seg)
+        sl.setContentsMargins(S(4), S(4), S(4), S(4))
+        sl.setSpacing(S(4))
+        self._seg_group = QtWidgets.QButtonGroup(self)
+        self._seg_group.setExclusive(True)
+        self._seg_buttons = {}
+        for key, label in (("main", "Organizar"), ("aero", "AEROTOOLS"), ("otros", "OTROS EQUIPOS")):
+            b = QtWidgets.QPushButton(label)
+            b.setObjectName("seg_btn")
+            b.setCheckable(True)
+            b.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+            b.setMinimumHeight(S(34))
+            self._seg_group.addButton(b)
+            sl.addWidget(b)
+            self._seg_buttons[key] = b
+        self._seg_buttons["main"].setChecked(True)
+        self._seg_buttons["main"].clicked.connect(lambda: self._show_section(None))
+        self._seg_buttons["aero"].clicked.connect(lambda: self._show_section(self.tab_aero_tools))
+        self._seg_buttons["otros"].clicked.connect(lambda: self._show_section(self.tab_manual))
+        h.addWidget(seg)
+
+        # Botón ⚙ con las acciones útiles del menú viejo (estadillo / config / debug).
+        gear = QtWidgets.QToolButton()
+        gear.setObjectName("gear_btn")
+        gear.setText("⚙")
+        gear.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        gear.setFixedSize(S(36), S(36))
+        gear.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QtWidgets.QMenu(gear)
+        menu.addAction(self.actionCargar_estadillo)
+        menu.addSeparator()
+        menu.addAction(self.actionCargar_config)
+        menu.addAction(self.actionEditar_Config)
+        menu.addSeparator()
+        menu.addAction(self.actionLog_debug)
+        menu.addAction(self.actionTest)
+        gear.setMenu(menu)
+        h.addSpacing(S(6))
+        h.addWidget(gear)
+
+        # Fuera la barra de menús fea: todo vive ahora en la cabecera.
+        self.menubar.setVisible(False)
+
+        # Insertar encima del QTabWidget dentro del gridLayout central.
+        self.gridLayout.addWidget(header, 0, 0)
+        self.gridLayout.addWidget(self.tab_widget_mode, 1, 0)
+        self.gridLayout.setRowStretch(1, 1)
+        self.gridLayout.setContentsMargins(0, 0, 0, 0)
+        self.gridLayout.setSpacing(0)
+
+    def _extra_qss(self) -> str:
+        """QSS que depende de rutas de recursos (checks con imagen) + estilos de la pantalla nueva."""
+        check_icon = resource_path("assets", "check.svg").replace("\\", "/")
+        dot_icon = resource_path("assets", "dot.svg").replace("\\", "/")
+        return f"""
+QCheckBox::indicator:checked {{
+    image: url({check_icon});
+    background: rgba(238,117,58,0.10);
+    border-color: rgba(238,117,58,0.75);
+}}
+QRadioButton::indicator:checked {{
+    image: url({dot_icon});
+    background: rgba(255,255,255,0.04);
+    border-color: rgba(238,117,58,0.75);
+}}
+QFrame#main_card {{
+    background: rgba(255,255,255,0.045);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 16px;
+}}
+QLabel#field_label {{
+    color: #cbd5e1;
+    font-size: 13px;
+    font-weight: 600;
+}}
+QLineEdit#main_input {{
+    background: rgba(255,255,255,0.05);
+    border: 2px solid rgba(255,255,255,0.20);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 14px;
+    color: rgba(255,255,255,0.92);
+}}
+QLineEdit#main_input:focus {{
+    border: 2px solid rgba(238,117,58,0.60);
+    background: rgba(255,255,255,0.08);
+}}
+QPushButton#browse_btn {{
+    background: rgba(255,255,255,0.05);
+    border: 2px solid rgba(255,255,255,0.20);
+    border-radius: 10px;
+    padding: 10px 22px;
+    font-size: 14px;
+    color: #e5e7eb;
+    font-weight: 600;
+}}
+QPushButton#browse_btn:hover {{
+    border-color: rgba(238,117,58,0.55);
+    color: #ffffff;
+}}
+QPushButton#run_primary {{
+    background: rgba(238,117,58,0.12);
+    border: 1px solid rgba(238,117,58,0.45);
+    border-radius: 12px;
+    color: #ffffff;
+    font-size: 15px;
+    font-weight: 600;
+}}
+QPushButton#run_primary:hover {{
+    background: rgba(238,117,58,0.22);
+    border-color: rgba(238,117,58,0.70);
+}}
+QToolButton#adv_toggle {{
+    background: transparent;
+    border: none;
+    color: {MUTED};
+    font-weight: 600;
+    padding: 4px 0;
+}}
+QToolButton#adv_toggle:hover {{ color: #9aa3af; }}
+QGroupBox#adv_section {{
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 14px;
+    margin-top: 1.5em;
+    padding-top: 0.4em;
+    font-size: 13px;
+}}
+QGroupBox#adv_section::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 14px;
+    padding: 2px 4px;
+    color: {ACCENT};
+    font-weight: 700;
+    text-transform: uppercase;
+}}
+QFrame#seg_control {{
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 12px;
+}}
+QPushButton#seg_btn {{
+    background: transparent;
+    border: none;
+    border-radius: 9px;
+    padding: 6px 16px;
+    color: {MUTED};
+    font-size: 13px;
+    font-weight: 600;
+}}
+QPushButton#seg_btn:hover {{
+    color: #cbd5e1;
+}}
+QPushButton#seg_btn:checked {{
+    background: rgba(238,117,58,0.16);
+    color: #ffffff;
+}}
+QToolButton#gear_btn {{
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 10px;
+    color: #cbd5e1;
+    font-size: 16px;
+}}
+QToolButton#gear_btn:hover {{
+    border-color: rgba(238,117,58,0.55);
+    color: #ffffff;
+}}
+QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
+"""
+
+    #%% Pantalla principal rediseñada (estética ATOM Suite)
+    def _file_row(self, parent_layout, caption: str, placeholder: str, on_click, top_gap: int = 14):
+        """Crea una fila 'etiqueta + input + Examinar' en la card principal y devuelve el QLineEdit."""
+        lbl = QtWidgets.QLabel(caption)
+        lbl.setObjectName("field_label")
+        parent_layout.addSpacing(top_gap)
+        parent_layout.addWidget(lbl)
+        row = QtWidgets.QHBoxLayout()
+        row.setSpacing(8)
+        le = QtWidgets.QLineEdit()
+        le.setObjectName("main_input")
+        le.setPlaceholderText(placeholder)
+        le.setMinimumHeight(S(52))
+        btn = QtWidgets.QPushButton("Examinar")
+        btn.setObjectName("browse_btn")
+        btn.setMinimumHeight(S(52))
+        btn.setMinimumWidth(S(130))
+        btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        btn.clicked.connect(on_click)
+        row.addWidget(le, 1)
+        row.addWidget(btn)
+        parent_layout.addSpacing(6)
+        parent_layout.addLayout(row)
+        return le
+
+    def _build_main_screen(self) -> None:
+        """Construye la pantalla 'Organizar' limpia: card con 4 controles + Modo avanzado (UI original).
+
+        No se re-cablea el pipeline: los 4 controles nuevos vuelcan sus valores en los widgets
+        originales (que quedan intactos dentro del panel avanzado) justo antes de ejecutar.
+        """
+        # 1. Sacar "Organizar completo" del QTabWidget para reutilizarla como panel avanzado.
+        adv_idx = self.tab_widget_mode.indexOf(self.tab)
+        if adv_idx != -1:
+            self.tab_widget_mode.removeTab(adv_idx)
+        self.tab_widget_mode.tabBar().hide()  # AEROTOOLS / OTROS EQUIPOS quedan como funciones separadas
+
+        # 2. Card con los 4 controles visibles.
+        card = QtWidgets.QFrame()
+        card.setObjectName("main_card")
+        card.setMaximumWidth(S(1120))
+        card.setMinimumWidth(S(560))
+        cv = QtWidgets.QVBoxLayout(card)
+        cv.setContentsMargins(S(38), S(34), S(38), S(34))
+        cv.setSpacing(S(2))
+
+        self.main_origen = self._file_row(cv, "Carpeta origen", "Selecciona la carpeta con el material crudo…", self._pick_main_origen, top_gap=0)
+        self.main_destino = self._file_row(cv, "Carpeta final", "Dónde se guardará el resultado organizado…", self._pick_main_destino)
+        self.main_estadillo = self._file_row(cv, "Estadillo", "Archivo del estadillo de vuelo (.xlsx / .csv)…", self._pick_main_estadillo)
+
+        self.main_rename = QtWidgets.QCheckBox("Renombrar imágenes según el estadillo")
+        self.main_rename.setChecked(self.cb_gb_split_images_rename_images.isChecked())
+        self.main_rename.setStyleSheet("font-size: 14px;")
+        cv.addSpacing(22)
+        cv.addWidget(self.main_rename)
+
+        self.main_run = QtWidgets.QPushButton("Ejecutar organización")
+        self.main_run.setObjectName("run_primary")
+        self.main_run.setMinimumHeight(S(54))
+        self.main_run.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.main_run.clicked.connect(self._run_main_organize)
+        self._launch_buttons.append(self.main_run)  # se deshabilita durante una corrida, como los demás
+        cv.addSpacing(20)
+        cv.addWidget(self.main_run)
+
+        # 3. Toggle "Modo avanzado" + panel (UI original en un scroll), oculto de primeras.
+        self.main_adv_btn = QtWidgets.QToolButton()
+        self.main_adv_btn.setObjectName("adv_toggle")
+        self.main_adv_btn.setText("  Modo avanzado")
+        self.main_adv_btn.setCheckable(True)
+        self.main_adv_btn.setArrowType(QtCore.Qt.ArrowType.RightArrow)
+        self.main_adv_btn.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.main_adv_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.main_adv_btn.toggled.connect(self._toggle_advanced)
+
+        # El panel avanzado se expande a su altura NATURAL (sin scroll propio): el scroll es de
+        # toda la página, para que card + avanzado bajen juntos y nada se corte abajo.
+        self.adv_panel = self._build_advanced_panel()
+        self.adv_panel.setVisible(False)
+
+        # 4. Página principal transparente: el fondo de puntos lo pinta un backdrop a pantalla
+        #    completa por detrás de todo (ver _install_dot_backdrop), para que los puntos también
+        #    pasen tras la cabecera. La página en sí no pinta nada.
+        page = QtWidgets.QWidget()
+        page.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
+        page.setStyleSheet("background: transparent;")
+        pv = QtWidgets.QVBoxLayout(page)
+        pv.setContentsMargins(28, 24, 28, 28)
+        pv.setSpacing(14)
+        card_row = QtWidgets.QHBoxLayout()
+        card_row.addStretch(1)
+        card_row.addWidget(card)
+        card_row.addStretch(1)
+        adv_row = QtWidgets.QHBoxLayout()
+        adv_row.addStretch(1)
+        adv_row.addWidget(self.main_adv_btn)
+        adv_row.addStretch(1)
+        pv.addStretch(1)
+        pv.addLayout(card_row)
+        pv.addLayout(adv_row)
+        pv.addWidget(self.adv_panel)
+        pv.addStretch(1)
+
+        # 5. Scroll de PÁGINA COMPLETA: al desplegar "Modo avanzado" toda la página baja (no un
+        # scroll interno que recorta el contenido).
+        self.page_scroll = QtWidgets.QScrollArea()
+        self.page_scroll.setWidgetResizable(True)
+        self.page_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.page_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.page_scroll.setWidget(page)
+        # Transparente para que el backdrop de puntos se vea a través del scroll (dots fijos).
+        self.page_scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        self.page_scroll.viewport().setAutoFillBackground(False)
+
+        # 6. Stack central: pantalla principal (0) + funciones separadas / tabs viejos (1, vía menú).
+        self.central_stack = QtWidgets.QStackedWidget()
+        self.central_stack.setStyleSheet("background: transparent;")  # deja ver el backdrop de puntos
+        self.central_stack.addWidget(self.page_scroll)          # 0 · Organizar
+        self.central_stack.addWidget(self.tab_widget_mode)      # 1 · (legacy, ya no se muestra)
+        self.aero_page = self._build_aero_panel()
+        self.otros_page = self._build_otros_panel()
+        self.central_stack.addWidget(self.aero_page)            # 2 · AEROTOOLS (glass)
+        self.central_stack.addWidget(self.otros_page)           # 3 · OTROS EQUIPOS (glass)
+        self.gridLayout.addWidget(self.central_stack, 1, 0)
+        self.central_stack.setCurrentIndex(0)
+        # El acceso a AEROTOOLS / OTROS EQUIPOS vive en el segmented control de la cabecera
+        # (_build_brand_header), no en la barra de menús.
+
+    def _install_dot_backdrop(self) -> None:
+        """Pinta el fondo de puntos por DETRÁS de toda la ventana (cabecera incluida). El header y
+        la página van transparentes encima, así los puntos son continuos y también se ven tras el
+        título. El backdrop se redimensiona con la ventana en resizeEvent()."""
+        self._backdrop = DotGridWidget(self.centralwidget)
+        self._backdrop.setGeometry(self.centralwidget.rect())
+        self._backdrop.lower()  # al fondo del z-order, debajo del gridLayout
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "_backdrop"):
+            self._backdrop.setGeometry(self.centralwidget.rect())
+            self._backdrop.lower()
+
+    def _show_section(self, tab) -> None:
+        """Conmuta entre la pantalla principal (Organizar) y los tabs originales (AEROTOOLS /
+        OTROS EQUIPOS), que agrupan funciones ajenas a la organización general."""
+        if tab is None:
+            self.central_stack.setCurrentWidget(self.page_scroll)
+            self._seg_buttons["main"].setChecked(True)
+        elif tab is self.tab_aero_tools:
+            self.central_stack.setCurrentWidget(self.aero_page)
+            self._seg_buttons["aero"].setChecked(True)
+        else:
+            self.central_stack.setCurrentWidget(self.otros_page)
+            self._seg_buttons["otros"].setChecked(True)
+
+    # --- Helpers de layout glass, compartidos por Modo avanzado / AEROTOOLS / OTROS EQUIPOS ----
+    def _glass_section(self, title: str, header_cb=None):
+        """Tarjeta-sección glass con título; opcionalmente su checkbox-cabecera arriba."""
+        gb = QtWidgets.QGroupBox(title)
+        gb.setObjectName("adv_section")
+        v = QtWidgets.QVBoxLayout(gb)
+        v.setContentsMargins(16, 16, 16, 16)
+        v.setSpacing(10)
+        if header_cb is not None:
+            v.addWidget(header_cb)
+        return gb, v
+
+    def _glass_form(self) -> QtWidgets.QFormLayout:
+        f = QtWidgets.QFormLayout()
+        f.setContentsMargins(0, 0, 0, 0)
+        f.setHorizontalSpacing(12)
+        f.setVerticalSpacing(8)
+        f.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        f.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        return f
+
+    def _glass_radios(self, gb: QtWidgets.QGroupBox, widgets):
+        """Re-maqueta un sub-QGroupBox (radios/checks) que venía con posiciones absolutas."""
+        lay = QtWidgets.QVBoxLayout(gb)
+        lay.setContentsMargins(12, 8, 12, 10)
+        lay.setSpacing(6)
+        for w in widgets:
+            lay.addWidget(w)
+        return gb
+
+    def _glass_file_row(self, button, lineedit) -> QtWidgets.QHBoxLayout:
+        """Fila selector: botón (glass) + lineedit que crece. Re-parenta los widgets originales."""
+        button.setObjectName("browse_btn")
+        r = QtWidgets.QHBoxLayout(); r.setSpacing(8)
+        r.addWidget(button)
+        r.addWidget(lineedit, 1)
+        return r
+
+    def _action_row(self, button) -> QtWidgets.QHBoxLayout:
+        """Botón de acción primario (acento naranja), alineado a la derecha de la sección."""
+        button.setObjectName("run_primary")
+        button.setMinimumHeight(S(42))
+        button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        r = QtWidgets.QHBoxLayout()
+        r.addStretch(1)
+        r.addWidget(button)
+        return r
+
+    def _glass_grid_page(self, secs) -> QtWidgets.QWidget:
+        """Coloca las secciones glass en una rejilla adaptable de 2 columnas, alineadas arriba."""
+        W = QtWidgets.QWidget()
+        W.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
+        W.setStyleSheet("background: transparent;")
+        grid = QtWidgets.QGridLayout(W)
+        grid.setContentsMargins(28, 24, 28, 28)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(16)
+        top = QtCore.Qt.AlignmentFlag.AlignTop
+        for i, gb in enumerate(secs):
+            grid.addWidget(gb, i // 2, i % 2, top)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        # Quitar los fondos oscuros heredados del .ui (rgb(28,28,29)) para respetar el glass.
+        for w in W.findChildren(QtWidgets.QWidget):
+            ss = w.styleSheet()
+            if "28, 28, 29" in ss or "28,28,29" in ss:
+                w.setStyleSheet("")
+        return W
+
+    def _wrap_page_scroll(self, content: QtWidgets.QWidget) -> QtWidgets.QScrollArea:
+        """Envuelve un contenido en un scroll de página completa transparente (backdrop de puntos visible)."""
+        sc = QtWidgets.QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        sc.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sc.setWidget(content)
+        sc.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        sc.viewport().setAutoFillBackground(False)
+        return sc
+
+    def _build_advanced_panel(self) -> QtWidgets.QWidget:
+        """Reconstruye el 'Modo avanzado' (todas las opciones de split_images) con layouts REALES
+        y estética glass. Re-parenta los MISMOS widgets originales del .ui a QGroupBox/QFormLayout,
+        por lo que se conservan intactas sus señales/slots y `_capture_run_config()`. No re-cablea
+        el pipeline: solo cambia dónde y cómo se muestran los controles."""
+        W = QtWidgets.QWidget()
+        grid = QtWidgets.QGridLayout(W)
+        grid.setContentsMargins(6, 6, 6, 6)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(16)
+
+        top = QtCore.Qt.AlignmentFlag.AlignTop
+
+        section = self._glass_section
+        form = self._glass_form
+        radios = self._glass_radios
+
+        secs = []
+
+        # --- Separación RGB / térmica -------------------------------------------------
+        gb, v = section("Separación RGB / térmica")
+        r = QtWidgets.QHBoxLayout(); r.setSpacing(14)
+        r.addWidget(radios(self.gb_gb_split_images_choose_mode,
+                           [self.rb_gb_choose_mode_sufix, self.rb_gb_choose_mode_size]), 0, top)
+        f = form()
+        f.addRow(self.lb_gb_split_images_rgb, self.le_gb_split_images_end_rgb_files)
+        f.addRow(self.lb_gb_split_images_rgb_extra, self.le_gb_split_images_end_rgb_extra_files)
+        f.addRow(self.lb_gb_split_images_termicas, self.le_gb_split_images_end_thermo_files)
+        f.addRow(self.lb_gb_split_images_max_size, self.sb_gb_split_images_max_size)
+        r.addLayout(f, 1)
+        v.addLayout(r)
+        secs.append(gb)
+
+        # --- Compresión RGB -----------------------------------------------------------
+        gb, v = section("Compresión RGB", self.cb_gb_split_images_compress_rgb)
+        f = form()
+        f.addRow(self.lb_gb_split_images_compress_level, self.sb_gb_split_images_compress_level)
+        v.addLayout(f)
+        secs.append(gb)
+
+        # --- Organizar imágenes (estadillo + desfase horario) -------------------------
+        gb, v = section("Organizar imágenes (estadillo)", self.cb_gb_split_images_organize_images)
+        v.addWidget(self.cb_gb_split_images_include_v)
+        er = QtWidgets.QHBoxLayout(); er.setSpacing(8)
+        er.addWidget(self.bt_gb_split_images_select_estad)
+        er.addWidget(self.le_gb_split_images_estad, 1)
+        v.addLayout(er)
+        f = form()
+        f.addRow(self.lb_gb_split_images_seconds_range, self.sb_gb_split_images_seconds_range)
+        f.addRow(self.lb_gb_split_images_mismatch_hours, self.sb_gb_split_images_mismatch_hours)
+        f.addRow(self.lb_gb_split_images_mismatch_minutes, self.sb_gb_split_images_mismatch_minutes)
+        v.addLayout(f)
+        secs.append(gb)
+
+        # --- Generar meta y GPS -------------------------------------------------------
+        gb, v = section("Generar meta y GPS", self.cb_gb_split_images_gen_meta_location)
+        v.addWidget(self.cb_gb_split_images_calculate_proyected_distance)
+        f = form()
+        f.addRow(self.lb_gb_split_images_flight_height, self.sb_gb_split_images_flight_height)
+        v.addLayout(f)
+        secs.append(gb)
+
+        # --- Miniaturas y rotación ----------------------------------------------------
+        gb, v = section("Miniaturas y rotación", self.cb_gb_split_images_gen_thumbnails)
+        r = QtWidgets.QHBoxLayout(); r.setSpacing(12)
+        r.addWidget(radios(self.gb_gb_split_images_gen_thumbnails,
+                           [self.cb_gb_gen_thumbnails_rgb_2, self.cb_gb_gen_thumbnails_termica_2]), 0, top)
+        r.addWidget(radios(self.gb_gb_split_images_gen_thumbnails_choose_mode,
+                           [self.rb_gb_split_images_choose_mode_auto, self.rb_gb_split_images_choose_mode_manual]), 0, top)
+        r.addWidget(radios(self.gb_gb_split_images_gen_thumbnails_rotate_manual_value,
+                           [self.rb_gb_split_images_gen_thumbnails_rotate_90, self.rb_gb_split_images_gen_thumbnails_rotate_minus_90]), 0, top)
+        r.addStretch(1)
+        v.addLayout(r)
+        f = form()
+        f.addRow(self.lb_gb_split_images_gen_thumbnails_max_error, self.sb_gb_split_images_gen_thumbnails_max_error)
+        f.addRow(self.lb_gb_split_images_gen_thumbnails_add_to_angle, self.sb_gb_split_images_gen_thumbnails_add_to_angle)
+        f.addRow(self.lb_gb_split_images_gen_thumbnails_subs_to_angle, self.sb_gb_split_images_gen_thumbnails_subs_to_angle)
+        v.addLayout(f)
+        secs.append(gb)
+
+        # --- Convertir DJI → TIF (térmica) --------------------------------------------
+        gb, v = section("Convertir DJI → TIF (térmica)", self.cb_split_images_convert_to_tif)
+        r = QtWidgets.QHBoxLayout(); r.setSpacing(14)
+        f = form()
+        f.addRow(self.lb_split_images_convert_to_tif_emissivity, self.sb_split_images_convert_to_tif_emissivity)
+        f.addRow(self.lb_split_images_convert_to_tif_humidity, self.sb_split_images_convert_to_tif_humidity)
+        f.addRow(self.lb_split_images_convert_to_tif_up_temperature, self.sb_split_images_convert_to_tif_up_temperature)
+        f.addRow(self.lb_split_images_convert_to_tif_low_temperature, self.sb_split_images_convert_to_tif_low_temperature)
+        f.addRow(self.lb_split_images_convert_to_tif_dron_selector, self.cob_split_images_convert_to_tif_dron_selector)
+        r.addLayout(f, 1)
+        r.addWidget(radios(self.gb_split_images_convert_to_tiff_rotate,
+                           [self.rb_split_images_convert_to_tiff_no_rotate, self.rb_split_images_convert_to_tiff_rotate_auto,
+                            self.rb_split_images_convert_to_tiff_rotate_90, self.rb_split_images_convert_to_tiff_rotate_minus_90]), 0, top)
+        v.addLayout(r)
+        v.addWidget(self.cb_split_images_convert_to_tif_temp_auto)
+        v.addWidget(self.cb_split_images_convert_to_tif_create_gray_scale_images)
+        v.addWidget(self.cb_split_images_convert_to_tif_solo_seleccion_atom)
+        secs.append(gb)
+
+        # --- Recorte RGB --------------------------------------------------------------
+        gb, v = section("Recorte RGB", self.cb_gb_split_images_cropping_rgb)
+        r = QtWidgets.QHBoxLayout(); r.setSpacing(14)
+        r.addWidget(radios(self.gb_gb_split_images_choose_cropping_mode,
+                           [self.rb_gb_split_images_choose_mode_cropping_mode_auto, self.rb_gb_gb_split_images_choose_cropping_mode_manual]), 0, top)
+        f = form()
+        f.addRow(self.lb_gb_split_images_crop_percentage, self.sb_gb_split_images_crop_percentage)
+        r.addLayout(f, 1)
+        v.addLayout(r)
+        secs.append(gb)
+
+        # Colocar las secciones en rejilla de 2 columnas, alineadas arriba.
+        for i, gb in enumerate(secs):
+            grid.addWidget(gb, i // 2, i % 2, top)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+
+        # Quitar los fondos oscuros heredados del .ui (rgb(28,28,29)) para que respiren en glass.
+        for w in W.findChildren(QtWidgets.QWidget):
+            ss = w.styleSheet()
+            if "28, 28, 29" in ss or "28,28,29" in ss:
+                w.setStyleSheet("")
+
+        return W
+
+    def _build_aero_panel(self) -> QtWidgets.QScrollArea:
+        """Reconstruye AEROTOOLS (tab_aero_tools) con layouts glass reales, re-parentando los
+        MISMOS widgets del .ui (señales/slots intactos). Mismo patrón que Modo avanzado."""
+        secs = []
+        top = QtCore.Qt.AlignmentFlag.AlignTop
+
+        # --- Térmica: extracción (.TMC → frames) --------------------------------------
+        gb, v = self._glass_section("Térmica · extracción")
+        v.addLayout(self._glass_file_row(self.bt_gb_extraction_select_folder, self.le_gb_extraction_folder))
+        v.addLayout(self._glass_file_row(self.bt_gb_extraction_select_output_folder, self.le_gb_extraction_output_folder))
+        v.addLayout(self._glass_file_row(self.bt_gb_extraction_select_estad, self.le_gb_extraction_estad))
+        v.addWidget(self.cb_gb_extraction_auto)
+        f = self._glass_form()
+        f.addRow(self.lb_gb_extraction_temp_min, self.sb_gb_extraction_temp_min)
+        f.addRow(self.lb_gb_extraction_temp_max, self.sb_gb_extraction_temp_max)
+        v.addLayout(f)
+        cr = QtWidgets.QHBoxLayout(); cr.setSpacing(14)
+        cr.addWidget(self.cb_gb_extraction_pre_extraction)
+        cr.addWidget(self.cb_gb_extraction_extraction)
+        cr.addStretch(1)
+        v.addLayout(cr)
+        v.addLayout(self._action_row(self.bt_do_extraction))
+        secs.append(gb)
+
+        # --- Procesamiento RGB --------------------------------------------------------
+        gb, v = self._glass_section("Procesamiento RGB")
+        v.addLayout(self._glass_file_row(self.bt_gb_rgb_aerotools_select_input_folder, self.le_gb_rgb_aerotools_input_folder))
+        v.addLayout(self._glass_file_row(self.bt_gb_rgb_aerotools_select_output_folder, self.le_gb_rgb_aerotools_output_folder))
+        v.addWidget(self.cb_gb_rgb_aerotools_compress_rgb)
+        f = self._glass_form()
+        f.addRow(self.lb_gb_rgb_aerotools_compress_level, self.sb_gb_rgb_aerotools_compress_level)
+        v.addLayout(f)
+        v.addWidget(self.cb_gb_rgb_aerotools_rename_images)
+        v.addLayout(self._glass_file_row(self.bt_gb_rgb_aerotools_select_estad, self.le_gb_rgb_aerotools_estad))
+        f = self._glass_form()
+        f.addRow(self.lb_gb_rgb_aerotools_seconds_range_image_estad, self.sb_gb_rgb_aerotools_seconds_range_image_estad)
+        f.addRow(self.lb_gb_rgb_aerotools_mismatch_hours, self.sb_gb_rgb_aerotools_mismatch_hours)
+        f.addRow(self.lb_gb_rgb_aerotools_mismatch_minutes, self.sb_gb_rgb_aerotools_mismatch_minutes)
+        v.addLayout(f)
+        v.addLayout(self._glass_file_row(self.bt_gb_rgb_aerotools_select_logs_folder, self.le_gb_rgb_aerotools_logs_folder))
+        f = self._glass_form()
+        f.addRow(self.lb_gb_rgb_aerotools_seconds_range_log_estad, self.sb_gb_rgb_aerotools_seconds_range_log_estad)
+        v.addLayout(f)
+        v.addWidget(self.cb_gb_rgb_aerotools_geotagging)
+        v.addWidget(self.cb_gb_rgb_aerotools_organize_images)
+        v.addLayout(self._action_row(self.bt_do_rgb_aerotools_processing))
+        secs.append(gb)
+
+        # --- Rotación y miniaturas ----------------------------------------------------
+        gb, v = self._glass_section("Rotación y miniaturas")
+        v.addLayout(self._glass_file_row(self.bt_gb_generate_thumbnails_aerotools_select_input_folder, self.le_gb_generate_thumbnails_aerotools_input_folder))
+        v.addWidget(self._glass_radios(self.gb_gb_gen_thumbnails_aerotools,
+                    [self.cb_gb_gen_thumbnails_aerotools_rgb, self.cb_gb_gen_thumbnails_aerotools_termica]))
+        f = self._glass_form()
+        f.addRow(self.lb_gb_gen_thumbnails_aerotools, self.sb_gb_generate_thumbnails_aerotools_max_error)
+        f.addRow(self.lb_gb_gen_thumbnails_aerotools_add_to_angle, self.sb_gb_generate_thumbnails_aerotools_add_to_angle)
+        f.addRow(self.lb_gb_gen_thumbnails_aerotools_subs_to_angle, self.sb_gb_generate_thumbnails_aerotools_subs_to_angle)
+        v.addLayout(f)
+        v.addLayout(self._action_row(self.bt_do_generate_thumbnails_aerotools))
+        secs.append(gb)
+
+        # --- Geoetiquetado manual -----------------------------------------------------
+        gb, v = self._glass_section("Geoetiquetado manual")
+        v.addLayout(self._glass_file_row(self.bt_gb_manual_geotagging_select_images_folder, self.le_gb_manual_geotagging_select_images_folder))
+        v.addLayout(self._glass_file_row(self.bt_gb_manual_geotagging_select_log, self.le_gb_manual_geotagging_select_log))
+        v.addLayout(self._glass_file_row(self.bt_gb_manual_geotagging_select_estad, self.le_gb_manual_geotagging_estad))
+        v.addLayout(self._glass_file_row(self.bt_gb_manual_geotagging_select_logs_folder, self.le_gb_manual_geotagging_logs_folder))
+        v.addLayout(self._action_row(self.bt_do_manual_geotagging))
+        secs.append(gb)
+
+        return self._wrap_page_scroll(self._glass_grid_page(secs))
+
+    def _build_otros_panel(self) -> QtWidgets.QScrollArea:
+        """Reconstruye OTROS EQUIPOS (tab_manual) con layouts glass reales, re-parentando los
+        MISMOS widgets del .ui (señales/slots intactos). Mismo patrón que Modo avanzado."""
+        secs = []
+        top = QtCore.Qt.AlignmentFlag.AlignTop
+
+        # --- Comprimir imágenes -------------------------------------------------------
+        gb, v = self._glass_section("Comprimir imágenes")
+        v.addLayout(self._glass_file_row(self.bt_gb_compress_rgbs_select_input_folder, self.le_gb_compress_rgbs_input_folder))
+        v.addLayout(self._glass_file_row(self.bt_gb_compress_rgbs_select_output_folder, self.le_gb_compress_rgbs_output_folder))
+        v.addWidget(self.cb_gb_compress_rgbs_include_subfolders)
+        f = self._glass_form()
+        f.addRow(self.lb_gb_compress_level, self.sb_compress_level)
+        v.addLayout(f)
+        v.addLayout(self._action_row(self.bt_do_compress))
+        secs.append(gb)
+
+        # --- Generar meta y location --------------------------------------------------
+        gb, v = self._glass_section("Generar meta y location")
+        v.addLayout(self._glass_file_row(self.bt_gb_gen_meta_location_select_input_folder, self.le_gb_gen_meta_location_input_folder))
+        v.addWidget(self._glass_radios(self.gb_gb_gen_meta_location,
+                    [self.rb_gb_gen_meta, self.rb_gb_gen_location, self.rb_gb_gen_location_and_meta]))
+        f = self._glass_form()
+        f.addRow(self.lb_gb_gen_meta_location_flight_height, self.sb_gb_gen_meta_location_flight_height)
+        v.addLayout(f)
+        v.addWidget(self.cb_gb_gen_meta_location_calculate_proyected_distance)
+        v.addLayout(self._action_row(self.bt_do_gen_meta_location))
+        secs.append(gb)
+
+        # --- Estructura de carpetas / organizar ---------------------------------------
+        gb, v = self._glass_section("Estructura de carpetas · organizar")
+        v.addLayout(self._glass_file_row(self.bt_gb_gen_folder_struct_select_estad, self.le_gb_gen_folder_struct_estad))
+        v.addLayout(self._glass_file_row(self.bt_gb_gen_folder_struct_select_output_folder, self.le_gb_gen_folder_struct_output_folder))
+        v.addWidget(self.cb_gb_gen_folder_struct_organize_images)
+        v.addWidget(self.cb_gb_gen_folder_struct_include_v)
+        f = self._glass_form()
+        f.addRow(self.lb_gb_gen_folder_struct_seconds_range, self.sb_gb_gen_folder_struct_seconds_range)
+        f.addRow(self.lb_gb_gen_folder_struct_mismatch_hours, self.sb_gb_gen_folder_struct_mismatch_hours)
+        f.addRow(self.lb_gb_gen_folder_struct_mismatch_minutes, self.sb_gb_gen_folder_struct_mismatch_minutes)
+        v.addLayout(f)
+        v.addLayout(self._action_row(self.bt_do_gen_struct))
+        secs.append(gb)
+
+        # --- Rotación y miniaturas ----------------------------------------------------
+        gb, v = self._glass_section("Rotación y miniaturas")
+        v.addLayout(self._glass_file_row(self.bt_gb_generate_thumbnails_select_input_folder, self.le_gb_generate_thumbnails_input_folder))
+        r = QtWidgets.QHBoxLayout(); r.setSpacing(12)
+        r.addWidget(self._glass_radios(self.gb_gb_gen_thumbnails,
+                    [self.cb_gb_gen_thumbnails_rgb, self.cb_gb_gen_thumbnails_termica]), 0, top)
+        r.addWidget(self._glass_radios(self.gb_gb_gen_thumbnails_choose_mode,
+                    [self.rb_gb_generate_thumbnails_choose_mode_auto, self.rb_gb_generate_thumbnails_choose_mode_manual]), 0, top)
+        r.addWidget(self._glass_radios(self.gb_gb_gen_thumbnails_rotate_manual_value,
+                    [self.rb_gb_gen_thumbnails_rotate_90, self.rb_gb_gen_thumbnails_rotate_minus_90]), 0, top)
+        r.addStretch(1)
+        v.addLayout(r)
+        f = self._glass_form()
+        f.addRow(self.lb_gb_gen_thumbnails, self.sb_gb_generate_thumbnails_max_error)
+        f.addRow(self.lb_gb_gen_thumbnails_add_to_angle, self.sb_gb_generate_thumbnails_add_to_angle)
+        f.addRow(self.lb_gb_gen_thumbnails_subs_to_angle, self.sb_gb_generate_thumbnails_subs_to_angle)
+        v.addLayout(f)
+        v.addLayout(self._action_row(self.bt_do_generate_thumbnails))
+        secs.append(gb)
+
+        # --- Renombrado de imágenes ---------------------------------------------------
+        gb, v = self._glass_section("Renombrado de imágenes")
+        v.addLayout(self._glass_file_row(self.bt_gb_rename_images_select_folder, self.le_gb_rename_images_output_folder))
+        v.addLayout(self._action_row(self.bt_do_rename_images))
+        secs.append(gb)
+
+        # --- Convertir DJI → TIF ------------------------------------------------------
+        gb, v = self._glass_section("Convertir DJI → TIF")
+        v.addLayout(self._glass_file_row(self.bt_gb_convert_to_tif_select_folder, self.le_gb_convert_to_tif_input_folder))
+        f = self._glass_form()
+        f.addRow(self.lb_gb_convert_to_tif_emissivity, self.sb_gb_convert_to_tif_emissivity)
+        f.addRow(self.lb_gb_convert_to_tif_humidity, self.sb_gb_convert_to_tif_humidity)
+        f.addRow(self.lb_gb_convert_to_tif_dron_selector, self.cob_gb_convert_to_tif_dron_selector)
+        v.addLayout(f)
+        v.addWidget(self.cb_gb_convert_to_tif_temp_auto)
+        f = self._glass_form()
+        f.addRow(self.lb_gb_convert_to_tif_up_temperature, self.sb_gb_convert_to_tif_up_temperature)
+        f.addRow(self.lb_gb_convert_to_tif_low_temperature, self.sb_gb_convert_to_tif_low_temperature)
+        v.addLayout(f)
+        v.addWidget(self._glass_radios(self.gb_gb_convert_to_tiff_rotate,
+                    [self.rb_gb_convert_to_tiff_no_rotate, self.rb_gb_convert_to_tiff_rotate_90,
+                     self.rb_gb_convert_to_tiff_rotate_minus_90, self.rb_gb_convert_to_tiff_rotate_auto]))
+        v.addWidget(self.cb_gb_convert_to_tif_solo_seleccion_atom)
+        v.addWidget(self.cb_gb_convert_to_tif_create_gray_scale_images)
+        v.addLayout(self._action_row(self.bt_do_convert_to_tif))
+        secs.append(gb)
+
+        # --- Recorte RGB --------------------------------------------------------------
+        gb, v = self._glass_section("Recorte RGB")
+        v.addLayout(self._glass_file_row(self.bt_gb_cropping_rgb_select_folder, self.le_gb_cropping_rgb_output_folder))
+        v.addWidget(self._glass_radios(self.gb_gb_cropping_rgb_choose_mode,
+                    [self.rb_gb_cropping_rgb_choose_mode_auto, self.rb_gb_cropping_rgb_choose_mode_manual]))
+        f = self._glass_form()
+        f.addRow(self.lb_gb_cropping_rgb_crop_percentage, self.sb_gb_cropping_rgb_crop_percentage)
+        v.addLayout(f)
+        v.addLayout(self._action_row(self.bt_do_rgb_cropping))
+        secs.append(gb)
+
+        # --- Girar imágenes TIF -------------------------------------------------------
+        gb, v = self._glass_section("Girar imágenes TIF")
+        v.addLayout(self._glass_file_row(self.bt_gb_rotate_tif_select_folder, self.le_gb_rotate_tif_input_folder_2))
+        v.addWidget(self._glass_radios(self.gb_gb_rotate_tiff_rotate_options,
+                    [self.rb_gb_rotate_tiff_rotate_90, self.rb_gb_rotate_tiff_rotate_minus_90, self.rb_gb_rotate_tiff_rotate_180]))
+        v.addLayout(self._action_row(self.bt_do_rotate_tif))
+        secs.append(gb)
+
+        return self._wrap_page_scroll(self._glass_grid_page(secs))
+
+    # Diálogo no-nativo de Qt: bajo Hyprland/XWayland el nativo (portal/GTK) atrapa el ratón.
+    _DLG_OPTS = QtWidgets.QFileDialog.Option.DontUseNativeDialog
+
+    def _pick_main_origen(self) -> None:
+        d = QtWidgets.QFileDialog.getExistingDirectory(self, "Carpeta origen", "", self._DLG_OPTS)
+        if d:
+            self.main_origen.setText(d)
+
+    def _pick_main_destino(self) -> None:
+        d = QtWidgets.QFileDialog.getExistingDirectory(self, "Carpeta final", "", self._DLG_OPTS)
+        if d:
+            self.main_destino.setText(d)
+
+    def _pick_main_estadillo(self) -> None:
+        f, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Estadillo", "", "Estadillos (*.xlsx *.xls *.csv);;Todos los archivos (*)", options=self._DLG_OPTS)
+        if f:
+            self.main_estadillo.setText(f)
+
+    def _toggle_advanced(self, on: bool) -> None:
+        self.adv_panel.setVisible(on)
+        self.main_adv_btn.setArrowType(QtCore.Qt.ArrowType.DownArrow if on else QtCore.Qt.ArrowType.RightArrow)
+        if on:  # revelar el panel dentro del scroll de página al desplegarlo.
+            QtCore.QTimer.singleShot(0, lambda: self.page_scroll.ensureWidgetVisible(self.main_adv_btn))
+
+    def _run_main_organize(self) -> None:
+        """Vuelca los 4 controles de la card en los widgets originales y lanza el pipeline split_images."""
+        self.le_gb_split_images_input_folder.setText(self.main_origen.text())
+        self.le_gb_split_images_output_folder.setText(self.main_destino.text())
+        estad = self.main_estadillo.text().strip()
+        self.le_gb_split_images_estad.setText(estad)
+        # Con estadillo => organizar imágenes activo (el checkbox vive en el panel avanzado).
+        self.cb_gb_split_images_organize_images.setChecked(bool(estad))
+        self.cb_gb_split_images_rename_images.setChecked(self.main_rename.isChecked())
+        self.modify_qt_objects()
+        self.run_thread("split_images")
+
     #%% Funciones específicas de la interfaz.
     def select_input_folder(self, input_folder_type: str) -> None:
         """Función que muestra una ventana de diálogo para elegir una carpeta de entrada. El path se mostrará en QLineEdit correspondiente."""
@@ -1194,6 +2124,7 @@ class MainWindow(QtWidgets.QMainWindow, aero_gui.Ui_MainWindow):
             progress_summarize.emit("---> SUBPROCESO: SEPARACIÓN DE IMÁGENES ENTRE RGB Y TÉRMICAS.")
 
             self.utils_obj.prepare_output_folder(cfg.output_folder, ["RGB", "TERMICA"])
+            self.split_images_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.input_folder)
             self.split_images_obj.iterate_folders(cfg.input_folder, cfg.output_folder,
             cfg.choose_mode_size, cfg.max_size, cfg.end_thermo_files,
             cfg.end_rgb_files, cfg.compress_rgb, cfg.compress_level,
@@ -1367,7 +2298,8 @@ class MainWindow(QtWidgets.QMainWindow, aero_gui.Ui_MainWindow):
                 self.new_log_gui.enable_process()
 
                 exiftool_exe = resource_path("programas_externos", "exiftool.exe")
-                dji_utility = resource_path("programas_externos", cfg.convert_to_tif_dron_selector, "dji_irp.exe")
+                dron_selector = self._resolve_dron_selector(cfg.convert_to_tif_dron_selector, os.path.join(cfg.output_folder, "TERMICA"), progress_callback)
+                dji_utility = resource_path("programas_externos", dron_selector, "dji_irp.exe")
                 # os.path.join(cfg.output_folder, "TERMICA")
                 # self.split_images_obj.iterate_folders_for_DJI(f"{cfg.output_folder}//TERMICA", exiftool_exe, dji_utility,
                 self.split_images_obj.iterate_folders_for_DJI(os.path.join(cfg.output_folder, "TERMICA"), exiftool_exe, dji_utility,
@@ -1769,6 +2701,60 @@ class MainWindow(QtWidgets.QMainWindow, aero_gui.Ui_MainWindow):
         processing_time = self.utils_obj.logging_time(progress_callback, processing_time, False)
         return processing_time
 
+    def _resolve_dron_selector(self, selector, termica_folder, progress_callback):
+        """Resuelve la carpeta de binarios DJI (programas_externos/<sel>/dji_irp.exe)
+        para la conversión a TIF. Si `selector` ya viene explícito (combo Qt o webui
+        con M2EA/M4T) lo respeta. Si viene vacío ('(automático)' del webui / default
+        headless) AUTODETECTA el modelo leyendo el campo EXIF "Image Model" de una
+        imagen térmica de muestra y lo mapea a la carpeta de binarios. Solo existen
+        binarios para M2EA y M4T. Devuelve el selector resuelto y VALIDA que la carpeta
+        de binarios del SO exista: si no, ABORTA con un único error claro (en vez de
+        dejar que falle imagen por imagen con N errores confusos aguas abajo)."""
+        resolved = selector
+        if not selector:
+            # Modelo EXIF (campo "Image Model") -> carpeta de binarios en programas_externos/.
+            model_to_folder = {
+                "M4T": "M4T",
+                "MAVIC2-ENTERPRISE-ADVANCED": "M2EA",
+            }
+            sample = None
+            for root, _dirs, files in os.walk(termica_folder):
+                for name in files:
+                    if name.lower().endswith((".jpg", ".jpeg")):
+                        sample = os.path.join(root, name)
+                        break
+                if sample:
+                    break
+            if not sample:
+                progress_callback.emit("AVISO: no se encontró imagen térmica para autodetectar el modelo de dron.\n")
+            else:
+                model = self.meta_location_obj.exif_management_obj.get_model(sample, progress_callback)
+                model = (model or "").strip("\x00").strip()
+                folder = model_to_folder.get(model)
+                if folder:
+                    progress_callback.emit(f"Modelo de dron autodetectado por EXIF: {model} -> {folder}.\n")
+                    resolved = folder
+                elif model:
+                    progress_callback.emit(f"AVISO: modelo de dron '{model}' sin binarios TIF disponibles (solo M2EA/M4T).\n")
+
+        # GUARD: el dron resuelto DEBE tener su carpeta de binarios con el binario del SO
+        # (dji_irp.exe en Windows, libdirp.so en Linux). Si no, abortar fuerte upfront
+        # con UN error claro, en vez de N fallos por imagen aguas abajo.
+        if not config.has_dron_binaries(resolved):
+            bin_name = config.dji_bin_name()
+            if selector:
+                msg = (f"No hay binarios DJI para el dron seleccionado '{selector}' "
+                       f"(falta programas_externos/{selector}/{bin_name}). "
+                       f"Usa M2EA, M4T o '(automático)'.")
+            else:
+                msg = ("No se pudo determinar un dron con binarios DJI por autodetección "
+                       f"(sin imagen de muestra o modelo no soportado; falta programas_externos/<dron>/{bin_name}). "
+                       "Selecciona M2EA o M4T manualmente.")
+            progress_callback.emit("ERROR: " + msg + "\n")
+            raise ValueError(msg)
+
+        return resolved
+
     def do_convert_to_tif(self, cfg: ConvertToTifConfig, progress_callback = None, progress_bar=None, progress_summarize=None):
         """
         Función que convierte las imágenes JPG térmicas a TIFF para su uso en la aplicación de AEROTOOLS.
@@ -1790,7 +2776,8 @@ class MainWindow(QtWidgets.QMainWindow, aero_gui.Ui_MainWindow):
         self.new_log_gui.enable_process()
 
         exiftool_exe = resource_path("programas_externos", "exiftool.exe")
-        dji_utility = resource_path("programas_externos", cfg.dron_selector, "dji_irp.exe")
+        dron_selector = self._resolve_dron_selector(cfg.dron_selector, cfg.input_folder, progress_callback)
+        dji_utility = resource_path("programas_externos", dron_selector, "dji_irp.exe")
 
         self.split_images_obj.iterate_folders_for_DJI(cfg.input_folder, exiftool_exe, dji_utility,
                                                       progress_callback, progress_bar, cfg.emissivity,
@@ -2327,7 +3314,21 @@ class MainWindow(QtWidgets.QMainWindow, aero_gui.Ui_MainWindow):
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+    # Escalado propio y determinista por pantalla: desactivamos el HiDPI de Qt y descartamos
+    # cualquier QT_SCALE_FACTOR fijo (que hacía la UI enorme en pantallas pequeñas como el portátil).
+    os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "0"
+    # Escalado por DPI a cargo de Qt (no un multiplicador propio en px). Requiere que Qt sepa la
+    # escala real de cada monitor: eso lo da Wayland, no XWayland/xcb (que reporta 96 DPI y dpr=1
+    # para todos). Si no se forzó una plataforma y hay sesión Wayland, usarla.
+    if not os.environ.get("QT_QPA_PLATFORM") and os.environ.get("WAYLAND_DISPLAY"):
+        os.environ["QT_QPA_PLATFORM"] = "wayland"
+    # Respetar escalas fraccionarias (1.25 del portátil) en vez de redondearlas a 2.0.
+    QtGui.QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+        QtCore.Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QtWidgets.QApplication(sys.argv)
+    _f = app.font()
+    _f.setPointSizeF(10.0)  # puntos: escalan con el DPI del monitor donde esté la ventana
+    app.setFont(_f)
     window = MainWindow()
     window.show()
     app.exec()

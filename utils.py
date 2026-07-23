@@ -282,7 +282,11 @@ def safe_copy2(src: str, dest: str) -> str:
     try:
         shutil.copy2(src, destino_final)
     except OSError as e:
-        raise OSError(f"Error copiando '{src}' a '{destino_final}': {e}") from e
+        # Preservar la subclase concreta (p. ej. FileNotFoundError): algunos
+        # llamadores hacen `except FileNotFoundError` a propósito para tolerar
+        # CSVs ausentes. Reenvolver en un OSError base rompía ese manejo y
+        # abortaba todo el pipeline en vez de saltar el archivo que falta.
+        raise type(e)(f"Error copiando '{src}' a '{destino_final}': {e}") from e
     return destino_final
 
 
@@ -559,6 +563,12 @@ class Utils:
         - exclude_folders - lista de nombres de carpetas que se excluirán del recorrido junto con todos sus subdirectorios.
         """
         excluded_folders_set = set(exclude_folders) if exclude_folders else set()
+        # SIN_ORDENAR es una carpeta de aparcado de imágenes huérfanas (fuera del
+        # estadillo): nunca es contenido válido que deba contarse en el total
+        # esperado de ninguna fase. Excluirla siempre evita el falso "no hay
+        # correspondencia entre número inicial y final" en las fases posteriores
+        # a la Estructura de carpetas (que cuentan sobre output_folder).
+        excluded_folders_set.add("SIN_ORDENAR")
         contador = 0
         for ruta, directorios, archivos in os.walk(folder):
             directorios[:] = [d for d in directorios if d not in excluded_folders_set]

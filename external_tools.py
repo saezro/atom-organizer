@@ -43,6 +43,20 @@ def is_feature_available(feature: str) -> bool:
     return _current_os() in FEATURE_MATRIX[feature]
 
 
+def dji_bin_name() -> str:
+    """Basename del binario DJI que debe existir en programas_externos/<dron>/ según el SO:
+    el .exe en Windows, la librería nativa libdirp.so en Linux (la que usa dji_irp_linux.py)."""
+    return "dji_irp.exe" if _current_os() == "win" else "libdirp.so"
+
+
+def has_dron_binaries(selector: str) -> bool:
+    """True si `selector` (M2EA/M4T) mapea a una carpeta programas_externos/<selector>/
+    con el binario DJI correcto para el SO actual. Selector vacío o inexistente -> False."""
+    if not selector:
+        return False
+    return os.path.isfile(os.path.join(app_base_dir(), "programas_externos", selector, dji_bin_name()))
+
+
 def resolve_tool(name: str) -> str:
     """
     Devuelve la ruta/comando invocable para el binario `name` según el SO actual.
