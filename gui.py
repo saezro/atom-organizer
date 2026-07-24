@@ -654,7 +654,7 @@ class MainWindow(QtWidgets.QMainWindow, aero_gui.Ui_MainWindow):
         self.new_log_gui = LogWindow()
     
         # Carga un archivo de configuración y se lee desde las diferentes funciones.
-        self.config_obj.load_new_config(resource_path("config", "Config.ini"))
+        self.config_obj.load_new_config(config._user_config_path())
         
         # Llamo a esta función para actualizar el estado de los checkboxes y su efecto.
         self.modify_qt_objects()

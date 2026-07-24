@@ -101,6 +101,40 @@ class Api:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
                     "thermal": "", "rgb": "", "tokens": {}, "total": 0, "no_suffix": 0}
 
+    # ---- configuración persistente (ruta ThermoViewer + % recorte por dron) -
+    def read_config(self) -> dict:
+        """Lee la config editable de usuario. Devuelve
+        {ruta_thermoviewer: str, percentage_by_models: {MODELO: int}}.
+        Ruta persistente (NO _MEIPASS efímero del onefile), ver external_tools."""
+        try:
+            from external_tools import load_config_or_default, _user_config_path
+            return load_config_or_default(_user_config_path())
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"error": f"{type(exc).__name__}: {exc}",
+                    "ruta_thermoviewer": "", "percentage_by_models": {}}
+
+    def write_config(self, data: dict) -> dict:
+        """Reescribe Config.ini completo (mismo comportamiento que la ConfigWindow
+        del Qt: reescritura total, no merge) en la ruta persistente. La próxima
+        corrida del pipeline lo relee al construir su config_obj.
+        data = {ruta_thermoviewer: str, percentage_by_models: {MODELO: int|str}}."""
+        try:
+            import configparser
+            from external_tools import _user_config_path
+            cfg = configparser.ConfigParser()
+            cfg.optionxform = str  # no forzar minúsculas en las claves de modelo
+            cfg["paths"] = {"ruta_thermoviewer": str(data.get("ruta_thermoviewer", "") or "")}
+            pbm = {str(k).upper(): str(v) for k, v in (data.get("percentage_by_models") or {}).items()}
+            if pbm:
+                cfg["percentage_by_models"] = pbm
+            path = _user_config_path()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                cfg.write(f)
+            return {"ok": True, "path": path}
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
     # ---- disparo del pipeline ---------------------------------------------
     def run_organize(self, params: dict, advanced: dict | None = None) -> dict:
         """Atajo de la pantalla principal: "Organizar completo". `advanced` son

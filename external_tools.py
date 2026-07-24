@@ -6,6 +6,7 @@ para evitar import circular entre general_functions.utils y general_functions.pl
 """
 import configparser
 import os
+import shutil
 import sys
 
 
@@ -37,6 +38,28 @@ def app_base_dir() -> str:
 def resource_path(*parts: str) -> str:
     """Construye una ruta a un recurso empaquetado bajo app_base_dir(), con el separador nativo del SO."""
     return os.path.join(app_base_dir(), *parts)
+
+
+def _user_config_path() -> str:
+    """Ruta EDITABLE y persistente del Config.ini de usuario.
+
+    NO es resource_path()/_MEIPASS: bajo el onefile de Windows ese dir se extrae
+    a un temporal efímero (%TEMP%\\_MEIxxxx) que se BORRA al cerrar el proceso, con
+    lo que un Config.ini editado desde la UI se perdería. Persistimos en el perfil
+    del usuario (%APPDATA%\\ATOM-Organizer en Windows, ~/.config/atom-organizer en
+    Linux). En el primer arranque se siembra copiando el Config.ini empaquetado
+    (resource_path) como valores por defecto."""
+    if sys.platform.startswith("win"):
+        base = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "ATOM-Organizer")
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".config", "atom-organizer")
+    path = os.path.join(base, "Config.ini")
+    if not os.path.exists(path):
+        os.makedirs(base, exist_ok=True)
+        bundled = resource_path("config", "Config.ini")  # el .spec lo empaqueta → seed
+        if os.path.exists(bundled):
+            shutil.copy(bundled, path)
+    return path
 
 
 def is_feature_available(feature: str) -> bool:

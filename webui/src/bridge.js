@@ -30,6 +30,11 @@ export const api = {
   // ¿La carpeta de salida está vacía? Feedback previo al arrancar (el backend
   // igualmente rechaza no-vacía). Devuelve {exists, empty, count}.
   folderIsEmpty: (path) => call('folder_is_empty', path),
+  // Configuración persistente: ruta de ThermoViewer.exe + % de recorte RGB por
+  // modelo de dron. read devuelve {ruta_thermoviewer, percentage_by_models};
+  // write persiste y devuelve {ok, path} | {ok:false, error}.
+  readConfig: () => call('read_config'),
+  writeConfig: (data) => call('write_config', data),
 }
 
 // Python empuja progreso del pipeline con:

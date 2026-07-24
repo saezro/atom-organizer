@@ -131,7 +131,7 @@ class HeadlessHost:
         # headless debe hacer lo MISMO o `percentage_by_models` queda {} y el
         # recorte RGB revienta con KeyError sobre el modelo del dron (p.ej.
         # 'M4T') en pipeline.get_percentage_by_model. Mismo path que la GUI.
-        self.config_obj.load_new_config(config.resource_path("config", "Config.ini"))
+        self.config_obj.load_new_config(config._user_config_path())
         self.rgb_processing_obj = pipeline.RGBProcessing(log)
         self.rgb_cropping_obj = pipeline.RGBCropping(log)
         self.new_log_gui = _LogStub(
