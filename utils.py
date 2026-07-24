@@ -575,7 +575,7 @@ class Utils:
             for archivo in archivos:
                 if exclude_patterns and any(pattern in archivo for pattern in exclude_patterns):
                     continue
-                if not tmc and archivo.endswith(('jpg', 'JPG')):
+                if not tmc and archivo.endswith(('jpg', 'png', 'JPG')):  # mismo predicado que get_images_from_dir (evita descuadre total/procesadas → falso "no correspondencia" en fase Separación)
                     contador += 1
                 elif tmc and archivo.endswith(('tmc', 'TMC')):
                     contador += 1
