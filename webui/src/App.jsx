@@ -58,6 +58,32 @@ function App() {
   // Modal PREVIO (info del estadillo). null | {loading, info, task, params, advanced}
   const [preflight, setPreflight] = useState(null)
 
+  // [DIAG v3.8.1 — TEMPORAL] sonda del bridge para distinguir b1 (api nunca
+  // inyectada) de b2 (api inyectada pero las llamadas no llegan a Python).
+  const [diag, setDiag] = useState('pw=? api=? rdy=? ping=?')
+  useEffect(() => {
+    let n = 0
+    const t = setInterval(() => {
+      n += 1
+      const pw = !!window.pywebview
+      const hasApi = !!window.pywebview?.api
+      setDiag((prev) => {
+        const ping = prev.split('ping=')[1] || '?'
+        return `pw=${pw ? 'Y' : 'N'} api=${hasApi ? 'Y' : 'N'} rdy=${ready ? 'Y' : 'N'} ping=${ping} (${n})`
+      })
+      if (n >= 40) clearInterval(t)
+    }, 250)
+    return () => clearInterval(t)
+  }, [ready])
+  useEffect(() => {
+    if (!ready) return
+    setDiag((p) => p.replace(/ping=[^ ]*/, 'ping=calling'))
+    api
+      .ping('diag')
+      .then((r) => setDiag((p) => p.replace(/ping=[^ ]*/, 'ping=OK:' + (r?.platform || '?'))))
+      .catch(() => setDiag((p) => p.replace(/ping=[^ ]*/, 'ping=ERR')))
+  }, [ready])
+
   useEffect(() => {
     whenBridgeReady().then(() => setReady(true))
     return onProgress((d) => {
@@ -182,7 +208,7 @@ function App() {
         <h1>
           <span className="atom">ATOM</span> <span className="org">ORGANIZER</span>
         </h1>
-        <span className="ver">v3.7</span>
+        <span className="ver" style={{ fontSize: 11, color: '#ff8c42' }}>{diag}</span>
       </header>
 
       <nav className="seg">
