@@ -308,8 +308,26 @@ def main() -> None:
 
     # Backend: en Linux forzamos Qt (el venv trae PySide6/QtWebEngine y así no
     # dependemos del GTK del sistema). En Windows pywebview usará WebView2 solo.
-    gui = "qt" if platform.system() == "Linux" else None
-    webview.start(gui=gui, debug=args.dev)
+    if platform.system() == "Linux":
+        webview.start(gui="qt", debug=args.dev)
+    else:
+        # [DIAG v3.8.2] En WebView2 la UI renderiza pero `window.pywebview` no se
+        # inyectaba (bridge muerto). Dos knobs contra ese fallo con contenido local:
+        #  - http_server=True: servir dist por un localhost real en vez de file://
+        #    virtual-host (el mapping puede romper el contexto de inyección).
+        #  - private_mode=False + storage_path persistente: user-data-folder real,
+        #    algunos WebView2 no establecen el canal chrome.webview en modo privado.
+        udf = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "ATOM-Organizer" / "webview"
+        try:
+            udf.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        webview.start(
+            debug=args.dev,
+            http_server=True,
+            private_mode=False,
+            storage_path=str(udf),
+        )
 
 
 if __name__ == "__main__":
