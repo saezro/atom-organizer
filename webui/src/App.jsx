@@ -182,7 +182,7 @@ function App() {
         <h1>
           <span className="atom">ATOM</span> <span className="org">ORGANIZER</span>
         </h1>
-        <span className="ver">v3.6</span>
+        <span className="ver">v3.7</span>
       </header>
 
       <nav className="seg">

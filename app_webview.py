@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import platform
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -56,11 +57,13 @@ class Api:
 
     # ---- diálogos de archivo ----------------------------------------------
     # En Linux el backend Qt de pywebview abre el diálogo desde el hilo del
-    # js_api sin problema. En Windows el backend es WebView2 y
-    # `create_file_dialog` NO abre nada llamado desde ese hilo (los métodos
-    # js_api corren en hilos worker; el diálogo WinForms/COM de pywebview no se
-    # marshaliza al hilo correcto en edgechromium) → en Windows usamos el
-    # diálogo NATIVO vía pywin32 con COM inicializado en el propio hilo.
+    # js_api sin problema. En Windows el backend es WebView2 y los métodos del
+    # js_api corren en un hilo worker que NO es el "foreground thread": Windows
+    # impide que una ventana creada por ese hilo se muestre al frente, así que
+    # `create_file_dialog` (y también `SHBrowseForFolder`/`GetOpenFileNameW`
+    # llamados directo, probado en v3.5) no aparecen — sin lanzar excepción.
+    # Solución: lanzar el diálogo en un PROCESO SEPARADO (PowerShell + WinForms),
+    # que tiene su propio foreground y usa un owner TopMost para quedar delante.
     def _log_picker(self, msg: str) -> None:
         """Traza a fichero persistente para diagnosticar en Windows sin consola."""
         try:
@@ -75,37 +78,51 @@ class Api:
         except Exception:
             pass
 
-    def _win_pick_folder(self) -> str | None:
-        import pythoncom
-        from win32com.shell import shell, shellcon
-        pythoncom.CoInitialize()
+    # Owner invisible TopMost fuera de pantalla → arrastra el diálogo al frente
+    # aunque lo dispare un proceso lanzado desde un hilo no-foreground.
+    _WIN_OWNER = (
+        "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
+        "$o=New-Object System.Windows.Forms.Form;"
+        "$o.TopMost=$true;$o.ShowInTaskbar=$false;$o.FormBorderStyle='None';"
+        "$o.StartPosition='Manual';$o.Location=New-Object System.Drawing.Point(-3000,-3000);"
+        "$o.Size=New-Object System.Drawing.Size(1,1);$o.Show();$o.Activate();"
+    )
+
+    def _win_dialog(self, ps_body: str) -> str | None:
+        """Ejecuta un diálogo WinForms en un proceso PowerShell -STA aparte y
+        devuelve por stdout la ruta elegida (vacío = cancelado)."""
+        script = self._WIN_OWNER + ps_body + "$o.Close();"
         try:
-            pidl, _, _ = shell.SHBrowseForFolder(
-                0, None, "Selecciona la carpeta",
-                shellcon.BIF_RETURNONLYFSDIRS | shellcon.BIF_NEWDIALOGSTYLE,
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-STA", "-WindowStyle", "Hidden",
+                 "-ExecutionPolicy", "Bypass", "-Command", script],
+                capture_output=True, text=True, timeout=600,
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
             )
-            return shell.SHGetPathFromIDListW(pidl) if pidl else None
-        finally:
-            pythoncom.CoUninitialize()
+            if proc.returncode != 0:
+                self._log_picker(f"_win_dialog rc={proc.returncode} err={proc.stderr!r}")
+            out = (proc.stdout or "").strip()
+            return out or None
+        except Exception:
+            import traceback
+            self._log_picker("_win_dialog EXC:\n" + traceback.format_exc())
+            return None
+
+    def _win_pick_folder(self) -> str | None:
+        return self._win_dialog(
+            "$d=New-Object System.Windows.Forms.FolderBrowserDialog;"
+            "$d.Description='Selecciona la carpeta';$d.ShowNewFolderButton=$true;"
+            "if($d.ShowDialog($o) -eq [System.Windows.Forms.DialogResult]::OK)"
+            "{[Console]::Out.Write($d.SelectedPath)}"
+        )
 
     def _win_pick_file(self) -> str | None:
-        import pythoncom
-        import pywintypes
-        import win32con
-        import win32gui
-        pythoncom.CoInitialize()
-        try:
-            fname, _, _ = win32gui.GetOpenFileNameW(
-                InitialDir=str(Path.home()),
-                Flags=win32con.OFN_EXPLORER | win32con.OFN_FILEMUSTEXIST | win32con.OFN_HIDEREADONLY,
-                Title="Selecciona el archivo",
-                Filter="Todos los archivos\0*.*\0",
-            )
-            return fname or None
-        except pywintypes.error:
-            return None  # el usuario canceló el diálogo
-        finally:
-            pythoncom.CoUninitialize()
+        return self._win_dialog(
+            "$d=New-Object System.Windows.Forms.OpenFileDialog;"
+            "$d.Title='Selecciona el archivo';$d.Filter='Todos los archivos (*.*)|*.*';"
+            "if($d.ShowDialog($o) -eq [System.Windows.Forms.DialogResult]::OK)"
+            "{[Console]::Out.Write($d.FileName)}"
+        )
 
     def pick_folder(self) -> str | None:
         try:
