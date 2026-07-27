@@ -182,7 +182,7 @@ function App() {
         <h1>
           <span className="atom">ATOM</span> <span className="org">ORGANIZER</span>
         </h1>
-        <span className="ver">v3.4</span>
+        <span className="ver">v3.6</span>
       </header>
 
       <nav className="seg">
@@ -299,8 +299,8 @@ function OrganizarScreen({ ready, running, onRun }) {
   return (
     <div className="card">
       <h2 className="card-title">Organizar completo</h2>
-      <FileField label="Carpeta origen" value={origen} onPick={pickOrigen} />
-      <FileField label="Carpeta final" value={destino} onPick={pickDestino} />
+      <FileField label="Carpeta origen" value={origen} onPick={pickOrigen} onType={setOrigen} />
+      <FileField label="Carpeta final" value={destino} onPick={pickDestino} onType={setDestino} />
       {destinoFull && (
         <span className="field-hint hint-warn">
           La carpeta de salida no está vacía ({destinoFull.count} elemento{destinoFull.count === 1 ? '' : 's'}).
@@ -312,6 +312,7 @@ function OrganizarScreen({ ready, running, onRun }) {
         label="Estadillo (opcional)"
         value={estadillo}
         onPick={() => pick(setEstadillo, 'file')}
+        onType={setEstadillo}
         placeholder="Si se indica, organiza por planta"
       />
       <div className="field">
@@ -467,6 +468,7 @@ function ConfigScreen({ ready }) {
         label="Ruta de ThermoViewer.exe"
         value={ruta}
         onPick={pickRuta}
+        onType={setRuta}
         placeholder="Solo Windows · necesario para la extracción térmica (TMC)"
       />
       <span className="field-hint">
@@ -543,7 +545,9 @@ function ConfigScreen({ ready }) {
   )
 }
 
-function FileField({ label, value, onPick, placeholder }) {
+function FileField({ label, value, onPick, onType, placeholder }) {
+  // Si se pasa `onType`, el campo es editable → se puede escribir o PEGAR la
+  // ruta a mano (fallback cuando el diálogo nativo no abre, p.ej. en Windows).
   return (
     <label className="field">
       <span className="field-label">{label}</span>
@@ -552,8 +556,10 @@ function FileField({ label, value, onPick, placeholder }) {
           className="glass-input"
           type="text"
           value={value}
-          placeholder={placeholder || '—'}
-          readOnly
+          placeholder={placeholder || 'Elige, o escribe/pega la ruta aquí…'}
+          onChange={onType ? (e) => onType(e.target.value) : undefined}
+          readOnly={!onType}
+          spellCheck={false}
         />
         <button type="button" className="btn-ghost" onClick={onPick}>
           Elegir…
