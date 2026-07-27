@@ -1,10 +1,29 @@
 // Puente con el backend Python (pywebview). Todo el acceso a `window.pywebview`
 // pasa por aquí para aislar la app de React del shell.
 
+// El puente queda "ready" cuando pywebview inyecta `window.pywebview.api`.
+// En WebView2 (Windows) el evento one-shot `pywebviewready` puede dispararse
+// ANTES de que React registre el listener (carrera de arranque): el evento se
+// pierde y ninguna llamada al backend resuelve nunca. Por eso no nos fiamos
+// solo del evento: polleamos `window.pywebview.api` con un intervalo y
+// resolvemos en cuanto exista, por cualquiera de las tres vías. Inocuo en
+// Linux/Qt (ahí gana el check inicial o el evento y el intervalo se limpia).
 export function whenBridgeReady() {
   return new Promise((resolve) => {
     if (window.pywebview?.api) return resolve()
-    window.addEventListener('pywebviewready', () => resolve(), { once: true })
+    let done = false
+    let timer = null
+    const finish = () => {
+      if (done) return
+      done = true
+      if (timer !== null) clearInterval(timer)
+      window.removeEventListener('pywebviewready', finish)
+      resolve()
+    }
+    window.addEventListener('pywebviewready', finish, { once: true })
+    timer = setInterval(() => {
+      if (window.pywebview?.api) finish()
+    }, 100)
   })
 }
 
