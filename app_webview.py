@@ -316,10 +316,16 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # UseOzonePlatform es una feature de Chromium/Ozone específica de Linux
-    # (Wayland/X11); en Windows QtWebEngine no la usa y puede confundir el arranque.
     if platform.system() == "Linux":
+        # UseOzonePlatform: integración Wayland/X11 del Chromium de QtWebEngine.
         os.environ.setdefault(
             "QTWEBENGINE_CHROMIUM_FLAGS", "--enable-features=UseOzonePlatform"
         )
+    elif platform.system() == "Windows":
+        # --disable-gpu: fuerza el rasterizador software de Chromium. Sin GPU real
+        # (máquina virtual, sesión RDP, drivers pobres) el compositing acelerado de
+        # QtWebEngine deja la ventana EN NEGRO (confirmado en VM QEMU). En una UI de
+        # formularios el coste de no usar GPU es imperceptible, y así renderiza en
+        # cualquier máquina. Se respeta un valor previo de la env var si ya existe.
+        os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
     main()

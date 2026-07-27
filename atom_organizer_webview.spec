@@ -24,6 +24,13 @@ pyexiv2_datas, pyexiv2_binaries, pyexiv2_hidden = collect_all('pyexiv2')
 # matplotlib mpl-data (colormaps usados por el pipeline)
 mpl_datas = collect_data_files('matplotlib')
 
+# CAUSA RAÍZ del bridge muerto en Windows (pw=N con WebView2 Y con Qt): PyInstaller
+# empaquetaba webview/ SIN sus assets JS internos (webview/js/*.js). Esos scripts son
+# los que inyectan `window.pywebview` / `window.pywebview.api` en la página; sin ellos
+# el objeto bridge NUNCA se crea (con cualquier backend), aunque la UI React (que va
+# aparte en webui/dist) sí renderice. Se fuerza su inclusión explícita.
+webview_datas = collect_data_files('webview')
+
 # Runtime de Visual C++ (2015-2022). QtWebEngineProcess.exe (subproceso Chromium de
 # QtWebEngine) enlaza contra msvcp140/vcruntime140; WebView2 no lo necesitaba porque
 # Edge ya trae el redist en el sistema, pero QtWebEngine SÍ. En una máquina sin el
@@ -51,7 +58,7 @@ a = Analysis(
         ('Logo_atom_uas_horizonta-02.png', '.'),
         ('assets', 'assets'),                  # atom-icon.svg, check.svg, dot.svg, fonts/ (los referencia gui.py)
         ('programas_externos', 'programas_externos'),
-    ] + pyexiv2_datas + mpl_datas,
+    ] + pyexiv2_datas + mpl_datas + webview_datas,
     hiddenimports=[
         'pyexiv2', 'ipaddress',
         'gui', 'atom_core.organize',           # import perezoso en el worker → forzarlo explícito
