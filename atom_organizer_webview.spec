@@ -24,10 +24,27 @@ pyexiv2_datas, pyexiv2_binaries, pyexiv2_hidden = collect_all('pyexiv2')
 # matplotlib mpl-data (colormaps usados por el pipeline)
 mpl_datas = collect_data_files('matplotlib')
 
+# Runtime de Visual C++ (2015-2022). QtWebEngineProcess.exe (subproceso Chromium de
+# QtWebEngine) enlaza contra msvcp140/vcruntime140; WebView2 no lo necesitaba porque
+# Edge ya trae el redist en el sistema, pero QtWebEngine SÍ. En una máquina sin el
+# VC++ Redistributable instalado el subproceso muere con "MSVCP140.dll was not found"
+# (confirmado en VM limpia). Se bundlean explícitamente para que el .exe sea portable
+# de verdad, colocadas junto a QtWebEngineProcess.exe (PySide6/) y en la raíz _MEIPASS.
+import os as _os
+_sys32 = _os.path.join(_os.environ.get('SystemRoot', r'C:\Windows'), 'System32')
+_vc_dlls = ('msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
+            'vcruntime140.dll', 'vcruntime140_1.dll', 'concrt140.dll')
+vcruntime_binaries = []
+for _d in _vc_dlls:
+    _p = _os.path.join(_sys32, _d)
+    if _os.path.exists(_p):
+        vcruntime_binaries.append((_p, '.'))
+        vcruntime_binaries.append((_p, 'PySide6'))
+
 a = Analysis(
     ['app_webview.py'],
     pathex=[],
-    binaries=pyexiv2_binaries,
+    binaries=pyexiv2_binaries + vcruntime_binaries,
     datas=[
         ('webui/dist', 'webui/dist'),          # UI React buildeada (npm run build)
         ('config/Config.ini', 'config'),
