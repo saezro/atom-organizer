@@ -306,32 +306,20 @@ def main() -> None:
     )
     api.bind_window(window)
 
-    # Backend: en Linux forzamos Qt (el venv trae PySide6/QtWebEngine y así no
-    # dependemos del GTK del sistema). En Windows pywebview usará WebView2 solo.
-    if platform.system() == "Linux":
-        webview.start(gui="qt", debug=args.dev)
-    else:
-        # [DIAG v3.8.2] En WebView2 la UI renderiza pero `window.pywebview` no se
-        # inyectaba (bridge muerto). Dos knobs contra ese fallo con contenido local:
-        #  - http_server=True: servir dist por un localhost real en vez de file://
-        #    virtual-host (el mapping puede romper el contexto de inyección).
-        #  - private_mode=False + storage_path persistente: user-data-folder real,
-        #    algunos WebView2 no establecen el canal chrome.webview en modo privado.
-        udf = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "ATOM-Organizer" / "webview"
-        try:
-            udf.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
-        webview.start(
-            debug=args.dev,
-            http_server=True,
-            private_mode=False,
-            storage_path=str(udf),
-        )
+    # Backend Qt (PySide6 + QtWebEngine, Chromium embebido) en AMBOS SO.
+    # Windows abandonó WebView2 (v3.8.x): con ese backend la UI renderizaba pero
+    # `window.pywebview` NUNCA se inyectaba → el bridge JS↔Python quedaba muerto y
+    # ninguna llamada `window.pywebview.api.*` llegaba a Python (pw=N en la sonda,
+    # confirmado en VM con http_server/private_mode/storage_path). QtWebEngine usa
+    # el mismo motor ya probado en Linux, donde el bridge funciona.
+    webview.start(gui="qt", debug=args.dev)
 
 
 if __name__ == "__main__":
-    os.environ.setdefault(
-        "QTWEBENGINE_CHROMIUM_FLAGS", "--enable-features=UseOzonePlatform"
-    )
+    # UseOzonePlatform es una feature de Chromium/Ozone específica de Linux
+    # (Wayland/X11); en Windows QtWebEngine no la usa y puede confundir el arranque.
+    if platform.system() == "Linux":
+        os.environ.setdefault(
+            "QTWEBENGINE_CHROMIUM_FLAGS", "--enable-features=UseOzonePlatform"
+        )
     main()

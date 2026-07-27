@@ -1,17 +1,19 @@
-# atom_organizer_webview.spec — build Windows ONEFILE de la UI React (pywebview).
+# atom_organizer_webview.spec — build Windows ONEFILE de la UI React (pywebview + Qt).
 # -*- mode: python ; coding: utf-8 -*-
 #
-# Entry: app_webview.py (pywebview + WebView2). Produce dist/ATOM-Organizer.exe (portable, un click).
-# SOLO Windows: PyInstaller no cross-compila. Compilar con build_windows.bat en un Windows con Python 3.11 + Node.
+# Entry: app_webview.py. Produce dist/ATOM-Organizer.exe (portable, un click).
+# SOLO Windows: PyInstaller no cross-compila.
 #
 # Notas de diseño:
-#  - En Windows pywebview pinta con WebView2 (Edge), NO con Qt. Pero el pipeline importa gui.py
-#    (`from gui import MainWindow` en atom_core/organize.py) y gui.py importa PySide6.{QtWidgets,QtCore,QtGui}
-#    a nivel módulo → PySide6 core DEBE empaquetarse igualmente. Se excluye solo lo pesado que nadie usa
-#    (QtWebEngine, Qt3D, Charts, Quick, Qml, Multimedia).
-#  - La UI React va como data en 'webui/dist'; app_webview.py la resuelve vía _MEIPASS (getattr sys._MEIPASS).
-#  - Recursos del pipeline (config, programas_externos, assets) los resuelve external_tools.app_base_dir,
-#    que ya maneja _MEIPASS → basta incluirlos como datas en su ruta destino.
+#  - Desde v3.9 Windows pinta con el backend Qt de pywebview (PySide6 + QtWebEngine,
+#    Chromium embebido), IGUAL que Linux (ver app_webview.py: `webview.start(gui="qt")`).
+#    Se abandonó WebView2 (v3.8.x): con ese backend `window.pywebview` no se inyectaba y
+#    el bridge JS↔Python quedaba muerto. QtWebEngine SÍ se empaqueta aquí (antes se excluía).
+#  - El pipeline importa gui.py (`from gui import MainWindow` en atom_core/organize.py) y
+#    gui.py importa PySide6.{QtWidgets,QtCore,QtGui} a nivel módulo → PySide6 core imprescindible.
+#    Se excluye solo lo pesado que nadie usa (Qt3D, Charts, Multimedia, Quick3D, DataVisualization).
+#  - La UI React va como data en 'webui/dist'; app_webview.py la resuelve vía _MEIPASS.
+#  - Recursos del pipeline (config, programas_externos, assets) los resuelve external_tools.app_base_dir.
 #  - programas_externos/{exiftool.exe, M2EA/dji_irp.exe, M4T/dji_irp.exe} son binarios Windows: imprescindibles.
 from PyInstaller.utils.hooks import collect_all, collect_data_files
 
@@ -36,10 +38,12 @@ a = Analysis(
     hiddenimports=[
         'pyexiv2', 'ipaddress',
         'gui', 'atom_core.organize',           # import perezoso en el worker → forzarlo explícito
-        'webview.platforms.edgechromium',      # backend WebView2 (Windows)
-        'clr', 'proxy_tools', 'bottle',        # pythonnet + transitivas de pywebview
-        # diálogos nativos de carpeta/archivo (pick_folder/pick_file en Windows):
-        # win32com.shell es un import dinámico que PyInstaller no detecta solo.
+        'webview.platforms.qt',                # backend pywebview Qt (antes edgechromium/WebView2)
+        'qtpy', 'bottle', 'proxy_tools',       # transitivas de pywebview
+        'PySide6.QtWebEngineWidgets',          # Chromium embebido (bridge Qt)
+        'PySide6.QtWebEngineCore',
+        'PySide6.QtWebChannel',
+        # diálogos nativos de carpeta/archivo (pick_folder/pick_file en Windows, vía PowerShell -STA):
         'pythoncom', 'pywintypes', 'win32gui', 'win32con',
         'win32com', 'win32com.shell',
         'win32comext.shell', 'win32comext.shell.shell', 'win32comext.shell.shellcon',
@@ -50,10 +54,10 @@ a = Analysis(
     excludes=[
         'IPython', 'ipykernel', 'jupyter_client', 'jupyter_core',
         'debugpy', 'jedi', 'parso',
-        # pywebview usa WebView2 en Windows → QtWebEngine sobra; lo demás no se usa
-        'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets', 'PySide6.QtWebEngineQuick',
-        'PySide6.Qt3DCore', 'PySide6.QtCharts', 'PySide6.QtQuick',
-        'PySide6.QtQml', 'PySide6.QtMultimedia', 'PySide6.QtQuick3D',
+        'clr', 'pythonnet',                    # pythonnet/WebView2: ya no se usa (Qt en su lugar)
+        # pesados que el pipeline no usa (QtWebEngine SÍ se mantiene ahora)
+        'PySide6.Qt3DCore', 'PySide6.QtCharts', 'PySide6.QtMultimedia',
+        'PySide6.QtQuick3D', 'PySide6.QtDataVisualization',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
