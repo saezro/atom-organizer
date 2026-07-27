@@ -38,6 +38,11 @@ a = Analysis(
         'gui', 'atom_core.organize',           # import perezoso en el worker → forzarlo explícito
         'webview.platforms.edgechromium',      # backend WebView2 (Windows)
         'clr', 'proxy_tools', 'bottle',        # pythonnet + transitivas de pywebview
+        # diálogos nativos de carpeta/archivo (pick_folder/pick_file en Windows):
+        # win32com.shell es un import dinámico que PyInstaller no detecta solo.
+        'pythoncom', 'pywintypes', 'win32gui', 'win32con',
+        'win32com', 'win32com.shell',
+        'win32comext.shell', 'win32comext.shell.shell', 'win32comext.shell.shellcon',
     ] + pyexiv2_hidden,
     hookspath=[],
     hooksconfig={},

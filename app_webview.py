@@ -54,15 +54,84 @@ class Api:
             "platform": platform.system(),
         }
 
-    # ---- diálogos de archivo (no-nativos problemáticos en Hyprland: pywebview
-    #      usa el diálogo del propio backend) --------------------------------
+    # ---- diálogos de archivo ----------------------------------------------
+    # En Linux el backend Qt de pywebview abre el diálogo desde el hilo del
+    # js_api sin problema. En Windows el backend es WebView2 y
+    # `create_file_dialog` NO abre nada llamado desde ese hilo (los métodos
+    # js_api corren en hilos worker; el diálogo WinForms/COM de pywebview no se
+    # marshaliza al hilo correcto en edgechromium) → en Windows usamos el
+    # diálogo NATIVO vía pywin32 con COM inicializado en el propio hilo.
+    def _log_picker(self, msg: str) -> None:
+        """Traza a fichero persistente para diagnosticar en Windows sin consola."""
+        try:
+            from external_tools import _user_config_path
+            logpath = Path(_user_config_path()).parent / "atom-picker.log"
+        except Exception:
+            logpath = Path.home() / "atom-picker.log"
+        try:
+            os.makedirs(os.path.dirname(logpath), exist_ok=True)
+            with open(logpath, "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass
+
+    def _win_pick_folder(self) -> str | None:
+        import pythoncom
+        from win32com.shell import shell, shellcon
+        pythoncom.CoInitialize()
+        try:
+            pidl, _, _ = shell.SHBrowseForFolder(
+                0, None, "Selecciona la carpeta",
+                shellcon.BIF_RETURNONLYFSDIRS | shellcon.BIF_NEWDIALOGSTYLE,
+            )
+            return shell.SHGetPathFromIDListW(pidl) if pidl else None
+        finally:
+            pythoncom.CoUninitialize()
+
+    def _win_pick_file(self) -> str | None:
+        import pythoncom
+        import pywintypes
+        import win32con
+        import win32gui
+        pythoncom.CoInitialize()
+        try:
+            fname, _, _ = win32gui.GetOpenFileNameW(
+                InitialDir=str(Path.home()),
+                Flags=win32con.OFN_EXPLORER | win32con.OFN_FILEMUSTEXIST | win32con.OFN_HIDEREADONLY,
+                Title="Selecciona el archivo",
+                Filter="Todos los archivos\0*.*\0",
+            )
+            return fname or None
+        except pywintypes.error:
+            return None  # el usuario canceló el diálogo
+        finally:
+            pythoncom.CoUninitialize()
+
     def pick_folder(self) -> str | None:
-        res = self._window.create_file_dialog(webview.FOLDER_DIALOG)
-        return res[0] if res else None
+        try:
+            if platform.system() == "Windows":
+                return self._win_pick_folder()
+            res = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+            return res[0] if res else None
+        except Exception as exc:  # noqa: BLE001 — se traza y se avisa al front
+            import traceback
+            self._log_picker("pick_folder ERROR:\n" + traceback.format_exc())
+            self._push({"kind": "error",
+                        "text": f"No se pudo abrir el diálogo de carpeta: {type(exc).__name__}: {exc}"})
+            return None
 
     def pick_file(self) -> str | None:
-        res = self._window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False)
-        return res[0] if res else None
+        try:
+            if platform.system() == "Windows":
+                return self._win_pick_file()
+            res = self._window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False)
+            return res[0] if res else None
+        except Exception as exc:  # noqa: BLE001 — se traza y se avisa al front
+            import traceback
+            self._log_picker("pick_file ERROR:\n" + traceback.format_exc())
+            self._push({"kind": "error",
+                        "text": f"No se pudo abrir el diálogo de archivo: {type(exc).__name__}: {exc}"})
+            return None
 
     def folder_is_empty(self, path: str) -> dict:
         """¿Está vacía la carpeta de salida? El front avisa al elegirla (una
