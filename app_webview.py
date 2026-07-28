@@ -13,6 +13,7 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import platform
@@ -34,6 +35,72 @@ def _base_dir() -> Path:
 ROOT = _base_dir()
 DIST_INDEX = ROOT / "webui" / "dist" / "index.html"
 DEV_URL = "http://localhost:5173"
+
+
+# Diálogo de carpeta MODERNO en Windows (IFileOpenDialog + FOS_PICKFOLDERS): el del
+# Explorador — barra de direcciones, árbol lateral y recuerda la última ubicación.
+# Sustituye a System.Windows.Forms.FolderBrowserDialog (el árbol legacy feo que no
+# recordaba carpeta). Se declara vía Add-Type C#; sólo se usan SetOptions/Show/GetResult
+# y IShellItem.GetDisplayName — el resto de la vtable son stubs para preservar el orden
+# de slots COM. Verificado en Win10 (PICKED=[C:\Users\...]). El here-string @"…"@ exige
+# que "@ vaya a inicio de línea → el cuerpo va a columna 0 a propósito.
+_MODERN_FOLDER_CS = '''Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class ModernFolder {
+  [ComImport, ClassInterface(ClassInterfaceType.None), Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
+  private class Dlg { }
+  [ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  private interface IFileOpenDialog {
+    [PreserveSig] int Show(IntPtr parent);
+    void SetFileTypes(uint c, IntPtr rg);
+    void SetFileTypeIndex(uint i);
+    void GetFileTypeIndex(out uint i);
+    void Advise(IntPtr p, out uint c);
+    void Unadvise(uint c);
+    void SetOptions(uint o);
+    void GetOptions(out uint o);
+    void SetDefaultFolder(IntPtr psi);
+    void SetFolder(IntPtr psi);
+    void GetFolder(out IntPtr psi);
+    void GetCurrentSelection(out IntPtr psi);
+    void SetFileName(string s);
+    void GetFileName(out string s);
+    void SetTitle(string s);
+    void SetOkButtonLabel(string s);
+    void SetFileNameLabel(string s);
+    void GetResult(out IShellItem psi);
+    void AddPlace(IntPtr psi, int a);
+    void SetDefaultExtension(string s);
+    void Close(int hr);
+    void SetClientGuid(ref Guid g);
+    void ClearClientData();
+    void SetFilter(IntPtr f);
+    void GetResults(out IntPtr e);
+    void GetSelectedItems(out IntPtr e);
+  }
+  [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  private interface IShellItem {
+    void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+    void GetParent(out IShellItem ppsi);
+    void GetDisplayName(uint sigdn, [MarshalAs(UnmanagedType.LPWStr)] out string name);
+    void GetAttributes(uint mask, out uint attribs);
+    void Compare(IShellItem psi, uint hint, out int order);
+  }
+  public static string Pick(IntPtr owner, string title) {
+    var d = (IFileOpenDialog)(new Dlg());
+    uint o; d.GetOptions(out o);
+    d.SetOptions(o | 0x20 | 0x40);
+    if (title != null) d.SetTitle(title);
+    int hr = d.Show(owner);
+    if (hr != 0) return null;
+    IShellItem it; d.GetResult(out it);
+    string p; it.GetDisplayName(0x80058000, out p);
+    return p;
+  }
+}
+"@;
+'''
 
 
 class Api:
@@ -92,10 +159,13 @@ class Api:
         """Ejecuta un diálogo WinForms en un proceso PowerShell -STA aparte y
         devuelve por stdout la ruta elegida (vacío = cancelado)."""
         script = self._WIN_OWNER + ps_body + "$o.Close();"
+        # -EncodedCommand (UTF-16LE b64): el cuerpo lleva un here-string C# con comillas
+        # y saltos; pasarlo por -Command es frágil. Codificado es a prueba de escaping.
+        enc = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         try:
             proc = subprocess.run(
                 ["powershell", "-NoProfile", "-STA", "-WindowStyle", "Hidden",
-                 "-ExecutionPolicy", "Bypass", "-Command", script],
+                 "-ExecutionPolicy", "Bypass", "-EncodedCommand", enc],
                 capture_output=True, text=True, timeout=600,
                 creationflags=0x08000000,  # CREATE_NO_WINDOW
             )
@@ -109,11 +179,12 @@ class Api:
             return None
 
     def _win_pick_folder(self) -> str | None:
+        # Diálogo MODERNO del Explorador (IFileOpenDialog + FOS_PICKFOLDERS), con el
+        # owner TopMost de _WIN_OWNER para quedar al frente desde el hilo no-foreground.
         return self._win_dialog(
-            "$d=New-Object System.Windows.Forms.FolderBrowserDialog;"
-            "$d.Description='Selecciona la carpeta';$d.ShowNewFolderButton=$true;"
-            "if($d.ShowDialog($o) -eq [System.Windows.Forms.DialogResult]::OK)"
-            "{[Console]::Out.Write($d.SelectedPath)}"
+            _MODERN_FOLDER_CS +
+            "$p=[ModernFolder]::Pick($o.Handle,'Selecciona la carpeta');"
+            "if($p){[Console]::Out.Write($p)}"
         )
 
     def _win_pick_file(self) -> str | None:
