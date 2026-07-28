@@ -32,14 +32,14 @@ pyexiv2_datas, pyexiv2_binaries, pyexiv2_hidden = collect_all('pyexiv2')
 # o aplane el .pyd). Sin esto, cualquier lectura de EXIF/estadillo revienta.
 import os as _os_px, sys as _sys_px
 import pyexiv2 as _px
-_px_lib = _os_px.join(_os_px.dirname(_px.__file__), 'lib')
+_px_lib = _os_px.path.join(_os_px.path.dirname(_px.__file__), 'lib')
 _px_pyver = 'py{}.{}-win'.format(_sys_px.version_info.major, _sys_px.version_info.minor)
 pyexiv2_native = []
 for _src, _dst in (
-    (_os_px.join(_px_lib, 'exiv2.dll'), 'pyexiv2/lib'),
-    (_os_px.join(_px_lib, _px_pyver, 'exiv2api.pyd'), 'pyexiv2/lib/' + _px_pyver),
+    (_os_px.path.join(_px_lib, 'exiv2.dll'), 'pyexiv2/lib'),
+    (_os_px.path.join(_px_lib, _px_pyver, 'exiv2api.pyd'), 'pyexiv2/lib/' + _px_pyver),
 ):
-    if _os_px.exists(_src):
+    if _os_px.path.exists(_src):
         pyexiv2_native.append((_src, _dst))
     else:
         raise SystemExit('[spec] pyexiv2 nativo NO encontrado: ' + _src)
