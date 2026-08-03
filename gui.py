@@ -22,6 +22,7 @@ from PySide6.QtCore import QObject, QRunnable, Signal, Slot, QThreadPool
 from qt_designer_files import atom_organizer as aero_gui
 from qt_designer_files import log_window_ui as log_gui
 from qt_designer_files import config_window_ui as config_gui
+import re
 import external_tools as config
 import pipeline as ci
 import exif as meta_location
@@ -2711,13 +2712,26 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
         de binarios del SO exista: si no, ABORTA con un único error claro (en vez de
         dejar que falle imagen por imagen con N errores confusos aguas abajo)."""
         resolved = selector
+        detected_model = None       # lo que dijo el EXIF (para el mensaje de error)
+        sample = None
         if not selector:
             # Modelo EXIF (campo "Image Model") -> carpeta de binarios en programas_externos/.
+            # Se compara NORMALIZADO (mayúsculas y sin separadores) porque el mismo dron
+            # escribe el modelo de formas distintas según firmware: 'M4T', 'Matrice 4T',
+            # 'MAVIC2-ENTERPRISE-ADVANCED', 'Mavic2 Enterprise Advanced'… Comparar el
+            # string literal hacía fallar la autodetección con drones que SÍ están soportados.
             model_to_folder = {
                 "M4T": "M4T",
-                "MAVIC2-ENTERPRISE-ADVANCED": "M2EA",
+                "MATRICE4T": "M4T",
+                "DJIMATRICE4T": "M4T",
+                "MAVIC2ENTERPRISEADVANCED": "M2EA",
+                "M2EA": "M2EA",
+                "DJIMAVIC2ENTERPRISEADVANCED": "M2EA",
             }
-            sample = None
+
+            def _norm(s):
+                return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
+
             for root, _dirs, files in os.walk(termica_folder):
                 for name in files:
                     if name.lower().endswith((".jpg", ".jpeg")):
@@ -2730,12 +2744,16 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
             else:
                 model = self.meta_location_obj.exif_management_obj.get_model(sample, progress_callback)
                 model = (model or "").strip("\x00").strip()
-                folder = model_to_folder.get(model)
+                detected_model = model
+                folder = model_to_folder.get(_norm(model))
                 if folder:
                     progress_callback.emit(f"Modelo de dron autodetectado por EXIF: {model} -> {folder}.\n")
                     resolved = folder
                 elif model:
                     progress_callback.emit(f"AVISO: modelo de dron '{model}' sin binarios TIF disponibles (solo M2EA/M4T).\n")
+                else:
+                    progress_callback.emit(
+                        f"AVISO: la imagen de muestra no trae modelo en el EXIF ({sample}).\n")
 
         # GUARD: el dron resuelto DEBE tener su carpeta de binarios con el binario del SO
         # (dji_irp.exe en Windows, libdirp.so en Linux). Si no, abortar fuerte upfront
@@ -2747,9 +2765,19 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
                        f"(falta programas_externos/{selector}/{bin_name}). "
                        f"Usa M2EA, M4T o '(automático)'.")
             else:
-                msg = ("No se pudo determinar un dron con binarios DJI por autodetección "
-                       f"(sin imagen de muestra o modelo no soportado; falta programas_externos/<dron>/{bin_name}). "
-                       "Selecciona M2EA o M4T manualmente.")
+                # Mensaje ACCIONABLE: decir exactamente por qué falló la autodetección.
+                # El anterior mezclaba tres causas distintas ("sin muestra o modelo no
+                # soportado") y no decía qué modelo había leído, así que no había forma
+                # de saber si faltaba soporte para el dron o si el EXIF venía vacío.
+                if not sample:
+                    causa = f"no se encontró ninguna imagen térmica de muestra en {termica_folder}"
+                elif detected_model:
+                    causa = f"el dron detectado ('{detected_model}') no está soportado; sólo hay binarios para M2EA y M4T"
+                else:
+                    causa = "la imagen de muestra no trae el modelo de dron en el EXIF"
+                msg = (f"No se pudo autodetectar el dron: {causa}. "
+                       "Abre «Modo avanzado» y selecciona M2EA o M4T a mano "
+                       f"(binarios en programas_externos/<dron>/{bin_name}).")
             progress_callback.emit("ERROR: " + msg + "\n")
             raise ValueError(msg)
 
