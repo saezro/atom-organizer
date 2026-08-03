@@ -33,11 +33,16 @@ class OrganizerLogger:
     def __init__(
         self,
         name: str,
-        log_dir: str = "Logs",
+        log_dir: str | None = None,
         max_bytes: int = 50 * 1024 * 1024,
         backup_count: int = 7,
         create_file_handler: bool = True,
     ) -> None:
+        # None -> carpeta de logs del perfil del usuario. El default de antes era el
+        # literal "Logs" (relativo al CWD), impredecible en una app instalada.
+        if log_dir is None:
+            from external_tools import user_log_dir
+            log_dir = user_log_dir()
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.DEBUG)
         # Evita que los mensajes se propaguen al root logger (evita duplicados)
@@ -60,7 +65,13 @@ class OrganizerLogger:
 
         self.console_handler = logging.StreamHandler()
 
-        Path(log_dir).mkdir(parents=True, exist_ok=True)
+        # OJO: NO crear aquí el directorio de logs. Estaba fuera del `if` y se
+        # ejecutaba SIEMPRE, incluso con create_file_handler=False (el caso del
+        # host headless en atom_core/organize.py, que es el que usa la UI webview).
+        # Con el CWD apuntando a un sitio no escribible eso abortaba la corrida
+        # entera antes de la primera fase con `PermissionError: [WinError 5]
+        # Acceso denegado: 'Logs'`. create_file_handler() ya crea el directorio,
+        # y sólo cuando de verdad se va a escribir en él.
         if create_file_handler:
             self.create_file_handler(log_dir, max_bytes, backup_count)
 
@@ -104,10 +115,13 @@ class OrganizerLogger:
 
     def create_file_handler(
         self,
-        log_dir: str = "Logs",
+        log_dir: str | None = None,
         max_bytes: int = 50 * 1024 * 1024,
         backup_count: int = 7,
     ) -> None:
+        if log_dir is None:
+            from external_tools import user_log_dir
+            log_dir = user_log_dir()
         # Parar el listener ANTES de tocar los handlers reales para evitar que
         # el hilo del listener acceda a un handler cerrado o semiiniciado.
         self._stop_listener()

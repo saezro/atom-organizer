@@ -62,6 +62,22 @@ def _user_config_path() -> str:
     return path
 
 
+def user_log_dir() -> str:
+    """Carpeta de logs, en el perfil del usuario y SIEMPRE escribible.
+
+    El default histórico era el literal relativo "Logs", o sea el CWD. Instalada,
+    la app se lanza desde un acceso directo y el CWD NO es el directorio de la app:
+    si el «Iniciar en» del .lnk viene vacío se hereda el del Explorer, típicamente
+    C:\\Windows\\System32 → `mkdir("Logs")` revienta con
+    `PermissionError: [WinError 5] Acceso denegado: 'Logs'`. Mismo criterio y misma
+    base que _user_config_path()."""
+    if sys.platform.startswith("win"):
+        base = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "ATOM-Organizer")
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".config", "atom-organizer")
+    return os.path.join(base, "Logs")
+
+
 def is_feature_available(feature: str) -> bool:
     return _current_os() in FEATURE_MATRIX[feature]
 
