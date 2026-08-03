@@ -616,3 +616,56 @@
   justify-content: space-between;
   gap: 0.8rem;
 }
+
+/* ---- modal de actualización (UpdateModal.jsx) ---------------------------- */
+.up-card {
+  width: min(480px, 100%);
+}
+.up-sub {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.up-notes {
+  margin: 0;
+  max-height: 9rem;
+  overflow-y: auto;
+  padding: 0.7rem 0.8rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--muted);
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+}
+.up-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.up-bar {
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.1);
+}
+/* scaleX en vez de animar `width`: la barra se repinta muchas veces por segundo
+   durante la descarga y transformar no provoca reflow. */
+.up-bar-fill {
+  height: 100%;
+  width: 100%;
+  transform-origin: left center;
+  transform: scaleX(var(--up-pct, 0));
+  background: var(--orange);
+  transition: transform 0.15s linear;
+}
+.up-pct {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+.up-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.7rem;
+}

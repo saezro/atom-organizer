@@ -31,6 +31,7 @@ a = Analysis(
     ] + pyexiv2_datas + mpl_datas,
     hiddenimports=[
         'pyexiv2', 'ipaddress',
+        'version', 'atom_core.updater',        # updater: import perezoso desde app_webview
         'gui', 'atom_core.organize',           # import perezoso en el worker → forzarlo
         'webview.platforms.qt',                # backend pywebview en Linux
         'qtpy', 'bottle', 'proxy_tools',       # transitivas de pywebview

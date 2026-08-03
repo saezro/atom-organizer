@@ -1,12 +1,18 @@
 name: release
 
-# Publica una release con AMBOS binarios de la UI webview por cada versión:
+# Publica una release con los dos entregables de la UI webview por cada versión:
 #   - Linux:   ATOM_Organizer-<ver>-x86_64.AppImage   (Qt/QtWebEngine, atom_organizer_webview_linux.spec)
-#   - Windows: ATOM-Organizer-<ver>.exe               (WebView2, atom_organizer_webview.spec, onefile)
+#   - Windows: ATOM-Organizer-Setup-v<ver>.exe        (instalador Inno Setup sobre el onedir)
+#
+# El instalador (no un .exe suelto) es lo que consume el updater in-app
+# (atom_core/updater.py): lo descarga y lo lanza con /VERYSILENT.
 #
 # Disparo:
-#   - push de un tag  vX.Y  → build + release con ese tag.
+#   - push de un tag  vX.Y.Z  → build + release ESTABLE (la que ve el updater).
+#   - push de un tag  vX.Y.Z-rc1 → igual, pero marcada pre-release (no se ofrece).
 #   - manual (workflow_dispatch) → indicar la versión; crea el tag en el sha actual.
+#
+# El tag DEBE coincidir con version.py (el job de Windows lo verifica y falla si no).
 on:
   push:
     tags: ['v*']
@@ -28,13 +34,25 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
       - id: v
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
-            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            V="${GITHUB_REF_NAME}"
+            # Un tag limpio (v3.2.0) publica ESTABLE — el updater in-app sólo ve
+            # releases estables (`/releases/latest` de GitHub ignora las pre-release).
+            # Para publicar una build de prueba que NO se ofrezca a nadie, etiqueta
+            # con sufijo: v3.3.0-rc1, v3.3.0-beta…
+            case "$V" in
+              *-*) PRE=true ;;
+              *)   PRE=false ;;
+            esac
+            echo "version=$V" >> "$GITHUB_OUTPUT"
+            echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
           else
             echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=${{ inputs.prerelease }}" >> "$GITHUB_OUTPUT"
           fi
 
   build-linux:
@@ -95,15 +113,34 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-webview.txt
           pip install pyinstaller==6.6.0
-      - name: PyInstaller (onefile WebView2)
-        run: pyinstaller --clean --noconfirm atom_organizer_webview.spec
-      - name: Renombrar exe con versión
+      # El tag manda, pero la versión que la app enseña (y con la que compara al
+      # buscar actualizaciones) sale de version.py: si no coinciden, el updater
+      # ofrecería una actualización ya instalada en bucle. Se falla aquí.
+      - name: Comprobar que el tag coincide con version.py
         shell: pwsh
-        run: Rename-Item dist/ATOM-Organizer.exe "ATOM-Organizer-${{ needs.meta.outputs.version }}.exe"
+        run: |
+          $py = (python -c "from version import __version__; print(__version__)").Trim()
+          # v3.2.0 y v3.2.0-rc1 valen los dos para version.py = 3.2.0
+          $tag = ("${{ needs.meta.outputs.version }}".TrimStart('v') -split '-')[0]
+          if ($py -ne $tag) {
+            Write-Error "Tag ($tag) != version.py ($py). Actualiza version.py y vuelve a etiquetar."
+            exit 1
+          }
+      - name: PyInstaller (onedir Qt/QtWebEngine)
+        run: pyinstaller --clean --noconfirm atom_organizer_webview.spec
+      - name: Construir instalador (Inno Setup)
+        shell: pwsh
+        run: |
+          $tag = "${{ needs.meta.outputs.version }}".TrimStart('v')
+          # VersionInfoVersion sólo admite números → la versión va limpia (3.2.0) y
+          # el sufijo (-rc1) sólo al nombre del fichero.
+          $ver = ($tag -split '-')[0]
+          # Inno Setup 6 viene preinstalado en los runners windows-latest
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyVersion=$ver" "/DMyTag=$tag" packaging\windows\ATOM-Organizer.iss
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-exe
-          path: dist/ATOM-Organizer-*.exe
+          name: windows-installer
+          path: dist/installer/ATOM-Organizer-Setup-*.exe
           if-no-files-found: error
 
   release:
@@ -118,8 +155,8 @@ jobs:
         with:
           tag_name: ${{ needs.meta.outputs.version }}
           name: ATOM Organizer ${{ needs.meta.outputs.version }}
-          prerelease: ${{ github.event_name == 'push' || inputs.prerelease }}
+          prerelease: ${{ needs.meta.outputs.prerelease }}
           fail_on_unmatched_files: true
           files: |
             dist-assets/linux-appimage/ATOM_Organizer-*-x86_64.AppImage
-            dist-assets/windows-exe/ATOM-Organizer-*.exe
+            dist-assets/windows-installer/ATOM-Organizer-Setup-*.exe

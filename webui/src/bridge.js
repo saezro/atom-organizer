@@ -54,6 +54,15 @@ export const api = {
   // write persiste y devuelve {ok, path} | {ok:false, error}.
   readConfig: () => call('read_config'),
   writeConfig: (data) => call('write_config', data),
+  // Actualizaciones (GitHub Releases). appVersion devuelve {version, platform};
+  // checkUpdate {ok, update_available, current, latest, notes, asset_url,
+  // asset_size, can_install}; downloadUpdate arranca la descarga (el progreso
+  // llega por el evento `atom:update`); installUpdate lanza el instalador
+  // silencioso, que cierra y reabre la app.
+  appVersion: () => call('app_version'),
+  checkUpdate: () => call('check_update'),
+  downloadUpdate: (url, size) => call('download_update', url, size ?? 0),
+  installUpdate: (path) => call('install_update', path ?? null),
 }
 
 // Python empuja progreso del pipeline con:
@@ -69,4 +78,15 @@ export function onProgress(handler) {
   const wrapped = (e) => handler(e.detail)
   window.addEventListener('atom:progress', wrapped)
   return () => window.removeEventListener('atom:progress', wrapped)
+}
+
+// Eventos del updater (Python → JS), canal aparte del progreso del pipeline:
+//   kind 'available'  -> data (resultado de check_update)
+//   kind 'progress'   -> value (%), done, total (bytes)
+//   kind 'downloaded' -> path del instalador en %TEMP%
+//   kind 'error'      -> text
+export function onUpdate(handler) {
+  const wrapped = (e) => handler(e.detail)
+  window.addEventListener('atom:update', wrapped)
+  return () => window.removeEventListener('atom:update', wrapped)
 }

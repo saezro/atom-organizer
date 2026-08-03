@@ -1,7 +1,11 @@
-# atom_organizer_webview.spec — build Windows ONEFILE de la UI React (pywebview + Qt).
+# atom_organizer_webview.spec — build Windows ONEDIR de la UI React (pywebview + Qt).
 # -*- mode: python ; coding: utf-8 -*-
 #
-# Entry: app_webview.py. Produce dist/ATOM-Organizer.exe (portable, un click).
+# Entry: app_webview.py. Produce dist/ATOM-Organizer/ (carpeta), que el instalador
+# Inno Setup (packaging/windows/ATOM-Organizer.iss) empaqueta en
+# ATOM-Organizer-Setup-vX.Y.Z.exe. Ya no se distribuye .exe portable: el onefile
+# se auto-extraía en %TEMP% en cada arranque (patrón que marcan los antivirus) y
+# el instalador es además lo que consume el updater in-app.
 # SOLO Windows: PyInstaller no cross-compila.
 #
 # Notas de diseño:
@@ -83,6 +87,7 @@ a = Analysis(
     ] + pyexiv2_datas + mpl_datas + webview_datas + pyexiv2_native,
     hiddenimports=[
         'pyexiv2', 'ipaddress',
+        'version', 'atom_core.updater',   # updater: import perezoso desde app_webview
         'gui', 'atom_core.organize',           # import perezoso en el worker → forzarlo explícito
         'webview.platforms.qt',                # backend pywebview Qt (antes edgechromium/WebView2)
         'qtpy', 'bottle', 'proxy_tools',       # transitivas de pywebview
@@ -113,25 +118,67 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-# ONEFILE: binaries + datas dentro del propio EXE (sin COLLECT).
+# Metadatos VERSIONINFO del .exe (empresa, producto, versión). Además de salir
+# en Propiedades del fichero, un binario CON metadatos coherentes puntúa mejor
+# en las heurísticas de Defender/SmartScreen: un .exe anónimo y sin firmar es
+# justo el perfil que marcan. Se genera al vuelo desde version.py (fuente única).
+import sys as _sys_v
+_sys_v.path.insert(0, _os.path.abspath('.'))
+from version import __version__ as _APP_VER
+_v_parts = tuple((list(int(x) for x in _APP_VER.split('.')[:3]) + [0, 0, 0])[:4])
+
+_version_res = '''VSVersionInfo(
+  ffi=FixedFileInfo(filevers={v}, prodvers={v}, mask=0x3f, flags=0x0,
+                    OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
+  kids=[
+    StringFileInfo([StringTable('040a04b0', [
+      StringStruct('CompanyName', 'Aerotools UAV'),
+      StringStruct('FileDescription', 'ATOM Organizer'),
+      StringStruct('FileVersion', '{s}'),
+      StringStruct('InternalName', 'ATOM-Organizer'),
+      StringStruct('LegalCopyright', 'Aerotools UAV'),
+      StringStruct('OriginalFilename', 'ATOM-Organizer.exe'),
+      StringStruct('ProductName', 'ATOM Organizer'),
+      StringStruct('ProductVersion', '{s}'),
+    ])]),
+    VarFileInfo([VarStruct('Translation', [0x40a, 1200])])
+  ]
+)'''.format(v=_v_parts, s=_APP_VER)
+with open('file_version_info.txt', 'w', encoding='utf-8') as _fh:
+    _fh.write(_version_res)
+
+# ONEDIR (antes onefile). Dos motivos:
+#  1) El onefile se auto-extrae en %TEMP% y ejecuta desde ahí en cada arranque:
+#     ese patrón es exactamente lo que las heurísticas de antivirus marcan como
+#     dropper. Onedir + instalador reduce mucho los falsos positivos.
+#  2) El instalador Inno Setup necesita una carpeta que copiar a Archivos de
+#     programa; y el arranque es bastante más rápido (no descomprime 200 MB).
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='ATOM-Organizer',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    runtime_tmpdir=None,
     console=False,                 # sin consola (app de ventana)
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='assets/atom-icon.ico' if __import__('os').path.exists('assets/atom-icon.ico') else None,
+    version='file_version_info.txt',
+    icon='assets/atom-icon.ico' if _os.path.exists('assets/atom-icon.ico') else None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    name='ATOM-Organizer',         # dist/ATOM-Organizer/ATOM-Organizer.exe
 )

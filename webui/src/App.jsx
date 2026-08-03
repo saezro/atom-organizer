@@ -4,6 +4,7 @@ import { SECTIONS, SPLIT_ADVANCED } from './schema'
 import TaskBlock, { Field, initialState, buildParams } from './TaskBlock'
 import ProgressModal from './ProgressModal'
 import PreflightModal from './PreflightModal'
+import UpdateModal from './UpdateModal'
 import './App.css'
 
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
@@ -231,6 +232,9 @@ function App() {
           onClose={() => setModalOpen(false)}
         />
       )}
+
+      {/* Se pinta solo si Python avisa de que hay versión nueva (`atom:update`). */}
+      <UpdateModal />
     </div>
   )
 }

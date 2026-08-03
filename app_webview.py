@@ -20,6 +20,7 @@ import platform
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import webview
@@ -109,6 +110,8 @@ class Api:
     def __init__(self) -> None:
         self._window = None
         self._running = False
+        self._downloading = False
+        self._update_path: str | None = None
 
     def bind_window(self, window) -> None:
         self._window = window
@@ -292,6 +295,80 @@ class Api:
         except Exception as exc:  # noqa: BLE001 — se reenvía al front
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    # ---- actualizaciones ---------------------------------------------------
+    # Patrón del atom-migrador: comprobar al arrancar, avisar en un modal y, si
+    # el usuario acepta, descargar el instalador y lanzarlo en silencio. Aquí no
+    # hay electron-updater: la lógica vive en atom_core/updater.py.
+    def app_version(self) -> dict:
+        from atom_core import updater
+
+        return {"version": updater.current_version(), "platform": platform.system()}
+
+    def check_update(self) -> dict:
+        from atom_core import updater
+
+        return updater.check()
+
+    def download_update(self, url: str, size: int = 0) -> dict:
+        """Descarga en un hilo; el progreso llega a JS como `atom:update`."""
+        if self._downloading:
+            return {"started": False, "reason": "Ya se está descargando."}
+        self._downloading = True
+
+        def worker() -> None:
+            from atom_core import updater
+
+            last = -1
+
+            def progress(pct: int, done: int, total: int) -> None:
+                # No inundar el bridge: sólo cuando cambia el entero de %.
+                nonlocal last
+                if pct != last:
+                    last = pct
+                    self._push_update({"kind": "progress", "value": pct,
+                                       "done": done, "total": total})
+
+            res = updater.download(url, size, progress)
+            self._downloading = False
+            self._update_path = res.get("path") if res.get("ok") else None
+            self._push_update({"kind": "downloaded" if res.get("ok") else "error",
+                               "path": res.get("path"), "text": res.get("error")})
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"started": True}
+
+    def install_update(self, path: str | None = None) -> dict:
+        """Lanza el instalador silencioso. Él cierra esta instancia
+        (/CLOSEAPPLICATIONS) y la reabre al terminar (/RESTARTAPPLICATIONS)."""
+        from atom_core import updater
+
+        return updater.install(path or self._update_path or "")
+
+    def _push_update(self, detail: dict) -> None:
+        if not self._window:
+            return
+        js = ("window.dispatchEvent(new CustomEvent('atom:update',"
+              f"{{detail:{json.dumps(detail)}}}))")
+        try:
+            self._window.evaluate_js(js)
+        except Exception:
+            pass
+
+    def start_update_check(self, delay: float = 3.0) -> None:
+        """Chequeo automático diferido tras el arranque (como el migrador: 3 s),
+        para no competir con la carga de la UI. Silencioso si no hay novedad o
+        si no hay red."""
+        def worker() -> None:
+            time.sleep(delay)
+            try:
+                res = self.check_update()
+            except Exception as exc:  # noqa: BLE001 — nunca romper el arranque
+                res = {"ok": False, "error": str(exc)}
+            if res.get("ok") and res.get("update_available"):
+                self._push_update({"kind": "available", "data": res})
+
+        threading.Thread(target=worker, daemon=True).start()
+
     # ---- disparo del pipeline ---------------------------------------------
     def run_organize(self, params: dict, advanced: dict | None = None) -> dict:
         """Atajo de la pantalla principal: "Organizar completo". `advanced` son
@@ -376,6 +453,11 @@ def main() -> None:
         background_color="#0a0a0a",
     )
     api.bind_window(window)
+
+    # Comprobación de actualizaciones 3 s después del arranque. En modo --dev no
+    # molesta (se corre desde fuente, la versión instalada no tiene sentido).
+    if not args.dev:
+        api.start_update_check()
 
     # Backend Qt (PySide6 + QtWebEngine, Chromium embebido) en AMBOS SO.
     # Windows abandonó WebView2 (v3.8.x): con ese backend la UI renderizaba pero
