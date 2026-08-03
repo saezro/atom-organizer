@@ -59,6 +59,17 @@ function App() {
   // Modal PREVIO (info del estadillo). null | {loading, info, task, params, advanced}
   const [preflight, setPreflight] = useState(null)
 
+  // Versión REAL, la que dice version.py (vía updater.current_version()). Antes era
+  // un literal en el header y quedó congelado en "v3.9" tras el reseteo de versionado.
+  const [version, setVersion] = useState('')
+
+  useEffect(() => {
+    whenBridgeReady()
+      .then(() => api.appVersion())
+      .then((r) => setVersion(r?.version || ''))
+      .catch(() => {})
+  }, [])
+
   useEffect(() => {
     whenBridgeReady().then(() => setReady(true))
     return onProgress((d) => {
@@ -183,7 +194,7 @@ function App() {
         <h1>
           <span className="atom">ATOM</span> <span className="org">ORGANIZER</span>
         </h1>
-        <span className="ver">v3.9</span>
+        {version && <span className="ver">v{version}</span>}
       </header>
 
       <nav className="seg">
