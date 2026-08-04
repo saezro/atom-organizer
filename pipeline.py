@@ -709,6 +709,10 @@ class GenStructFolder:
             self.warning_gen_struct_folder += 1
             self.warnings_type_gen_struct_folder.append(f"{rgb_folder_list_length} imágenes rgb fuera del estadillo movidas a SIN_ORDENAR")
             progress_callback.emit(f"AVISO: {rgb_folder_list_length} imágenes rgb fuera del estadillo movidas a SIN_ORDENAR.\n")
+        # Se devuelven los conteos para que el llamador pueda detectar el caso
+        # degenerado "TODO fuera del estadillo" y abortar con un mensaje útil,
+        # en vez de dejar que las fases siguientes procesen 0 imágenes en verde.
+        return thermal_folder_list_length, rgb_folder_list_length
 
     def checking_results_gen_thumbnails_and_rotate(self, progress_callback, progress_summarize) -> None:
         """

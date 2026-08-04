@@ -2176,7 +2176,30 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
                     self.gen_struct_folder_obj.gen_folder_struct(cfg.estad, cfg.output_folder, cfg.output_folder,
                                                         True, cfg.seconds_range, cfg.mismatch_hours, cfg.mismatch_minutes, progress_callback, progress_bar, include_v=cfg.include_v)
 
-                self.gen_struct_folder_obj.checking_results_gen_struct_folder(cfg.output_folder, progress_callback)
+                apartadas_termica, apartadas_rgb = self.gen_struct_folder_obj.checking_results_gen_struct_folder(cfg.output_folder, progress_callback)
+
+                # GUARD "todo fuera del estadillo": si tras generar la estructura no
+                # sobrevive NINGUNA imagen en TERMICA/RGB y sí se apartaron a
+                # SIN_ORDENAR, ninguna foto encajó en la ventana horaria de ningún
+                # vuelo. Sin este guard las fases siguientes (recorte, meta,
+                # miniaturas) procesan 0 imágenes y salen en VERDE — porque
+                # contar_imagenes_or_tmc excluye SIN_ORDENAR del total esperado, así
+                # que 0 esperadas == 0 procesadas cuadra — y el run solo revienta al
+                # final, en la conversión a TIF, con un error que culpa al dron
+                # (no encuentra térmica de muestra) en vez de al estadillo.
+                quedan_termica = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, "TERMICA"))
+                quedan_rgb = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, "RGB"))
+                apartadas = apartadas_termica + apartadas_rgb
+                if quedan_termica == 0 and quedan_rgb == 0 and apartadas > 0:
+                    msg = (f"Ninguna de las {apartadas} imágenes encaja en la franja horaria de ningún "
+                           f"vuelo del estadillo: todas se han apartado a SIN_ORDENAR y no queda nada que "
+                           f"procesar. Revisa que el estadillo sea el de este vuelo (fecha correcta) y el "
+                           f"desfase horario configurado (ahora: {cfg.mismatch_hours} h, {cfg.mismatch_minutes} min; "
+                           f"margen {cfg.seconds_range} s). Las imágenes NO se han perdido: están en "
+                           f"{os.path.join(cfg.output_folder, 'SIN_ORDENAR')}.")
+                    progress_callback.emit("ERROR: " + msg + "\n")
+                    self.organizer_logger_obj.logger.info(msg)
+                    raise ValueError(msg)
 
                 summarize_dict = self.gen_struct_folder_obj.get_summarize()
                 self.show_summarize(summarize_dict, progress_summarize)
