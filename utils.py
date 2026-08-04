@@ -652,6 +652,55 @@ se ejecuta en el hilo GUI, antes de arrancar el `Worker`.
 """
 
 
+# --- criterio de rotación: valores que NO se deben tener que tocar -----------
+# El giro se decide comparando el GimbalYawDegree con ±90 (gui.py:2388-2391):
+#   rotar 90  si  90 - subs_to_angle < yaw <  90 + add_to_angle
+#   rotar 270 si -90 - subs_to_angle < yaw < -90 + add_to_angle
+# El margen NO es un ajuste fino: es lo que hace que el intervalo EXISTA. Con 0
+# queda `90 > yaw > 90`, que está vacío, y entonces no rota nada nunca, pase lo
+# que pase con las imágenes. Ese era el valor por defecto, y es la razón de que
+# ningún vuelo saliera girado.
+#
+# 80 sale de los vuelos reales, no de un número redondo:
+#   - ZARATAN (4632 térmicas, rejilla de inspección): yaw entre -101.6 y -97.7.
+#     Un margen estrecho (±10 -> intervalo (-100, -80)) ya dejaría fuera parte
+#     del vuelo. Con 80 -> (-170, -10), entra todo.
+#   - ANTOLIN (vuelo suelto): hay tomas con yaw -1.4, que NO se deben rotar. Un
+#     margen de 90 -> (-180, 0) las rotaría por error; con 80 caen en la zona
+#     muerta de ±10 alrededor de 0 y 180 y se clasifican bien.
+# O sea: 80 es el mayor margen que sigue distinguiendo "cámara perpendicular a
+# la línea de vuelo" de "cámara alineada con ella".
+ROTATION_YAW_MARGIN = 80
+# Porcentaje MÍNIMO de imágenes del vuelo que deben coincidir para aplicar la
+# decisión a todo el vuelo (pipeline.py:1177). 50 = mayoría simple. El 95 del
+# comentario original es frágil: un vuelo con un 6% de tomas raras se quedaría
+# SIN rotar nada. Y 0 es peor todavía: una sola imagen desviada arrastra al
+# vuelo entero, porque basta con que su categoría sea la primera no vacía.
+ROTATION_MIN_AGREEMENT_PCT = 50
+
+
+def sane_rotation_criteria(add_to_angle, subs_to_angle, max_error):
+    """
+    Devuelve (add_to_angle, subs_to_angle, max_error) utilizables, sustituyendo
+    por el valor sano cualquiera que sea 0, negativo o no numérico.
+
+    Ninguno de los tres tiene un uso legítimo en <= 0: margen 0 es un intervalo
+    de decisión vacío y un porcentaje de acuerdo 0 acepta cualquier minoría. Se
+    sanea en un único punto porque los valores llegan por tres caminos distintos
+    (formulario webview, `advanced`, y los spinbox de la GUI Qt) y basta con que
+    uno de ellos traiga un 0 para que el vuelo entero se quede sin rotar.
+    """
+    def _sano(valor, defecto):
+        try:
+            return valor if float(valor) > 0 else defecto
+        except (TypeError, ValueError):
+            return defecto
+
+    return (_sano(add_to_angle, ROTATION_YAW_MARGIN),
+            _sano(subs_to_angle, ROTATION_YAW_MARGIN),
+            _sano(max_error, ROTATION_MIN_AGREEMENT_PCT))
+
+
 @dataclass(frozen=True)
 class CompressRgbsConfig:
     input_folder: str

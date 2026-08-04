@@ -1065,20 +1065,29 @@ class GenStructFolder:
         - progress_callback - Callback (los signals) que envían, mediante un emit(), información de texto desde el hilo correspondiente.
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
         """
-        # Los umbrales llegan calculados como (90 + add_to_angle, 90 - subs_to_angle) y
-        # (-90 + add_to_angle, -90 - subs_to_angle), y se comparan con `<` ESTRICTO. Con los
-        # márgenes a 0 -- que es el valor por defecto del formulario -- el intervalo queda
-        # lim_min == lim_max, o sea VACÍO: ningún yaw puede caer dentro, los contadores salen
-        # 0 y 0, y todo el vuelo se va por la rama "no se deben rotar". El usuario ve que no
-        # se gira NADA y el log dice "OK", sin una sola pista de por qué. Pasó exactamente eso
-        # en las cuatro corridas del 2026-08-04. Avisamos antes de procesar nada.
+        # ÚLTIMA BARRERA del criterio de rotación, y la única por la que pasan las tres
+        # rutas (webview, GUI Qt "Generar miniaturas" y la de Aerotools).
+        #
+        # Los umbrales llegan ya calculados como (90 - subs_to_angle, 90 + add_to_angle) y
+        # (-90 - subs_to_angle, -90 + add_to_angle), y se comparan con `<` ESTRICTO. Con los
+        # márgenes a 0 el intervalo queda lim_min == lim_max, o sea VACÍO: ningún yaw puede
+        # caer dentro -- ni siquiera 90 clavado --, los contadores salen 0 y 0 y todo el
+        # vuelo se va por la rama "no se deben rotar" (:1209). El usuario ve que no se gira
+        # NADA y el log escribe "OK", sin una sola pista de por qué. Eso pasó en las cuatro
+        # corridas del 2026-08-04. Aquí se reconstruyen los márgenes, se sanean y se
+        # recalculan los límites, para que un 0 llegado por CUALQUIER camino no pueda dejar
+        # el proceso sin rotar.
         if rotation_mode_auto and (lim_min_90 >= lim_max_90 or lim_min_270 >= lim_max_270):
-            aviso = ("\nAVISO: el margen de yaw es 0, así que NINGUNA imagen puede cumplir el "
-                     "criterio de giro y no se rotará nada. Sube «Margen Yaw +» y «Margen Yaw −» "
-                     "antes de lanzar el proceso.\n")
+            add_to_angle, subs_to_angle, max_error = utils.sane_rotation_criteria(
+                lim_max_90 - 90, 90 - lim_min_90, max_error)
+            lim_max_90, lim_min_90 = 90 + add_to_angle, 90 - subs_to_angle
+            lim_max_270, lim_min_270 = -90 + add_to_angle, -90 - subs_to_angle
+            aviso = ("\nAVISO: el margen de yaw venía a 0, con lo que ninguna imagen podría "
+                     f"cumplir el criterio de giro. Se usa un margen de ±{add_to_angle}° y un "
+                     f"{max_error}% mínimo de imágenes que deben girar igual.\n")
             self.organizer_logger.logger.warning(
-                f"Margen de yaw vacío: 90 in ({lim_min_90}, {lim_max_90}) y -90 in ({lim_min_270}, {lim_max_270}) "
-                "-> ninguna imagen puede rotar.")
+                f"Margen de yaw vacío; se corrige a 90 in ({lim_min_90}, {lim_max_90}) y "
+                f"-90 in ({lim_min_270}, {lim_max_270}), max_error={max_error}.")
             progress_callback.emit(aviso)
 
         list_dir = os.listdir(input_folder)

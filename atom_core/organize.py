@@ -41,6 +41,8 @@ import pipeline
 import utils
 from gui import MainWindow  # solo se usan funciones (globals del módulo intactos)
 from utils import (
+    ROTATION_MIN_AGREEMENT_PCT,
+    ROTATION_YAW_MARGIN,
     CompressRgbsConfig,
     ConvertToTifConfig,
     ExtractionConfig,
@@ -248,8 +250,8 @@ def _default_split_config(params: dict) -> SplitImagesConfig:
         cropping_rgb=True, cropping_mode_auto=True, crop_percentage="0",
         gen_meta_location=True, gen_thumbnails=True, seconds_range=30.0,
         include_v=True, calculate_proyected_distance=False, flight_height=0.0,
-        gen_thumbnails_rotate_90=False, gen_thumbnails_add_to_angle=0,
-        gen_thumbnails_max_error=0, gen_thumbnails_subs_to_angle=0,
+        gen_thumbnails_rotate_90=False, gen_thumbnails_add_to_angle=ROTATION_YAW_MARGIN,
+        gen_thumbnails_max_error=ROTATION_MIN_AGREEMENT_PCT, gen_thumbnails_subs_to_angle=ROTATION_YAW_MARGIN,
         choose_mode_auto=True, gen_thumbnails_rgb=True, gen_thumbnails_termica=True,
         # TIF: en Windows usa dji_irp.exe/exiftool.exe; en Linux usa libdirp.so
         # (DJI Thermal SDK v1.7) vía ctypes + exiftool del sistema (ver
@@ -432,6 +434,28 @@ def run_task(
             if hasattr(cfg, _hum_f) and not _in_range(getattr(cfg, _hum_f), 20.0, 100.0):
                 emit("summary", f"AVISO: humedad {getattr(cfg, _hum_f)} fuera de rango [20-100]; se usa 70.")
                 cfg = replace(cfg, **{_hum_f: 70.0})
+
+        # Misma red de seguridad para el criterio de rotación, y por el mismo motivo:
+        # el margen de yaw y el porcentaje de acuerdo llegan a 0 desde el front o desde
+        # `advanced`, y un margen de 0 deja el intervalo de decisión VACÍO -> el vuelo
+        # entero se va por "no rotar" con un "OK" en el log y NADA sale girado. No hay
+        # ningún uso legítimo del 0 en estos campos, así que se corrige sobre el cfg
+        # FINAL, sea cual sea el origen del valor. Los tres juegos de nombres son los
+        # de SplitImagesConfig (gen_thumbnails_*) y GenThumbnailsConfig (pelado y
+        # aerotools_*).
+        for _pref in ("gen_thumbnails_", "", "aerotools_"):
+            for _campo, _sano, _que in ((f"{_pref}add_to_angle", ROTATION_YAW_MARGIN, "margen de yaw +"),
+                                        (f"{_pref}subs_to_angle", ROTATION_YAW_MARGIN, "margen de yaw −"),
+                                        (f"{_pref}max_error", ROTATION_MIN_AGREEMENT_PCT, "% de imágenes que deben girar igual")):
+                if not hasattr(cfg, _campo):
+                    continue
+                try:
+                    _actual = float(getattr(cfg, _campo))
+                except (TypeError, ValueError):
+                    _actual = 0.0
+                if _actual <= 0:
+                    emit("summary", f"AVISO: {_que} venía a {getattr(cfg, _campo)}, que impediría rotar ninguna imagen; se usa {_sano}.")
+                    cfg = replace(cfg, **{_campo: _sano})
 
         # Guarda: en separación por sufijo, si NO hay sufijo térmico NI RGB, la
         # clasificación no asigna ninguna imagen y se copiarían 0 fotos en

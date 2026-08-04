@@ -92,7 +92,11 @@ def test_margen_amplio_si_rota_el_mismo_yaw(tmp_path, logger, make_dji_jpeg):
 
 
 def test_avisa_cuando_el_intervalo_esta_vacio(tmp_path, logger, make_dji_jpeg):
-    """El usuario tiene que enterarse ANTES de esperar 20 minutos a un no-op."""
+    """
+    El usuario tiene que enterarse ANTES de esperar 20 minutos a un no-op. Que la
+    corrección sea automática (ver test_criterio_rotacion_por_defecto.py) no
+    justifica hacerla en silencio: el log tiene que decir con qué se rotó.
+    """
     import pipeline as gen_struct_folder
 
     planta_folder, flight_folder = _flight_folder(tmp_path, make_dji_jpeg, yaw=-90.0)
@@ -108,7 +112,7 @@ def test_avisa_cuando_el_intervalo_esta_vacio(tmp_path, logger, make_dji_jpeg):
         progress_callback=progress, progress_bar=progress,
     )
 
-    avisos = [m for m in mensajes if isinstance(m, str) and "margen de yaw es 0" in m]
+    avisos = [m for m in mensajes if isinstance(m, str) and "margen de yaw" in m]
     assert avisos, (
         "Con el intervalo vacío no se avisó de nada: el usuario ve 'OK ... NO se deben rotar' "
         "y no puede saber que el criterio era imposible de cumplir."
@@ -132,5 +136,5 @@ def test_no_avisa_cuando_el_margen_es_valido(tmp_path, logger, make_dji_jpeg):
         progress_callback=progress, progress_bar=progress,
     )
 
-    avisos = [m for m in mensajes if isinstance(m, str) and "margen de yaw es 0" in m]
+    avisos = [m for m in mensajes if isinstance(m, str) and "margen de yaw" in m]
     assert not avisos, "Se avisó de margen vacío con un margen perfectamente válido."
