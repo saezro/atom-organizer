@@ -303,14 +303,25 @@ def run_task(
     """Ejecuta un task del pipeline en el hilo actual (bloqueante)."""
     # Tee a fichero: en la ruta webview los logs solo iban al panel de React y
     # se perdían al cerrar (no hay app_*.log como en la ruta Qt). Persistimos
-    # cada evento en /tmp para poder diagnosticar corridas post-mortem.
+    # cada evento en la carpeta de logs del usuario para diagnosticar corridas
+    # post-mortem.
+    #
+    # Antes esto escribía en "/tmp", ruta que NO existe en Windows: el open()
+    # petaba, el except lo tragaba y _run_log quedaba en None. Resultado: en el
+    # producto real (Windows) NO se generaba ningún log de corrida, así que ante
+    # un fallo del usuario no había nada que pedirle. Ahora usa user_log_dir(),
+    # la misma carpeta que ya usa la ruta Qt (%APPDATA%\ATOM-Organizer\Logs).
     _run_log = None
     try:
         _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        from external_tools import user_log_dir
+        _log_dir = user_log_dir()
+        os.makedirs(_log_dir, exist_ok=True)
         # El PID va en el nombre: dos corridas en el MISMO segundo (p. ej. dos
         # sesiones a la vez) caían antes en el mismo fichero y se INTERLEAVABAN
         # -> un log con origen de una corrida y errores de otra, imposible de leer.
-        _run_log = open(f"/tmp/atom-organizer-run_{_ts}_pid{os.getpid()}.log", "a", encoding="utf-8")
+        _run_log = open(os.path.join(_log_dir, f"atom-organizer-run_{_ts}_pid{os.getpid()}.log"),
+                        "a", encoding="utf-8")
         # Cabecera de contexto: qué task, con qué directorios y qué PID. Permite
         # detectar de un vistazo cruces de directorio (origen X -> salida Y) y
         # colisiones entre procesos que operan sobre los MISMOS ficheros.
