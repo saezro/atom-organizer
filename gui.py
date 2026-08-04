@@ -1,19 +1,19 @@
 '''-------------------------------------------------------------------------------
- Nombre:    ATOM_Organizer
- Proposito: Programa que integra diferentes funcionalidades para trabajar con 
+ Nombre:    ATOM Organizer
+ Proposito: Programa que integra diferentes funcionalidades para trabajar con
             la información generada en los vuelos.
- Notas:     - Fix csv sorting.
-            - Fix problem with estadillos that already exist.
-            - Fix problem if the already exist estadillo is chosen in the HMI.
 
- Autor:      Manuel Álvarez Souto
+ Autor original:  Manuel Álvarez Souto (2023, hasta la 2.1.5)
+ Mantenimiento:   Rodrigo Sáez Escobar — Aerotools-UAV (desde 2026, v3.x)
 
- Creado:     xx/xx/2023
- Copyright:  (c) 2023. All rights reserved. Aerotools-UAV
- Licencia:     
- Interprete: Python 3.10.2
- 
- Versiones:  2.1.5
+ Creado:     2023
+ Copyright:  (c) 2023-2026. All rights reserved. Aerotools-UAV
+ Licencia:
+ Interprete: Python 3.10+
+
+ Versión:    la fuente única es version.py (__version__). Este módulo es la GUI
+             Qt original; desde la 3.x el producto que se distribuye es la
+             interfaz webview (app_webview.py), que reutiliza esta lógica.
 -------------------------------------------------------------------------------'''
 
 from PySide6 import QtWidgets, QtCore, QtGui
@@ -520,6 +520,15 @@ class MainWindow(QtWidgets.QMainWindow, aero_gui.Ui_MainWindow):
     def __init__(self, *args, obj=None, **kwargs) -> None:
         super(MainWindow, self).__init__(*args, **kwargs)
         self.setupUi(self)
+        # El .ui generado por Qt Designer lleva "ATOM Organizer v2.1.5" escrito a
+        # mano en el título (qt_designer_files/atom_organizer.py), así que la
+        # ventana anunciaba una versión de hace tres años. Se pisa con la fuente
+        # única en vez de editar un fichero generado, que se regenera y vuelve.
+        try:
+            from version import __version__
+            self.setWindowTitle(f"ATOM Organizer v{__version__}")
+        except Exception:
+            pass
         self._load_brand_font()
         self.setStyleSheet(scale_qss(DARK_QSS + self._extra_qss(), UI_SCALE))
         self._build_brand_header()
