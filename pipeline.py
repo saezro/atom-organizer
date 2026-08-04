@@ -2104,7 +2104,27 @@ class SplitImages:
             # dji_utility apunta a programas_externos/<dron>/dji_irp.exe
             subproceso = '"{0}" -s "{1}" -a measure --humidity {2} --emissivity {3} --measurefmt float32 -o "{4}"'.format(
                 dji_utility, os.path.join(input_folder, image_name), humidity, emissivity, raw_path)
-            subprocess.run(subproceso)
+            # Se captura el resultado: si dji_irp.exe falla, el único síntoma era un .raw
+            # que no aparece ("Posible error del conversor DJI") y el motivo real (DLL que
+            # falta, permisos, disco lleno, argumento rechazado) se perdía. Con el código de
+            # salida y stderr en el log de corrida el fallo es diagnosticable sin la máquina
+            # delante. No se aborta aquí: el flujo de abajo ya trata el .raw ausente.
+            try:
+                proc = subprocess.run(subproceso, capture_output=True, text=True, errors="replace")
+            except FileNotFoundError:
+                # El .exe del dron no está donde se espera (instalación incompleta o
+                # selector de dron apuntando a una carpeta que no existe).
+                self.organizer_logger.logger.error(
+                    f"No se encuentra el conversor DJI en {dji_utility}. La conversión a TIFF no puede ejecutarse.")
+                progress_callback.emit(
+                    f"\nERROR: No se encuentra el conversor DJI en {dji_utility}.\n")
+                self._register_image_error(os.path.join(input_folder, image_name))
+                return
+            if proc.returncode != 0:
+                salida = (proc.stderr or proc.stdout or "").strip()
+                self.organizer_logger.logger.error(
+                    f"El conversor DJI ha fallado con {os.path.join(input_folder, image_name)}: "
+                    f"código {proc.returncode}. Salida: {salida!r}")
         else:
             # En Linux no hay ejecutable dji_irp: usamos libdirp.so vía ctypes.
             # Las librerías del SDK viven junto al .exe teórico -> carpeta del dron.

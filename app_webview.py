@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import multiprocessing
 import os
 import platform
 import subprocess
@@ -476,6 +477,13 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # LO PRIMERO, antes de cualquier otro efecto: en Windows el start method es
+    # `spawn` y el hijo re-ejecuta el .exe congelado; sin esto no ejecuta el worker,
+    # muere, y el ProcessPoolExecutor de utils.run_batch se rompe entero
+    # (BrokenProcessPool en TODOS los items: recorte RGB y compresión). gui.py ya lo
+    # llamaba en su propio __main__, pero el entry point del build webview es ESTE
+    # fichero y gui.py sólo se importa como módulo, así que aquel nunca corría.
+    multiprocessing.freeze_support()
     if platform.system() == "Linux":
         # UseOzonePlatform: integración Wayland/X11 del Chromium de QtWebEngine.
         os.environ.setdefault(
