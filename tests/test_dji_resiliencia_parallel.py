@@ -27,6 +27,25 @@ def _noop_progress():
     return types.SimpleNamespace(emit=lambda *a, **k: None)
 
 
+def _cmd_text(cmd):
+    """El comando como texto, venga como cadena (Windows) o como argv (Linux).
+
+    El conversor se invoca de dos formas según la plataforma: en Windows es una
+    CADENA (`"dji_irp.exe" -s ...`) y en Linux una LISTA de argumentos
+    (`[python, dji_irp_linux.py, jpg, raw, ...]`). Los fakes de estos tests
+    hacían `nombre in cmd`, que sobre una lista busca el elemento EXACTO y por
+    tanto nunca casaba en Linux: el .raw no se escribía y el conversor parecía
+    fallar. Normalizar a texto hace los tests independientes de la plataforma.
+    """
+    return " ".join(str(a) for a in cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
+
+
+def _es_conversor_dji(cmd):
+    """True si el comando es el conversor térmico y no, p. ej., exiftool."""
+    texto = _cmd_text(cmd)
+    return "dji_irp" in texto or "dji_utility" in texto
+
+
 def _make_raw(image_path, input_folder, image_name):
     """Genera el .raw sintético (floats 0..N) del tamaño de la imagen dada."""
     w, h = PILImage.open(image_path).size  # (64, 48) -> w=64, h=48
@@ -82,9 +101,9 @@ def test_raw_truncado_no_tumba_el_lote(tmp_path, logger, make_dji_jpeg, monkeypa
     paths = {n: make_dji_jpeg(str(input_folder / n)) for n in names}
 
     def fake_run(cmd, *args, **kwargs):
-        # Identifica la imagen por el nombre presente en el comando (string).
+        # Identifica la imagen por el nombre presente en el comando (cadena o argv).
         for n in names:
-            if n in cmd:
+            if n in _cmd_text(cmd) and _es_conversor_dji(cmd):
                 if n == "DJI_0002_T.JPG":
                     # dji_irp "corrupto": escribe un .raw truncado -> struct/reshape peta.
                     with open(os.path.join(str(input_folder), n + ".raw"), "wb") as f:
@@ -153,7 +172,7 @@ def test_paralelo_identico_a_secuencial(tmp_path, logger, make_dji_jpeg, monkeyp
 
         def fake_run(cmd, *args, **kwargs):
             for n in names:
-                if n in cmd and cmd.strip().startswith('"dji'):
+                if n in _cmd_text(cmd) and _es_conversor_dji(cmd):
                     _make_raw(paths[n], input_folder, n)
                     break
             return subprocess.CompletedProcess(args=cmd, returncode=0)

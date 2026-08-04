@@ -115,10 +115,15 @@ def test_tiff_rotation_preserves_radiometry_and_copies_exif(
     )
 
     assert len(calls) == 2, "Se esperaban 2 llamadas a subprocess.run: utilidad DJI + exiftool."
+    # El comando es una LISTA de argv, no una cadena: el flag es "-tagsfromfile" (con
+    # guión) y los ficheros van como RUTA ABSOLUTA, no como nombre suelto. Buscar
+    # "tagsfromfile" o image_name como elementos exactos no encontraba nada y el test
+    # fallaba aunque el código hiciera exactamente lo que se le pide.
     exiftool_cmd = calls[1]
-    assert "tagsfromfile" in exiftool_cmd, "No se copiaron metadatos EXIF con exiftool -tagsfromfile."
+    assert "-tagsfromfile" in exiftool_cmd, "No se copiaron metadatos EXIF con exiftool -tagsfromfile."
     assert "-overwrite_original_in_place" in exiftool_cmd
-    assert image_name in exiftool_cmd and "DJI_0001_T.tiff" in exiftool_cmd
+    assert any(a.endswith(image_name) for a in exiftool_cmd), f"El JPG origen {image_name} no está en el comando."
+    assert any(a.endswith("DJI_0001_T.tiff") for a in exiftool_cmd), "El TIFF destino no está en el comando."
 
 
 # --- 3. CSV _Videofiles con columnas ['New Name','Original Name','Degree'] --

@@ -38,6 +38,7 @@ import pandas as pd
 import PIL
 import PIL.Image
 from PIL import Image
+import matplotlib
 from matplotlib import cm
 
 import utils  # acceso diferido (utils.X) para evitar ciclo de import con utils.py, que hace `import pipeline`.
@@ -98,6 +99,21 @@ _LUT_SIZE = 1024
 _LUT_CACHE: dict[str, np.ndarray] = {}
 
 
+def _get_cmap(colormap_name: str):
+    """El colormap por nombre, sirva la matplotlib que sirva.
+
+    `matplotlib.cm.get_cmap` estaba deprecado desde la 3.7 y lo BORRARON en la 3.9.
+    requirements*.txt pinnea la 3.8.0, así que hoy no revienta en producción, pero
+    cualquier entorno con una matplotlib más nueva (el venv de tests, ya) se lleva
+    un AttributeError en cuanto se piden imágenes con colormap. `matplotlib.colormaps`
+    es la API nueva (3.5+); el fallback cubre las viejas.
+    """
+    try:
+        return matplotlib.colormaps[colormap_name]
+    except AttributeError:
+        return cm.get_cmap(colormap_name)
+
+
 def _get_thermal_lut(colormap_name: str) -> np.ndarray:
     """LUT uint8 (1024, 3) precomputada una sola vez por nombre de colormap.
     Usa bin edges izquierdos (endpoint=False): matplotlib cuantiza sus colormaps
@@ -108,7 +124,7 @@ def _get_thermal_lut(colormap_name: str) -> np.ndarray:
     """
     lut = _LUT_CACHE.get(colormap_name)
     if lut is None:
-        lut = (cm.get_cmap(colormap_name)(np.linspace(0, 1, _LUT_SIZE, endpoint=False))[:, :3] * 255).astype(np.uint8)
+        lut = (_get_cmap(colormap_name)(np.linspace(0, 1, _LUT_SIZE, endpoint=False))[:, :3] * 255).astype(np.uint8)
         _LUT_CACHE[colormap_name] = lut
     return lut
 
@@ -2283,7 +2299,22 @@ class SplitImages:
             # self.organizer_logger.logger.info("La carpeta de Miniaturas es: {0}".format(miniaturas_folder))
             try:
                 df_pb_csv = pd.read_csv(os.path.join(miniaturas_folder, pb_v_name + "_Videofiles.csv"))
-                degree = int(df_pb_csv["Degree"][0])
+                # El CSV puede existir y estar VACÍO (solo cabecera): pasa cuando el paso
+                # de miniaturas se fue por la rama "hay demasiadas imágenes que no rotan
+                # igual" y no escribió ninguna fila. Ahí `df["Degree"][0]` lanzaba KeyError,
+                # que no captura el `except FileNotFoundError` de abajo, y reventaba la
+                # conversión de CADA imagen del vuelo sin decir por qué. Sin fila no hay
+                # criterio: no se rota, pero se dice en el log.
+                if df_pb_csv.empty or "Degree" not in df_pb_csv.columns:
+                    progress_callback.emit(
+                        "\nEl criterio de giro ({0}) está vacío: el paso de miniaturas no llegó a "
+                        "decidir un ángulo para este vuelo. El TIFF se genera SIN rotar.\n".format(
+                            pb_v_name + "_Videofiles.csv"))
+                    self.organizer_logger.logger.warning(
+                        f"{pb_v_name}_Videofiles.csv sin filas: no hay Degree que aplicar, TIFF sin rotar.")
+                    degree = 0
+                else:
+                    degree = int(df_pb_csv["Degree"][0])
                 # self.organizer_logger.logger.info("Degree: {0}".format(degree))
                 if (degree == 90):
                     arr = np.rot90(arr, 1, (1,0)) # Clockwise
@@ -2291,12 +2322,14 @@ class SplitImages:
                 elif (degree == 270):
                     arr = np.rot90(arr, 1, (0,1)) # Counterclockwise
                     array_to_normalize = np.rot90(array_to_normalize, 1, (0,1)) # Counterclockwise
-            except FileNotFoundError as file_not_found:
+            # EmptyDataError = el CSV existe pero tiene 0 bytes (ni cabecera). Mismo
+            # desenlace que si faltara: no hay criterio, no se rota, y se avisa.
+            except (FileNotFoundError, pd.errors.EmptyDataError) as file_not_found:
                 self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
                 self.organizer_logger.logger.error(file_not_found.__str__)
                 self.organizer_logger.logger.exception(file_not_found)
                 self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-                progress_callback.emit("\nNo existe el archivo {0}. No se rota la imagen.\n".format(pb_v_name + "_Videofiles.csv"))
+                progress_callback.emit("\nNo se pudo leer el criterio de giro {0}. No se rota la imagen.\n".format(pb_v_name + "_Videofiles.csv"))
                 self._register_image_error(os.path.join(miniaturas_folder, pb_v_name + "_Videofiles.csv"))
 
         if generate_gray_scale_images:

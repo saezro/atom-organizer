@@ -1,16 +1,19 @@
 import numpy as np
-from pipeline import apply_thermal_colormap
-from matplotlib import cm
+from pipeline import apply_thermal_colormap, _get_cmap
 
 
 def _reference_colormap(array, temp_min, temp_max, name="inferno"):
-    """Implementación de referencia (la vieja, get_cmap continuo) para comparar fidelidad."""
+    """Implementación de referencia (colormap continuo, sin LUT) para comparar fidelidad.
+
+    Usa el mismo `_get_cmap` que el pipeline: `cm.get_cmap` desapareció en
+    matplotlib 3.9 y hacía fallar este test en cualquier entorno moderno.
+    """
     clipped = np.clip(array, temp_min, temp_max)
     if temp_max > temp_min:
         normalized = (clipped - temp_min) / (temp_max - temp_min)
     else:
         normalized = np.zeros_like(clipped)
-    rgba = cm.get_cmap(name)(normalized)
+    rgba = _get_cmap(name)(normalized)
     return (rgba[..., :3] * 255).astype(np.uint8)
 
 
