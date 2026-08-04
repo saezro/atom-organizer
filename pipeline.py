@@ -2123,10 +2123,17 @@ class SplitImages:
                     # stdout/stderr, pero stdin seguía heredándose: DEVNULL le da uno
                     # válido en vez de un handle muerto.
                     stdin=subprocess.DEVNULL,
-                    # El conversor resuelve sus dependencias (libdirp.dll, libv_*.dll,
-                    # libv_list.ini) relativas al directorio de trabajo. Con el CWD de la
-                    # app instalada no las encuentra y aborta sin escribir el .raw. Con
-                    # cwd = carpeta del dron, las tiene todas al lado.
+                    # cwd = carpeta del dron. Es lo correcto (libdirp.dll lee
+                    # `libv_list.ini` por nombre relativo, o sea contra el CWD, para
+                    # saber qué libv_*.dll cargar), pero que quede claro que NO era la
+                    # causa del fallo de LA_ISLA, aunque el commit que lo introdujo lo
+                    # diera por hecho: con este cwd el SDK arranca bien y aun asi falla.
+                    # Log de la corrida del 2026-08-04 15:12 ya con 3.2.6:
+                    #     DIRP API version number : 0x13          <- el SDK carga OK
+                    #     ERROR: create R-JPEG dirp handle failed  <- y RECHAZA la imagen
+                    # es decir, dirp_create_from_rjpeg devuelve -16 (0xFFFFFFF0) sobre un
+                    # M2EA autodetectado correctamente. El problema esta en la imagen que
+                    # le llega, no en como se invoca. Sin cerrar: ver [[ATOM Organizer]].
                     cwd=os.path.dirname(dji_utility) or None,
                     creationflags=0x08000000,  # CREATE_NO_WINDOW: sin parpadeo de consola
                 )
