@@ -27,6 +27,7 @@ import tempfile
 import threading
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 REPO = "saezro/atom-organizer"
@@ -155,6 +156,28 @@ _INNO_EXIT = {
 }
 
 
+def _install_log_path() -> Path:
+    """Dónde escribe Inno su `/LOG`.
+
+    En la MISMA carpeta que los logs de corrida (`%APPDATA%\\ATOM-Organizer\\Logs`),
+    no en %TEMP%. Es deliberado: esa carpeta es la que el usuario ya sabe abrir y
+    la que nos manda cuando algo falla, así que el log de la instalación llega
+    solo, sin ningún mecanismo extra de recogida. Y sobrevive a la instalación:
+    el proceso que lo escribe es el instalador, no la app (a la que Inno mata).
+    """
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    name = f"atom-organizer-install_{ts}.log"
+    try:
+        from external_tools import user_log_dir
+
+        d = Path(user_log_dir())
+        d.mkdir(parents=True, exist_ok=True)
+        return d / name
+    except Exception:
+        # Peor sitio, pero mejor que no tener log.
+        return Path(tempfile.gettempdir()) / "atom-organizer-update" / name
+
+
 def install(path: str, on_failure=None) -> dict:
     """Lanza el instalador en silencio y deja que cierre/reabra la app.
 
@@ -170,6 +193,16 @@ def install(path: str, on_failure=None) -> dict:
                               Manager ya no la revive: de relanzarla se encarga la entrada
                               [Run] con `Check: WizardSilent` del .iss.
       /NORESTART              nunca reiniciar Windows
+      /LOG="<ruta>"           deja el log de la instalación en la carpeta de logs.
+
+    Sobre el `/LOG` (2026-08-04): sin él la instalación era una caja negra —
+    exactamente el mismo agujero que tenía el conversor DJI. Cuando a Daniel le
+    saltó el modal y la app no volvió a abrirse, no hubo forma de saber si la
+    instalación había ido bien y sólo falló el relanzado, o si había fallado
+    entera: `_watch` no sirve para eso, porque cuando la instalación va bien esta
+    app está muerta antes de poder informar de nada. El log lo escribe el
+    instalador, así que sobrevive a la app y dice si la entrada [Run] llegó a
+    ejecutarse.
 
     `on_failure(codigo, mensaje)` — opcional — se llama desde un hilo si el
     instalador termina con un código != 0. Sólo llega si el proceso sigue vivo
@@ -181,11 +214,13 @@ def install(path: str, on_failure=None) -> dict:
     exe = Path(path)
     if not exe.exists():
         return {"ok": False, "error": "No se encuentra el instalador descargado."}
+    log_path = _install_log_path()
     try:
         creationflags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
         proc = subprocess.Popen(
             [str(exe), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS",
-             "/FORCECLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS", "/NORESTART"],
+             "/FORCECLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS", "/NORESTART",
+             f"/LOG={log_path}"],
             close_fds=True,
             creationflags=creationflags,
             cwd=str(exe.parent),
@@ -194,11 +229,12 @@ def install(path: str, on_failure=None) -> dict:
         return {"ok": False, "error": f"No se pudo lanzar el instalador: {exc}"}
 
     if on_failure is not None:
-        threading.Thread(target=_watch, args=(proc, on_failure), daemon=True).start()
-    return {"ok": True}
+        threading.Thread(target=_watch, args=(proc, on_failure, str(log_path)),
+                         daemon=True).start()
+    return {"ok": True, "log": str(log_path)}
 
 
-def _watch(proc: "subprocess.Popen", on_failure) -> None:
+def _watch(proc: "subprocess.Popen", on_failure, log_path: str = "") -> None:
     try:
         code = proc.wait()
     except Exception:
@@ -206,6 +242,8 @@ def _watch(proc: "subprocess.Popen", on_failure) -> None:
     if code == 0:
         return
     msg = _INNO_EXIT.get(code, f"El instalador terminó con el código {code}.")
+    if log_path:
+        msg = f"{msg} Detalle en {log_path}"
     try:
         on_failure(code, msg)
     except Exception:

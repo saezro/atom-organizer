@@ -61,10 +61,22 @@ export default function UpdateModal() {
           </div>
         )}
 
+        {/* Nada de prometer el reinicio como un hecho: la reapertura la hace la
+            entrada [Run] del instalador y en la corrida de Daniel (2026-08-04) no
+            ocurrió. Decir «volverá a abrirse solo» y que no pase deja al usuario
+            creyendo que la actualización falló. Se avisa del plan B. */}
         {phase === 'ready' && (
-          <p className="up-sub">Descarga completa. Al instalar, ATOM Organizer se cerrará y volverá a abrirse solo.</p>
+          <p className="up-sub">
+            Descarga completa. Al instalar, ATOM Organizer se cerrará y debería volver
+            a abrirse solo. Si no lo hace, ábrelo desde el acceso directo de siempre.
+          </p>
         )}
-        {phase === 'installing' && <p className="up-sub">Instalando… la aplicación se reiniciará.</p>}
+        {phase === 'installing' && (
+          <p className="up-sub">
+            Instalando… ATOM Organizer se cerrará. Si no vuelve a abrirse solo en unos
+            segundos, ábrelo desde el acceso directo de siempre.
+          </p>
+        )}
         {phase === 'error' && <p className="pm-status err">✗ {error}</p>}
 
         {!info.can_install && (
