@@ -3,8 +3,11 @@
  Proposito: Programa que integra diferentes funcionalidades para trabajar con
             la información generada en los vuelos.
 
- Autor original:  Manuel Álvarez Souto (2023, hasta la 2.1.5)
- Mantenimiento:   Rodrigo Sáez Escobar — Aerotools-UAV (desde 2026, v3.x)
+ Versión 1.x-2.1.5 (2023):  Manuel Álvarez Souto
+ Versión 3.x (2026- ):      Rodrigo Sáez Escobar — Aerotools-UAV
+                            Rediseño y desarrollo: nueva interfaz webview,
+                            pipeline de rotación, conversor DJI, empaquetado
+                            multiplataforma y actualizador automático.
 
  Creado:     2023
  Copyright:  (c) 2023-2026. All rights reserved. Aerotools-UAV
