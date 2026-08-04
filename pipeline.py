@@ -1241,7 +1241,7 @@ class GenStructFolder:
                         self.send_progress_to_bar(progress_bar, progress_callback)
                         
                         # gimbal_yaw = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder,image))[0]
-                        cropped_images = self.compress_image_obj.rotate_and_save(image, input_folder, os.path.join(input_folder, os.path.basename(input_folder) + "_miniaturas"), Image.ROTATE_90, 45, os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", rgb_processing, os.path.join(self.miniaturas_root_folder, os.path.basename(input_folder) + "_miniaturas"),progress_callback)
+                        cropped_images = self.compress_image_obj.rotate_and_save(image, input_folder, os.path.join(input_folder, os.path.basename(input_folder) + "_miniaturas"), Image.ROTATE_270, 45, os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", rgb_processing, os.path.join(self.miniaturas_root_folder, os.path.basename(input_folder) + "_miniaturas"),progress_callback)
                         if(cropped_images):
                             self.send_progress_to_bar(progress_bar, progress_callback) # Si hay imágenes recortadas, contamos una más
                         df_videofiles.loc[len(df_videofiles)] = {"New Name": os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", "Original Name": image, "Degree": 90}
@@ -1360,7 +1360,10 @@ class GenStructFolder:
                     if (cropped_images):
                         self.send_progress_to_bar(progress_bar, progress_callback)
 
-                    df_videofiles.loc[len(df_videofiles)] = {"New Name": os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", "Original Name": image, "Degree": 270}
+                    # El Degree tiene que reflejar lo que se acaba de rotar: es lo que lee
+                    # después el criterio de giro del TIFF. Escribir 270 fijo hacía que un
+                    # vuelo rotado a mano 90 girase el TIFF al revés.
+                    df_videofiles.loc[len(df_videofiles)] = {"New Name": os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", "Original Name": image, "Degree": 90 if rotation_value_90 else 270}
 
                 if not rgb_processing:  # Comprobamos que procesamos térmicas
                     for file in os.listdir(input_folder):
