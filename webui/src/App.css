@@ -612,6 +612,16 @@
 .pf-table td {
   color: var(--text);
 }
+/* Vuelo cuyo final es anterior al inicio (cruza medianoche): el pipeline
+   construye la ventana con la misma fecha y no le entra ninguna imagen.
+   Selector con `tbody tr` para ganar al rayado de :nth-child(even). */
+.pf-table tbody tr.pf-row-warn {
+  background: rgba(240, 173, 78, 0.14);
+}
+.pf-warn {
+  color: #f0ad4e;
+  cursor: help;
+}
 .pf-actions {
   justify-content: space-between;
   gap: 0.8rem;
