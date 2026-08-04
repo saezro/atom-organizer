@@ -119,6 +119,31 @@ class HeadlessHost:
             backup_count=7,
             create_file_handler=False,
         )
+        # Sin handler de fichero, el logger es un agujero negro: el único handler que
+        # tiene es el QueueHandler, y el QueueListener que vacía esa cola solo arranca
+        # desde set_handlers(). Resultado en el producto real (webview, .exe sin
+        # consola): TODOS los organizer_logger.logger.error() del pipeline se quedaban
+        # en una queue.Queue(-1) que nadie consume -> ni llegan a disco ni a consola, y
+        # además se acumulan en memoria durante toda la corrida. Por eso los diagnósticos
+        # que se escriben ahí (p. ej. el código de salida del conversor DJI) no aparecían
+        # en ningún log que pedirle al usuario.
+        #
+        # Se crea en user_log_dir() -- la MISMA carpeta que ya usa el tee de run_task, que
+        # se sabe escribible -- y no el literal "Logs" relativo al CWD, que es lo que en su
+        # día reventaba con PermissionError. Si aun así falla, se sigue sin fichero: un
+        # logger mudo es malo, pero no debe impedir la corrida.
+        try:
+            # El StreamHandler que OrganizerLogger crea siempre apunta a sys.stderr, que
+            # en un .exe congelado sin consola es None. Dejarlo activo cambiaría un logger
+            # mudo por uno que revienta en cada emit(), así que se retira antes de arrancar
+            # el listener: en ese entorno no hay consola a la que escribir de todas formas.
+            if getattr(sys, "stderr", None) is None and hasattr(log, "console_handler"):
+                del log.console_handler
+            log.create_file_handler()
+            log.set_formatter()
+            log.set_handlers()  # fija niveles y arranca el QueueListener
+        except Exception:
+            pass
         self.organizer_logger_obj = log
         self.compress_image_obj = pipeline.CompressImage(log)
         self.meta_location_obj = meta_location.MetaLocation(log)

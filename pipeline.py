@@ -2100,17 +2100,36 @@ class SplitImages:
         # self.organizer_logger.logger.debug("Girar auto: {0}".format(auto_rotate))
 
         raw_path = os.path.join(input_folder, image_name + ".raw")
+        # Resultado de la invocación al conversor. Se arrastra hasta el punto donde se
+        # abre el .raw: si el fichero no aparece PERO el conversor devolvió 0, el fallo
+        # es silencioso y sin este dato no hay forma de distinguirlo de un fallo ruidoso.
+        dji_rc = None
+        dji_salida = ""
         if _is_windows():
             # dji_utility apunta a programas_externos/<dron>/dji_irp.exe
             subproceso = '"{0}" -s "{1}" -a measure --humidity {2} --emissivity {3} --measurefmt float32 -o "{4}"'.format(
                 dji_utility, os.path.join(input_folder, image_name), humidity, emissivity, raw_path)
             # Se captura el resultado: si dji_irp.exe falla, el único síntoma era un .raw
             # que no aparece ("Posible error del conversor DJI") y el motivo real (DLL que
-            # falta, permisos, disco lleno, argumento rechazado) se perdía. Con el código de
-            # salida y stderr en el log de corrida el fallo es diagnosticable sin la máquina
-            # delante. No se aborta aquí: el flujo de abajo ya trata el .raw ausente.
+            # falta, permisos, disco lleno, argumento rechazado) se perdía. No se aborta
+            # aquí: el flujo de abajo ya trata el .raw ausente.
             try:
-                proc = subprocess.run(subproceso, capture_output=True, text=True, errors="replace")
+                proc = subprocess.run(
+                    subproceso,
+                    capture_output=True, text=True, errors="replace",
+                    # dji_irp.exe es un binario de CONSOLA y la app se congela sin
+                    # consola (atom_organizer_webview.spec: console=False), así que los
+                    # handles estándar que hereda son inválidos. capture_output ya cubre
+                    # stdout/stderr, pero stdin seguía heredándose: DEVNULL le da uno
+                    # válido en vez de un handle muerto.
+                    stdin=subprocess.DEVNULL,
+                    # El conversor resuelve sus dependencias (libdirp.dll, libv_*.dll,
+                    # libv_list.ini) relativas al directorio de trabajo. Con el CWD de la
+                    # app instalada no las encuentra y aborta sin escribir el .raw. Con
+                    # cwd = carpeta del dron, las tiene todas al lado.
+                    cwd=os.path.dirname(dji_utility) or None,
+                    creationflags=0x08000000,  # CREATE_NO_WINDOW: sin parpadeo de consola
+                )
             except FileNotFoundError:
                 # El .exe del dron no está donde se espera (instalación incompleta o
                 # selector de dron apuntando a una carpeta que no existe).
@@ -2120,11 +2139,20 @@ class SplitImages:
                     f"\nERROR: No se encuentra el conversor DJI en {dji_utility}.\n")
                 self._register_image_error(os.path.join(input_folder, image_name))
                 return
-            if proc.returncode != 0:
-                salida = (proc.stderr or proc.stdout or "").strip()
+            dji_rc = proc.returncode
+            dji_salida = (proc.stderr or proc.stdout or "").strip()[:300]
+            if dji_rc != 0:
                 self.organizer_logger.logger.error(
                     f"El conversor DJI ha fallado con {os.path.join(input_folder, image_name)}: "
-                    f"código {proc.returncode}. Salida: {salida!r}")
+                    f"código {dji_rc}. Salida: {dji_salida!r}")
+                # En la ruta webview el organizer_logger NO tiene handler de fichero
+                # (atom_core/organize.py, create_file_handler=False): lo que se escribe
+                # ahí no llega a ningún sitio. El único canal que acaba en el log de
+                # corrida en disco es progress_callback, así que el motivo va también
+                # por aquí o se pierde igual que antes.
+                progress_callback.emit(
+                    "\nEl conversor DJI ha fallado con {0}: código {1}. Salida: {2}\n".format(
+                        image_name, dji_rc, dji_salida or "(vacía)"))
         else:
             # En Linux no hay ejecutable dji_irp: usamos libdirp.so vía ctypes.
             # Las librerías del SDK viven junto al .exe teórico -> carpeta del dron.
@@ -2164,7 +2192,12 @@ class SplitImages:
         try:
             f = open(os.path.join(input_folder, image_name + ".raw"), "rb")
         except FileNotFoundError as file_not_found:
-            progress_callback.emit("\nNo existe el archivo {0}. Posible error del conversor DJI.\n".format(os.path.join(input_folder, image_name + ".raw")))
+            # El rc va en el mensaje: un .raw ausente con rc == 0 significa que el
+            # conversor se dio por bueno sin escribir nada (fallo silencioso), y eso
+            # apunta a un sitio muy distinto que un rc != 0.
+            _diag = "" if dji_rc is None else " [conversor: código {0}; salida: {1}]".format(
+                dji_rc, dji_salida or "(vacía)")
+            progress_callback.emit("\nNo existe el archivo {0}. Posible error del conversor DJI.{1}\n".format(os.path.join(input_folder, image_name + ".raw"), _diag))
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
             self.organizer_logger.logger.error(f"No existe el archivo {os.path.join(input_folder, image_name + '.raw')}. Posible error del conversor DJI.")
             self.organizer_logger.logger.exception(file_not_found.__str__)
