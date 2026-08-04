@@ -24,6 +24,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -139,15 +140,41 @@ def download(url: str, expected_size: int = 0, progress=None) -> dict:
     return {"ok": True, "path": str(dest), "size": size}
 
 
-def install(path: str) -> dict:
+# Códigos de salida de Inno Setup que conviene traducir. El 5 es el que salía
+# siempre antes de /FORCECLOSEAPPLICATIONS: el Restart Manager no lograba cerrar
+# la app, Inno sacaba un Abort/Retry/Ignore y, suprimidos los mensajes, tomaba
+# el default (Abort) y cancelaba en silencio.
+_INNO_EXIT = {
+    1: "El instalador no pudo iniciarse (parámetros incorrectos).",
+    2: "La instalación se canceló antes de empezar.",
+    3: "Error fatal preparando la instalación.",
+    4: "Error fatal durante la instalación.",
+    5: "La instalación se canceló: no se pudo cerrar la aplicación en uso.",
+    6: "La instalación se detuvo por un cierre de sesión de Windows.",
+    8: "Windows necesita reiniciarse para completar la instalación.",
+}
+
+
+def install(path: str, on_failure=None) -> dict:
     """Lanza el instalador en silencio y deja que cierre/reabra la app.
 
     Flags Inno Setup:
-      /VERYSILENT          sin UI (salvo el UAC si lo hubiera; el instalador es per-user)
-      /SUPPRESSMSGBOXES    sin diálogos bloqueantes
-      /CLOSEAPPLICATIONS   cierra la instancia en marcha (la nuestra) para poder sustituir ficheros
-      /RESTARTAPPLICATIONS la vuelve a abrir al terminar
-      /NORESTART           nunca reiniciar Windows
+      /VERYSILENT             sin UI (salvo el UAC si lo hubiera; el instalador es per-user)
+      /SUPPRESSMSGBOXES       sin diálogos bloqueantes
+      /CLOSEAPPLICATIONS      cierra la instancia en marcha (la nuestra) para poder sustituir ficheros
+      /FORCECLOSEAPPLICATIONS mata las que no responden al cierre limpio. Sin esto,
+                              `QtWebEngineProcess` ignora al Restart Manager, Inno aborta
+                              con ExitCode 5 y la actualización NO se aplica (verificado
+                              en la VM de pruebas, 2026-08-04).
+      /RESTARTAPPLICATIONS    intenta reabrirla al terminar. Con force-close el Restart
+                              Manager ya no la revive: de relanzarla se encarga la entrada
+                              [Run] con `Check: WizardSilent` del .iss.
+      /NORESTART              nunca reiniciar Windows
+
+    `on_failure(codigo, mensaje)` — opcional — se llama desde un hilo si el
+    instalador termina con un código != 0. Sólo llega si el proceso sigue vivo
+    para verlo: cuando la instalación va bien, esta app muere antes. Un fallo
+    silencioso (la UI colgada en «Instalando…» para siempre) es peor que un error.
     """
     if platform.system() != "Windows":
         return {"ok": False, "error": "La instalación automática sólo está disponible en Windows."}
@@ -156,13 +183,30 @@ def install(path: str) -> dict:
         return {"ok": False, "error": "No se encuentra el instalador descargado."}
     try:
         creationflags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
-        subprocess.Popen(
+        proc = subprocess.Popen(
             [str(exe), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS",
-             "/RESTARTAPPLICATIONS", "/NORESTART"],
+             "/FORCECLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS", "/NORESTART"],
             close_fds=True,
             creationflags=creationflags,
             cwd=str(exe.parent),
         )
     except Exception as exc:
         return {"ok": False, "error": f"No se pudo lanzar el instalador: {exc}"}
+
+    if on_failure is not None:
+        threading.Thread(target=_watch, args=(proc, on_failure), daemon=True).start()
     return {"ok": True}
+
+
+def _watch(proc: "subprocess.Popen", on_failure) -> None:
+    try:
+        code = proc.wait()
+    except Exception:
+        return
+    if code == 0:
+        return
+    msg = _INNO_EXIT.get(code, f"El instalador terminó con el código {code}.")
+    try:
+        on_failure(code, msg)
+    except Exception:
+        pass

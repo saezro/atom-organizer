@@ -339,10 +339,17 @@ class Api:
 
     def install_update(self, path: str | None = None) -> dict:
         """Lanza el instalador silencioso. Él cierra esta instancia
-        (/CLOSEAPPLICATIONS) y la reabre al terminar (/RESTARTAPPLICATIONS)."""
+        (/FORCECLOSEAPPLICATIONS) y la reabre al terminar (entrada [Run] del .iss).
+
+        Si el instalador falla y esta instancia sigue viva, el aviso llega a la UI
+        por el mismo canal `atom:update`: sin esto el modal se quedaba en
+        «Instalando…» para siempre (el Popen es DETACHED y nadie miraba el código)."""
         from atom_core import updater
 
-        return updater.install(path or self._update_path or "")
+        def on_failure(code: int, msg: str) -> None:
+            self._push_update({"kind": "error", "text": f"No se pudo instalar: {msg}"})
+
+        return updater.install(path or self._update_path or "", on_failure=on_failure)
 
     def _push_update(self, detail: dict) -> None:
         if not self._window:

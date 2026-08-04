@@ -15,6 +15,9 @@
 ;    usuario no vería (la app se cierra durante el proceso).
 ;  - CloseApplications + RestartApplications: el Restart Manager cierra la
 ;    instancia en marcha para poder sustituir los ficheros, y la reabre al acabar.
+;    OJO: en el updater in-app va con /FORCECLOSEAPPLICATIONS porque el cierre
+;    limpio no funciona (QtWebEngineProcess lo ignora), y entonces el Restart
+;    Manager ya no reabre nada → la reapertura la hace la entrada [Run] silenciosa.
 
 #ifndef MyVersion
   #define MyVersion "0.0.0"
@@ -78,9 +81,14 @@ Name: "{group}\Desinstalar {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: desktopicon
 
 [Run]
-; Tras una instalación interactiva, ofrecer abrir. En modo /VERYSILENT no se
-; ejecuta: de reabrir la app se encarga /RESTARTAPPLICATIONS (Restart Manager).
+; Tras una instalación interactiva, ofrecer abrir (casilla al final del asistente).
 Filename: "{app}\{#MyAppExe}"; Description: "Abrir {#MyAppName}"; Flags: nowait postinstall skipifsilent
+; En modo silencioso (updater in-app) hay que relanzarla a mano: el updater usa
+; /FORCECLOSEAPPLICATIONS y el Restart Manager, tras matar los procesos a la
+; fuerza, ya NO los revive con /RESTARTAPPLICATIONS (verificado en la VM,
+; 2026-08-04: instalaba bien pero la app no volvía). `WizardSilent` acota esta
+; entrada a /SILENT y /VERYSILENT, para no abrirla dos veces en la interactiva.
+Filename: "{app}\{#MyAppExe}"; Flags: nowait runasoriginaluser; Check: WizardSilent
 
 [UninstallDelete]
 ; Restos del updater (instaladores descargados en %TEMP%)
