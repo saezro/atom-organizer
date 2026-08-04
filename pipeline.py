@@ -1065,6 +1065,22 @@ class GenStructFolder:
         - progress_callback - Callback (los signals) que envían, mediante un emit(), información de texto desde el hilo correspondiente.
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
         """
+        # Los umbrales llegan calculados como (90 + add_to_angle, 90 - subs_to_angle) y
+        # (-90 + add_to_angle, -90 - subs_to_angle), y se comparan con `<` ESTRICTO. Con los
+        # márgenes a 0 -- que es el valor por defecto del formulario -- el intervalo queda
+        # lim_min == lim_max, o sea VACÍO: ningún yaw puede caer dentro, los contadores salen
+        # 0 y 0, y todo el vuelo se va por la rama "no se deben rotar". El usuario ve que no
+        # se gira NADA y el log dice "OK", sin una sola pista de por qué. Pasó exactamente eso
+        # en las cuatro corridas del 2026-08-04. Avisamos antes de procesar nada.
+        if rotation_mode_auto and (lim_min_90 >= lim_max_90 or lim_min_270 >= lim_max_270):
+            aviso = ("\nAVISO: el margen de yaw es 0, así que NINGUNA imagen puede cumplir el "
+                     "criterio de giro y no se rotará nada. Sube «Margen Yaw +» y «Margen Yaw −» "
+                     "antes de lanzar el proceso.\n")
+            self.organizer_logger.logger.warning(
+                f"Margen de yaw vacío: 90 in ({lim_min_90}, {lim_max_90}) y -90 in ({lim_min_270}, {lim_max_270}) "
+                "-> ninguna imagen puede rotar.")
+            progress_callback.emit(aviso)
+
         list_dir = os.listdir(input_folder)
         self.root_folder = input_folder  # Almacenamos el input_folder, que puede ser cualquiera.
         self.miniaturas_root_folder = os.path.join(self.root_folder, "MINIATURAS") # Almacenamos el path de MINIATURAS.

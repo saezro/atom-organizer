@@ -352,7 +352,21 @@ def run_task(
         # colisiones entre procesos que operan sobre los MISMOS ficheros.
         _ctx = {k: params.get(k) for k in ("origen", "destino", "input_folder",
                                            "estadillo", "dron_selector") if k in params}
-        _run_log.write(f"[run] pid={os.getpid()} task={task} ctx={_ctx}\n")
+        # La versión va en la cabecera porque sin ella un log no es diagnosticable:
+        # el 2026-08-04 hubo que deducir a mano si una corrida era 3.2.5 o 3.2.6
+        # buscando qué mensajes de error existían en cada commit.
+        try:
+            from version import __version__ as _app_version
+        except Exception:
+            _app_version = "desconocida"
+        _run_log.write(f"[run] version={_app_version} pid={os.getpid()} task={task} ctx={_ctx}\n")
+        # Y los AJUSTES con los que se lanzó: los umbrales de rotación (márgenes de
+        # yaw y max_error) deciden si se rota o no, y sin verlos en el log es
+        # imposible distinguir "el criterio no dispara" de "el usuario dejó los
+        # campos a 0". Se excluyen las rutas, que ya van en ctx.
+        _settings = {k: v for k, v in params.items()
+                     if k not in _ctx and not isinstance(v, (bytes, bytearray))}
+        _run_log.write(f"[params] {_settings}\n")
         _run_log.flush()
     except Exception:
         _run_log = None
