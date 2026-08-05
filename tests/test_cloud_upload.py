@@ -156,7 +156,7 @@ class StaticProvider(cu.UrlProvider):
     def __init__(self):
         self.calls: list[tuple[str, int]] = []
 
-    def signed_url(self, remote: str, size: int) -> str:
+    def upload_url(self, remote: str, size: int) -> str:
         self.calls.append((remote, size))
         return f"https://fake/upload/{remote.replace('/', '_')}?sig=x"
 
@@ -503,7 +503,7 @@ def test_el_proveedor_manda_el_token_y_no_guarda_credenciales_de_gcs(monkeypatch
 
     monkeypatch.setattr(cu.urllib.request, "urlopen", _fake)
 
-    url = cu.SignedUrlProvider("https://api/firma", "tok123").signed_url("a/b.jpg", 42)
+    url = cu.SignedUrlProvider("https://api/firma", "tok123").upload_url("a/b.jpg", 42)
 
     assert url == "https://firmada"
     assert capturado["auth"] == "Bearer tok123"
@@ -514,4 +514,4 @@ def test_el_proveedor_falla_claro_si_el_endpoint_no_devuelve_url(monkeypatch):
     monkeypatch.setattr(cu.urllib.request, "urlopen",
                         lambda req, timeout=None: _Resp(200, body=b'{"error":"no"}'))
     with pytest.raises(RuntimeError, match="no devolvió URL"):
-        cu.SignedUrlProvider("https://api/firma", "tok").signed_url("a.jpg", 1)
+        cu.SignedUrlProvider("https://api/firma", "tok").upload_url("a.jpg", 1)

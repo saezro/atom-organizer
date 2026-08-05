@@ -15,8 +15,10 @@ más la robustez de la transferencia que cualquier microoptimización:
     disco: si se cierra la app a mitad, al reabrirla continúa donde iba.
   - **Sin credenciales en el cliente.** Una service account key dentro del
     `.exe` es escritura en el bucket para cualquiera que lo abra con un editor
-    hexadecimal. El cliente pide **signed URLs** a un endpoint (`UrlProvider`);
-    quien firma es el backend, que sí tiene la SA.
+    hexadecimal. Quien autoriza es una identidad **del usuario**, vía
+    `UrlProvider`: por defecto `GcsOAuthProvider`, que usa el login con Google
+    (`google_auth`) y deja el permiso en manos de IAM sobre el bucket. Queda
+    `SignedUrlProvider` para el día en que haga falta un backend firmando.
   - **Solo stdlib.** Misma razón que en `updater.py`: `requests` y
     `google-cloud-storage` engordarían el bundle de PyInstaller sin aportar
     nada que `urllib` no haga.
@@ -26,9 +28,13 @@ más la robustez de la transferencia que cualquier microoptimización:
 
 Uso típico::
 
+    auth = GoogleAuth(CLIENT_ID, CLIENT_SECRET, hosted_domain="aerotools.es")
+    if not auth.is_logged_in():
+        auth.login()
+
     plan = build_plan(Path(r"D:/Vuelos/ANTOLIN"), prefix="vuelos/antolin")
-    provider = SignedUrlProvider("https://api.aerotools.example/upload-url", token)
-    result = upload_plan(plan, provider, on_progress=print)
+    result = upload_plan(plan, GcsOAuthProvider("aerotools-vuelos", auth),
+                         on_progress=print)
     if not result.ok:
         ...  # result.failed trae (ruta, error) por fichero
 """
@@ -53,6 +59,7 @@ __all__ = [
     "UploadPlan",
     "UploadResult",
     "UrlProvider",
+    "GcsOAuthProvider",
     "SignedUrlProvider",
     "build_plan",
     "upload_plan",
@@ -158,15 +165,72 @@ def build_plan(root: Path, prefix: str = "", *,
 # --------------------------------------------------------------------------
 
 class UrlProvider:
-    """Devuelve una URL firmada con permiso de escritura para un objeto.
+    """De dónde sale el permiso para escribir un objeto en el bucket.
 
-    Se deja como interfaz a propósito: el backend que firma todavía no existe,
-    y así el resto del módulo no depende de cómo acabe siendo (Cloud Function,
-    endpoint del server de Aerotools, o una SA local en desarrollo).
+    Hay dos formas de autorizar la subida y el resto del módulo no distingue:
+
+    - **`GcsOAuthProvider`** — el usuario se ha identificado con Google y el
+      permiso lo pone IAM sobre el bucket. No hace falta backend.
+    - **`SignedUrlProvider`** — un servicio propio firma cada objeto. Más
+      control (puede imponer rutas o cuotas), a cambio de mantenerlo.
     """
 
-    def signed_url(self, remote: str, size: int) -> str:  # pragma: no cover
+    def upload_url(self, remote: str, size: int) -> str:  # pragma: no cover
+        """URL a la que abrir la sesión resumable."""
         raise NotImplementedError
+
+    def headers(self) -> dict[str, str]:
+        """Cabeceras de autorización, pedidas **en cada petición**.
+
+        No se cachean a propósito: un access token de Google vive 1 h y una
+        subida grande dura más que eso.
+        """
+        return {}
+
+    def recover_auth(self) -> bool:
+        """Intenta recuperar la autorización tras un 401/403.
+
+        Devuelve True si con eso basta y la sesión resumable en curso sigue
+        sirviendo (caso OAuth: solo había caducado el token, y los bytes ya
+        confirmados en GCS siguen ahí). False si hay que abrir sesión nueva.
+        """
+        return False
+
+
+class GcsOAuthProvider(UrlProvider):
+    """Autoriza con la cuenta de Google del usuario (ver `google_auth`).
+
+    Se usa la XML API de Cloud Storage (`https://storage.googleapis.com/
+    <bucket>/<objeto>`) porque acepta el mismo protocolo resumable que las
+    signed URLs: así hay un único camino de código para las dos formas de
+    autorizar, y el que se ejercita en los tests es el que corre en producción.
+
+    Quién puede subir se decide **fuera de la app**, en el IAM del bucket
+    (`roles/storage.objectCreator` al grupo de Google que toque). Revocar a
+    alguien no exige publicar versión.
+    """
+
+    BASE = "https://storage.googleapis.com"
+
+    def __init__(self, bucket: str, auth, *, base: str | None = None):
+        if not bucket:
+            raise ValueError("falta el nombre del bucket")
+        self.bucket = bucket
+        self.auth = auth
+        self.base = (base or self.BASE).rstrip("/")
+
+    def upload_url(self, remote: str, size: int) -> str:
+        objeto = urllib.parse.quote(remote.lstrip("/"), safe="/")
+        return f"{self.base}/{self.bucket}/{objeto}"
+
+    def headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.auth.access_token()}"}
+
+    def recover_auth(self) -> bool:
+        # Fuerza el refresco; si el usuario revocó el acceso, `access_token`
+        # levanta AuthError y la subida falla con un mensaje que se entiende.
+        self.auth.access_token(force_refresh=True)
+        return True
 
 
 class SignedUrlProvider(UrlProvider):
@@ -183,7 +247,7 @@ class SignedUrlProvider(UrlProvider):
         self.token = token
         self.timeout = timeout
 
-    def signed_url(self, remote: str, size: int) -> str:
+    def upload_url(self, remote: str, size: int) -> str:
         payload = json.dumps({"object": remote, "size": size}).encode()
         req = urllib.request.Request(
             self.endpoint,
@@ -272,10 +336,11 @@ class Manifest:
 # Subida de un fichero (protocolo resumable de GCS)
 # --------------------------------------------------------------------------
 
-def _open_session(signed_url: str, content_type: str = "application/octet-stream") -> str:
+def _open_session(url: str, extra: dict[str, str] | None = None,
+                  content_type: str = "application/octet-stream") -> str:
     """Inicia la sesión resumable y devuelve la URI de sesión."""
     req = urllib.request.Request(
-        signed_url,
+        url,
         data=b"",
         method="POST",
         headers={
@@ -283,6 +348,7 @@ def _open_session(signed_url: str, content_type: str = "application/octet-stream
             "Content-Type": content_type,
             "Content-Length": "0",
             "User-Agent": USER_AGENT,
+            **(extra or {}),
         },
     )
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
@@ -292,7 +358,8 @@ def _open_session(signed_url: str, content_type: str = "application/octet-stream
     return location
 
 
-def _committed_offset(session_uri: str, total: int) -> int:
+def _committed_offset(session_uri: str, total: int,
+                      extra: dict[str, str] | None = None) -> int:
     """Pregunta a GCS cuántos bytes tiene ya confirmados.
 
     Es lo que permite reanudar: se manda un PUT vacío con `bytes */total` y
@@ -306,6 +373,7 @@ def _committed_offset(session_uri: str, total: int) -> int:
             "Content-Range": f"bytes */{total}",
             "Content-Length": "0",
             "User-Agent": USER_AGENT,
+            **(extra or {}),
         },
     )
     try:
@@ -324,7 +392,8 @@ def _committed_offset(session_uri: str, total: int) -> int:
         return int(rng.rsplit("-", 1)[1]) + 1
 
 
-def _put_chunk(session_uri: str, chunk: bytes, start: int, total: int) -> bool:
+def _put_chunk(session_uri: str, chunk: bytes, start: int, total: int,
+               extra: dict[str, str] | None = None) -> bool:
     """Sube un trozo. Devuelve True si con esto el objeto quedó completo."""
     if total == 0:
         # Objeto vacío: no hay rango que declarar. `bytes 0--1/0` sería lo que
@@ -341,6 +410,7 @@ def _put_chunk(session_uri: str, chunk: bytes, start: int, total: int) -> bool:
             "Content-Range": content_range,
             "Content-Length": str(len(chunk)),
             "User-Agent": USER_AGENT,
+            **(extra or {}),
         },
     )
     try:
@@ -400,14 +470,15 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
     for attempt in range(MAX_RETRIES):
         try:
             if session_uri is None:
-                session_uri = _open_session(provider.signed_url(item.remote, total))
+                session_uri = _open_session(provider.upload_url(item.remote, total),
+                                            provider.headers())
                 offset = 0
             else:
-                offset = _committed_offset(session_uri, total)
+                offset = _committed_offset(session_uri, total, provider.headers())
 
             if total == 0:
                 # Un fichero vacío se cierra con un PUT de longitud cero.
-                _put_chunk(session_uri, b"", 0, 0)
+                _put_chunk(session_uri, b"", 0, 0, provider.headers())
                 return _file_md5_b64(item.local)
 
             with open(item.local, "rb") as fh:
@@ -418,7 +489,9 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
                     chunk = fh.read(CHUNK_SIZE)
                     if not chunk:
                         break
-                    _put_chunk(session_uri, chunk, offset, total)
+                    # Las cabeceras se piden por trozo: en un fichero de varios
+                    # GB el token puede caducar entre el primero y el último.
+                    _put_chunk(session_uri, chunk, offset, total, provider.headers())
                     offset += len(chunk)
                     if on_bytes is not None:
                         on_bytes(len(chunk))
@@ -430,9 +503,16 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
         except Exception as exc:  # noqa: BLE001 - se reclasifica justo debajo
             if attempt == MAX_RETRIES - 1 or not _is_retryable(exc):
                 raise
-            # Una signed URL caducada da 403: hay que pedir otra, no reanudar.
             if _needs_new_session(exc):
-                session_uri = None
+                # 401/403: la autorización murió a mitad. Con OAuth basta
+                # refrescar el token y la sesión resumable sigue viva (los
+                # bytes confirmados en GCS no se pierden). Con signed URL hay
+                # que pedir otra y abrir sesión nueva.
+                try:
+                    if not provider.recover_auth():
+                        session_uri = None
+                except Exception:  # noqa: BLE001 - el error original manda
+                    session_uri = None
             time.sleep(delay)
             delay = min(delay * 2, 30)
 
