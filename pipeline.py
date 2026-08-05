@@ -1685,7 +1685,11 @@ class SplitImages:
                     continue
 
                 tiff_count = sum(1 for f in all_files if f.lower().endswith(".tiff"))
-                jpg_count = sum(1 for f in all_files if f.endswith(("JPG", "jpg", "JPEG", "jpeg")))
+                # Las copias giradas `_ROT` NO son originales que deban tener TIFF:
+                # contarlas daría un jpg_count del doble y un falso "no coinciden".
+                jpg_count = sum(1 for f in all_files
+                                if f.endswith(("JPG", "jpg", "JPEG", "jpeg"))
+                                and utils.ROTATED_JPG_SUFFIX not in f)
                 match = tiff_count == jpg_count
 
                 results[subfolder_path] = {
@@ -1948,7 +1952,11 @@ class SplitImages:
         """ 
         if os.path.basename(input_folder)== "Escala_de_grises": # Evito realizar el proceso dentro de esta carpeta, pues dará error.
             return
-        images = self.utils_obj.get_images_from_dir(input_folder)
+        # Se excluyen las copias giradas `_ROT` que escribe el paso posterior: en una
+        # corrida limpia todavía no existen, pero si se re-procesa una carpeta ya
+        # procesada intentaría convertirlas (son JPG normales, ya sin payload
+        # radiométrico -> fallo por imagen) y descuadraría `jpg_count == tiff_count`.
+        images = self.utils_obj.get_images_from_dir(input_folder, [utils.ROTATED_JPG_SUFFIX])
         
         # print(f"Procesando {len(images)} imágenes")
 
@@ -2120,6 +2128,165 @@ class SplitImages:
                 "Conversor térmico Linux falló (rc={0}) en {1}: {2}".format(
                     result.returncode, image_path, (result.stderr or "").strip()))
 
+    def write_rotated_jpg_copies(self, input_folder: str, progress_callback, progress_bar,
+                                 rotate_90: bool = False, rotate_minus_90: bool = False,
+                                 auto_rotate: bool = False) -> int:
+        """Escribe, junto a cada JPG térmico, una copia GIRADA `<nombre>_ROT.JPG`.
+
+        Por qué una copia y no girar el original: el `*_T.JPG` de DJI es un R-JPEG
+        con payload radiométrico propietario. Abrirlo y volver a guardarlo con PIL
+        lo destruye, y ese fichero ya no se puede convertir a TIFF nunca más. El
+        original queda intacto; lo girado es un derivado para vista.
+
+        Se llama DESPUÉS de la conversión a TIFF y de sus verificaciones, a
+        propósito: mientras el pipeline lista imágenes, estas copias todavía no
+        existen, así que no pueden colarse en ninguna conversión ni descuadrar el
+        recuento `jpg_count == tiff_count`. La exclusión por patrón `_ROT` de los
+        listados es la red por si se re-procesa una carpeta ya procesada.
+
+        Gira lo MISMO que giró el TIFF (mismo criterio, `read_auto_rotate_degree`),
+        para que el par TIFF/JPG case. Devuelve el número de copias escritas.
+
+        Arguments:
+        ---------
+        - input_folder - raíz de TERMICA; se recorre recursivamente.
+        - progress_callback - se devuelve información al hilo principal.
+        - progress_bar - porcentaje a la barra de progreso.
+        - rotate_90 / rotate_minus_90 / auto_rotate - mismos flags de la conversión.
+        """
+        if not (rotate_90 or rotate_minus_90 or auto_rotate):
+            return 0  # nada que girar: no tiene sentido duplicar los JPG
+        if not os.path.isdir(input_folder):
+            self.organizer_logger.logger.warning(
+                f"No se pueden escribir copias giradas: no existe {input_folder}")
+            return 0
+
+        escritas = 0
+        for ruta, _, _ in os.walk(input_folder):
+            if self.stop:
+                break
+            if os.path.basename(ruta) in ("Escala_de_grises", "Color_gradiente"):
+                continue
+            # Excluir las copias ya generadas: sin esto, una segunda pasada sobre
+            # la misma carpeta giraría los `_ROT` otra vez (y encadenaría
+            # `_ROT_ROT`), acumulando basura y girando de más.
+            images = self.utils_obj.get_images_from_dir(ruta, [utils.ROTATED_JPG_SUFFIX])
+            if not images:
+                continue
+
+            if auto_rotate:
+                degree = self.read_auto_rotate_degree(ruta, progress_callback)
+            elif rotate_90:
+                degree = 90
+            else:
+                degree = 270
+            if degree not in (90, 270):
+                continue  # sin criterio (0) no se gira: no se escribe copia
+
+            # PIL gira en sentido ANTIhorario, el criterio está en horario: 90º
+            # horario == ROTATE_270. Mismo mapeo que `rotate_tiff_images`; si
+            # divergiera, el JPG saldría del revés respecto a su TIFF.
+            transpose = Image.ROTATE_270 if degree == 90 else Image.ROTATE_90
+
+            progress_callback.emit(
+                "\nEscribiendo {0} copias giradas ({1}º) en el directorio {2}\n".format(
+                    len(images), degree, ruta))
+            for image in images:
+                if self.stop:
+                    break
+                escritas += self._write_one_rotated_jpg(ruta, image, transpose, progress_callback)
+
+        if escritas:
+            self.organizer_logger.logger.info(
+                f"Copias giradas escritas: {escritas} (sufijo {utils.ROTATED_JPG_SUFFIX}).")
+        return escritas
+
+    def _write_one_rotated_jpg(self, folder: str, image_name: str, transpose: int,
+                               progress_callback) -> int:
+        """Una copia girada. Devuelve 1 si se escribió, 0 si se omitió o falló.
+
+        Aísla los fallos por imagen igual que el resto del pipeline: una foto
+        corrupta no puede tumbar el vuelo entero, y menos en un paso accesorio
+        que corre DESPUÉS de que lo importante (el TIFF) ya esté en disco.
+        """
+        base, ext = os.path.splitext(image_name)
+        destino = os.path.join(folder, base + utils.ROTATED_JPG_SUFFIX + ext)
+        if os.path.exists(destino):
+            return 0  # ya estaba de una corrida anterior: no se re-escribe
+        origen = os.path.join(folder, image_name)
+        try:
+            with Image.open(origen) as image_open:
+                # El EXIF se arrastra a la copia: lleva la geolocalización y la
+                # fecha, que es justo lo que se consulta luego sobre estas fotos.
+                exif = image_open.info.get("exif")
+                girada = image_open.transpose(transpose)
+                if exif:
+                    girada.save(destino, exif=exif)
+                else:
+                    girada.save(destino)
+            return 1
+        except Exception as e:
+            self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
+            self.organizer_logger.logger.error(
+                "ERROR: no se pudo escribir la copia girada de {0}: {1}".format(origen, e))
+            self.organizer_logger.logger.exception(e)
+            self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
+            progress_callback.emit(
+                "ERROR: no se pudo escribir la copia girada de {0}.\n".format(origen))
+            self._register_image_error(destino)
+            return 0
+
+    def read_auto_rotate_degree(self, input_folder: str, progress_callback) -> int:
+        """Criterio de giro AUTO de un vuelo: 0, 90 o 270 grados (horario).
+
+        La decisión NO se recalcula aquí: la toma el paso de rotación y la deja
+        escrita en `MINIATURAS/<PBX_VXX>_miniaturas/<PBX_VXX>_Videofiles.csv`
+        (columna `Degree`). Este método es la ÚNICA lectura de ese criterio, para
+        que la conversión a TIFF y la copia girada del JPG no puedan divergir:
+        ambas tienen que girar lo mismo o el par TIFF/JPG deja de casar.
+
+        Sin criterio legible (CSV ausente, vacío o sin la columna) devuelve 0 —
+        no rotar — y lo dice; nunca revienta el vuelo.
+
+        Arguments:
+        ---------
+        - input_folder - carpeta del vuelo (dentro de TERMICA).
+        - progress_callback - se devuelve información al hilo principal.
+        """
+        if os.path.basename(input_folder) == "Seleccion_ATOM":
+            pb_v_name = os.path.basename(input_folder.rstrip("/\\").removesuffix("Seleccion_ATOM").rstrip("/\\"))
+        else:
+            pb_v_name = os.path.basename(input_folder)
+
+        miniaturas_folder = os.path.join(input_folder.split("TERMICA")[0].rstrip("/\\"), "MINIATURAS", pb_v_name + "_miniaturas")
+        try:
+            df_pb_csv = pd.read_csv(os.path.join(miniaturas_folder, pb_v_name + "_Videofiles.csv"))
+            # El CSV puede existir y estar VACÍO (solo cabecera): pasa cuando el paso
+            # de rotación se fue por la rama "hay demasiadas imágenes que no rotan
+            # igual" y no escribió ninguna fila. Ahí `df["Degree"][0]` lanzaba KeyError,
+            # que no captura el `except FileNotFoundError` de abajo, y reventaba la
+            # conversión de CADA imagen del vuelo sin decir por qué. Sin fila no hay
+            # criterio: no se rota, pero se dice en el log.
+            if df_pb_csv.empty or "Degree" not in df_pb_csv.columns:
+                progress_callback.emit(
+                    "\nEl criterio de giro ({0}) está vacío: el paso de rotación no llegó a "
+                    "decidir un ángulo para este vuelo. El TIFF se genera SIN rotar.\n".format(
+                        pb_v_name + "_Videofiles.csv"))
+                self.organizer_logger.logger.warning(
+                    f"{pb_v_name}_Videofiles.csv sin filas: no hay Degree que aplicar, TIFF sin rotar.")
+                return 0
+            return int(df_pb_csv["Degree"][0])
+        # EmptyDataError = el CSV existe pero tiene 0 bytes (ni cabecera). Mismo
+        # desenlace que si faltara: no hay criterio, no se rota, y se avisa.
+        except (FileNotFoundError, pd.errors.EmptyDataError) as file_not_found:
+            self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
+            self.organizer_logger.logger.error(file_not_found.__str__)
+            self.organizer_logger.logger.exception(file_not_found)
+            self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
+            progress_callback.emit("\nNo se pudo leer el criterio de giro {0}. No se rota la imagen.\n".format(pb_v_name + "_Videofiles.csv"))
+            self._register_image_error(os.path.join(miniaturas_folder, pb_v_name + "_Videofiles.csv"))
+            return 0
+
     def convert_dji_image_to_tif(self, input_folder: str, output_folder: str, image_name: str, exiftool_exe:str, dji_utility: str, progress_callback, progress_bar, emissivity: float = 0.9, humidity: float = 50.0, auto_temp = False, up_threshold_temperature = 20, low_threshold_temperature = 0, rotate_90: bool = False, rotate_minus_90: bool = False, auto_rotate: bool = False, just_atom_selection = False, generate_gray_scale_images: bool = False, generate_colormap_images: bool = False, defer_exif: bool = False):
         """
         Función que convierte la imagen JPG dada por el parámetro image_name a formato TIFF.
@@ -2286,54 +2453,13 @@ class SplitImages:
             arr = np.rot90(arr, 1, (0,1)) # Counterclockwise
             array_to_normalize = np.rot90(array_to_normalize, 1, (0,1)) # Counterclockwise
         elif auto_rotate:
-            # self.organizer_logger.logger.info("Estamos en Rotate AUTO")
-            # self.organizer_logger.logger.info("Input Folder es: {0}".format(input_folder))
-            # self.organizer_logger.logger.info("Output Folder es: {0}".format(output_folder))
-            if os.path.basename(input_folder) == "Seleccion_ATOM":
-                pb_v_name = os.path.basename(input_folder.rstrip("/\\").removesuffix("Seleccion_ATOM").rstrip("/\\"))
-                # self.organizer_logger.logger.info("La carpeta al procesarla es {0}".format(pb_v_name))
-            else:
-                pb_v_name = os.path.basename(input_folder)
-            # self.organizer_logger.logger.info("La carpeta es {0}".format(pb_v_name))
-
-            # self.organizer_logger.logger.info("La carpeta es {0}".format(input_folder))
-            # self.organizer_logger.logger.info("La carpeta truncada es {0}".format(input_folder.split("TERMICA")[0].rstrip("/\\")))
-            miniaturas_folder = os.path.join(input_folder.split("TERMICA")[0].rstrip("/\\"), "MINIATURAS", pb_v_name + "_miniaturas")
-            # self.organizer_logger.logger.info("La carpeta de Miniaturas es: {0}".format(miniaturas_folder))
-            try:
-                df_pb_csv = pd.read_csv(os.path.join(miniaturas_folder, pb_v_name + "_Videofiles.csv"))
-                # El CSV puede existir y estar VACÍO (solo cabecera): pasa cuando el paso
-                # de miniaturas se fue por la rama "hay demasiadas imágenes que no rotan
-                # igual" y no escribió ninguna fila. Ahí `df["Degree"][0]` lanzaba KeyError,
-                # que no captura el `except FileNotFoundError` de abajo, y reventaba la
-                # conversión de CADA imagen del vuelo sin decir por qué. Sin fila no hay
-                # criterio: no se rota, pero se dice en el log.
-                if df_pb_csv.empty or "Degree" not in df_pb_csv.columns:
-                    progress_callback.emit(
-                        "\nEl criterio de giro ({0}) está vacío: el paso de miniaturas no llegó a "
-                        "decidir un ángulo para este vuelo. El TIFF se genera SIN rotar.\n".format(
-                            pb_v_name + "_Videofiles.csv"))
-                    self.organizer_logger.logger.warning(
-                        f"{pb_v_name}_Videofiles.csv sin filas: no hay Degree que aplicar, TIFF sin rotar.")
-                    degree = 0
-                else:
-                    degree = int(df_pb_csv["Degree"][0])
-                # self.organizer_logger.logger.info("Degree: {0}".format(degree))
-                if (degree == 90):
-                    arr = np.rot90(arr, 1, (1,0)) # Clockwise
-                    array_to_normalize = np.rot90(array_to_normalize, 1, (1,0)) # Clockwise
-                elif (degree == 270):
-                    arr = np.rot90(arr, 1, (0,1)) # Counterclockwise
-                    array_to_normalize = np.rot90(array_to_normalize, 1, (0,1)) # Counterclockwise
-            # EmptyDataError = el CSV existe pero tiene 0 bytes (ni cabecera). Mismo
-            # desenlace que si faltara: no hay criterio, no se rota, y se avisa.
-            except (FileNotFoundError, pd.errors.EmptyDataError) as file_not_found:
-                self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-                self.organizer_logger.logger.error(file_not_found.__str__)
-                self.organizer_logger.logger.exception(file_not_found)
-                self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-                progress_callback.emit("\nNo se pudo leer el criterio de giro {0}. No se rota la imagen.\n".format(pb_v_name + "_Videofiles.csv"))
-                self._register_image_error(os.path.join(miniaturas_folder, pb_v_name + "_Videofiles.csv"))
+            degree = self.read_auto_rotate_degree(input_folder, progress_callback)
+            if (degree == 90):
+                arr = np.rot90(arr, 1, (1,0)) # Clockwise
+                array_to_normalize = np.rot90(array_to_normalize, 1, (1,0)) # Clockwise
+            elif (degree == 270):
+                arr = np.rot90(arr, 1, (0,1)) # Counterclockwise
+                array_to_normalize = np.rot90(array_to_normalize, 1, (0,1)) # Counterclockwise
 
         if generate_gray_scale_images:
             normalizedData = (array_to_normalize-np.min(array_to_normalize))/(np.max(array_to_normalize)-np.min(array_to_normalize))*255 # Normalizamos datos para grabar la imagen en escala de grises. Da igual si con auto_temp o no, ya que se ajusta a los datos del array.

@@ -678,6 +678,17 @@ ROTATION_YAW_MARGIN = 80
 # vuelo entero, porque basta con que su categoría sea la primera no vacía.
 ROTATION_MIN_AGREEMENT_PCT = 50
 
+# Sufijo de la copia GIRADA del JPG térmico, que se escribe junto a su TIFF
+# (decisión de Cas 2026-08-05). El `*_T.JPG` original es un R-JPEG propietario de
+# DJI: si PIL lo re-encoda se pierde el payload radiométrico y ya no se puede
+# volver a convertir a TIFF nunca más. Por eso la rotación va a una copia APARTE
+# y el original no se toca.
+#
+# Mismo idioma que el `_CROP` del recorte RGB, y por el mismo motivo: los
+# listados del pipeline lo excluyen por patrón para no re-procesar lo que él
+# mismo generó (`get_images_from_dir(..., ["_ROT"])`).
+ROTATED_JPG_SUFFIX = "_ROT"
+
 
 def sane_rotation_criteria(add_to_angle, subs_to_angle, max_error):
     """
