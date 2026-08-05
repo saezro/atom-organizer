@@ -2295,8 +2295,10 @@ class SplitImages:
                     f"\nERROR: No se encuentra el conversor DJI en {dji_utility}.\n")
                 self._register_image_error(os.path.join(input_folder, image_name))
                 return
-            dji_rc = proc.returncode
-            dji_salida = (proc.stderr or proc.stdout or "").strip()[:300]
+            # El rc va con signo: sin esto el -16 del SDK salía como 4294967280.
+            dji_rc = rjpeg.rc_con_signo(proc.returncode)
+            dji_salida = rjpeg.resumir_salida_sdk(
+                (proc.stderr or proc.stdout or "").strip()[:300])
             if dji_rc != 0:
                 self.organizer_logger.logger.error(
                     f"El conversor DJI ha fallado con {os.path.join(input_folder, image_name)}: "
@@ -2312,7 +2314,7 @@ class SplitImages:
                 # El -16 (0xFFFFFFF0) es `create R-JPEG dirp handle failed`: el SDK
                 # rechaza la imagen. Traducirlo a las dos únicas causas posibles
                 # ahorra la ronda de preguntas que costó el caso del 28/07.
-                if dji_rc in (-16, 0xFFFFFFF0):
+                if dji_rc == -16:
                     if _rjpeg_info["ok"]:
                         _causa = ("la imagen SÍ conserva su payload radiométrico ({0} bytes), "
                                   "así que el fichero no es el problema: mira si un antivirus la "
@@ -2320,9 +2322,9 @@ class SplitImages:
                                   "DLL del SDK junto al conversor").format(_rjpeg_info["payload"])
                     else:
                         _causa = "la imagen llegó dañada al conversor: {0}".format(_rjpeg_info["motivo"])
+                    # Sin repetir la frase del SDK: ya va en la línea de arriba.
                     progress_callback.emit(
-                        "  -> El SDK de DJI ha rechazado la imagen (create R-JPEG dirp handle failed). "
-                        "Diagnóstico: {0}.\n".format(_causa))
+                        "  -> El SDK de DJI ha rechazado la imagen. Diagnóstico: {0}.\n".format(_causa))
                     self.organizer_logger.logger.error(
                         "SDK DJI rechaza {0}: {1}".format(image_name, _causa))
         else:
@@ -2364,18 +2366,27 @@ class SplitImages:
         try:
             f = open(os.path.join(input_folder, image_name + ".raw"), "rb")
         except FileNotFoundError as file_not_found:
-            # El rc va en el mensaje: un .raw ausente con rc == 0 significa que el
-            # conversor se dio por bueno sin escribir nada (fallo silencioso), y eso
-            # apunta a un sitio muy distinto que un rc != 0.
-            _diag = "" if dji_rc is None else " [conversor: código {0}; salida: {1}]".format(
-                dji_rc, dji_salida or "(vacía)")
+            # Un .raw ausente con rc == 0 es un fallo SILENCIOSO (el conversor se dio
+            # por bueno sin escribir nada) y apunta a un sitio muy distinto que un
+            # rc != 0. Ese matiz es lo único que hay que decir aquí: si el rc no era
+            # cero, el error ya se reportó arriba con su causa, y repetir el volcado
+            # del SDK solo duplicaba el muro de texto.
+            if dji_rc in (None, 0):
+                _diag = "" if dji_rc is None else (
+                    " El conversor terminó con código 0 pero no escribió nada:"
+                    " fallo silencioso, no un rechazo de la imagen.")
+            else:
+                _diag = " Causa ya indicada arriba (código {0}).".format(dji_rc)
             progress_callback.emit("\nNo existe el archivo {0}. Posible error del conversor DJI.{1}\n".format(os.path.join(input_folder, image_name + ".raw"), _diag))
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
             self.organizer_logger.logger.error(f"No existe el archivo {os.path.join(input_folder, image_name + '.raw')}. Posible error del conversor DJI.")
             self.organizer_logger.logger.exception(file_not_found.__str__)
             self.organizer_logger.logger.exception(file_not_found)
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self._register_image_error(os.path.join(input_folder, image_name + ".raw"))
+            # Se registra la IMAGEN, no el .raw: el .raw es un intermedio que nunca
+            # llegó a existir, y ponerlo en «Imágenes con error» mandaba al usuario a
+            # buscar un fichero inexistente en vez de a la térmica que falló.
+            self._register_image_error(os.path.join(input_folder, image_name))
             return
 
         data = f.read()

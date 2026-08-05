@@ -184,3 +184,98 @@ def test_la_inspeccion_no_aborta_la_conversion(tmp_path, logger, make_dji_jpeg, 
     texto = _convertir(logger, input_folder, image_name, dji_utility)
 
     assert "Posible error del conversor DJI" in texto
+
+
+# --- Legibilidad del log del conversor ---------------------------------------
+# En el log de la v3.3.0, cinco térmicas fallidas ocuparon ~80 líneas: el volcado
+# del SDK salía DOS veces por imagen (una en el fallo, otra en el aviso del .raw
+# ausente) y tres de sus cinco líneas eran un banner idéntico en todas.
+
+SALIDA_SDK_REAL = (
+    "DIRP API version number : 0x13\n"
+    "DIRP API magic version  : d4c7dea\n"
+    "R-JPEG file path : C:\\Users\\Kais\\...\\20260728_100801_DJI_0002_T.JPG\n"
+    "ERROR: create R-JPEG dirp handle failed\n"
+    "Test done with return code -16"
+)
+
+
+def test_el_codigo_de_salida_se_muestra_con_signo():
+    """Windows lo entrega sin signo: el -16 del SDK salía como 4294967280, que no
+    se parece a lo que imprime el propio conversor ni se puede buscar."""
+    assert rjpeg.rc_con_signo(4294967280) == -16
+    assert rjpeg.rc_con_signo(0) == 0
+    assert rjpeg.rc_con_signo(2) == 2
+    assert rjpeg.rc_con_signo(None) is None
+
+
+def test_la_salida_del_sdk_se_queda_en_lo_que_informa():
+    resumen = rjpeg.resumir_salida_sdk(SALIDA_SDK_REAL)
+
+    assert "create R-JPEG dirp handle failed" in resumen, "el error debe sobrevivir"
+    assert "DIRP API version" not in resumen, "el banner se repite en cada imagen"
+    assert "R-JPEG file path" not in resumen, "la ruta ya va en el resto del mensaje"
+
+
+def test_una_salida_que_es_solo_banner_no_se_queda_vacia():
+    """Si todo lo que dijo el conversor es banner, mejor enseñarlo que no decir nada."""
+    resumen = rjpeg.resumir_salida_sdk("DIRP API version number : 0x13")
+
+    assert "0x13" in resumen
+
+
+def test_el_fallo_no_se_vuelca_dos_veces_por_imagen(
+    tmp_path, logger, make_dji_jpeg, monkeypatch
+):
+    normal = make_dji_jpeg(str(tmp_path / "src.JPG"))
+    termica = _hacer_rjpeg(normal, str(tmp_path / "src_T.JPG"))
+    input_folder, image_name, dji_utility = _preparar(
+        tmp_path, monkeypatch, rc=4294967280, imagen_bytes_desde=termica,
+        salida=SALIDA_SDK_REAL)
+
+    texto = _convertir(logger, input_folder, image_name, dji_utility)
+
+    assert texto.count("create R-JPEG dirp handle failed") == 1, (
+        "el error del SDK debe aparecer UNA vez, no en el fallo y otra vez en el "
+        "aviso del .raw ausente")
+    assert "código -16" in texto and "4294967280" not in texto
+    assert "Posible error del conversor DJI" in texto, "el aviso del .raw se mantiene"
+
+
+def test_el_fallo_silencioso_sigue_distinguiendose(
+    tmp_path, logger, make_dji_jpeg, monkeypatch
+):
+    """rc 0 sin .raw es un fallo silencioso y NO debe confundirse con un rechazo."""
+    normal = make_dji_jpeg(str(tmp_path / "src.JPG"))
+    termica = _hacer_rjpeg(normal, str(tmp_path / "src_T.JPG"))
+    input_folder, image_name, dji_utility = _preparar(
+        tmp_path, monkeypatch, rc=0, imagen_bytes_desde=termica)
+
+    texto = _convertir(logger, input_folder, image_name, dji_utility)
+
+    assert "código 0" in texto
+    assert "fallo silencioso" in texto
+
+
+def test_el_error_apunta_a_la_imagen_y_no_al_raw_inexistente(
+    tmp_path, logger, make_dji_jpeg, monkeypatch
+):
+    """«Imágenes con error» listaba rutas .raw que nunca llegaron a existir."""
+    import pipeline
+
+    normal = make_dji_jpeg(str(tmp_path / "src.JPG"))
+    termica = _hacer_rjpeg(normal, str(tmp_path / "src_T.JPG"))
+    input_folder, image_name, dji_utility = _preparar(
+        tmp_path, monkeypatch, rc=4294967280, imagen_bytes_desde=termica,
+        salida=SALIDA_SDK_REAL)
+
+    obj = pipeline.SplitImages(logger)
+    mensajes = []
+    progress = _sink_progress(mensajes)
+    obj.convert_dji_image_to_tif(
+        input_folder, input_folder, image_name, "exiftool", dji_utility, progress, progress)
+
+    registrados = [str(r) for r in obj.images_error_splitting_images]
+    assert registrados, "el fallo debe quedar registrado"
+    assert not any(r.endswith(".raw") for r in registrados), (
+        "debe registrarse la térmica que falló, no un .raw que nunca existió")

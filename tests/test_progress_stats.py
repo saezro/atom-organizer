@@ -164,3 +164,55 @@ def test_el_puente_reenvia_stats_como_dato_estructurado():
     de `data` se serializaría con str() y React recibiría texto."""
     fuente = open(os.path.join(REPO, "app_webview.py"), encoding="utf-8").read()
     assert '("plan", "phase", "stats", "done")' in fuente
+
+
+# --- Contadores que mentían en el log real del 2026-08-05 --------------------
+# Las cadenas de esta sección están copiadas LITERALMENTE del log de corrida de
+# la v3.3.0 (atom-organizer-run_20260805_103904_pid11260.log.txt), donde el
+# panel mostraba cosas imposibles: "10/0 img" (más hechas que anunciadas) y
+# "RGB 0 / térmica 0" mientras procesaba cinco térmicas.
+
+def test_procesando_sin_articulo_cuenta_igual():
+    """La fase de meta/geolocalización dice "en directorio", sin "el". Exigir el
+    artículo dejaba esa fase entera con total=0."""
+    t = StatsTracker()
+    t.on_line("Procesando 5 imágenes en directorio "
+              r"C:\Users\Kais\Desktop\DATOS_ORGANIZAR\Nueva carpeta\RGB\PB24\PB24_V1")
+
+    assert t.snapshot()["total"] == 5
+    assert t.snapshot()["rgb"] == 5
+
+
+def test_moviendo_imagenes_cuenta_en_la_fase_de_estructura():
+    t = StatsTracker()
+    t.on_line("Moviendo 5 imágenes Térmicas al directorio "
+              r"C:\Users\Kais\Desktop\DATOS_ORGANIZAR\Nueva carpeta\TERMICA\PB24\PB24_V1")
+    t.on_line("Moviendo 5 imágenes RGB al directorio "
+              r"C:\Users\Kais\Desktop\DATOS_ORGANIZAR\Nueva carpeta\RGB\PB24\PB24_V1")
+
+    s = t.snapshot()
+    assert s["total"] == 10, "la fase de estructura avanzaba con total=0"
+    assert s["termica"] == 5 and s["rgb"] == 5
+
+
+def test_el_directorio_anunciado_aparte_clasifica_las_imagenes():
+    """En la conversión a TIFF el directorio va en su propia línea y el recuento
+    llega desnudo: sin recordarlo, cinco térmicas salían como "térmica 0"."""
+    t = StatsTracker()
+    t.on_line("Analizando directorio: "
+              r"C:\Users\Kais\Desktop\DATOS_ORGANIZAR\Nueva carpeta\TERMICA\PB24\PB24_V1")
+    t.on_line("Procesando 5 imágenes")
+
+    s = t.snapshot()
+    assert s["total"] == 5
+    assert s["termica"] == 5, "el tipo debe heredarse del directorio anunciado antes"
+
+
+def test_nunca_se_anuncia_un_total_menor_que_lo_hecho():
+    """Red de seguridad: si un recuento se emite con una redacción no prevista,
+    el panel debe quedarse corto, nunca mostrar "10/0"."""
+    t = StatsTracker()
+    for _ in range(10):
+        t.on_image()
+
+    assert t.snapshot()["total"] == 10

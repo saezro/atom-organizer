@@ -33,8 +33,20 @@ IMAGE_EMIT_EVERY = 10
 _RE_PROCESANDO = re.compile(
     r"Procesando(?:\s+y\s+\w+)?\s+(\d+)\s+(?:im[áa]genes|TMCs)"
     r"(?:\s+TIFF)?"
-    r"(?:\s+en\s+el\s+directorio\s+(\S.*?))?\s*$"
+    # "en el directorio X" y "en directorio X" conviven en el pipeline; exigir el
+    # artículo dejaba la fase de meta/geolocalización con total=0 y el contador
+    # mostrando cosas como "10/0 img".
+    r"(?:\s+en\s+(?:el\s+)?directorio\s+(\S.*?))?\s*$"
 )
+# "Moviendo 5 imágenes Térmicas al directorio X" (fase de estructura de carpetas).
+# Sin esto la fase entera avanzaba con total=0.
+_RE_MOVIENDO = re.compile(
+    r"Moviendo\s+(\d+)\s+im[áa]genes\s+\w+\s+al\s+directorio\s+(\S.*?)\s*$"
+)
+# El directorio se anuncia en su propia línea y el "Procesando N imágenes" que
+# viene detrás no lo repite: sin recordarlo, la fase de conversión a TIFF contaba
+# las térmicas como "RGB 0 / térmica 0".
+_RE_ANALIZANDO = re.compile(r"Analizando\s+(?:el\s+)?directorio:?\s+(\S.*?)\s*$")
 _RE_ROT_270 = re.compile(r"im[áa]genes rotadas 270:\s*(\d+)")
 _RE_ROT_90 = re.compile(r"im[áa]genes rotadas 90:\s*(\d+)")
 _RE_ROT_NONE = re.compile(r"im[áa]genes sin rotar:\s*(\d+)")
@@ -75,6 +87,9 @@ class StatsTracker:
         self.total = 0
         self.rgb = 0
         self.termica = 0
+        # Último directorio anunciado en la fase, para clasificar los recuentos
+        # que llegan sin ruta propia.
+        self.last_dir = ""
 
     def start_phase(self, index: int, name: str) -> None:
         self.phase_index = index
@@ -96,11 +111,16 @@ class StatsTracker:
         """
         changed = False
         for line in str(text).splitlines():
-            m = _RE_PROCESANDO.search(line)
+            m_dir = _RE_ANALIZANDO.search(line)
+            if m_dir:
+                self.last_dir = m_dir.group(1)
+            m = _RE_PROCESANDO.search(line) or _RE_MOVIENDO.search(line)
             if m:
                 n = int(m.group(1))
                 self.total += n
-                kind = classify_folder(m.group(2) or "")
+                # Si el recuento no trae ruta, vale la del último directorio
+                # anunciado: el pipeline los emite siempre en ese orden.
+                kind = classify_folder(m.group(2) or self.last_dir)
                 if kind == "rgb":
                     self.rgb += n
                 elif kind == "termica":
@@ -119,7 +139,10 @@ class StatsTracker:
             "phase_index": self.phase_index,
             "phase_name": self.phase_name,
             "done": self.done,
-            "total": self.total,
+            # Nunca anunciar un total menor que lo ya hecho: si un punto del
+            # pipeline emite un recuento con una redacción que aquí no se
+            # reconoce, es preferible un total que se queda corto a un "10/0".
+            "total": max(self.total, self.done),
             "rgb": self.rgb,
             "termica": self.termica,
             "rot270": self.rot270,

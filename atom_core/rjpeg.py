@@ -129,6 +129,38 @@ def inspect_rjpeg(path):
     return info
 
 
+def rc_con_signo(rc):
+    """Normaliza el código de salida del conversor a su valor con signo.
+
+    En Windows `subprocess` devuelve el código como entero sin signo de 32 bits,
+    así que el -16 del SDK aparecía en el log como `4294967280` — un número que no
+    se puede buscar en ninguna documentación y que no se parece a lo que el propio
+    conversor imprime por pantalla (`Test done with return code -16`).
+    """
+    if rc is None:
+        return None
+    if rc > 0x7FFFFFFF:
+        return rc - 0x100000000
+    return rc
+
+
+# Líneas de cortesía que el conversor imprime SIEMPRE, iguales para cada imagen.
+# No aportan nada repetidas cinco veces (diez, contando el mensaje del .raw ausente).
+_BANNER_SDK = ("DIRP API version", "DIRP API magic", "R-JPEG file path")
+
+
+def resumir_salida_sdk(salida):
+    """Deja solo las líneas del conversor que dicen algo.
+
+    El volcado completo son cinco líneas de las que tres son un banner idéntico en
+    todas las imágenes. Repetirlo por imagen convertía el log en un muro donde el
+    error de verdad no se veía.
+    """
+    lineas = [ln.strip() for ln in (salida or "").splitlines() if ln.strip()]
+    utiles = [ln for ln in lineas if not ln.startswith(_BANNER_SDK)]
+    return " | ".join(utiles or lineas) or "(sin detalle)"
+
+
 def describe(info, nombre=""):
     """Línea única para el log de corrida. Compacta cuando todo está bien."""
     if not info.get("existe"):
