@@ -275,6 +275,93 @@ def rotate_one_image(image_name: str, input_folder: str, degrees, quality: int) 
     }
 
 
+# --- Separación RGB / térmica en paralelo (fase 1) ---------------------------
+# Era la fase más cara del proceso entero y la última grande que seguía en un bucle
+# secuencial: 188 ms por imagen RGB medidos sobre ANTOLIN, de los que el 94 % es el
+# decode+encode de `compress_image`. Reutiliza los stand-ins de la rotación
+# (`_WorkerLogger`, `_CollectingProgress`), porque el problema es el mismo: ni el logger
+# de fichero ni los signals de Qt cruzan a un proceso hijo.
+
+
+@dataclass(frozen=True)
+class SplitJobConfig:
+    """
+    Los parámetros de la separación que son iguales para todas las imágenes de la carpeta.
+
+    Va en un dataclass en vez de sueltos porque tiene que viajar picklado a cada worker;
+    `frozen=True` deja claro que ningún proceso hijo puede alterarlo para los demás.
+    """
+
+    input_folder: str
+    output_folder: str
+    mode: bool
+    min_size: str
+    thermal_sufix: str
+    rgb_sufix: str
+    compress_checked: bool
+    quality: int
+    rename: bool
+    mismatch_hours: int
+    mismatch_minutes: int
+    extra_suffix: bool = False
+
+
+_SPLIT_WORKER_OBJ = None
+
+
+def _split_worker_obj() -> "SplitImages":
+    """El `SplitImages` que reutilizan todas las imágenes que caen en el mismo worker.
+
+    Igual que `_rotate_worker_obj`: construirlo por imagen re-crearía Utils +
+    GeneralInformationFromImage cientos de veces por carpeta. Sus contadores de error se
+    limpian en cada llamada (`split_one_image`), porque se reportan por imagen.
+    """
+    global _SPLIT_WORKER_OBJ
+    if _SPLIT_WORKER_OBJ is None:
+        _SPLIT_WORKER_OBJ = SplitImages(_WorkerLogger())
+    return _SPLIT_WORKER_OBJ
+
+
+def split_one_image(image: str, cfg: "SplitJobConfig") -> dict:
+    """
+    Separa una imagen (copia o comprime a RGB/TERMICA) dentro de un proceso worker.
+
+    Es el equivalente paralelizable del cuerpo del bucle de `SplitImages.split_images`:
+    calcula el nombre de destino con el MISMO `nombre_destino` que usaba el padre y llama
+    a la MISMA `split_image`. Función de MÓDULO (no método, no closure) para ser picklable
+    y poder enviarse a un ProcessPoolExecutor (ver `utils.run_batch` y el aviso de la
+    cabecera del fichero).
+
+    Returns:
+    --------
+    dict con "image", "new_name" (el nombre con el que se guardó), "messages" (lo que hay
+    que emitir a la ventana de log) y los contadores de error que el padre necesita para
+    `get_summarize`: compresión y metadatos, cada uno con su lista de rutas.
+    """
+    obj = _split_worker_obj()
+    obj.compress_image_obj.error_compress = 0
+    obj.compress_image_obj.images_error_compress = []
+    obj.exif_management_obj.error_exif_data = 0
+    obj.exif_management_obj.images_error_exif_data = []
+    progress = _CollectingProgress()
+
+    new_name = obj.nombre_destino(image, cfg.input_folder, cfg.rename, cfg.mismatch_hours, cfg.mismatch_minutes)
+    obj.split_image(
+        image, cfg.input_folder, cfg.output_folder, cfg.mode, cfg.min_size, cfg.thermal_sufix,
+        cfg.rgb_sufix, cfg.compress_checked, cfg.quality, new_name, cfg.rename, progress,
+        cfg.extra_suffix,
+    )
+    return {
+        "image": image,
+        "new_name": new_name,
+        "messages": progress.messages,
+        "error_compress": obj.compress_image_obj.error_compress,
+        "images_error_compress": list(obj.compress_image_obj.images_error_compress),
+        "error_exif_data": obj.exif_management_obj.error_exif_data,
+        "images_error_exif_data": list(obj.exif_management_obj.images_error_exif_data),
+    }
+
+
 class CompressImage:
     """
     Clase que aglutina las funciones centradas en la compresión de las imágenes.
@@ -483,8 +570,10 @@ class CompressImage:
             # no me fío mucho, pues algún archivo me ha dado error.
             img.close()
             if not aerotools_devices: # Comprobamos si no son de AEROTOOLS, con lo que grabamos los datos XMP en las imágenes al comprimir para no perder ningún dato. Si son de AEROTOOLS no tenemos dichos datos y no hace falta llamar a estas funciones.
-                self.exif_management_obj.saving_gimbal_data_in_xmp(os.path.join(output_folder, image_name), gimbal_data)  # Se graban los datos en el archivo de destino.
-                self.exif_management_obj.saving_xmp_data_in_xmp(os.path.join(output_folder, image_name), xmp_all_data)  # Se graban los datos en el archivo de destino.
+                # Una sola escritura en vez de dos: cada `saving_*_in_xmp` reescribía el JPEG
+                # entero, así que grabar gimbal y resto por separado costaba dos pasadas
+                # completas sobre el fichero de destino. Ver `exif.saving_all_xmp_data`.
+                self.exif_management_obj.saving_all_xmp_data(os.path.join(output_folder, image_name), gimbal_data, xmp_all_data)  # Se graban los datos en el archivo de destino.
                 self.check_and_fix_xmp_data(output_folder,image_name, gimbal_data, xmp_all_data, progress_callback)
                 
 
@@ -589,8 +678,7 @@ class CompressImage:
                 crop_imagen_open.save(os.path.join(input_folder, crop_image_name), quality=quality)  # Sin optimize=True: ver el save del original.
                 crop_imagen_open.close()
 
-            self.exif_management_obj.saving_gimbal_data_in_xmp(os.path.join(input_folder, image_name), gimbal_data)  # Se graban los datos en el mismo archivo de entrada, pero rotado.
-            self.exif_management_obj.saving_xmp_data_in_xmp(os.path.join(input_folder, image_name), xmp_all_data)  # Se graban los datos xmp en mismo archivo de entrada, pero rotado.
+            self.exif_management_obj.saving_all_xmp_data(os.path.join(input_folder, image_name), gimbal_data, xmp_all_data)  # Se graban los datos en el mismo archivo de entrada, pero rotado, en una sola escritura.
 
             self.check_and_fix_xmp_data(input_folder,image_name, gimbal_data, xmp_all_data, progress_callback)
             return cropped_images
@@ -666,8 +754,7 @@ class CompressImage:
         if xmp_data_missing:
             attempts = 2
             for i in range(1, attempts + 1):
-                self.exif_management_obj.saving_gimbal_data_in_xmp(os.path.join(folder, image_name), gimbal_data)
-                self.exif_management_obj.saving_xmp_data_in_xmp(os.path.join(folder, image_name), xmp_all_data)
+                self.exif_management_obj.saving_all_xmp_data(os.path.join(folder, image_name), gimbal_data, xmp_all_data)
                 xmp_data_missing, list_of_missing_keys = self.exif_management_obj.check_xmp_data_using_pyexiv2(os.path.join(folder, image_name))
                 if xmp_data_missing:
                     # progress_callback.emit(f"Attempt {i}")
@@ -1849,36 +1936,81 @@ class SplitImages:
         images = self.utils_obj.get_images_from_dir(input_folder)
         progress_callback.emit("Procesando {0} imágenes".format(len(images)) + "\n") # Se envía información al iniciar el procesado de un directorio. Si no hay imágenes
         # se enviará 0 imágenes.
-        for image in images:
-            if not self.stop:
-                self.current_image_number += 1
-                p = utils.safe_pct(self.current_image_number, self.total_images_number) # Se calcula el porcentaje que queda teniendo en cuenta la cantidad total de imágenes a procesar
-                # y la cantidad actual de imágenes procesadas.
-                progress_callback.emit(".") # Por cada imagen que se va a procesar, se emite un "." a la ventana de log.
-                progress_bar.emit(p) # Por cada imagen que se va a procesar, se emite el procentaje de imágenes procesadas para mostrar en la barra de progreso.
-                self.organizer_logger.logger.debug("Nombre de la imagen: " + image)
-                self.organizer_logger.logger.debug("Estado de renombrar: " + str(rename))
-                        
-                if rename:
-                    desfase = datetime.timedelta(hours=mismatch_hours, minutes=mismatch_minutes)
-                    timestamp_image = self.exif_management_obj.get_timestamp_from_image(os.path.join(input_folder, image))
-                    if timestamp_image is not None:
-                        # Obtenemos el nuevo nombre en el caso de querer renombrar el archivo
-                        new_date_time_image_name = timestamp_image + desfase
-                        new_name = (str(new_date_time_image_name)).replace(" ", "_").replace("-","").replace(":","")
-                        # print(f"El nuevo nombre debería llevar esta fecha: {new_name}")
-                        # new_name = self.exif_management_obj.fechaHora_DJI(os.path.join(input_folder, image), progress_callback)
-                    # if new_name is not None:
-                        new_name = new_name + "_" + image
-                    else:
-                        new_name = ""
-                else:
-                    # Si no lo queremos, se enviará un string vacío.
-                    new_name = ""
-                self.organizer_logger.logger.debug("Nuevo nombre de la imagen: " + new_name)            
-                self.split_image(image, input_folder, output_folder, mode, min_size, thermal_sufix, rgb_sufix, compress_checked, quality, new_name, rename, progress_callback, extra_suffix)
-        
-    
+
+        # El botón de parar se comprueba ANTES de lanzar el lote, no imagen a imagen: un
+        # ProcessPoolExecutor ya en marcha no se cancela a mitad. Es el mismo compromiso que
+        # aceptó `compress_images` al paralelizarse, y como esta función se llama una vez por
+        # carpeta, parar sigue surtiendo efecto entre carpetas.
+        if self.stop:
+            return
+
+        cfg = SplitJobConfig(
+            input_folder=input_folder, output_folder=output_folder, mode=mode, min_size=min_size,
+            thermal_sufix=thermal_sufix, rgb_sufix=rgb_sufix, compress_checked=compress_checked,
+            quality=quality, rename=rename, mismatch_hours=mismatch_hours,
+            mismatch_minutes=mismatch_minutes, extra_suffix=extra_suffix,
+        )
+
+        def _worker_args_fn(image):
+            return (image, cfg)
+
+        def _on_progress(_pct):
+            self.current_image_number += 1
+            p = utils.safe_pct(self.current_image_number, self.total_images_number) # Se calcula el porcentaje que queda teniendo en cuenta la cantidad total de imágenes a procesar
+            # y la cantidad actual de imágenes procesadas.
+            progress_callback.emit(".") # Por cada imagen procesada, se emite un "." a la ventana de log.
+            progress_bar.emit(p) # Por cada imagen procesada, se emite el porcentaje para mostrar en la barra de progreso.
+
+        result = utils.run_batch(images, split_one_image, _worker_args_fn, on_progress=_on_progress)
+
+        # Todo lo que pasó dentro de los procesos hijos vuelve aquí: los mensajes que el
+        # usuario tiene que ver en la ventana de log y los contadores de error que luego
+        # lee `get_summarize`. Sin esto, un fallo dentro de un worker sería invisible.
+        for payload in result["results"]:
+            for mensaje in payload["messages"]:
+                progress_callback.emit(mensaje)
+            self.organizer_logger.logger.debug("Nuevo nombre de la imagen: " + payload["new_name"])
+            self.compress_image_obj.error_compress += payload["error_compress"]
+            self.compress_image_obj.images_error_compress.extend(payload["images_error_compress"])
+            self.exif_management_obj.error_exif_data += payload["error_exif_data"]
+            self.exif_management_obj.images_error_exif_data.extend(payload["images_error_exif_data"])
+
+        # Segunda red: un worker que muere antes de llegar a los try/except de `split_image`
+        # (por ejemplo, si el proceso se queda sin memoria) no deja rastro en los contadores
+        # de arriba, solo aquí.
+        for image, error_str in result["errors"]:
+            self.organizer_logger.logger.warning(f"ERROR: No se ha podido separar la imagen {image}: {error_str}")
+            self.error_splitting_images += 1
+            self.images_error_splitting_images.append(os.path.join(input_folder, image))
+
+    def nombre_destino(self, image: str, input_folder: str, rename: bool, mismatch_hours: int, mismatch_minutes: int) -> str:
+        """
+        Devuelve el nombre con el que se guardará la imagen, o "" si no hay renombrado.
+
+        Punto ÚNICO donde se decide el nombre de salida. Estaba en el bucle de
+        `split_images`; al paralelizar la fase lo calcula cada worker, y tenerlo en un solo
+        sitio es lo que garantiza que el nombre sea el mismo que daba el bucle secuencial.
+
+        Arguments:
+        ---------
+        - image - nombre del fichero de origen.
+        - input_folder - carpeta donde está la imagen.
+        - rename - si es False se devuelve "" y la imagen conserva su nombre.
+        - mismatch_hours / mismatch_minutes - desfase horario a aplicar al timestamp.
+        """
+        if not rename:
+            # Si no lo queremos, se enviará un string vacío.
+            return ""
+        desfase = datetime.timedelta(hours=mismatch_hours, minutes=mismatch_minutes)
+        timestamp_image = self.exif_management_obj.get_timestamp_from_image(os.path.join(input_folder, image))
+        if timestamp_image is None:
+            return ""
+        # Obtenemos el nuevo nombre en el caso de querer renombrar el archivo
+        new_date_time_image_name = timestamp_image + desfase
+        new_name = (str(new_date_time_image_name)).replace(" ", "_").replace("-", "").replace(":", "")
+        return new_name + "_" + image
+
+
     def _rgb_destination_folder(self, output_folder: str, image_name: str) -> str:
         """
         Devuelve la carpeta destino para una imagen RGB. Si el nombre contiene "_Z" (zoom), la carpeta destino
