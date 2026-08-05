@@ -7,7 +7,7 @@ tocado, que es lo que fija este fichero:
      del original RGB in-place vivía dentro de la misma función que escribía la
      miniatura térmica. La rotación RGB tiene que seguir intacta.
   2. El criterio de giro (`_Videofiles.csv`, columna `Degree`) vivía DENTRO de
-     MINIATURAS. Es lo único que le dice a la conversión a TIFF y a la copia `_ROT`
+     MINIATURAS. Es lo único que le dice a la conversión a TIFF y al giro del JPG térmico
      cuánto girar: si desapareciera con la carpeta, ambas dejarían de rotar EN
      SILENCIO. Ahora va a `CSVs/`, plano.
   3. El `*_T.JPG` crudo sigue sin tocarse: es R-JPEG propietario de DJI y re-encodarlo
@@ -61,14 +61,14 @@ def test_no_se_crea_la_carpeta_miniaturas(tmp_path, logger, make_dji_jpeg):
 
 
 def test_el_criterio_de_giro_se_escribe_en_csvs(tmp_path, logger, make_dji_jpeg):
-    """Sin este CSV, el TIFF y la copia _ROT dejan de rotar sin decir nada."""
+    """Sin este CSV, el TIFF y el JPG térmico dejan de rotar sin decir nada."""
     planta, carpeta = _vuelo(tmp_path, make_dji_jpeg, "DJI_0001_T.JPG")
     _corre_fase(logger, planta, carpeta, rgb_processing=False)
 
     csv_path = planta / "CSVs" / utils.CRITERIO_DIRNAME / "PB1_V01_Videofiles.csv"
     assert csv_path.exists(), (
         "El criterio de giro no está en CSVs/: se ha ido con MINIATURAS y el vuelo "
-        "dejará de rotar el TIFF y la copia _ROT en silencio."
+        "dejará de rotar el TIFF y el JPG térmico en silencio."
     )
     assert set(pd.read_csv(csv_path)["Degree"].unique()) == {270}
 

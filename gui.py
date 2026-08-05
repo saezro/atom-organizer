@@ -2329,7 +2329,7 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
                 progress_summarize.emit("---> SUBPROCESO: CONVERTIR IMÁGENES A TIF.")
 
                 self.split_images_obj.reset_variables()
-                self.split_images_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, "TERMICA"), exclude_patterns=[utils.ROTATED_JPG_SUFFIX])  # las copias giradas no se convierten: contarlas dejaria la barra a medias
+                self.split_images_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, "TERMICA"), exclude_patterns=[utils.ROTATED_JPG_SUFFIX])  # legado 3.4.5: las copias `_ROT` de una carpeta ya procesada no se convierten, contarlas dejaria la barra a medias
                 self.new_log_gui.enable_process()
 
                 exiftool_exe = resource_path("programas_externos", "exiftool.exe")
@@ -2347,11 +2347,11 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
 
                 self.split_images_obj.checking_convert_to_tif(os.path.join(cfg.output_folder, "TERMICA"), progress_callback, progress_summarize)
 
-                # Copia girada `_ROT` del JPG térmico, junto a su TIFF. Va DESPUÉS de
-                # la conversión y de su verificación a propósito: mientras se lista y
-                # se cuenta, estas copias todavía no existen, así que no pueden
-                # colarse en la conversión ni descuadrar `jpg_count == tiff_count`.
-                self.split_images_obj.write_rotated_jpg_copies(
+                # Giro in-place del JPG térmico, para que case con su TIFF. Va DESPUÉS
+                # de la conversión y de su verificación a propósito: girarlo destruye
+                # el payload radiométrico del R-JPEG, así que el conversor tiene que
+                # haber terminado ya con él.
+                self.split_images_obj.rotate_thermal_jpgs_in_place(
                     os.path.join(cfg.output_folder, "TERMICA"), progress_callback, progress_bar,
                     cfg.convert_to_tiff_rotate_90, cfg.convert_to_tiff_rotate_minus_90,
                     cfg.convert_to_tiff_rotate_auto)
@@ -2826,7 +2826,7 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
         processing_time = self.utils_obj.logging_time()
 
         self.split_images_obj.reset_variables()
-        self.split_images_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.input_folder, exclude_patterns=[utils.ROTATED_JPG_SUFFIX])  # idem: las `_ROT` de una pasada previa no se reconvierten
+        self.split_images_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.input_folder, exclude_patterns=[utils.ROTATED_JPG_SUFFIX])  # idem: las `_ROT` heredadas de 3.4.5 no se reconvierten
         self.new_log_gui.enable_process()
 
         exiftool_exe = resource_path("programas_externos", "exiftool.exe")
@@ -2844,10 +2844,10 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
         # TODO: En el caso de que la carpeta elegida no sea TERMICA, o no estén las carpetas PBX, dará error. Habrá que añadir un parámetro para que en este caso busque en el árbol de directorios o algo similar.
         self.split_images_obj.checking_convert_to_tif(cfg.input_folder, progress_callback, progress_summarize)
 
-        # Copia girada `_ROT` del JPG térmico junto a su TIFF (ver la fase equivalente
-        # de split_images): después de convertir y verificar, para no aparecer en
-        # ningún listado ni recuento previo.
-        self.split_images_obj.write_rotated_jpg_copies(
+        # Giro in-place del JPG térmico junto a su TIFF (ver la fase equivalente de
+        # split_images): después de convertir y verificar, porque girarlo destruye el
+        # payload radiométrico que necesita el conversor.
+        self.split_images_obj.rotate_thermal_jpgs_in_place(
             cfg.input_folder, progress_callback, progress_bar,
             cfg.rotate_90, cfg.rotate_minus_90, cfg.rotate_auto)
 

@@ -696,19 +696,22 @@ ROTATION_YAW_MARGIN = 80
 # vuelo entero, porque basta con que su categoría sea la primera no vacía.
 ROTATION_MIN_AGREEMENT_PCT = 50
 
-# Sufijo de la copia GIRADA del JPG térmico, que se escribe junto a su TIFF
-# (decisión de Cas 2026-08-05). El `*_T.JPG` original es un R-JPEG propietario de
-# DJI: si PIL lo re-encoda se pierde el payload radiométrico y ya no se puede
-# volver a convertir a TIFF nunca más. Por eso la rotación va a una copia APARTE
-# y el original no se toca.
+# Sufijo de la copia girada del JPG térmico. LEGADO: solo lo generó la v3.4.5.
 #
-# Mismo idioma que el `_CROP` del recorte RGB, y por el mismo motivo: los
-# listados del pipeline lo excluyen por patrón para no re-procesar lo que él
-# mismo generó (`get_images_from_dir(..., ["_ROT"])`).
+# Aquella versión giraba a una copia aparte para no re-encodar el `*_T.JPG` (es un
+# R-JPEG propietario de DJI: al re-guardarlo con PIL se pierde el payload
+# radiométrico y ya no se puede volver a convertir a TIFF). Pero eso dejaba la
+# salida DUPLICADA —la girada con otro nombre y la original sin girar— y Cas lo
+# rechazó (2026-08-05): desde 3.4.6 el JPG térmico se gira EN SU SITIO, al final,
+# cuando el conversor ya ha terminado con él.
+#
+# La constante se mantiene porque los listados del pipeline siguen excluyendo el
+# patrón: si se re-procesa una carpeta salida de 3.4.5, sus `_ROT` no pueden
+# entrar en la conversión ni descuadrar `jpg_count == tiff_count`.
 ROTATED_JPG_SUFFIX = "_ROT"
 
 # Subcarpeta de `CSVs/` donde vive el criterio de giro (`<vuelo>_Videofiles.csv`).
-# NO es un fichero descartable —lo leen la conversión a TIFF y la copia `_ROT`—
+# NO es un fichero descartable —lo leen la conversión a TIFF y el giro del JPG térmico—
 # pero tampoco es un entregable: al usuario le estorba entre los CSVs que sí
 # consume (meta, location). Se aparta a una subcarpeta interna en vez de
 # borrarse. `read_auto_rotate_degree` mantiene los fallbacks a las ubicaciones

@@ -170,8 +170,8 @@ def test_videofiles_csv_columns_and_degree(tmp_path, logger, make_dji_jpeg):
 
 # --- 4. La rotación RGB es un transpose real, in-place ----------------------
 # pipeline.py CompressImage.rotate_and_save. Solo queda la rama RGB: desde que se
-# quitaron las miniaturas la térmica no pasa por aquí (su *_T.JPG crudo no se re-encoda;
-# su copia girada _ROT se escribe al final, tras la conversión a TIFF).
+# quitaron las miniaturas la térmica no pasa por aquí: su *_T.JPG se gira al final,
+# tras la conversión a TIFF, porque girarlo destruye su payload radiométrico.
 def test_rgb_rotates_in_place_with_a_real_transpose(tmp_path, logger, make_dji_jpeg):
     import pipeline as compress_image
 

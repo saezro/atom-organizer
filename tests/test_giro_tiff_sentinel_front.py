@@ -58,7 +58,7 @@ def test_sin_sentinel_los_flags_de_giro_del_front_se_ignoran():
     })
     assert not any(k.startswith("convert_to_tiff_rotate") for k in limpio), (
         "Un front sin __tif_rot_mode sigue pisando el default del backend: el TIFF "
-        "volvería a salir sin girar y sin copias _ROT."
+        "volvería a salir sin girar, y su JPG térmico también."
     )
     assert limpio["end_thermo_files"] == "_T", "Se han tocado ajustes que no son de giro."
     assert aviso and "__tif_rot_mode" in aviso, "El descarte tiene que quedar en el log."

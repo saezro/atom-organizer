@@ -10,8 +10,8 @@ export function initialState(fields) {
     // en _default_split_config. Al forzar 0 aquí, el select mandaba SIEMPRE
     // {rotate_auto: false, rotate_90: false, rotate_minus_90: false} dentro de
     // `advanced`, y ese objeto PISA los defaults sanos del backend (organize.py,
-    // `replace(cfg, **coerced)`) -> ni se giraba el TIFF ni se escribían las
-    // copias _ROT, aunque el criterio de giro (Degree=270) fuera correcto.
+    // `replace(cfg, **coerced)`) -> no se giraba ni el TIFF ni el JPG térmico,
+    // aunque el criterio de giro (Degree=270) fuera correcto.
     else if (f.type === 'select') s[f.name] = f.default ?? 0
     else s[f.name] = f.default ?? ''
   }

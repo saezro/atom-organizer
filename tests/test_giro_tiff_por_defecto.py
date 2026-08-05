@@ -10,7 +10,7 @@ select `__tif_rot` declara default 1 (= "Auto"), pero arrancaba en 0
 `_default_split_config` (organize.py: `cfg = replace(cfg, **coerced)`), así que
 el usuario no tenía forma de que el TIFF se girara sin abrir el panel avanzado
 y tocar el desplegable: el TIFF salía 640x512 (como el JPG crudo) en vez de
-512x640, y tampoco se escribían las copias `_ROT`. Mismo patrón que el bug de
+512x640, y tampoco se giraban los JPG térmicos. Mismo patrón que el bug de
 emissivity/humidity a 0.0.
 
 Es un bug PREEXISTENTE: no se pudo ver hasta que dejó de fallar el -16 y
@@ -68,7 +68,7 @@ def test_el_select_de_giro_del_tif_arranca_en_auto():
     label, params = opciones[idx]
     assert "convert_to_tiff_rotate_auto: true" in params, (
         f"La opción por defecto de __tif_rot es '{label}', que no activa el giro "
-        "automático. El TIFF térmico saldría sin girar y sin copias _ROT."
+        "automático. Ni el TIFF térmico ni su JPG saldrían girados."
     )
 
 
@@ -92,7 +92,7 @@ def test_el_default_del_front_coincide_con_el_del_backend():
 # --- v3.4.4: que el "no giro" deje de ser silencioso ------------------------
 def test_sin_flags_de_giro_se_dice_en_el_log(tmp_path, logger):
     """
-    Con los tres flags a False no se escriben copias giradas — correcto — pero
+    Con los tres flags a False no se gira nada — correcto — pero
     antes se salía con un `return 0` MUDO. Desde el log era indistinguible de
     "el criterio salió 0" o de "el paso ni corrió", y costó una ronda entera de
     diagnóstico con v3.4.3. Ahora tiene que decirlo.
@@ -105,9 +105,9 @@ def test_sin_flags_de_giro_se_dice_en_el_log(tmp_path, logger):
     cb = types.SimpleNamespace(emit=lambda payload=None, *a, **k: mensajes.append(payload))
 
     obj = gen_struct_folder.SplitImages(logger)
-    escritas = obj.write_rotated_jpg_copies(str(tmp_path), cb, cb, False, False, False)
+    giradas = obj.rotate_thermal_jpgs_in_place(str(tmp_path), cb, cb, False, False, False)
 
-    assert escritas == 0
+    assert giradas == 0
     assert any(isinstance(m, str) and "Sin giro" in m for m in mensajes), (
-        "write_rotated_jpg_copies vuelve a salir en silencio con los flags a False."
+        "rotate_thermal_jpgs_in_place vuelve a salir en silencio con los flags a False."
     )

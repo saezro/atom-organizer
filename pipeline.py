@@ -450,7 +450,7 @@ class CompressImage:
         Solo aplica a RGB: la térmica ya no pasa por aquí. Su `*_T.JPG` crudo NO se
         puede re-encodar (se perdería el payload radiométrico de DJI) y, desde que se
         quitaron las miniaturas, no hay nada más que escribir en el paso de rotación;
-        su copia girada `_ROT` se genera al final, después de la conversión a TIFF.
+        el `*_T.JPG` se gira al final, después de la conversión a TIFF.
 
         Arguments:
         ---------
@@ -1120,8 +1120,8 @@ class GenStructFolder:
         """
         Gira el original in-place cuando es RGB. Con térmicas no hay nada que girar en este
         paso: el `*_T.JPG` crudo no se puede re-encodar (perdería el payload radiométrico) y
-        las miniaturas ya no se generan; su copia girada `_ROT` se escribe al final, después
-        de la conversión a TIFF y con el mismo criterio (`read_auto_rotate_degree`).
+        las miniaturas ya no se generan; el `*_T.JPG` se gira al final, después de la
+        conversión a TIFF y con el mismo criterio (`read_auto_rotate_degree`).
 
         Devuelve True si el vuelo tiene un `_CROP` asociado a esta imagen, para que la barra
         de progreso siga contándolo igual en RGB y en térmica.
@@ -1139,7 +1139,7 @@ class GenStructFolder:
 
         Vivía dentro de MINIATURAS hasta que se eliminaron las miniaturas, luego en
         `CSVs/<vuelo>/` y luego plano en `CSVs/`. NO es un subproducto descartable: es
-        lo único que le dice a la conversión a TIFF y a la copia girada `_ROT` cuánto
+        lo único que le dice a la conversión a TIFF y al giro del JPG térmico cuánto
         tienen que girar (`read_auto_rotate_degree`). Si falta, ambas dejan de rotar en
         silencio. Pero tampoco es un entregable, y plano en `CSVs/` se mezclaba con los
         CSVs que el usuario sí consume (meta, location), así que va apartado en una
@@ -1607,8 +1607,9 @@ class SplitImages:
                     continue
 
                 tiff_count = sum(1 for f in all_files if f.lower().endswith(".tiff"))
-                # Las copias giradas `_ROT` NO son originales que deban tener TIFF:
-                # contarlas daría un jpg_count del doble y un falso "no coinciden".
+                # Las copias `_ROT` de una carpeta procesada con 3.4.5 NO son originales
+                # que deban tener TIFF: contarlas daría un jpg_count del doble y un falso
+                # "no coinciden". Las versiones nuevas giran in-place y ya no las generan.
                 jpg_count = sum(1 for f in all_files
                                 if f.endswith(("JPG", "jpg", "JPEG", "jpeg"))
                                 and utils.ROTATED_JPG_SUFFIX not in f)
@@ -1879,10 +1880,10 @@ class SplitImages:
         """ 
         if os.path.basename(input_folder)== "Escala_de_grises": # Evito realizar el proceso dentro de esta carpeta, pues dará error.
             return
-        # Se excluyen las copias giradas `_ROT` que escribe el paso posterior: en una
-        # corrida limpia todavía no existen, pero si se re-procesa una carpeta ya
-        # procesada intentaría convertirlas (son JPG normales, ya sin payload
+        # Se excluyen las copias `_ROT` heredadas de 3.4.5: si se re-procesa una carpeta
+        # de aquella versión, intentaría convertirlas (son JPG normales, ya sin payload
         # radiométrico -> fallo por imagen) y descuadraría `jpg_count == tiff_count`.
+        # Desde 3.4.6 el giro es in-place y no se generan copias nuevas.
         images = self.utils_obj.get_images_from_dir(input_folder, [utils.ROTATED_JPG_SUFFIX])
         
         # print(f"Procesando {len(images)} imágenes")
@@ -2055,24 +2056,26 @@ class SplitImages:
                 "Conversor térmico Linux falló (rc={0}) en {1}: {2}".format(
                     result.returncode, image_path, (result.stderr or "").strip()))
 
-    def write_rotated_jpg_copies(self, input_folder: str, progress_callback, progress_bar,
-                                 rotate_90: bool = False, rotate_minus_90: bool = False,
-                                 auto_rotate: bool = False) -> int:
-        """Escribe, junto a cada JPG térmico, una copia GIRADA `<nombre>_ROT.JPG`.
+    def rotate_thermal_jpgs_in_place(self, input_folder: str, progress_callback, progress_bar,
+                                     rotate_90: bool = False, rotate_minus_90: bool = False,
+                                     auto_rotate: bool = False) -> int:
+        """Gira EN SU SITIO cada JPG térmico, conservando su nombre de siempre.
 
-        Por qué una copia y no girar el original: el `*_T.JPG` de DJI es un R-JPEG
-        con payload radiométrico propietario. Abrirlo y volver a guardarlo con PIL
-        lo destruye, y ese fichero ya no se puede convertir a TIFF nunca más. El
-        original queda intacto; lo girado es un derivado para vista.
+        Hasta v3.4.5 esto escribía una copia aparte `<nombre>_ROT.JPG` y dejaba el
+        original sin girar, así que la salida venía DUPLICADA. Cas (2026-08-05):
+        «no debes poner la girada con otro nombre, simplemente giras la jpg y la
+        tiff». Ahora la carpeta queda con un solo fichero por imagen: el
+        `*_T.JPG` girado y su `*_T.tiff` girado, ambos con el mismo encuadre.
 
-        Se llama DESPUÉS de la conversión a TIFF y de sus verificaciones, a
-        propósito: mientras el pipeline lista imágenes, estas copias todavía no
-        existen, así que no pueden colarse en ninguna conversión ni descuadrar el
-        recuento `jpg_count == tiff_count`. La exclusión por patrón `_ROT` de los
-        listados es la red por si se re-procesa una carpeta ya procesada.
+        ⚠️ Consecuencia asumida: el `*_T.JPG` de DJI es un R-JPEG con payload
+        radiométrico propietario, y re-guardarlo con PIL lo destruye. Una vez
+        girado, ese fichero ya NO se puede volver a convertir a TIFF. Por eso el
+        paso corre al FINAL, cuando el TIFF ya está escrito y verificado, y por
+        eso importa que el original íntegro siga en la carpeta de ORIGEN, que el
+        pipeline solo lee y copia (`_reflink_or_copy`), nunca modifica.
 
         Gira lo MISMO que giró el TIFF (mismo criterio, `read_auto_rotate_degree`),
-        para que el par TIFF/JPG case. Devuelve el número de copias escritas.
+        para que el par TIFF/JPG case. Devuelve el número de imágenes giradas.
 
         Arguments:
         ---------
@@ -2085,25 +2088,25 @@ class SplitImages:
             # Salida silenciosa NO: los tres flags a False es indistinguible, desde el
             # log, de "el criterio salió 0" o de "el paso ni se ejecutó". Costó una
             # ronda entera de diagnóstico con Daniel (v3.4.3): el TIFF salía sin girar
-            # y aquí no se escribía nada, sin una sola línea que dijera por qué.
+            # y aquí no se giraba nada, sin una sola línea que dijera por qué.
             progress_callback.emit(
-                "\nNo se escriben copias giradas: el modo de giro del TIFF está en «Sin giro» "
+                "\nNo se giran los JPG térmicos: el modo de giro del TIFF está en «Sin giro» "
                 "(rotate_90=False, rotate_minus_90=False, auto=False).\n")
-            return 0  # nada que girar: no tiene sentido duplicar los JPG
+            return 0  # sin criterio de giro no hay nada que hacer
         if not os.path.isdir(input_folder):
             self.organizer_logger.logger.warning(
-                f"No se pueden escribir copias giradas: no existe {input_folder}")
+                f"No se pueden girar los JPG térmicos: no existe {input_folder}")
             return 0
 
-        escritas = 0
+        giradas = 0
         for ruta, _, _ in os.walk(input_folder):
             if self.stop:
                 break
             if os.path.basename(ruta) in ("Escala_de_grises", "Color_gradiente"):
                 continue
-            # Excluir las copias ya generadas: sin esto, una segunda pasada sobre
-            # la misma carpeta giraría los `_ROT` otra vez (y encadenaría
-            # `_ROT_ROT`), acumulando basura y girando de más.
+            # La exclusión `_ROT` se mantiene por LEGADO: una carpeta procesada con
+            # 3.4.5 tiene copias `_ROT` que no hay que volver a girar ni contar.
+            # Las versiones nuevas ya no las generan.
             images = self.utils_obj.get_images_from_dir(ruta, [utils.ROTATED_JPG_SUFFIX])
             if not images:
                 continue
@@ -2115,7 +2118,7 @@ class SplitImages:
             else:
                 degree = 270
             if degree not in (90, 270):
-                continue  # sin criterio (0) no se gira: no se escribe copia
+                continue  # sin criterio (0) no se gira
 
             # PIL gira en sentido ANTIhorario, el criterio está en horario: 90º
             # horario == ROTATE_270. Mismo mapeo que `rotate_tiff_images`; si
@@ -2123,51 +2126,70 @@ class SplitImages:
             transpose = Image.ROTATE_270 if degree == 90 else Image.ROTATE_90
 
             progress_callback.emit(
-                "\nEscribiendo {0} copias giradas ({1}º) en el directorio {2}\n".format(
+                "\nGirando {0} imágenes térmicas ({1}º) en el directorio {2}\n".format(
                     len(images), degree, ruta))
             for image in images:
                 if self.stop:
                     break
-                escritas += self._write_one_rotated_jpg(ruta, image, transpose, progress_callback)
+                giradas += self._rotate_one_thermal_jpg_in_place(
+                    ruta, image, transpose, progress_callback)
 
-        if escritas:
+        if giradas:
             self.organizer_logger.logger.info(
-                f"Copias giradas escritas: {escritas} (sufijo {utils.ROTATED_JPG_SUFFIX}).")
-        return escritas
+                f"Imágenes térmicas giradas en su sitio: {giradas}.")
+        return giradas
 
-    def _write_one_rotated_jpg(self, folder: str, image_name: str, transpose: int,
-                               progress_callback) -> int:
-        """Una copia girada. Devuelve 1 si se escribió, 0 si se omitió o falló.
+    def _rotate_one_thermal_jpg_in_place(self, folder: str, image_name: str, transpose: int,
+                                         progress_callback) -> int:
+        """Gira una térmica sobre sí misma. Devuelve 1 si se giró, 0 si se omitió o falló.
 
         Aísla los fallos por imagen igual que el resto del pipeline: una foto
-        corrupta no puede tumbar el vuelo entero, y menos en un paso accesorio
-        que corre DESPUÉS de que lo importante (el TIFF) ya esté en disco.
+        corrupta no puede tumbar el vuelo entero, y menos en un paso que corre
+        DESPUÉS de que lo importante (el TIFF) ya esté en disco.
+
+        Se escribe a un temporal y se reemplaza con `os.replace` (atómico): si el
+        guardado se corta a medias, la térmica original sigue entera en su sitio en
+        vez de quedar truncada. Con el giro in-place esto ya no es un derivado
+        descartable — es el único fichero que queda.
         """
-        base, ext = os.path.splitext(image_name)
-        destino = os.path.join(folder, base + utils.ROTATED_JPG_SUFFIX + ext)
-        if os.path.exists(destino):
-            return 0  # ya estaba de una corrida anterior: no se re-escribe
         origen = os.path.join(folder, image_name)
+        temporal = origen + ".rot.tmp"
         try:
             with Image.open(origen) as image_open:
-                # El EXIF se arrastra a la copia: lleva la geolocalización y la
-                # fecha, que es justo lo que se consulta luego sobre estas fotos.
+                if image_open.height > image_open.width:
+                    # Las térmicas DJI son apaisadas de fábrica (640x512): si esta ya
+                    # viene vertical, es que se giró en una pasada anterior sobre la
+                    # misma carpeta. Volver a girarla la dejaría a 180º.
+                    self.organizer_logger.logger.info(
+                        f"Ya estaba girada, se deja como está: {origen}")
+                    return 0
+                # El EXIF se arrastra: lleva la geolocalización y la fecha, que es
+                # justo lo que se consulta luego sobre estas fotos.
                 exif = image_open.info.get("exif")
                 girada = image_open.transpose(transpose)
+                # quality=95: el re-encodado es inevitable (PIL no gira sin
+                # descomprimir), así que al menos que no añada artefactos visibles
+                # sobre la única copia que va a quedar.
                 if exif:
-                    girada.save(destino, exif=exif)
+                    girada.save(temporal, format="JPEG", quality=95, exif=exif)
                 else:
-                    girada.save(destino)
+                    girada.save(temporal, format="JPEG", quality=95)
+            os.replace(temporal, origen)
             return 1
         except Exception as e:
+            if os.path.exists(temporal):
+                try:
+                    os.remove(temporal)
+                except OSError:
+                    pass
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
             self.organizer_logger.logger.error(
-                "ERROR: no se pudo escribir la copia girada de {0}: {1}".format(origen, e))
+                "ERROR: no se pudo girar la imagen térmica {0}: {1}".format(origen, e))
             self.organizer_logger.logger.exception(e)
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
             progress_callback.emit(
-                "ERROR: no se pudo escribir la copia girada de {0}.\n".format(origen))
-            self._register_image_error(destino)
+                "ERROR: no se pudo girar la imagen térmica {0}.\n".format(origen))
+            self._register_image_error(origen)
             return 0
 
     def read_auto_rotate_degree(self, input_folder: str, progress_callback) -> int:
