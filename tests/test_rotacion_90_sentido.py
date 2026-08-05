@@ -62,7 +62,7 @@ def _obj_con_espia(logger, planta_folder):
 
 
 def _leer_degrees(obj):
-    csv_path = os.path.join(obj.csvs_root_folder, "PB1_V01", "PB1_V01_Videofiles.csv")
+    csv_path = os.path.join(obj.csvs_root_folder, "PB1_V01_Videofiles.csv")
     return set(pd.read_csv(csv_path)["Degree"].unique())
 
 

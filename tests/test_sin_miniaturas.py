@@ -9,7 +9,7 @@ tocado, que es lo que fija este fichero:
   2. El criterio de giro (`_Videofiles.csv`, columna `Degree`) vivía DENTRO de
      MINIATURAS. Es lo único que le dice a la conversión a TIFF y a la copia `_ROT`
      cuánto girar: si desapareciera con la carpeta, ambas dejarían de rotar EN
-     SILENCIO. Ahora va a `CSVs/<vuelo>/`.
+     SILENCIO. Ahora va a `CSVs/`, plano.
   3. El `*_T.JPG` crudo sigue sin tocarse: es R-JPEG propietario de DJI y re-encodarlo
      pierde el payload radiométrico.
 """
@@ -63,7 +63,7 @@ def test_el_criterio_de_giro_se_escribe_en_csvs(tmp_path, logger, make_dji_jpeg)
     planta, carpeta = _vuelo(tmp_path, make_dji_jpeg, "DJI_0001_T.JPG")
     _corre_fase(logger, planta, carpeta, rgb_processing=False)
 
-    csv_path = planta / "CSVs" / "PB1_V01" / "PB1_V01_Videofiles.csv"
+    csv_path = planta / "CSVs" / "PB1_V01_Videofiles.csv"
     assert csv_path.exists(), (
         "El criterio de giro no está en CSVs/: se ha ido con MINIATURAS y el vuelo "
         "dejará de rotar el TIFF y la copia _ROT en silencio."

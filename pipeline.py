@@ -1052,8 +1052,14 @@ class GenStructFolder:
 
     def copy_flight_csvs_to_csvs_folder(self, input_folder: str, file: str) -> None:
         """
-        Copia a `CSVs/<vuelo>` el meta.csv del vuelo térmico (`file`) y el location.csv
+        Copia a `CSVs/` el meta.csv del vuelo térmico (`file`) y el location.csv
         de su carpeta RGB equivalente.
+
+        PLANO, sin subcarpeta por vuelo: los nombres ya llevan el vuelo delante
+        (`PB24_V1_meta.csv`), así que no colisionan, y en `CSVs/` solo debe haber CSVs.
+        La subcarpeta era herencia de cuando esto vivía en `MINIATURAS/<vuelo>/`; al
+        moverlo aquí se arrastró la jerarquía y dejaba un duplicado byte a byte del
+        meta/location que el paso de meta/location ya escribe en la raíz de `CSVs/`.
 
         SOBRESCRIBE a propósito. Se usaba `safe_copy2`, que en vez de sobrescribir versiona
         (`unique_dest` -> `_1`, `_2`...): re-procesar el mismo destino dejaba
@@ -1062,12 +1068,11 @@ class GenStructFolder:
         el mismo dato, no una versión nueva. Ese versionado sí tiene sentido para imágenes
         distintas que colisionan de nombre, no aquí.
         """
-        dest_subfolder = os.path.join(self.csvs_root_folder, os.path.basename(input_folder))
-        os.makedirs(dest_subfolder, exist_ok=True)
+        os.makedirs(self.csvs_root_folder, exist_ok=True)
         rgb_dir = input_folder.replace("TERMICA", "RGB")
         rgb_file = file.replace("meta", "location")
-        for origen, destino in ((os.path.join(input_folder, file), os.path.join(dest_subfolder, os.path.basename(file))),
-                                (os.path.join(rgb_dir, rgb_file), os.path.join(dest_subfolder, os.path.basename(rgb_file)))):
+        for origen, destino in ((os.path.join(input_folder, file), os.path.join(self.csvs_root_folder, os.path.basename(file))),
+                                (os.path.join(rgb_dir, rgb_file), os.path.join(self.csvs_root_folder, os.path.basename(rgb_file)))):
             try:
                 shutil.copy2(origen, destino)
             except FileNotFoundError:
@@ -1075,7 +1080,7 @@ class GenStructFolder:
 
     def copy_flight_csvs(self, input_folder: str, progress_callback) -> None:
         """
-        Copia el meta/location.csv del vuelo térmico a `CSVs/<vuelo>`, avisando si
+        Copia el meta/location.csv del vuelo térmico a `CSVs/`, avisando si
         alguno de los dos no está donde se espera.
 
         Antes se copiaban DOS veces (a MINIATURAS y a CSVs). Al quitar las miniaturas queda
@@ -1130,16 +1135,15 @@ class GenStructFolder:
     def write_videofiles_csv(self, input_folder: str, df_videofiles) -> None:
         """
         Escribe el criterio de giro del vuelo (`<PBX_VXX>_Videofiles.csv`, columna `Degree`)
-        en `CSVs/<PBX_VXX>/`.
+        en `CSVs/`, plano: el nombre ya lleva el vuelo, no hace falta subcarpeta.
 
         Vivía dentro de MINIATURAS hasta que se eliminaron las miniaturas. NO es un
         subproducto descartable: es lo único que le dice a la conversión a TIFF y a la copia
         girada `_ROT` cuánto tienen que girar (`read_auto_rotate_degree`). Si falta, ambas
         dejan de rotar en silencio.
         """
-        dest_folder = os.path.join(self.csvs_root_folder, os.path.basename(input_folder))
-        os.makedirs(dest_folder, exist_ok=True)
-        df_videofiles.to_csv(os.path.join(dest_folder, os.path.basename(input_folder) + "_Videofiles.csv"),
+        os.makedirs(self.csvs_root_folder, exist_ok=True)
+        df_videofiles.to_csv(os.path.join(self.csvs_root_folder, os.path.basename(input_folder) + "_Videofiles.csv"),
                              sep=",", header=True, index=False)
 
     def gen_thumbnails_and_rotate(self, input_folder: str, rgb_processing: bool, max_error: int, lim_max_270: int, lim_min_270: int, lim_max_90: int, lim_min_90: int, progress_callback, progress_bar) -> None:
@@ -2153,14 +2157,15 @@ class SplitImages:
         """Criterio de giro AUTO de un vuelo: 0, 90 o 270 grados (horario).
 
         La decisión NO se recalcula aquí: la toma el paso de rotación y la deja
-        escrita en `CSVs/<PBX_VXX>/<PBX_VXX>_Videofiles.csv`
+        escrita en `CSVs/<PBX_VXX>_Videofiles.csv`
         (columna `Degree`). Este método es la ÚNICA lectura de ese criterio, para
         que la conversión a TIFF y la copia girada del JPG no puedan divergir:
         ambas tienen que girar lo mismo o el par TIFF/JPG deja de casar.
 
-        Ese CSV vivía en `MINIATURAS/` hasta que se eliminaron las miniaturas. Se
-        mantiene el fallback de lectura a MINIATURAS para poder re-procesar carpetas
-        generadas por versiones anteriores, que no tienen el CSV en `CSVs/`.
+        Ese CSV vivía en `MINIATURAS/<vuelo>_miniaturas/` hasta que se eliminaron las
+        miniaturas, y luego en `CSVs/<vuelo>/` (v3.4.0-v3.4.1) hasta que se aplanó.
+        Se mantienen AMBOS fallbacks de lectura para poder re-procesar carpetas
+        generadas por versiones anteriores sin que el vuelo deje de rotar en silencio.
 
         Sin criterio legible (CSV ausente, vacío o sin la columna) devuelve 0 —
         no rotar — y lo dice; nunca revienta el vuelo.
@@ -2177,11 +2182,17 @@ class SplitImages:
 
         root_folder = input_folder.split("TERMICA")[0].rstrip("/\\")
         csv_name = pb_v_name + "_Videofiles.csv"
-        csvs_folder = os.path.join(root_folder, "CSVs", pb_v_name)
-        legacy_folder = os.path.join(root_folder, "MINIATURAS", pb_v_name + "_miniaturas")  # Las carpetas antiguas sí llevaban el sufijo _miniaturas.
-        criterio_path = os.path.join(csvs_folder, csv_name)
-        if not os.path.exists(criterio_path) and os.path.exists(os.path.join(legacy_folder, csv_name)):
-            criterio_path = os.path.join(legacy_folder, csv_name)  # Carpeta procesada por una versión anterior: el criterio sigue en MINIATURAS.
+        csvs_folder = os.path.join(root_folder, "CSVs")
+        candidatos = (
+            os.path.join(csvs_folder, csv_name),                                                   # Actual: CSVs/ plano.
+            os.path.join(csvs_folder, pb_v_name, csv_name),                                        # v3.4.0-v3.4.1: subcarpeta por vuelo.
+            os.path.join(root_folder, "MINIATURAS", pb_v_name + "_miniaturas", csv_name),          # Legacy: las carpetas antiguas sí llevaban el sufijo _miniaturas.
+        )
+        criterio_path = candidatos[0]
+        for candidato in candidatos:
+            if os.path.exists(candidato):
+                criterio_path = candidato  # Carpeta procesada por una versión anterior: el criterio sigue donde lo dejó.
+                break
         try:
             df_pb_csv = pd.read_csv(criterio_path)
             # El CSV puede existir y estar VACÍO (solo cabecera): pasa cuando el paso

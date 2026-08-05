@@ -154,7 +154,7 @@ def test_videofiles_csv_columns_and_degree(tmp_path, logger, make_dji_jpeg):
         progress_callback=progress, progress_bar=progress,
     )
 
-    csv_path = os.path.join(obj.csvs_root_folder, "PB1_V01", "PB1_V01_Videofiles.csv")
+    csv_path = os.path.join(obj.csvs_root_folder, "PB1_V01_Videofiles.csv")
     assert os.path.exists(csv_path), (
         "No se generó el CSV _Videofiles — gen_struct/gen_struct_folder.py:649-652"
     )

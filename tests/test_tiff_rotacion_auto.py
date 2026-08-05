@@ -1,7 +1,7 @@
 """Rotación AUTO del TIFF: el paso 6 consume el criterio que decidió el paso 5.
 
 La decisión de giro NO se recalcula en la conversión a TIFF: el paso de rotación
-la escribe en `CSVs/<PBX_VXX>/<PBX_VXX>_Videofiles.csv` (columna `Degree`) y
+la escribe en `CSVs/<PBX_VXX>_Videofiles.csv` (columna `Degree`) y
 `convert_dji_image_to_tif(auto_rotate=True)` la relee de ahí. Ese
 traspaso entre pasos, que es por FICHERO, no tenía ni un solo test: se probaba que
 el paso 5 escribe el CSV y que el paso 6 rota con los flags manuales, pero nunca
@@ -31,7 +31,7 @@ def _noop_progress():
     return types.SimpleNamespace(emit=lambda *a, **k: None)
 
 
-def _monta_vuelo(tmp_path, make_dji_jpeg, contenido_csv, carpeta_criterio="CSVs/PB24_V1"):
+def _monta_vuelo(tmp_path, make_dji_jpeg, contenido_csv, carpeta_criterio="CSVs"):
     """Crea <destino>/TERMICA/PB24/PB24_V1/DJI_0001_T.JPG y, si procede, el CSV de
     criterio en <destino>/<carpeta_criterio>/. Devuelve (carpeta, jpg)."""
     vuelo = tmp_path / "TERMICA" / "PB24" / "PB24_V1"

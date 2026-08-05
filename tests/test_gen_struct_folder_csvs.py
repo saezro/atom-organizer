@@ -21,8 +21,8 @@ def test_csvs_folder_recibe_copia_de_meta_y_location(tmp_path, organizer_logger_
 
     obj.copy_flight_csvs_to_csvs_folder(str(termica_vuelo), "meta.csv")
 
-    assert os.path.exists(os.path.join(obj.csvs_root_folder, "PB1_V01", "meta.csv"))
-    assert os.path.exists(os.path.join(obj.csvs_root_folder, "PB1_V01", "location.csv"))
+    assert os.path.exists(os.path.join(obj.csvs_root_folder, "meta.csv"))
+    assert os.path.exists(os.path.join(obj.csvs_root_folder, "location.csv"))
 
 
 def _monta_vuelo(root):
@@ -58,7 +58,7 @@ def test_reprocesar_no_versiona_los_csv(tmp_path, organizer_logger_stub):
     for _ in range(3):
         obj.copy_flight_csvs(str(termica_vuelo), _noop())
 
-    destino = tmp_path / "CSVs" / "PB1_V01"
+    destino = tmp_path / "CSVs"
     assert sorted(p.name for p in destino.glob("*.csv")) == ["PB1_V01_location.csv", "PB1_V01_meta.csv"], (
         f"Han aparecido copias versionadas: {sorted(p.name for p in destino.glob('*.csv'))}"
     )
@@ -74,5 +74,30 @@ def test_varios_csv_en_el_vuelo_no_repiten_la_copia(tmp_path, organizer_logger_s
 
     obj.copy_flight_csvs(str(termica_vuelo), _noop())
 
-    destino = tmp_path / "CSVs" / "PB1_V01"
+    destino = tmp_path / "CSVs"
     assert sorted(p.name for p in destino.glob("*.csv")) == ["PB1_V01_location.csv", "PB1_V01_meta.csv"]
+
+
+def test_en_csvs_no_queda_ninguna_subcarpeta(tmp_path, organizer_logger_stub):
+    """`CSVs/` es plana: solo ficheros .csv, ninguna carpeta por vuelo.
+
+    Hasta v3.4.1 el criterio de giro y las copias de meta/location se escribían en
+    `CSVs/<vuelo>/` (herencia de cuando vivían en `MINIATURAS/<vuelo>/`). Eso metía una
+    carpeta dentro de CSVs y duplicaba byte a byte el meta/location que el paso de
+    meta/location ya deja plano ahí mismo.
+    """
+    import pandas as pd
+
+    from pipeline import GenStructFolder
+    termica_vuelo = _monta_vuelo(tmp_path)
+    obj = _obj(tmp_path, organizer_logger_stub)
+
+    obj.copy_flight_csvs(str(termica_vuelo), _noop())
+    obj.write_videofiles_csv(str(termica_vuelo),
+                             pd.DataFrame(columns=["New Name", "Original Name", "Degree"]))
+
+    csvs = tmp_path / "CSVs"
+    assert [p.name for p in csvs.iterdir() if p.is_dir()] == [], (
+        "Ha aparecido una carpeta dentro de CSVs; ahí solo deben ir los .csv."
+    )
+    assert (csvs / "PB1_V01_Videofiles.csv").exists()
