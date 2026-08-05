@@ -3,12 +3,18 @@
 Hasta la 3.3.2 se empaquetaban programas_externos/M2EA/ y /M4T/, elegidas en runtime
 por autodetección del modelo de dron, siendo byte a byte idénticas (mismo md5 en los
 19 ficheros de ambas). La elección no elegía nada — siempre acababa lanzando el mismo
-binario — y a cambio duplicaba 6,7 MB de instalador y metía una ruta variable en la
-única fase que falla en campo. Estos tests impiden que la duplicación vuelva a colarse.
+binario — y a cambio ocupaba 6,8 MB extra en disco instalado y metía una ruta variable
+en la única fase que falla en campo. Estos tests impiden que vuelva a colarse.
+
+(El instalador apenas encogió al unificar —147.205.104 → 147.199.035 bytes, 6 KB—:
+LZMA ya deduplicaba dos carpetas idénticas casi por completo. El ahorro está en el
+disco del usuario, no en la descarga.)
 """
 import hashlib
 import os
 from pathlib import Path
+
+import pytest
 
 import external_tools
 
@@ -63,3 +69,33 @@ def test_ningun_binario_del_sdk_esta_duplicado():
         por_hash.setdefault(digest, []).append(fichero.relative_to(SDK_DIR).as_posix())
     duplicados = {h: n for h, n in por_hash.items() if len(n) > 1}
     assert not duplicados, f"ficheros duplicados en el SDK: {duplicados}"
+
+
+def _libs_declaradas(seccion: str) -> list:
+    """Ficheros que libv_list.ini declara en una seccion, en orden."""
+    import configparser
+
+    ini = configparser.ConfigParser()
+    ini.read(SDK_DIR / "libv_list.ini", encoding="utf-8")
+    return [ini[seccion][k] for k in ini[seccion]]
+
+
+@pytest.mark.parametrize("seccion", ["windows_release_dll_list", "linux_release_dll_list"])
+def test_las_libs_que_declara_el_sdk_existen(seccion):
+    """Cada libreria que libv_list.ini declara para una plataforma DEBE estar.
+
+    Este test nace del bug que rompio la conversion termica en Windows entre el
+    2026-07-23 y el 2026-08-05. El port a Linux (cd9b913) sobreescribio
+    libv_list.ini con el de una version mas nueva del SDK, que declara
+    `hirp=libv_hirp.dll`; los binarios Windows siguieron siendo los de 2022, que
+    traen `libv_cirp.dll` y ningun libv_hirp.dll. libdirp.dll cargaba bien (el log
+    imprimia "DIRP API version number : 0x13") pero dirp_create_from_rjpeg fallaba
+    con -16 en TODAS las imagenes, en todas las maquinas Windows. En Linux no se
+    noto: alli libv_hirp.so si esta.
+
+    Un .ini que declara ficheros ausentes es exactamente eso, y aqui salta.
+    """
+    faltan = [n for n in _libs_declaradas(seccion) if not (SDK_DIR / n).is_file()]
+    assert not faltan, (
+        f"libv_list.ini [{seccion}] declara librerias que no estan en el paquete: {faltan}. "
+        "El SDK fallara con -16 (create R-JPEG dirp handle failed) en esa plataforma.")
