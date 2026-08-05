@@ -72,7 +72,10 @@ import configparser
 # #0a0a0a, inputs/botones "glass"). El wordmark usa Space Grotesk 700 (cargada en _load_brand_font).
 # Follow-up (Fase B): neutralizar los ~80 setStyleSheet inline del .ui generado que aún pisan esto.
 
-APP_VERSION = "3.2"        # versión mostrada junto al wordmark en la cabecera
+try:                        # versión mostrada junto al wordmark en la cabecera
+    from version import __version__ as APP_VERSION
+except Exception:           # congelado sin version.py al alcance: no romper la GUI
+    APP_VERSION = "0.0.0"
 BACKGROUND = "#0a0a0a"      # fondo login ATOM Suite
 ACCENT = "#EE753A"          # naranja marca (título "SUITE", acentos)
 ACCENT_SOFT = "rgba(238,117,58,0.6)"
