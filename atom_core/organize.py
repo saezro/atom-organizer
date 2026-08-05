@@ -269,11 +269,13 @@ def _default_split_config(params: dict) -> SplitImagesConfig:
         convert_to_tif_low_temperature=0.0, convert_to_tiff_rotate_90=False,
         convert_to_tiff_rotate_minus_90=False, convert_to_tiff_rotate_auto=True,
         convert_to_tif_solo_seleccion_atom=False,
-        # ON por defecto: el .tiff es float32 de temperaturas y Windows lo abre BLANCO,
-        # así que sin la vista en gris no hay forma de comprobar a ojo que la térmica
-        # quedó girada con el norte arriba. Gira con el mismo criterio que el TIFF
-        # (`rotar_arrays_termicos`). Cuesta un JPG por imagen en `Escala_de_grises/`.
-        convert_to_tif_create_gray_scale_images=True,
+        # OFF por defecto (3.4.9). En 3.4.8 se activó para poder ver la orientación del
+        # .tiff, dando por hecho que se abría BLANCO: el fichero es float32 en °C (rango
+        # real medido 27,3–70,9) y la convención para float es 0,0–1,0, así que satura.
+        # Pero en el visor de Cas SÍ se ve en gris, luego el síntoma no existe y la
+        # carpeta `Escala_de_grises/` sólo añadía un JPG por imagen a la salida. Se deja
+        # como opción a un clic; el giro sigue siendo común al TIFF (`rotar_arrays_termicos`).
+        convert_to_tif_create_gray_scale_images=False,
     )
 
 
@@ -397,7 +399,16 @@ def run_task(
                 if kind in ("log", "summary", "error", "plant"):
                     _run_log.write(f"[{kind}] {payload}\n")
                 elif kind == "phase" and isinstance(payload, dict):
-                    _run_log.write(f"[phase] {payload.get('index')}/{payload.get('total')} {payload.get('name')}\n")
+                    # `prev` (duración + errores de la fase que acaba de cerrarse) ya
+                    # viajaba en el evento pero se descartaba aquí: el log sólo dejaba
+                    # el total del run, así que no había forma de saber QUÉ fase se
+                    # come el tiempo sin instrumentar a mano. Se escribe como sufijo
+                    # de la fase entrante para no cambiar el formato de la línea.
+                    _prev = payload.get("prev") or {}
+                    _cierre = (f"  (fase {_prev['index']}: {_prev['duration']}s)"
+                               if _prev.get("duration") is not None else "")
+                    _run_log.write(f"[phase] {payload.get('index')}/{payload.get('total')} "
+                                   f"{payload.get('name')}{_cierre}\n")
                 elif kind == "stats" and isinstance(payload, dict):
                     _run_log.write(
                         "[stats] {done}/{total} img (RGB {rgb} / térmica {termica}) · "

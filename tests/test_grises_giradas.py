@@ -75,8 +75,14 @@ def test_auto_lee_el_criterio_y_un_valor_raro_no_gira(split, monkeypatch):
     assert split.degree_de_giro(False, False, False, "/x", _FakeSignal()) == 0
 
 
-def test_la_escala_de_grises_viene_activada_por_defecto():
-    """Sin esto el .tiff se abre blanco y no hay forma de ver la orientación.
+def test_la_escala_de_grises_viene_desactivada_por_defecto():
+    """3.4.9 invierte el default de 3.4.8: la carpeta `Escala_de_grises/` es OPT-IN.
+
+    3.4.8 la activó para poder ver la orientación del .tiff dando por hecho que se abría
+    blanco (es float32 en °C, 27,3–70,9 medidos, y la convención float es 0,0–1,0). Pero
+    en el visor real SÍ se ve en gris: el síntoma no existe y la carpeta sólo engordaba
+    la salida con un JPG por imagen. Los tres consumidores del .tiff (ThermoViewer, QGIS,
+    Pix4D) leen la primera página, así que el fichero NO se toca.
 
     Se lee como TEXTO a propósito: `atom_core/organize.py` arrastra Qt y no es importable
     en CI, y el default del front vive en un `.js`.
@@ -84,10 +90,10 @@ def test_la_escala_de_grises_viene_activada_por_defecto():
     raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     organize = open(os.path.join(raiz, "atom_core", "organize.py"), encoding="utf-8").read()
-    assert "convert_to_tif_create_gray_scale_images=True" in organize
-    assert "convert_to_tif_create_gray_scale_images=False" not in organize
+    assert "convert_to_tif_create_gray_scale_images=False" in organize
+    assert "convert_to_tif_create_gray_scale_images=True" not in organize
 
     schema = open(os.path.join(raiz, "webui", "src", "schema.js"), encoding="utf-8").read()
     for campo in ("create_gray_scale_images", "convert_to_tif_create_gray_scale_images"):
         linea = next(l for l in schema.splitlines() if f"name: '{campo}'" in l)
-        assert "default: true" in linea, linea
+        assert "default: false" in linea, linea

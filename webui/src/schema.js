@@ -149,7 +149,7 @@ export const OTROS = [
         ],
       },
       { name: 'solo_seleccion_atom', type: 'bool', label: 'Solo Seleccion_ATOM', default: false },
-      { name: 'create_gray_scale_images', type: 'bool', label: 'Generar escala de grises JPG', default: true },
+      { name: 'create_gray_scale_images', type: 'bool', label: 'Generar escala de grises JPG', default: false },
     ],
   },
   {
@@ -275,7 +275,7 @@ export const SPLIT_ADVANCED = [
       { name: 'convert_to_tif_up_temperature', type: 'number', label: 'Umbral Tª máxima', default: '0' },
       { name: 'convert_to_tif_low_temperature', type: 'number', label: 'Umbral Tª mínima', default: '0' },
       { name: 'convert_to_tif_temp_auto', type: 'bool', label: 'Auto Tª habilitado', default: false },
-      { name: 'convert_to_tif_create_gray_scale_images', type: 'bool', label: 'Generar escala de grises JPG', default: true },
+      { name: 'convert_to_tif_create_gray_scale_images', type: 'bool', label: 'Generar escala de grises JPG', default: false },
       { name: 'convert_to_tif_solo_seleccion_atom', type: 'bool', label: 'Solo Seleccion_ATOM', default: false },
     ],
   },
