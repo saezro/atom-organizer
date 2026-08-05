@@ -975,7 +975,63 @@ class StopGate:
         self._armed = False
 
 
-def run_batch(items, worker_fn, worker_args_fn, on_progress=None, max_workers=None):
+#: Coste de RAM que se le presupone a un worker del pool, en MB. Una imagen de 48 MP
+#: descomprimida ocupa ~144 MB, y PIL tiene el original y el transpuesto vivos a la vez;
+#: sumando su `_CROP` y el intérprete del proceso hijo, ~600 MB es un presupuesto holgado.
+MB_POR_WORKER = 600
+
+#: Núcleos que se dejan libres SIEMPRE. Sin esto el pool ocupa la máquina entera y el
+#: usuario ve la aplicación (y el resto de su ordenador) congelada mientras procesa.
+NUCLEOS_RESERVADOS = 1
+
+
+def _memoria_disponible_mb():
+    """
+    RAM disponible en MB, o None si no se puede averiguar.
+
+    `psutil` está en requirements, pero se importa aquí dentro y con red de seguridad a
+    propósito: si en el ejecutable congelado no viajara, el pool tiene que seguir
+    funcionando (limitado solo por CPU) en vez de tumbar el procesado entero.
+    """
+    try:
+        import psutil
+
+        return psutil.virtual_memory().available / (1024 * 1024)
+    except Exception:
+        return None
+
+
+def workers_para_lote(mb_por_worker: int = MB_POR_WORKER) -> int:
+    """
+    Cuántos procesos puede permitirse ESTA máquina, ahora mismo.
+
+    El pool corre en el ordenador del usuario, no en un servidor: abrir un proceso por
+    núcleo con imágenes de 48 MP dentro puede agotar la RAM de un portátil y llevarse por
+    delante el procesado (o el resto de lo que tenga abierto). Se elige el menor de:
+
+    - los núcleos utilizables, dejando `NUCLEOS_RESERVADOS` libres para que la interfaz
+      siga respondiendo;
+    - los que caben en la memoria disponible a razón de `mb_por_worker` cada uno.
+
+    Nunca devuelve menos de 1: con la máquina al límite se procesa de uno en uno, que es
+    exactamente lo que hacía la versión secuencial.
+
+    Arguments:
+    ---------
+    - mb_por_worker - RAM que se le presupone a cada proceso. Súbelo en fases que abran
+      imágenes más grandes, bájalo en las que solo muevan ficheros.
+    """
+    nucleos = os.process_cpu_count() if hasattr(os, "process_cpu_count") else os.cpu_count()
+    limite = max(1, (nucleos or 1) - NUCLEOS_RESERVADOS)
+
+    disponible = _memoria_disponible_mb()
+    if disponible is not None and mb_por_worker > 0:
+        limite = min(limite, int(disponible // mb_por_worker))
+
+    return max(1, limite)
+
+
+def run_batch(items, worker_fn, worker_args_fn, on_progress=None, max_workers=None, mb_por_worker=MB_POR_WORKER):
     """
     Reparte `items` en un ProcessPoolExecutor, ejecutando worker_fn(*worker_args_fn(item)) para
     cada uno. Un item que lanza excepción NO tumba el lote: se captura, se registra, y se sigue
@@ -988,7 +1044,10 @@ def run_batch(items, worker_fn, worker_args_fn, on_progress=None, max_workers=No
     - worker_args_fn - función que, dado un item, devuelve la tupla de argumentos posicionales
       para worker_fn.
     - on_progress - callback opcional invocado con el porcentaje (0-100) tras cada item completado.
-    - max_workers - número de procesos del pool; None delega en ProcessPoolExecutor.
+    - max_workers - número de procesos del pool. None (lo normal) lo decide
+      `workers_para_lote` según los núcleos y la RAM libres de la máquina del usuario, en
+      vez de dejar que ProcessPoolExecutor abra uno por núcleo.
+    - mb_por_worker - RAM que se le presupone a cada proceso, para ese cálculo.
 
     Returns:
     --------
@@ -1000,6 +1059,10 @@ def run_batch(items, worker_fn, worker_args_fn, on_progress=None, max_workers=No
     total = len(items)
     if total == 0:
         return {"results": results, "errors": errors}
+
+    if max_workers is None:
+        max_workers = workers_para_lote(mb_por_worker)
+    max_workers = max(1, min(max_workers, total))  # Abrir más procesos que items no acelera nada.
 
     current = 0
     with ProcessPoolExecutor(max_workers=max_workers) as executor:

@@ -1262,7 +1262,11 @@ class GenStructFolder:
         def _on_progress(_pct):
             self.send_progress_to_bar(progress_bar, progress_callback)
 
-        result = utils.run_batch(images, rotate_one_image, _worker_args_fn, on_progress=_on_progress)
+        # Se resuelve aquí, y no dentro de run_batch, para dejarlo escrito en el log: si un
+        # día una máquina va lenta, lo primero que hay que saber es con cuántos procesos giró.
+        workers = utils.workers_para_lote()
+        self.organizer_logger.logger.info(f"Rotando {len(images)} imágenes con {workers} procesos en paralelo.")
+        result = utils.run_batch(images, rotate_one_image, _worker_args_fn, on_progress=_on_progress, max_workers=workers)
 
         for payload in result["results"]:
             for message in payload["messages"]:  # Lo que el worker quiso escribir en la ventana de log.

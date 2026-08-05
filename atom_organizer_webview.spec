@@ -89,6 +89,8 @@ a = Analysis(
         'pyexiv2', 'ipaddress',
         'version', 'atom_core.updater',   # updater: import perezoso desde app_webview
         'gui', 'atom_core.organize',           # import perezoso en el worker → forzarlo explícito
+        'psutil',                              # utils.workers_para_lote: import perezoso; sin él
+                                               # el pool no puede capar por RAM libre
         'webview.platforms.qt',                # backend pywebview Qt (antes edgechromium/WebView2)
         'qtpy', 'bottle', 'proxy_tools',       # transitivas de pywebview
         'PySide6.QtWebEngineWidgets',          # Chromium embebido (bridge Qt)
