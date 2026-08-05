@@ -5,7 +5,14 @@ export function initialState(fields) {
   const s = {}
   for (const f of fields) {
     if (f.type === 'bool') s[f.name] = !!f.default
-    else if (f.type === 'select') s[f.name] = 0 // índice de opción
+    // Índice de opción. Hay que respetar `f.default`: `__tif_rot` declara
+    // default 1 (= Auto) porque el backend tiene convert_to_tiff_rotate_auto=True
+    // en _default_split_config. Al forzar 0 aquí, el select mandaba SIEMPRE
+    // {rotate_auto: false, rotate_90: false, rotate_minus_90: false} dentro de
+    // `advanced`, y ese objeto PISA los defaults sanos del backend (organize.py,
+    // `replace(cfg, **coerced)`) -> ni se giraba el TIFF ni se escribían las
+    // copias _ROT, aunque el criterio de giro (Degree=270) fuera correcto.
+    else if (f.type === 'select') s[f.name] = f.default ?? 0
     else s[f.name] = f.default ?? ''
   }
   return s
