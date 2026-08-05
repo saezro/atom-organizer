@@ -792,22 +792,6 @@ class MetaLocation:
             progress_callback.emit("\nWARNING: No se pudo obtener AlturaRelativa (XMP RelativeAltitude) de una imagen.\n")
             return float('nan')
 
-    def copy_location_csv_to_flight_folder(self, termica_input_folder: str) -> None:
-        """
-        Copia el location.csv del vuelo (generado en la carpeta RGB hermana) dentro de la carpeta TERMICA del mismo vuelo,
-        para que meta.csv y location.csv queden juntos en la carpeta del vuelo.
-        """
-        from utils import safe_copy2
-        rgb_dir = termica_input_folder.replace("TERMICA", "RGB")
-        location_filename = os.path.basename(rgb_dir) + "_location.csv"
-        location_path = os.path.join(rgb_dir, location_filename)
-        if os.path.exists(location_path):
-            try:
-                dest_path = os.path.join(termica_input_folder, os.path.basename(location_path))
-                safe_copy2(location_path, dest_path)
-            except FileNotFoundError:
-                pass
-
     def gen_meta_location(self, input_folder: str, filename: str, progress_callback, progress_bar, csv_folder, flight_height:float, calculate_proyected_distance: bool) -> None:
         """
         Función que genera un archivo csv (normalmente llamado meta o location, junto con el nombre de la carpeta) a partir de los datos
@@ -878,8 +862,12 @@ class MetaLocation:
                 if ".csv" in file:
                     shutil.copy2(os.path.join(input_folder, os.path.basename(input_folder) + "_" + filename), csv_folder)
 
-        if filename == "meta.csv":
-            self.copy_location_csv_to_flight_folder(input_folder)
+        # El location.csv NO se copia a la carpeta del vuelo térmico: describe las imágenes
+        # RGB (`_W`) y en `TERMICA/<PBX>/<PBX_VXX>/` es un duplicado byte a byte del que ya
+        # está en `RGB/<PBX>/<PBX_VXX>/`. Daniel lo reportó como salida sobrante (v3.4.6).
+        # El par meta+location sigue llegando junto a `CSVs/`, que es donde se consulta:
+        # `SplitImages.copy_flight_csvs_to_csvs_folder` lee el location de la carpeta RGB
+        # hermana, no de TERMICA, así que esto no le afecta.
 
 
     def iterate_folders(self, input_folder: str, filename: str, progress_callback, progress_bar, csv_folder: str, flight_height: float, calculate_proyected_distance: bool) -> None:
