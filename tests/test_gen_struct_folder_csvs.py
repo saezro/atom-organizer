@@ -97,7 +97,15 @@ def test_en_csvs_no_queda_ninguna_subcarpeta(tmp_path, organizer_logger_stub):
                              pd.DataFrame(columns=["New Name", "Original Name", "Degree"]))
 
     csvs = tmp_path / "CSVs"
-    assert [p.name for p in csvs.iterdir() if p.is_dir()] == [], (
-        "Ha aparecido una carpeta dentro de CSVs; ahí solo deben ir los .csv."
+    # La ÚNICA subcarpeta admitida es la interna del criterio de giro. Cualquier otra
+    # es la regresión que fijaba este test (v3.4.0-v3.4.1 creaban una carpeta por
+    # vuelo). El criterio se aparta ahí a propósito desde v3.4.4: no es un CSV que el
+    # usuario consuma y estorbaba entre los de meta/location.
+    assert [p.name for p in csvs.iterdir() if p.is_dir()] == [utils_module.CRITERIO_DIRNAME], (
+        "Ha aparecido una carpeta inesperada dentro de CSVs; ahí solo deben ir los .csv "
+        f"y la interna {utils_module.CRITERIO_DIRNAME}/."
     )
-    assert (csvs / "PB1_V01_Videofiles.csv").exists()
+    assert not (csvs / "PB1_V01_Videofiles.csv").exists(), (
+        "El criterio de giro sigue suelto en CSVs/: debe ir en la subcarpeta interna."
+    )
+    assert (csvs / utils_module.CRITERIO_DIRNAME / "PB1_V01_Videofiles.csv").exists()

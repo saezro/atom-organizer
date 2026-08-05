@@ -439,6 +439,16 @@ def resolve_target(dev: bool) -> str:
     return str(DIST_INDEX)
 
 
+def _app_version_for_title() -> str:
+    """Versión para la barra de título. Nunca revienta el arranque por esto."""
+    try:
+        from atom_core import updater
+
+        return updater.current_version()
+    except Exception:
+        return "?"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="ATOM Organizer (UI React/pywebview)")
     parser.add_argument(
@@ -452,7 +462,10 @@ def main() -> None:
     api = Api()
 
     window = webview.create_window(
-        title="ATOM Organizer",
+        # La versión va en el TÍTULO de la ventana, no solo en el header de la UI:
+        # es lo que se ve en la barra de tareas y en una captura de pantalla, que es
+        # como el usuario final reporta en qué build está.
+        title=f"ATOM Organizer v{_app_version_for_title()}",
         url=target,
         js_api=api,
         width=1100,

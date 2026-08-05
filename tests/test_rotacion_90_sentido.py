@@ -22,6 +22,8 @@ import types
 import pandas as pd
 from PIL import Image
 
+import utils
+
 
 def _recording_progress():
     mensajes = []
@@ -62,7 +64,7 @@ def _obj_con_espia(logger, planta_folder):
 
 
 def _leer_degrees(obj):
-    csv_path = os.path.join(obj.csvs_root_folder, "PB1_V01_Videofiles.csv")
+    csv_path = os.path.join(obj.csvs_root_folder, utils.CRITERIO_DIRNAME, "PB1_V01_Videofiles.csv")
     return set(pd.read_csv(csv_path)["Degree"].unique())
 
 

@@ -19,6 +19,8 @@ import types
 import pandas as pd
 from PIL import Image
 
+import utils
+
 
 def _noop_progress():
     return types.SimpleNamespace(emit=lambda *a, **k: None)
@@ -63,7 +65,7 @@ def test_el_criterio_de_giro_se_escribe_en_csvs(tmp_path, logger, make_dji_jpeg)
     planta, carpeta = _vuelo(tmp_path, make_dji_jpeg, "DJI_0001_T.JPG")
     _corre_fase(logger, planta, carpeta, rgb_processing=False)
 
-    csv_path = planta / "CSVs" / "PB1_V01_Videofiles.csv"
+    csv_path = planta / "CSVs" / utils.CRITERIO_DIRNAME / "PB1_V01_Videofiles.csv"
     assert csv_path.exists(), (
         "El criterio de giro no está en CSVs/: se ha ido con MINIATURAS y el vuelo "
         "dejará de rotar el TIFF y la copia _ROT en silencio."

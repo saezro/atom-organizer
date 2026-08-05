@@ -16,6 +16,7 @@ import types
 import pandas as pd
 import pytest
 
+import utils
 from utils import (
     ROTATION_MIN_AGREEMENT_PCT,
     ROTATION_YAW_MARGIN,
@@ -138,7 +139,7 @@ def test_con_los_limites_a_cero_la_barrera_rota_igual(tmp_path, logger, make_dji
         progress_callback=progress, progress_bar=progress,
     )
 
-    csv_path = os.path.join(planta_folder, "CSVs", "PB1_V01_Videofiles.csv")
+    csv_path = os.path.join(planta_folder, "CSVs", utils.CRITERIO_DIRNAME, "PB1_V01_Videofiles.csv")
     assert os.path.exists(csv_path), "No se llegó a procesar el vuelo."
     df = pd.read_csv(csv_path)
     assert set(df["Degree"].unique()) == {270}, (

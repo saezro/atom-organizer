@@ -410,6 +410,24 @@ class Utils:
         return ''.join([n for n in input_string if n.isdigit() or n=="-"or n=="." ])
 
 
+    def hide_folder_on_windows(self, folder: str) -> None:
+        """Marca `folder` como oculta en Windows (atributo FILE_ATTRIBUTE_HIDDEN).
+
+        El prefijo `_` basta para que ordene al final, pero en el Explorador sigue a
+        la vista. Es SOLO cosmético: el contenido se lee igual esté oculta o no, así
+        que un fallo aquí no puede afectar al pipeline y se traga en silencio. En
+        Linux/macOS no hace nada (no existe el atributo).
+        """
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+
+            FILE_ATTRIBUTE_HIDDEN = 0x02
+            ctypes.windll.kernel32.SetFileAttributesW(str(folder), FILE_ATTRIBUTE_HIDDEN)
+        except Exception:
+            pass
+
     def prepare_output_folder(self, output_folder: str, words_list: list[str]) -> None:
         """
         Función que gestiona la carpeta de salida, comprobando que las carpetas que se encuentran en la lista de entrada existen. Si no es así las crea.
@@ -688,6 +706,14 @@ ROTATION_MIN_AGREEMENT_PCT = 50
 # listados del pipeline lo excluyen por patrón para no re-procesar lo que él
 # mismo generó (`get_images_from_dir(..., ["_ROT"])`).
 ROTATED_JPG_SUFFIX = "_ROT"
+
+# Subcarpeta de `CSVs/` donde vive el criterio de giro (`<vuelo>_Videofiles.csv`).
+# NO es un fichero descartable —lo leen la conversión a TIFF y la copia `_ROT`—
+# pero tampoco es un entregable: al usuario le estorba entre los CSVs que sí
+# consume (meta, location). Se aparta a una subcarpeta interna en vez de
+# borrarse. `read_auto_rotate_degree` mantiene los fallbacks a las ubicaciones
+# anteriores para re-procesar carpetas de versiones previas.
+CRITERIO_DIRNAME = "_criterio"
 
 
 def sane_rotation_criteria(add_to_angle, subs_to_angle, max_error):

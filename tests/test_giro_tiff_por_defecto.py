@@ -87,3 +87,27 @@ def test_el_default_del_front_coincide_con_el_del_backend():
         f"_default_split_config trae convert_to_tiff_rotate_auto={asignacion.group(1)}: "
         "el TIFF térmico no se giraría."
     )
+
+
+# --- v3.4.4: que el "no giro" deje de ser silencioso ------------------------
+def test_sin_flags_de_giro_se_dice_en_el_log(tmp_path, logger):
+    """
+    Con los tres flags a False no se escriben copias giradas — correcto — pero
+    antes se salía con un `return 0` MUDO. Desde el log era indistinguible de
+    "el criterio salió 0" o de "el paso ni corrió", y costó una ronda entera de
+    diagnóstico con v3.4.3. Ahora tiene que decirlo.
+    """
+    import types
+
+    import pipeline as gen_struct_folder
+
+    mensajes = []
+    cb = types.SimpleNamespace(emit=lambda payload=None, *a, **k: mensajes.append(payload))
+
+    obj = gen_struct_folder.SplitImages(logger)
+    escritas = obj.write_rotated_jpg_copies(str(tmp_path), cb, cb, False, False, False)
+
+    assert escritas == 0
+    assert any(isinstance(m, str) and "Sin giro" in m for m in mensajes), (
+        "write_rotated_jpg_copies vuelve a salir en silencio con los flags a False."
+    )

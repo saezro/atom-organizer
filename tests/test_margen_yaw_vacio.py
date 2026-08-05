@@ -22,6 +22,8 @@ import types
 
 import pandas as pd
 
+import utils
+
 
 def _recording_progress():
     mensajes = []
@@ -61,7 +63,7 @@ def test_margen_cero_no_rota_ni_con_el_yaw_exacto(tmp_path, logger, make_dji_jpe
     _run(obj, flight_folder, progress,
          lim_max_270=-90, lim_min_270=-90, lim_max_90=90, lim_min_90=90)
 
-    csv_path = os.path.join(obj.csvs_root_folder, "PB1_V01_Videofiles.csv")
+    csv_path = os.path.join(obj.csvs_root_folder, utils.CRITERIO_DIRNAME, "PB1_V01_Videofiles.csv")
     df = pd.read_csv(csv_path)
     assert set(df["Degree"].unique()) == {0}, (
         "Con márgenes a 0 y yaw -90 exacto se rotó algo: el intervalo ya no está vacío."
@@ -82,7 +84,7 @@ def test_margen_amplio_si_rota_el_mismo_yaw(tmp_path, logger, make_dji_jpeg):
     _run(obj, flight_folder, progress,
          lim_max_270=-10, lim_min_270=-170, lim_max_90=170, lim_min_90=10)
 
-    csv_path = os.path.join(obj.csvs_root_folder, "PB1_V01_Videofiles.csv")
+    csv_path = os.path.join(obj.csvs_root_folder, utils.CRITERIO_DIRNAME, "PB1_V01_Videofiles.csv")
     df = pd.read_csv(csv_path)
     assert set(df["Degree"].unique()) == {270}, (
         "El mismo yaw -90 con margen amplio debería rotar 270 — si no, el fallo no es el margen."

@@ -1135,15 +1135,20 @@ class GenStructFolder:
     def write_videofiles_csv(self, input_folder: str, df_videofiles) -> None:
         """
         Escribe el criterio de giro del vuelo (`<PBX_VXX>_Videofiles.csv`, columna `Degree`)
-        en `CSVs/`, plano: el nombre ya lleva el vuelo, no hace falta subcarpeta.
+        en `CSVs/_criterio/`.
 
-        Vivía dentro de MINIATURAS hasta que se eliminaron las miniaturas. NO es un
-        subproducto descartable: es lo único que le dice a la conversión a TIFF y a la copia
-        girada `_ROT` cuánto tienen que girar (`read_auto_rotate_degree`). Si falta, ambas
-        dejan de rotar en silencio.
+        Vivía dentro de MINIATURAS hasta que se eliminaron las miniaturas, luego en
+        `CSVs/<vuelo>/` y luego plano en `CSVs/`. NO es un subproducto descartable: es
+        lo único que le dice a la conversión a TIFF y a la copia girada `_ROT` cuánto
+        tienen que girar (`read_auto_rotate_degree`). Si falta, ambas dejan de rotar en
+        silencio. Pero tampoco es un entregable, y plano en `CSVs/` se mezclaba con los
+        CSVs que el usuario sí consume (meta, location), así que va apartado en una
+        subcarpeta interna.
         """
-        os.makedirs(self.csvs_root_folder, exist_ok=True)
-        df_videofiles.to_csv(os.path.join(self.csvs_root_folder, os.path.basename(input_folder) + "_Videofiles.csv"),
+        criterio_folder = os.path.join(self.csvs_root_folder, utils.CRITERIO_DIRNAME)
+        os.makedirs(criterio_folder, exist_ok=True)
+        self.utils_obj.hide_folder_on_windows(criterio_folder)
+        df_videofiles.to_csv(os.path.join(criterio_folder, os.path.basename(input_folder) + "_Videofiles.csv"),
                              sep=",", header=True, index=False)
 
     def gen_thumbnails_and_rotate(self, input_folder: str, rgb_processing: bool, max_error: int, lim_max_270: int, lim_min_270: int, lim_max_90: int, lim_min_90: int, progress_callback, progress_bar) -> None:
@@ -1843,6 +1848,11 @@ class SplitImages:
         - rotate_90 - booleano que indica que la imagen TIFF se rotará 90 grados en sentido de las agujas del reloj.
         - rotate_minus_90 - booleano que indica que la imagen TIFF se rotará 90 grados en sentido contrario a las agujas del reloj.
         """ 
+        # Con qué criterio de giro entra la conversión. Sin esto, un TIFF que sale sin
+        # rotar no se puede atribuir: ¿flag apagado, o criterio ilegible? (caso v3.4.3).
+        progress_callback.emit(
+            "\nGiro del TIFF: auto={0} 90={1} -90={2}\n".format(
+                auto_rotate, rotate_90, rotate_minus_90))
         self.convert_dji_images_to_tif(input_folder, exiftool_exe, dji_utility, progress_callback, progress_bar, emissivity, humidity, auto_temp, up_threshold_temperature, low_threshold_temperature, rotate_90, rotate_minus_90, auto_rotate, just_atom_selection, generate_gray_scale_images, generate_colormap_images)
         for dir in next(os.walk(input_folder))[1]:
             if not self.stop:
@@ -2072,6 +2082,13 @@ class SplitImages:
         - rotate_90 / rotate_minus_90 / auto_rotate - mismos flags de la conversión.
         """
         if not (rotate_90 or rotate_minus_90 or auto_rotate):
+            # Salida silenciosa NO: los tres flags a False es indistinguible, desde el
+            # log, de "el criterio salió 0" o de "el paso ni se ejecutó". Costó una
+            # ronda entera de diagnóstico con Daniel (v3.4.3): el TIFF salía sin girar
+            # y aquí no se escribía nada, sin una sola línea que dijera por qué.
+            progress_callback.emit(
+                "\nNo se escriben copias giradas: el modo de giro del TIFF está en «Sin giro» "
+                "(rotate_90=False, rotate_minus_90=False, auto=False).\n")
             return 0  # nada que girar: no tiene sentido duplicar los JPG
         if not os.path.isdir(input_folder):
             self.organizer_logger.logger.warning(
@@ -2163,9 +2180,10 @@ class SplitImages:
         ambas tienen que girar lo mismo o el par TIFF/JPG deja de casar.
 
         Ese CSV vivía en `MINIATURAS/<vuelo>_miniaturas/` hasta que se eliminaron las
-        miniaturas, y luego en `CSVs/<vuelo>/` (v3.4.0-v3.4.1) hasta que se aplanó.
-        Se mantienen AMBOS fallbacks de lectura para poder re-procesar carpetas
-        generadas por versiones anteriores sin que el vuelo deje de rotar en silencio.
+        miniaturas, luego en `CSVs/<vuelo>/` (v3.4.0-v3.4.1), luego plano en `CSVs/`
+        (v3.4.2-v3.4.4) y ahora en `CSVs/_criterio/`. Se mantienen TODOS los fallbacks
+        de lectura para poder re-procesar carpetas generadas por versiones anteriores
+        sin que el vuelo deje de rotar en silencio.
 
         Sin criterio legible (CSV ausente, vacío o sin la columna) devuelve 0 —
         no rotar — y lo dice; nunca revienta el vuelo.
@@ -2184,7 +2202,8 @@ class SplitImages:
         csv_name = pb_v_name + "_Videofiles.csv"
         csvs_folder = os.path.join(root_folder, "CSVs")
         candidatos = (
-            os.path.join(csvs_folder, csv_name),                                                   # Actual: CSVs/ plano.
+            os.path.join(csvs_folder, utils.CRITERIO_DIRNAME, csv_name),                           # Actual: CSVs/_criterio/.
+            os.path.join(csvs_folder, csv_name),                                                   # v3.4.2-v3.4.4: CSVs/ plano.
             os.path.join(csvs_folder, pb_v_name, csv_name),                                        # v3.4.0-v3.4.1: subcarpeta por vuelo.
             os.path.join(root_folder, "MINIATURAS", pb_v_name + "_miniaturas", csv_name),          # Legacy: las carpetas antiguas sí llevaban el sufijo _miniaturas.
         )

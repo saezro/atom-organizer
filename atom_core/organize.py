@@ -373,6 +373,12 @@ def run_task(
         _settings = {k: v for k, v in params.items()
                      if k not in _ctx and not isinstance(v, (bytes, bytearray))}
         _run_log.write(f"[params] {_settings}\n")
+        # Y el panel AVANZADO tal y como llega del front. Es lo que PISA los defaults
+        # del backend (`replace(cfg, **coerced)` más abajo), así que un flag mal puesto
+        # aquí cambia el resultado sin dejar rastro en ningún otro sitio. En v3.4.3 el
+        # TIFF salía sin girar y no había forma de saber, desde el log, si
+        # `convert_to_tiff_rotate_auto` había llegado False o el criterio era ilegible.
+        _run_log.write(f"[advanced] {advanced if advanced else '(ninguno: se usan los defaults del backend)'}\n")
         _run_log.flush()
     except Exception:
         _run_log = None
