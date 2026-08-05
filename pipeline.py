@@ -178,7 +178,11 @@ def process_one_image(path: str, cfg: ImageProcessConfig) -> str:
             img = img.crop(box)
         if cfg.rotate_degrees is not None:
             img = img.transpose(cfg.rotate_degrees)
-        img.save(cfg.output_path, optimize=True, quality=cfg.quality, exif=exif)
+        # Sin optimize=True: medido en 12 MP cuesta un +66 % de tiempo de encode (195 ms
+        # frente a 118 ms) y solo recorta un 6,5 % de tamaño. No cambia un solo píxel —
+        # optimize solo recalcula las tablas de Huffman, no recuantiza— así que sale del
+        # camino caliente. Mismo criterio que los saves de la fase 5 desde la 3.4.10.
+        img.save(cfg.output_path, quality=cfg.quality, exif=exif)
     finally:
         img.close()
     return cfg.output_path
@@ -474,7 +478,7 @@ class CompressImage:
             # print("Datos EXIF modificados")
             # exif.items()
 
-            img.save(os.path.join(output_folder, image_name), optimize=True, quality=quality, exif=exif)  # Comprimo la imagen grabando los datos exif original. Si no tiene, no da error.
+            img.save(os.path.join(output_folder, image_name), quality=quality, exif=exif)  # Comprimo la imagen grabando los datos exif original. Si no tiene, no da error. Sin optimize=True: ver process_one_image.
             # self.exif_management_obj.copy_xmp_data(os.path.join(input_folder,image_name),os.path.join(output_folder, image_name))  # Intento de grabar los datos xmp en el archivo comprimido.
             # no me fío mucho, pues algún archivo me ha dado error.
             img.close()
@@ -1589,7 +1593,7 @@ class GenStructFolder:
             self.errors_type_gen_struct_folder.append(image_full_path)
             return
         image_open = image_open.transpose(degrees)  # Se gira la imagen mediante transponse para mantener las resoluciones correctamente.
-        image_open.save(os.path.join(input_folder, image_name), optimize=True, quality=96, subsampling = 0)
+        image_open.save(os.path.join(input_folder, image_name), quality=96, subsampling = 0)  # quality/subsampling intactos: mandan sobre la imagen. optimize fuera, que solo cuesta tiempo (ver process_one_image).
         image_open.close()
 
 def apply_thermal_colormap(array: np.ndarray, temp_min: float, temp_max: float, colormap_name: str = "inferno") -> np.ndarray:
@@ -1621,8 +1625,13 @@ class SplitImages:
         self.images_error_splitting_images = []
         self.organizer_logger = organizer_logger
         # Nº de conversiones DJI->TIFF en paralelo. dji_irp.exe es un proceso
-        # externo (libera el GIL), así que threads valen. Default conservador.
-        self.max_dji_workers = min(8, os.cpu_count() or 4)
+        # externo (libera el GIL), así que threads valen. El tope era un `min(8, ...)`
+        # fijo que dejaba parada media máquina en equipos de más de 8 núcleos; ahora lo
+        # dimensiona `utils.workers_para_lote`, el mismo criterio que el resto de fases
+        # (núcleos menos los reservados, y capado por la RAM libre). Cada hilo tiene su
+        # dji_irp.exe detrás, así que la RAM por worker se cuenta igual que en un pool
+        # de procesos.
+        self.max_dji_workers = utils.workers_para_lote()
         # Protege las mutaciones de contadores de error compartidos entre workers.
         self._stats_lock = threading.Lock()
 
