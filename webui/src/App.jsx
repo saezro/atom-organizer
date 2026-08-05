@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, onProgress, whenBridgeReady } from './bridge'
+import { api, onCloud, onProgress, whenBridgeReady } from './bridge'
 import { SECTIONS, SPLIT_ADVANCED } from './schema'
 import TaskBlock, { Field, initialState, buildParams } from './TaskBlock'
 import ProgressModal from './ProgressModal'
@@ -12,10 +12,18 @@ const ADV_FIELDS = SPLIT_ADVANCED.flatMap((s) => s.fields)
 
 const NAV = [
   { id: 'organizar', label: 'Organizar' },
+  { id: 'bucket', label: 'SUBIR AL BUCKET' },
   { id: 'aerotools', label: 'AEROTOOLS' },
   { id: 'otros', label: 'OTROS EQUIPOS' },
   { id: 'config', label: 'CONFIGURACIÓN' },
 ]
+
+function formatBytes(n) {
+  if (!n) return '0 B'
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.min(u.length - 1, Math.floor(Math.log(n) / Math.log(1024)))
+  return `${(n / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${u[i]}`
+}
 
 // Marca la fase `index` (1-based) como activa y las previas como hechas. Si el
 // backend no mandó `plan` (tasks sin fases predefinidas), añade la fase que
@@ -216,6 +224,8 @@ function App() {
       <main>
         {section === 'organizar' ? (
           <OrganizarScreen ready={ready} running={running} onRun={run} />
+        ) : section === 'bucket' ? (
+          <BucketScreen ready={ready} />
         ) : section === 'config' ? (
           <ConfigScreen ready={ready} />
         ) : (
@@ -405,6 +415,227 @@ function OrganizarScreen({ ready, running, onRun }) {
       <button className="btn-run" disabled={!canRun} onClick={handleRun}>
         {running ? 'Procesando…' : 'Ejecutar'}
       </button>
+    </div>
+  )
+}
+
+// Subir al bucket «datos para organizar»: elegir la carpeta del vuelo y subirla
+// entera. El destino dentro del bucket sale del nombre de la carpeta; no se
+// pide nada más al operador.
+function BucketScreen({ ready }) {
+  const [status, setStatus] = useState(null) // {configured, logged_in, email, bucket, help}
+  const [carpeta, setCarpeta] = useState('')
+  const [plan, setPlan] = useState(null) // {ok, prefix, files, bytes, existing, error}
+  const [busy, setBusy] = useState(false) // login o preparación en curso
+  const [uploading, setUploading] = useState(false)
+  const [force, setForce] = useState(false)
+  const [lines, setLines] = useState([])
+  const [result, setResult] = useState(null) // {ok, ...} | {error}
+
+  async function refresh() {
+    try {
+      setStatus(await api.cloudStatus())
+    } catch (e) {
+      setStatus({ ok: false, configured: false, help: String(e) })
+    }
+  }
+
+  useEffect(() => {
+    if (ready) refresh()
+  }, [ready])
+
+  useEffect(
+    () =>
+      onCloud((d) => {
+        switch (d.kind) {
+          case 'login':
+            setBusy(false)
+            if (d.ok) refresh()
+            else setResult({ error: d.text || 'No se pudo iniciar sesión.' })
+            break
+          case 'start':
+            setLines([`Subiendo ${d.files} ficheros (${formatBytes(d.bytes)}) a ${d.prefix}/`])
+            break
+          case 'log':
+            if (d.text) setLines((l) => [...l, d.text])
+            break
+          case 'done':
+            setUploading(false)
+            setResult(d)
+            break
+          case 'error':
+            setUploading(false)
+            setResult({ error: d.text })
+            break
+          default:
+            break
+        }
+      }),
+    []
+  )
+
+  async function login() {
+    setResult(null)
+    setBusy(true)
+    const r = await api.cloudLogin()
+    if (r && r.started === false) {
+      setBusy(false)
+      setResult({ error: r.reason })
+    }
+  }
+
+  async function logout() {
+    await api.cloudLogout()
+    setPlan(null)
+    refresh()
+  }
+
+  async function pickCarpeta() {
+    const path = await api.pickFolder()
+    if (!path) return
+    setCarpeta(path)
+    setResult(null)
+    setForce(false)
+    await preparar(path)
+  }
+
+  async function preparar(path) {
+    setBusy(true)
+    try {
+      setPlan(await api.cloudPrepare(path))
+    } catch (e) {
+      setPlan({ ok: false, error: String(e) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function subir() {
+    setResult(null)
+    setLines([])
+    setUploading(true)
+    const r = await api.cloudUpload(carpeta, force)
+    if (r && r.started === false) {
+      setUploading(false)
+      setResult({ error: r.reason })
+    }
+  }
+
+  const logged = !!status?.logged_in
+  const ocupado = busy || uploading
+  const puedeSubir = ready && logged && plan?.ok && !ocupado
+
+  if (status && status.configured === false) {
+    return (
+      <div className="card">
+        <h2 className="card-title">Subir al bucket</h2>
+        <span className="field-hint hint-warn" style={{ whiteSpace: 'pre-line' }}>
+          {status.help}
+        </span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="card">
+      <h2 className="card-title">Subir al bucket</h2>
+
+      <div className="field">
+        <span className="field-label">Cuenta de Google</span>
+        {logged ? (
+          <div className="field-row">
+            <input className="glass-input" type="text" value={status.email || 'sesión iniciada'} readOnly />
+            <button type="button" className="btn-ghost" onClick={logout} disabled={ocupado}>
+              Cerrar sesión
+            </button>
+          </div>
+        ) : (
+          <div className="field-row">
+            <input
+              className="glass-input"
+              type="text"
+              value="Sin iniciar sesión"
+              readOnly
+            />
+            <button type="button" className="btn-ghost" onClick={login} disabled={!ready || busy}>
+              {busy ? 'Esperando…' : 'Iniciar sesión'}
+            </button>
+          </div>
+        )}
+        <span className="field-hint">
+          Se abre el navegador para identificarte con tu cuenta de Aerotools. Los datos van
+          al bucket «{status?.bucket || 'datos_para_organizar'}»; quién puede subir lo decide
+          el permiso de la cuenta, no la aplicación.
+        </span>
+      </div>
+
+      <FileField
+        label="Carpeta a subir"
+        value={carpeta}
+        onPick={pickCarpeta}
+        onType={setCarpeta}
+        placeholder="La carpeta completa del vuelo"
+      />
+      {carpeta && !plan && (
+        <button type="button" className="btn-ghost" onClick={() => preparar(carpeta)} disabled={ocupado}>
+          Comprobar carpeta
+        </button>
+      )}
+
+      {plan && plan.ok && (
+        <span className="field-hint hint-ok">
+          {plan.files} ficheros · {formatBytes(plan.bytes)} → {plan.prefix}/
+        </span>
+      )}
+      {plan && !plan.ok && <span className="field-hint hint-warn">{plan.error}</span>}
+
+      {plan?.ok && plan.existing > 0 && (
+        <>
+          <span className="field-hint hint-warn">
+            En «{plan.prefix}/» ya hay datos subidos. Si es esta misma carpeta, puedes
+            continuar donde se quedó. Si es otro vuelo, renómbrala: las imágenes de dron se
+            llaman igual en todos y subir encima pisaría el anterior.
+          </span>
+          <label className="check">
+            <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
+            <span>Continuar la subida en ese destino</span>
+          </label>
+        </>
+      )}
+
+      {lines.length > 0 && (
+        <ul className="config-list">
+          {lines.slice(-6).map((l, i) => (
+            <li key={i} className="config-item">
+              <span className="config-model">{l}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {result && result.error && <span className="field-hint hint-warn">{result.error}</span>}
+      {result && !result.error && (
+        <span className={`field-hint ${result.ok ? 'hint-ok' : 'hint-warn'}`}>
+          {result.cancelled
+            ? `Subida cancelada. ${result.uploaded} ficheros subidos; al volver a lanzarla continúa donde se quedó.`
+            : result.ok
+              ? `Subida completa: ${result.uploaded} ficheros (${formatBytes(result.bytes)}) a ${result.mbps} Mbps.` +
+                (result.skipped ? ` ${result.skipped} ya estaban.` : '')
+              : `Terminó con ${result.failed_total} fallo(s): ${(result.failed || [])
+                  .map((f) => `${f.objeto} (${f.error})`)
+                  .join('; ')}. Vuelve a lanzarla: sólo reintenta lo que falta.`}
+        </span>
+      )}
+
+      {uploading ? (
+        <button className="btn-run" onClick={() => api.cloudCancel()}>
+          Cancelar subida
+        </button>
+      ) : (
+        <button className="btn-run" disabled={!puedeSubir} onClick={subir}>
+          {busy ? 'Comprobando…' : 'Subir al bucket'}
+        </button>
+      )}
     </div>
   )
 }

@@ -113,6 +113,13 @@ class Api:
         self._running = False
         self._downloading = False
         self._update_path: str | None = None
+        # Subida al bucket (ver más abajo). `_auth` se crea perezoso: sin él, el
+        # arranque tendría que leer el fichero de credenciales aunque nadie vaya
+        # a subir nada en toda la sesión.
+        self._auth = None
+        self._logging_in = False
+        self._uploading = False
+        self._cancel_upload = False
 
     def bind_window(self, window) -> None:
         self._window = window
@@ -376,6 +383,204 @@ class Api:
                 self._push_update({"kind": "available", "data": res})
 
         threading.Thread(target=worker, daemon=True).start()
+
+    # ---- subida al bucket «datos para organizar» ---------------------------
+    # Cuenta de Google del operador + IAM del bucket. La app no lleva ninguna
+    # credencial de servicio: quién puede subir se decide fuera, en el IAM.
+    def _get_auth(self):
+        """`GoogleAuth` cacheado, o None si no hay cliente OAuth configurado."""
+        if self._auth is not None:
+            return self._auth
+        from atom_core import cloud_config
+        from atom_core.google_auth import GoogleAuth
+
+        client = cloud_config.load_client(ROOT)
+        if client is None:
+            return None
+        self._auth = GoogleAuth(client.client_id, client.client_secret,
+                                hosted_domain=cloud_config.HOSTED_DOMAIN)
+        return self._auth
+
+    def cloud_status(self) -> dict:
+        from atom_core import cloud_config
+
+        auth = self._get_auth()
+        if auth is None:
+            return {"ok": True, "configured": False, "logged_in": False,
+                    "bucket": cloud_config.BUCKET_DATOS,
+                    "help": cloud_config.missing_client_help()}
+        ident = auth.identity
+        return {"ok": True, "configured": True,
+                "logged_in": auth.is_logged_in(),
+                "email": ident.email if ident else None,
+                "bucket": cloud_config.BUCKET_DATOS,
+                "uploading": self._uploading}
+
+    def cloud_login(self) -> dict:
+        """Abre el navegador para el consentimiento. Devuelve al instante; el
+        resultado llega como evento `atom:cloud` (el consentimiento puede tardar
+        minutos y bloquear el bridge dejaría la ventana congelada)."""
+        auth = self._get_auth()
+        if auth is None:
+            from atom_core import cloud_config
+
+            return {"started": False, "reason": cloud_config.missing_client_help()}
+        if self._logging_in:
+            return {"started": False, "reason": "Ya hay un login en curso."}
+        self._logging_in = True
+
+        def worker() -> None:
+            try:
+                ident = auth.login()
+                self._push_cloud({"kind": "login", "ok": True,
+                                  "email": ident.email if ident else None})
+            except Exception as exc:  # noqa: BLE001 - se enseña, no se traga
+                self._push_cloud({"kind": "login", "ok": False, "text": str(exc)})
+            finally:
+                self._logging_in = False
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"started": True}
+
+    def cloud_logout(self) -> dict:
+        auth = self._get_auth()
+        if auth is None:
+            return {"ok": False, "error": "No hay sesión."}
+        try:
+            auth.logout()
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True}
+
+    def cloud_prepare(self, folder: str) -> dict:
+        """Qué se subiría: nº de ficheros, tamaño y prefijo destino.
+
+        También mira si el prefijo YA tiene objetos: dos carpetas distintas
+        pueden llamarse igual y los ficheros de dron se repiten
+        (`DJI_0001.JPG`), así que subir encima pisaría el vuelo anterior. Aquí
+        sólo se informa; el bloqueo lo hace `cloud_upload`.
+        """
+        from atom_core import cloud_config, cloud_upload
+
+        root = Path(folder or "")
+        if not root.is_dir():
+            return {"ok": False, "error": "Esa carpeta no existe."}
+
+        prefix = cloud_config.prefijo_desde_carpeta(root.name)
+        if not prefix:
+            return {"ok": False,
+                    "error": "El nombre de la carpeta no da un destino válido."}
+        try:
+            plan = cloud_upload.build_plan(root, prefix)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+        out = {"ok": True, "prefix": prefix, "files": len(plan.items),
+               "bytes": plan.total_bytes, "bucket": cloud_config.BUCKET_DATOS,
+               "existing": None}
+        if not plan.items:
+            out["error"] = ("La carpeta no tiene ningún fichero subible "
+                            "(imágenes, vídeos, CSV o estadillos).")
+            out["ok"] = False
+            return out
+
+        auth = self._get_auth()
+        if auth is not None and auth.is_logged_in():
+            try:
+                out["existing"] = cloud_upload.objetos_en_prefijo(
+                    cloud_config.BUCKET_DATOS, prefix, auth)
+            except Exception:  # noqa: BLE001 - informativo; no bloquea el paso previo
+                out["existing"] = None
+        return out
+
+    def cloud_upload(self, folder: str, force: bool = False) -> dict:
+        """Sube la carpeta entera al bucket. El progreso va por `atom:cloud`."""
+        if self._uploading:
+            return {"started": False, "reason": "Ya hay una subida en curso."}
+
+        from atom_core import cloud_config, cloud_upload
+
+        auth = self._get_auth()
+        if auth is None:
+            return {"started": False, "reason": cloud_config.missing_client_help()}
+        if not auth.is_logged_in():
+            return {"started": False,
+                    "reason": "Primero inicia sesión con tu cuenta de Aerotools."}
+
+        root = Path(folder or "")
+        if not root.is_dir():
+            return {"started": False, "reason": "Esa carpeta no existe."}
+
+        prefix = cloud_config.prefijo_desde_carpeta(root.name)
+        if not prefix:
+            return {"started": False,
+                    "reason": "El nombre de la carpeta no da un destino válido."}
+
+        self._uploading = True
+        self._cancel_upload = False
+
+        def worker() -> None:
+            try:
+                plan = cloud_upload.build_plan(root, prefix)
+                if not plan.items:
+                    raise RuntimeError("La carpeta no tiene ficheros subibles.")
+
+                # Guarda anti-pisado. Si la consulta falla no se asume vacío: se
+                # aborta, porque el fallo puede ser justo lo que oculta que ya
+                # había datos ahí.
+                if not force:
+                    ya = cloud_upload.objetos_en_prefijo(
+                        cloud_config.BUCKET_DATOS, prefix, auth)
+                    if ya:
+                        raise RuntimeError(
+                            f"En «{prefix}/» ya hay datos subidos. Si es la misma "
+                            "carpeta y quieres continuar donde se quedó, marca "
+                            "«continuar subida». Si es otro vuelo, renombra la "
+                            "carpeta: subir encima pisaría el anterior.")
+
+                provider = cloud_upload.GcsOAuthProvider(
+                    cloud_config.BUCKET_DATOS, auth)
+
+                self._push_cloud({"kind": "start", "files": len(plan.items),
+                                  "bytes": plan.total_bytes, "prefix": prefix})
+
+                res = cloud_upload.upload_plan(
+                    plan, provider,
+                    on_progress=lambda t: self._push_cloud({"kind": "log", "text": t}),
+                    should_stop=lambda: self._cancel_upload,
+                )
+                self._push_cloud({
+                    "kind": "done", "ok": res.ok,
+                    "uploaded": res.uploaded, "skipped": res.skipped,
+                    "bytes": res.bytes_sent, "elapsed": res.elapsed,
+                    "mbps": round(res.mbps, 1),
+                    "failed": [{"objeto": o, "error": e} for o, e in res.failed[:20]],
+                    "failed_total": len(res.failed),
+                    "cancelled": self._cancel_upload,
+                })
+            except Exception as exc:  # noqa: BLE001 - llega a la UI como error
+                self._push_cloud({"kind": "error", "text": str(exc)})
+            finally:
+                self._uploading = False
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"started": True}
+
+    def cloud_cancel(self) -> dict:
+        """Pide parar. Los ficheros ya subidos quedan; el manifiesto local deja
+        que una subida posterior siga donde se quedó sin repetirlos."""
+        self._cancel_upload = True
+        return {"ok": True}
+
+    def _push_cloud(self, detail: dict) -> None:
+        if not self._window:
+            return
+        js = ("window.dispatchEvent(new CustomEvent('atom:cloud',"
+              f"{{detail:{json.dumps(detail)}}}))")
+        try:
+            self._window.evaluate_js(js)
+        except Exception:
+            pass
 
     # ---- disparo del pipeline ---------------------------------------------
     def run_organize(self, params: dict, advanced: dict | None = None) -> dict:

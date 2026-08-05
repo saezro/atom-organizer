@@ -12,3 +12,6 @@ __pycache__/
 .superpowers/
 .impeccable/
 **/.impeccable/
+
+# Credenciales del cliente OAuth de escritorio (repo PUBLICO: nunca commitear)
+google_client.json

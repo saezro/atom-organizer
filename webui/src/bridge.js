@@ -63,6 +63,16 @@ export const api = {
   checkUpdate: () => call('check_update'),
   downloadUpdate: (url, size) => call('download_update', url, size ?? 0),
   installUpdate: (path) => call('install_update', path ?? null),
+  // Subida al bucket «datos para organizar». cloudStatus devuelve
+  // {configured, logged_in, email, bucket, help?}; cloudLogin abre el navegador
+  // y responde por el evento `atom:cloud`; cloudPrepare {ok, prefix, files,
+  // bytes, existing}; cloudUpload arranca la subida (progreso por `atom:cloud`).
+  cloudStatus: () => call('cloud_status'),
+  cloudLogin: () => call('cloud_login'),
+  cloudLogout: () => call('cloud_logout'),
+  cloudPrepare: (folder) => call('cloud_prepare', folder),
+  cloudUpload: (folder, force) => call('cloud_upload', folder, force ?? false),
+  cloudCancel: () => call('cloud_cancel'),
 }
 
 // Python empuja progreso del pipeline con:
@@ -92,4 +102,16 @@ export function onUpdate(handler) {
   const wrapped = (e) => handler(e.detail)
   window.addEventListener('atom:update', wrapped)
   return () => window.removeEventListener('atom:update', wrapped)
+}
+
+// Eventos de la subida al bucket (Python → JS), canal propio:
+//   kind 'login' -> ok, email | text (error)
+//   kind 'start' -> files, bytes, prefix
+//   kind 'log'   -> text (línea ya formateada por cloud_upload)
+//   kind 'done'  -> ok, uploaded, skipped, bytes, elapsed, mbps, failed[]
+//   kind 'error' -> text
+export function onCloud(handler) {
+  const wrapped = (e) => handler(e.detail)
+  window.addEventListener('atom:cloud', wrapped)
+  return () => window.removeEventListener('atom:cloud', wrapped)
 }

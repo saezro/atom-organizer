@@ -63,6 +63,7 @@ __all__ = [
     "SignedUrlProvider",
     "build_plan",
     "upload_plan",
+    "objetos_en_prefijo",
 ]
 
 # GCS exige que todo chunk intermedio de una subida resumable sea múltiplo de
@@ -158,6 +159,34 @@ def build_plan(root: Path, prefix: str = "", *,
                                 size=path.stat().st_size))
 
     return UploadPlan(root=root, items=items, prefix=prefix)
+
+
+def objetos_en_prefijo(bucket: str, prefix: str, auth, *,
+                       base: str = "https://storage.googleapis.com",
+                       timeout: int = TIMEOUT) -> int:
+    """Cuántos objetos hay ya bajo `prefix` (se corta al llegar a unos pocos).
+
+    Existe para no pisar datos en silencio: dos vuelos distintos pueden generar
+    el mismo nombre de carpeta y los ficheros de dron se llaman igual
+    (`DJI_0001.JPG`) en todos. Subir encima sustituye el objeto y el original
+    sólo es recuperable durante los 7 días de soft-delete del bucket, si es que
+    alguien se entera. Mejor negarse a subir y avisar.
+
+    Devuelve 0 si el prefijo está libre. Si la consulta falla (red, permisos),
+    propaga: quien llama decide, pero NO se interpreta como "está vacío".
+    """
+    q = urllib.parse.urlencode({
+        "prefix": prefix.strip("/") + "/" if prefix.strip("/") else "",
+        "maxResults": 5,
+        "fields": "items(name)",
+    })
+    url = f"{base.rstrip('/')}/storage/v1/b/{urllib.parse.quote(bucket)}/o?{q}"
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Authorization", f"Bearer {auth.access_token()}")
+    req.add_header("User-Agent", USER_AGENT)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8") or "{}")
+    return len(data.get("items") or [])
 
 
 # --------------------------------------------------------------------------

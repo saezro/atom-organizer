@@ -79,6 +79,13 @@ jobs:
           pip install -r requirements-webview.txt
           # setuptools<81: PyInstaller 5.13.2 necesita pkg_resources (setuptools 83 lo quitó)
           pip install "setuptools==80.10.2" "pyinstaller==5.13.2"
+      # El client_secret no está en el repo (es público: Google revocaría el
+      # cliente por secret-scanning). Se inyecta aquí, solo en el runner.
+      - name: Inyectar credenciales OAuth
+        env:
+          ATOM_GOOGLE_CLIENT_ID: ${{ secrets.ATOM_GOOGLE_CLIENT_ID }}
+          ATOM_GOOGLE_CLIENT_SECRET: ${{ secrets.ATOM_GOOGLE_CLIENT_SECRET }}
+        run: python scripts/inject_oauth_client.py
       - name: PyInstaller (onedir Qt/QtWebEngine)
         run: pyinstaller --clean --noconfirm atom_organizer_webview_linux.spec
       - name: Inject ipaddress en base_library.zip
@@ -126,6 +133,11 @@ jobs:
             Write-Error "Tag ($tag) != version.py ($py). Actualiza version.py y vuelve a etiquetar."
             exit 1
           }
+      - name: Inyectar credenciales OAuth
+        env:
+          ATOM_GOOGLE_CLIENT_ID: ${{ secrets.ATOM_GOOGLE_CLIENT_ID }}
+          ATOM_GOOGLE_CLIENT_SECRET: ${{ secrets.ATOM_GOOGLE_CLIENT_SECRET }}
+        run: python scripts/inject_oauth_client.py
       - name: PyInstaller (onedir Qt/QtWebEngine)
         run: pyinstaller --clean --noconfirm atom_organizer_webview.spec
       - name: Construir instalador (Inno Setup)
