@@ -48,6 +48,7 @@ import exif as em
 
 import sys
 import external_tools
+from atom_core import rjpeg
 
 
 def _is_windows() -> bool:
@@ -2238,6 +2239,21 @@ class SplitImages:
         # es silencioso y sin este dato no hay forma de distinguirlo de un fallo ruidoso.
         dji_rc = None
         dji_salida = ""
+
+        # Radiografía del fichero ANTES de tocarlo el conversor. Cuando el SDK
+        # devuelve -16 ("create R-JPEG dirp handle failed") no dice si el problema
+        # es suyo o de la imagen que le llega, y sin esta línea no hay forma de
+        # distinguirlo desde el log — que es el único canal de diagnóstico, porque
+        # el usuario final no ejecuta nada por terminal. El hash permite además
+        # comparar el fichero de salida contra el original de la tarjeta sin
+        # pedirle nada al usuario. Es SOLO diagnóstico: no aborta la conversión,
+        # el conversor sigue teniendo la última palabra.
+        _rjpeg_info = rjpeg.inspect_rjpeg(os.path.join(input_folder, image_name))
+        _rjpeg_linea = rjpeg.describe(_rjpeg_info, image_name)
+        progress_callback.emit("\n{0}\n".format(_rjpeg_linea))
+        if not _rjpeg_info["ok"]:
+            self.organizer_logger.logger.error(_rjpeg_linea)
+
         if _is_windows():
             # dji_utility apunta a programas_externos/<dron>/dji_irp.exe
             subproceso = '"{0}" -s "{1}" -a measure --humidity {2} --emissivity {3} --measurefmt float32 -o "{4}"'.format(
@@ -2293,6 +2309,22 @@ class SplitImages:
                 progress_callback.emit(
                     "\nEl conversor DJI ha fallado con {0}: código {1}. Salida: {2}\n".format(
                         image_name, dji_rc, dji_salida or "(vacía)"))
+                # El -16 (0xFFFFFFF0) es `create R-JPEG dirp handle failed`: el SDK
+                # rechaza la imagen. Traducirlo a las dos únicas causas posibles
+                # ahorra la ronda de preguntas que costó el caso del 28/07.
+                if dji_rc in (-16, 0xFFFFFFF0):
+                    if _rjpeg_info["ok"]:
+                        _causa = ("la imagen SÍ conserva su payload radiométrico ({0} bytes), "
+                                  "así que el fichero no es el problema: mira si un antivirus la "
+                                  "está bloqueando, si la ruta tiene permisos, o si falta alguna "
+                                  "DLL del SDK junto al conversor").format(_rjpeg_info["payload"])
+                    else:
+                        _causa = "la imagen llegó dañada al conversor: {0}".format(_rjpeg_info["motivo"])
+                    progress_callback.emit(
+                        "  -> El SDK de DJI ha rechazado la imagen (create R-JPEG dirp handle failed). "
+                        "Diagnóstico: {0}.\n".format(_causa))
+                    self.organizer_logger.logger.error(
+                        "SDK DJI rechaza {0}: {1}".format(image_name, _causa))
         else:
             # En Linux no hay ejecutable dji_irp: usamos libdirp.so vía ctypes.
             # Las librerías del SDK viven junto al .exe teórico -> carpeta del dron.
