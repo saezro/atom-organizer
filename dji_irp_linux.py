@@ -37,12 +37,24 @@ class _resolution_t(ctypes.Structure):
 
 
 class _measurement_params_t(ctypes.Structure):
-    # Orden de campos del SDK: distance, humidity, emissivity, reflection.
+    # Orden de campos del SDK: distance, humidity, emissivity, reflection y un
+    # QUINTO float que la cabecera pública no documenta (temperatura ambiente:
+    # medido, devuelve 18,9-23,8 C en las térmicas de un vuelo real).
+    #
+    # Declararla con 4 campos (16 B) era un BUFFER OVERFLOW: dirp_get_measurement_params
+    # escribe 20 B y pisaba 4 B del heap de Python en CADA térmica. Con proceso
+    # efímero por imagen el daño casi nunca llegaba a manifestarse -- de ahí el
+    # "segfault benigno en el teardown" que se atribuía a libdirp/libgomp. Encadenando
+    # imágenes en un mismo proceso, revienta a la 6a de forma reproducible.
+    # `_cola` deja holgura para que un SDK futuro con más campos no vuelva a pisar
+    # nada; el SDK actual no escribe más allá del quinto (verificado).
     _fields_ = [
         ("distance", ctypes.c_float),
         ("humidity", ctypes.c_float),
         ("emissivity", ctypes.c_float),
         ("reflection", ctypes.c_float),
+        ("ambient", ctypes.c_float),
+        ("_cola", ctypes.c_ubyte * 64),
     ]
 
 
