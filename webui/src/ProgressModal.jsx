@@ -16,11 +16,35 @@ function fmtDur(s) {
   return `${m} min ${r} s`
 }
 
+// Desglose de lo analizado en la fase: "34 de 120 img · 90 RGB · 30 térmicas".
+// El total y el reparto solo aparecen cuando el pipeline los ha anunciado.
+function statsLine(s) {
+  if (!s) return ''
+  const parts = []
+  if (s.total > 0) parts.push(`${Math.min(s.done, s.total)} de ${s.total} img`)
+  else if (s.done > 0) parts.push(`${s.done} img`)
+  if (s.rgb > 0) parts.push(`${s.rgb} RGB`)
+  if (s.termica > 0) parts.push(`${s.termica} ${s.termica === 1 ? 'térmica' : 'térmicas'}`)
+  return parts.join(' · ')
+}
+
+// Resumen de rotación del run: qué se ha girado y en qué sentido.
+function rotLine(s) {
+  if (!s) return ''
+  const total = s.rot270 + s.rot90 + s.rot_none
+  if (total === 0) return ''
+  const parts = []
+  if (s.rot270 > 0) parts.push(`${s.rot270} giradas 270°`)
+  if (s.rot90 > 0) parts.push(`${s.rot90} giradas 90°`)
+  if (s.rot_none > 0) parts.push(`${s.rot_none} sin girar`)
+  return parts.join(' · ')
+}
+
 export default function ProgressModal({
   plant,
   phases,
   progress,
-  imgCount,
+  stats,
   detail,
   finished,
   onClose,
@@ -53,19 +77,28 @@ export default function ProgressModal({
                 <span className="pm-errbadge">{p.errors} err</span>
               )}
               {p.status === 'active' && !finished && (
-                <div className="pm-sub">
-                  <div className="pm-bar">
-                    <div className="pm-bar-fill" style={{ width: `${progress}%` }} />
+                <>
+                  <div className="pm-sub">
+                    <div className="pm-bar">
+                      <div className="pm-bar-fill" style={{ width: `${progress}%` }} />
+                    </div>
+                    <span className="pm-pct">{progress}%</span>
                   </div>
-                  <span className="pm-pct">
-                    {imgCount > 0 ? `${imgCount} img · ` : ''}
-                    {progress}%
-                  </span>
-                </div>
+                  {statsLine(stats) && (
+                    <div className="pm-stats">{statsLine(stats)}</div>
+                  )}
+                </>
               )}
             </li>
           ))}
         </ul>
+
+        {/* Rotación: acumulado del run, visible durante y después del proceso. */}
+        {rotLine(stats) && (
+          <p className="pm-rot">
+            <span className="pm-rot-label">Rotación:</span> {rotLine(stats)}
+          </p>
+        )}
 
         {finished && (
           <p

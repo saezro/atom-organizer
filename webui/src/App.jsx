@@ -52,7 +52,9 @@ function App() {
   const [plant, setPlant] = useState('')
   const [phases, setPhases] = useState([]) // [{name, status}]
   const [progress, setProgress] = useState(0) // % de la fase activa
-  const [imgCount, setImgCount] = useState(0) // imágenes ("." ) de la fase activa
+  // Estadísticas en vivo de la fase (evento `stats`): imágenes analizadas de M,
+  // reparto RGB / térmica y rotaciones 270/90/sin rotar del run.
+  const [stats, setStats] = useState(null)
   const [detail, setDetail] = useState([]) // log crudo (colapsable)
   const [finished, setFinished] = useState(null) // null | {ok, msg}
 
@@ -82,15 +84,17 @@ function App() {
           break
         case 'phase':
           setProgress(0)
-          setImgCount(0)
           setPhases((prev) => advancePhases(prev, d.data))
           break
         case 'progress':
           setProgress(Math.max(0, Math.min(100, d.value)))
           break
+        case 'stats':
+          // Python ya reinicia los contadores por fase; aquí solo se pinta.
+          setStats(d.data || null)
+          break
         case 'log':
-          if (d.text === '.') setImgCount((n) => n + 1)
-          else if (d.text) setDetail((l) => [...l, d.text])
+          if (d.text) setDetail((l) => [...l, d.text])
           break
         case 'summary':
           if (d.text && d.text.trim() && !/^_+$/.test(d.text)) {
@@ -162,7 +166,7 @@ function App() {
     setPlant('')
     setPhases([])
     setProgress(0)
-    setImgCount(0)
+    setStats(null)
     setDetail([])
     setFinished(null)
     setModalOpen(true)
@@ -237,7 +241,7 @@ function App() {
           plant={plant}
           phases={phases}
           progress={progress}
-          imgCount={imgCount}
+          stats={stats}
           detail={detail}
           finished={finished}
           onClose={() => setModalOpen(false)}

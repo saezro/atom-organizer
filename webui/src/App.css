@@ -356,6 +356,25 @@
   gap: 0.6rem;
   margin-top: 0.3rem;
 }
+/* Desglose de imágenes de la fase activa (analizadas / RGB / térmicas). */
+.pm-stats {
+  grid-column: 2 / -1;
+  margin-top: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+/* Resumen de rotación del run (bajo el checklist). */
+.pm-rot {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.pm-rot-label {
+  font-weight: 600;
+  color: var(--text);
+}
 /* Tiempo por fase (columna derecha del checklist). */
 .pm-dur {
   font-size: 0.78rem;

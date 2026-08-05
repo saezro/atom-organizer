@@ -9,13 +9,16 @@ por shims Python que reenvían a `emit(kind, payload)`.
 Contrato de `emit`:
   emit('log', str) · emit('summary', str) · emit('progress', int)
   emit('plant', str) · emit('plan', list[str]) · emit('phase', dict)
-  emit('done', None) · emit('error', str)
+  emit('stats', dict) · emit('done', None) · emit('error', str)
 
 Eventos del modal de progreso por fases:
   'plant' -> nombre de planta derivado (título del modal).
   'plan'  -> lista ordenada de fases activas según la cfg (checklist inicial).
   'phase' -> {index, total, name}: fase que arranca (1-based). Se detecta
              interceptando el prefijo '---> SUBPROCESO:' del canal summary.
+  'stats' -> snapshot de `atom_core.progress_stats.StatsTracker`: imágenes
+             analizadas / anunciadas de la fase, reparto RGB vs térmica, y
+             rotaciones 270/90/sin rotar acumuladas del run.
 
 Tasks soportados (== los de `run_thread` en gui.py):
   split_images, gen_meta_location, compress_image, gen_thumbnails,
@@ -39,6 +42,7 @@ import external_tools as config
 import exif as meta_location
 import pipeline
 import utils
+from atom_core.progress_stats import StatsTracker
 from gui import MainWindow  # solo se usan funciones (globals del módulo intactos)
 from utils import (
     ROTATION_MIN_AGREEMENT_PCT,
@@ -382,6 +386,10 @@ def run_task(
                     _run_log.write(f"[{kind}] {payload}\n")
                 elif kind == "phase" and isinstance(payload, dict):
                     _run_log.write(f"[phase] {payload.get('index')}/{payload.get('total')} {payload.get('name')}\n")
+                elif kind == "stats" and isinstance(payload, dict):
+                    _run_log.write(
+                        "[stats] {done}/{total} img (RGB {rgb} / térmica {termica}) · "
+                        "rot 270:{rot270} 90:{rot90} sin:{rot_none}\n".format(**payload))
                 elif kind in ("done", "progress", "plan"):
                     _run_log.write(f"[{kind}] {payload}\n")
                 _run_log.flush()
@@ -525,9 +533,18 @@ def run_task(
             return {"index": idx, "duration": round(dur, 1),
                     "errors": _t["cur_errors"]}
 
+        # Estadísticas en vivo (imágenes analizadas, RGB vs térmica, rotaciones).
+        # Se derivan del texto que el pipeline ya emite; ver progress_stats.
+        stats = StatsTracker()
+
+        def _emit_stats() -> None:
+            emit("stats", stats.snapshot())
+
         def _on_summary(s) -> None:
             text = str(s)
             _scan_errors(text)
+            if stats.on_line(text):
+                _emit_stats()
             emit("summary", text)
             if text.startswith(_PHASE_PREFIX):
                 phase_counter["i"] += 1
@@ -544,15 +561,26 @@ def run_task(
                     name = text[len(_PHASE_PREFIX):].strip().rstrip(".")
                 emit("phase", {"index": idx, "total": len(plan_names),
                                "name": name, "prev": prev})
+                # Los contadores por fase arrancan de cero con la fase.
+                stats.start_phase(idx, name)
+                _emit_stats()
 
         def _on_log(s) -> None:
             text = str(s)
             # El pipeline original de Aerotools emite un "." por cada imagen como
             # spinner textual. En el panel y en el log solo es ruido (ya hay barra
-            # de progreso numérica): descartamos las líneas de solo puntos/espacios.
+            # de progreso numérica): se descarta del texto, pero se CUENTA — es la
+            # única señal por-imagen que da el pipeline, y de ahí sale el "N de M
+            # analizadas" del modal.
             if text.strip(" .\t\r\n") == "":
+                if text.strip():  # puntos, no una línea en blanco
+                    for _ in range(text.count(".")):
+                        if stats.on_image():
+                            _emit_stats()
                 return
             _scan_errors(text)
+            if stats.on_line(text):
+                _emit_stats()
             emit("log", text)
 
         host = HeadlessHost()
@@ -561,6 +589,10 @@ def run_task(
         psum = _Signal(_on_summary)
 
         getattr(host, method_name)(cfg, pcb, pbar, psum)
+        # Snapshot final: el throttling de imágenes puede haber dejado sin emitir
+        # las últimas < IMAGE_EMIT_EVERY, y el resumen de rotación del modal se
+        # lee de aquí.
+        _emit_stats()
         # Cerrar la última fase y emitir el resumen final con estado agregado.
         last = _close_phase(phase_counter["i"]) if _t["phase_start"] else None
         elapsed = round((datetime.now() - _t["start"]).total_seconds(), 1)

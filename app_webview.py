@@ -403,7 +403,7 @@ class Api:
             detail = {"kind": kind}
             if kind == "progress":
                 detail["value"] = int(payload)
-            elif kind in ("plan", "phase", "done"):
+            elif kind in ("plan", "phase", "stats", "done"):
                 detail["data"] = payload  # list / dict estructurado
             elif payload is not None:
                 detail["text"] = str(payload)

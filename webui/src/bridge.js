@@ -73,6 +73,9 @@ export const api = {
 //   kind 'plant'         -> text (nombre de planta, título del modal)
 //   kind 'plan'          -> data (list[str] de fases activas)
 //   kind 'phase'         -> data ({index, total, name})
+//   kind 'stats'         -> data ({phase_index, phase_name, done, total, rgb,
+//                           termica, rot270, rot90, rot_none}) — imágenes
+//                           analizadas de la fase y rotaciones del run
 //   kind 'done'|'error'  -> (error trae text)
 export function onProgress(handler) {
   const wrapped = (e) => handler(e.detail)
