@@ -269,7 +269,11 @@ def _default_split_config(params: dict) -> SplitImagesConfig:
         convert_to_tif_low_temperature=0.0, convert_to_tiff_rotate_90=False,
         convert_to_tiff_rotate_minus_90=False, convert_to_tiff_rotate_auto=True,
         convert_to_tif_solo_seleccion_atom=False,
-        convert_to_tif_create_gray_scale_images=False,
+        # ON por defecto: el .tiff es float32 de temperaturas y Windows lo abre BLANCO,
+        # así que sin la vista en gris no hay forma de comprobar a ojo que la térmica
+        # quedó girada con el norte arriba. Gira con el mismo criterio que el TIFF
+        # (`rotar_arrays_termicos`). Cuesta un JPG por imagen en `Escala_de_grises/`.
+        convert_to_tif_create_gray_scale_images=True,
     )
 
 

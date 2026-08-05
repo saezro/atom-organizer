@@ -2262,6 +2262,42 @@ class SplitImages:
             self._register_image_error(criterio_path)
             return 0
 
+    def degree_de_giro(self, rotate_90: bool, rotate_minus_90: bool, auto_rotate: bool, input_folder: str, progress_callback) -> int:
+        """
+        Resuelve en GRADOS el giro que toca aplicar a la térmica: 90 (horario), 270
+        (antihorario) o 0 (ninguno). Los flags manuales mandan sobre el automático.
+
+        El criterio automático sale de `read_auto_rotate_degree`, que es el punto ÚNICO
+        de lectura (columna `Degree` del `<vuelo>_Videofiles.csv`). El `_T.JPG` se gira
+        con ese mismo criterio, así que TIFF, JPG y escala de grises quedan siempre en
+        la misma orientación: norte arriba.
+        """
+        if rotate_90:
+            return 90
+        if rotate_minus_90:
+            return 270
+        if auto_rotate:
+            degree = self.read_auto_rotate_degree(input_folder, progress_callback)
+            if degree in (90, 270):
+                return degree
+        return 0
+
+    def rotar_arrays_termicos(self, arr, array_to_normalize, degree: int):
+        """
+        Gira los DOS arrays térmicos con el mismo criterio y devuelve la pareja.
+
+        `arr` es el que acaba en el .tiff (float32 de temperaturas) y `array_to_normalize`
+        el que alimenta la escala de grises y el mapa de color. Tienen que girar JUNTOS:
+        si divergen, la vista en gris deja de servir para comprobar la orientación del
+        TIFF, que es justo para lo que se mira (el .tiff float32 se abre blanco en
+        Windows). Estaban duplicados en seis ramas; aquí es un único sitio.
+        """
+        if degree == 90:
+            return np.rot90(arr, 1, (1, 0)), np.rot90(array_to_normalize, 1, (1, 0))  # Clockwise
+        if degree == 270:
+            return np.rot90(arr, 1, (0, 1)), np.rot90(array_to_normalize, 1, (0, 1))  # Counterclockwise
+        return arr, array_to_normalize
+
     def convert_dji_image_to_tif(self, input_folder: str, output_folder: str, image_name: str, exiftool_exe:str, dji_utility: str, progress_callback, progress_bar, emissivity: float = 0.9, humidity: float = 50.0, auto_temp = False, up_threshold_temperature = 20, low_threshold_temperature = 0, rotate_90: bool = False, rotate_minus_90: bool = False, auto_rotate: bool = False, just_atom_selection = False, generate_gray_scale_images: bool = False, generate_colormap_images: bool = False, defer_exif: bool = False):
         """
         Función que convierte la imagen JPG dada por el parámetro image_name a formato TIFF.
@@ -2464,20 +2500,8 @@ class SplitImages:
             array_to_normalize[array_to_normalize > up_threshold_temperature] = up_threshold_temperature # replace all elements greater than up_threshold_temperature with up_threshold_temperature.
             array_to_normalize[array_to_normalize < low_threshold_temperature] = low_threshold_temperature # replace all elements less than low_threshold_temperature with up_threshold_temperature.
     
-        if rotate_90:
-            arr = np.rot90(arr, 1, (1,0)) # Clockwise
-            array_to_normalize = np.rot90(array_to_normalize, 1, (1,0)) # Clockwise
-        elif rotate_minus_90:
-            arr = np.rot90(arr, 1, (0,1)) # Counterclockwise
-            array_to_normalize = np.rot90(array_to_normalize, 1, (0,1)) # Counterclockwise
-        elif auto_rotate:
-            degree = self.read_auto_rotate_degree(input_folder, progress_callback)
-            if (degree == 90):
-                arr = np.rot90(arr, 1, (1,0)) # Clockwise
-                array_to_normalize = np.rot90(array_to_normalize, 1, (1,0)) # Clockwise
-            elif (degree == 270):
-                arr = np.rot90(arr, 1, (0,1)) # Counterclockwise
-                array_to_normalize = np.rot90(array_to_normalize, 1, (0,1)) # Counterclockwise
+        degree = self.degree_de_giro(rotate_90, rotate_minus_90, auto_rotate, input_folder, progress_callback)
+        arr, array_to_normalize = self.rotar_arrays_termicos(arr, array_to_normalize, degree)
 
         if generate_gray_scale_images:
             normalizedData = (array_to_normalize-np.min(array_to_normalize))/(np.max(array_to_normalize)-np.min(array_to_normalize))*255 # Normalizamos datos para grabar la imagen en escala de grises. Da igual si con auto_temp o no, ya que se ajusta a los datos del array.
