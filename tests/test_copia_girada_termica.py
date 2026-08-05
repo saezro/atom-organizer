@@ -105,9 +105,9 @@ def test_sin_rotacion_no_se_duplican_los_jpg(organizer_logger_stub, vuelo):
 def test_auto_usa_el_mismo_criterio_que_el_tiff(organizer_logger_stub, tmp_path, vuelo,
                                                 degree, transpose):
     raiz, carpeta = vuelo
-    miniaturas = tmp_path / "MINIATURAS" / "PB1_V1_miniaturas"
-    miniaturas.mkdir(parents=True)
-    (miniaturas / "PB1_V1_Videofiles.csv").write_text(
+    criterio = tmp_path / "CSVs" / "PB1_V1"
+    criterio.mkdir(parents=True)
+    (criterio / "PB1_V1_Videofiles.csv").write_text(
         f"New Name,Original Name,Degree\na,b,{degree}\n", encoding="utf-8")
 
     obj = _split(organizer_logger_stub)

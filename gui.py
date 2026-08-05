@@ -1209,8 +1209,8 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
         v.addLayout(f)
         secs.append(gb)
 
-        # --- Miniaturas y rotación ----------------------------------------------------
-        gb, v = section("Miniaturas y rotación", self.cb_gb_split_images_gen_thumbnails)
+        # --- Rotación -----------------------------------------------------------------
+        gb, v = section("Rotación", self.cb_gb_split_images_gen_thumbnails)
         r = QtWidgets.QHBoxLayout(); r.setSpacing(12)
         r.addWidget(radios(self.gb_gb_split_images_gen_thumbnails,
                            [self.cb_gb_gen_thumbnails_rgb_2, self.cb_gb_gen_thumbnails_termica_2]), 0, top)
@@ -1319,8 +1319,8 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
         v.addLayout(self._action_row(self.bt_do_rgb_aerotools_processing))
         secs.append(gb)
 
-        # --- Rotación y miniaturas ----------------------------------------------------
-        gb, v = self._glass_section("Rotación y miniaturas")
+        # --- Rotación -----------------------------------------------------------------
+        gb, v = self._glass_section("Rotación")
         v.addLayout(self._glass_file_row(self.bt_gb_generate_thumbnails_aerotools_select_input_folder, self.le_gb_generate_thumbnails_aerotools_input_folder))
         v.addWidget(self._glass_radios(self.gb_gb_gen_thumbnails_aerotools,
                     [self.cb_gb_gen_thumbnails_aerotools_rgb, self.cb_gb_gen_thumbnails_aerotools_termica]))
@@ -1386,8 +1386,8 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
         v.addLayout(self._action_row(self.bt_do_gen_struct))
         secs.append(gb)
 
-        # --- Rotación y miniaturas ----------------------------------------------------
-        gb, v = self._glass_section("Rotación y miniaturas")
+        # --- Rotación -----------------------------------------------------------------
+        gb, v = self._glass_section("Rotación")
         v.addLayout(self._glass_file_row(self.bt_gb_generate_thumbnails_select_input_folder, self.le_gb_generate_thumbnails_input_folder))
         r = QtWidgets.QHBoxLayout(); r.setSpacing(12)
         r.addWidget(self._glass_radios(self.gb_gb_gen_thumbnails,
@@ -2082,7 +2082,7 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
             processing_time = self.utils_obj.logging_time()
 
             self.meta_location_obj.reset_variables(main_process=True, progress_callback=progress_callback)
-            self.meta_location_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.input_folder, exclude_patterns=["_CROP"], exclude_folders=["MINIATURAS"])
+            self.meta_location_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.input_folder, exclude_patterns=["_CROP"], exclude_folders=["MINIATURAS", "CSVs"])
             self.organizer_logger_obj.logger.info(f"El número total de imágenes es: {self.meta_location_obj.total_images_number}")
             self.new_log_gui.enable_process()
 
@@ -2266,14 +2266,14 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
 
             if cfg.gen_thumbnails:
                 self.organizer_logger_obj.logger.info("-----------------------------------------------------------------")
-                self.organizer_logger_obj.logger.info("SUBPROCESO: GENERACIÓN DE LAS MINIATURAS.")
+                self.organizer_logger_obj.logger.info("SUBPROCESO: ROTACIÓN.")
                 self.organizer_logger_obj.logger.info("-----------------------------------------------------------------")
 
                 self.gen_struct_folder_obj.reset_variables(main_process=False, gen_thumbnails=True, progress_callback=progress_callback)
                 self.new_log_gui.enable_process()
 
                 progress_summarize.emit("__________________")
-                progress_summarize.emit("---> SUBPROCESO: GENERACIÓN DE LAS MINIATURAS.")
+                progress_summarize.emit("---> SUBPROCESO: ROTACIÓN.")
 
                 lim_max_90 = cfg.gen_thumbnails_add_to_angle + 90
                 lim_max_270 = cfg.gen_thumbnails_add_to_angle - 90
@@ -2286,7 +2286,7 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
                 # self.organizer_logger_obj.logger.debug(f"Lim min 270: {lim_min_270}")
 
                 if cfg.gen_thumbnails_rgb and not cfg.gen_thumbnails_termica:
-                    self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, "RGB"), exclude_folders=["MINIATURAS"])
+                    self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, "RGB"), exclude_folders=["MINIATURAS", "CSVs"])
                     # logging.info(f"Number of total images for miniatures: {self.gen_struct_folder_obj.total_images_number}")
                     if self.gen_struct_folder_obj.check_input_folder_and_iterate(cfg.output_folder,["RGB"], cfg.gen_thumbnails_max_error,
                                                                                 lim_max_270, lim_min_270,
@@ -2294,7 +2294,7 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
                         progress_callback.emit("\nNo se puede iniciar el proceso: El directorio RGB no se encuentra en la carpeta de entrada.\n")
                         self.organizer_logger_obj.logger.info("No se puede iniciar el proceso: El directorio RGB no se encuentra en la carpeta de entrada.")
                 elif cfg.gen_thumbnails_termica and not cfg.gen_thumbnails_rgb:
-                    self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, "TERMICA"), exclude_folders=["MINIATURAS"])
+                    self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, "TERMICA"), exclude_folders=["MINIATURAS", "CSVs"])
                     # self.organizer_logger_obj.logger.info(f"Number of total images for miniatures: {self.gen_struct_folder_obj.total_images_number}")
                     if self.gen_struct_folder_obj.check_input_folder_and_iterate(cfg.output_folder,["TERMICA"], cfg.gen_thumbnails_max_error,
                                                                                 lim_max_270, lim_min_270,
@@ -2302,17 +2302,13 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
                         progress_callback.emit("\nNo se puede iniciar el proceso: El directorio TERMICA no se encuentra en la carpeta de entrada.\n")
                         self.organizer_logger_obj.logger.info("No se puede iniciar el proceso: El directorio TERMICA no se encuentra en la carpeta de entrada.")
                 elif cfg.gen_thumbnails_rgb and cfg.gen_thumbnails_termica:
-                    self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.output_folder, exclude_folders=["MINIATURAS"])
+                    self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.output_folder, exclude_folders=["MINIATURAS", "CSVs"])
                     # logging.info(f"Number of total images for miniatures: {self.gen_struct_folder_obj.total_images_number}")
                     if self.gen_struct_folder_obj.check_input_folder_and_iterate(cfg.output_folder,["TERMICA", "RGB"], cfg.gen_thumbnails_max_error,
                                                                                 lim_max_270, lim_min_270,
                                                                                 lim_max_90, lim_min_90, cfg.choose_mode_auto, cfg.gen_thumbnails_rotate_90, progress_callback, progress_bar) is False:
                         progress_callback.emit("\nNo se puede iniciar el proceso: Los directorios RGB y TERMICA no se encuentran en la carpeta de entrada.\n")
                         self.organizer_logger_obj.logger.info("No se puede iniciar el proceso: Los directorios RGB y TERMICA no se encuentran en la carpeta de entrada.")
-
-                # Sólo comprobamos las miniaturas con termica, pues con las RGB se rotan en el mismo directorio y de todas maneras ya se comprueba si existen problemas durante el procesado.
-                if cfg.gen_thumbnails_termica:
-                    self.gen_struct_folder_obj.checking_results_gen_thumbnails_and_rotate(progress_callback, progress_summarize)
 
                 summarize_dict = self.gen_struct_folder_obj.get_summarize()
                 self.show_summarize(summarize_dict, progress_summarize)
@@ -2403,7 +2399,7 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
         # Por ahora que llamen al directorio en el que quieran crear las miniaturas, que no sea el directorio con RGB y TERMICA. Así, pueden probar
         # con pequeños directorios y ver que todo funciona correctamente.
         self.organizer_logger_obj.logger.info("###################################################################")
-        self.organizer_logger_obj.logger.info("PROCESO: Generación de miniaturas.")
+        self.organizer_logger_obj.logger.info("PROCESO: Rotación de imágenes.")
         self.organizer_logger_obj.logger.info("###################################################################")
 
         lim_max_90 = cfg.add_to_angle + 90
@@ -2417,29 +2413,26 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
         # self.organizer_logger_obj.logger.debug(f"Lim min 270: {lim_min_270}")
 
         if cfg.rgb and not cfg.termica:
-            self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.input_folder, "RGB"), exclude_folders=["MINIATURAS"])
+            self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.input_folder, "RGB"), exclude_folders=["MINIATURAS", "CSVs"])
             if self.gen_struct_folder_obj.check_input_folder_and_iterate(cfg.input_folder,["RGB"], cfg.max_error,
                                                                          lim_max_270, lim_min_270,
                                                                          lim_max_90, lim_min_90, cfg.choose_mode_auto, cfg.rotate_90, progress_callback, progress_bar) is False:
                 progress_callback.emit("\nNo se puede iniciar el proceso: El directorio RGB no se encuentra en la carpeta de entrada.\n")
                 self.organizer_logger_obj.logger.info("No se puede iniciar el proceso: RGB folder does not exist in input folder.")
         elif cfg.termica and not cfg.rgb:
-            self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.input_folder, "TERMICA"), exclude_folders=["MINIATURAS"])
+            self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.input_folder, "TERMICA"), exclude_folders=["MINIATURAS", "CSVs"])
             if self.gen_struct_folder_obj.check_input_folder_and_iterate(cfg.input_folder,["TERMICA"], cfg.max_error,
                                                                          lim_max_270, lim_min_270,
                                                                          lim_max_90, lim_min_90, cfg.choose_mode_auto, cfg.rotate_90, progress_callback, progress_bar) is False:
                 progress_callback.emit("\nNo se puede iniciar el proceso: El directorio TERMICA no se encuentra en la carpeta de entrada.\n")
                 self.organizer_logger_obj.logger.info("No se puede iniciar el proceso: TERMICA folder does not exist in input folder.")
         elif cfg.rgb and cfg.termica:
-            self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.input_folder, exclude_folders=["MINIATURAS"])
+            self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.input_folder, exclude_folders=["MINIATURAS", "CSVs"])
             if self.gen_struct_folder_obj.check_input_folder_and_iterate(cfg.input_folder,["TERMICA", "RGB"], cfg.max_error,
                                                                          lim_max_270, lim_min_270,
                                                                          lim_max_90, lim_min_90, cfg.choose_mode_auto, cfg.rotate_90, progress_callback, progress_bar) is False:
                 progress_callback.emit("\nNo se puede iniciar el proceso: Los directorios RGB y TERMICA no se encuentran en la carpeta de entrada.\n")
                 self.organizer_logger_obj.logger.info("No se puede iniciar el proceso: RGB and TERMICA folders do not exist in input folder.")
-
-        if cfg.termica_2:
-            self.gen_struct_folder_obj.checking_results_gen_thumbnails_and_rotate(progress_callback, progress_summarize)
 
         summarize_dict = self.gen_struct_folder_obj.get_summarize()
         self.show_summarize(summarize_dict, progress_summarize)
@@ -2461,7 +2454,7 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
         # Por ahora que llamen al directorio en el que quieran crear las miniaturas, que no sea el directorio con RGB y TERMICA. Así, pueden probar
         # con pequeños directorios y ver que todo funciona correctamente.
         self.organizer_logger_obj.logger.info("###################################################################")
-        self.organizer_logger_obj.logger.info("PROCESO: Generación de miniaturas para las imágenes de AEROTOOLS.")
+        self.organizer_logger_obj.logger.info("PROCESO: Rotación de las imágenes de AEROTOOLS.")
         self.organizer_logger_obj.logger.info("###################################################################")
 
         lim_max_90 = cfg.aerotools_add_to_angle + 90
@@ -3180,7 +3173,7 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
             # Ahora podemos preparar los datos del log con cualquier carpeta que se elija.
             dir_input_folder =self.le_gb_generate_thumbnails_input_folder.text()
 
-            self.prepare_log("Rotar/Generar miniaturas","PROCESO PRINCIPAL: ROTAR/GENERAR MINIATURAS", self.gen_struct_folder_obj, dir_input_folder)
+            self.prepare_log("Rotar","PROCESO PRINCIPAL: ROTAR", self.gen_struct_folder_obj, dir_input_folder)
         elif function_to_call == "rename_images":
             worker = Worker(self.rename_images, cfg.rename_images) # Any other args, kwargs are passed to the run function
             self.prepare_log("Renombrar imágenes", "PROCESO PRINCIPAL: RENOMBRAR IMÁGENES", self.gen_struct_folder_obj, self.le_gb_rename_images_output_folder.text())
@@ -3206,7 +3199,7 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
             # Ahora podemos preparar los datos del log con cualquier carpeta que se elija.
             dir_input_folder = self.le_gb_generate_thumbnails_aerotools_input_folder.text()
 
-            self.prepare_log("Rotar/Generar miniaturas AEROTOOLS","PROCESO PRINCIPAL: ROTAR/GENERAR MINIATURAS IMÁGENES AEROTOOLS", self.gen_struct_folder_obj, dir_input_folder)
+            self.prepare_log("Rotar AEROTOOLS","PROCESO PRINCIPAL: ROTAR IMÁGENES AEROTOOLS", self.gen_struct_folder_obj, dir_input_folder)
         elif function_to_call == "manual_geotagging":
             worker = Worker(self.do_manual_geotagging, cfg.manual_geotagging) # Any other args, kwargs are passed to the run function
             self.prepare_log("Geoetiquetar manualmente una serie de imágenes","PROCESO PRINCIPAL: GEOETIQUETADO MANUAL", self.rgb_processing_obj, self.le_gb_manual_geotagging_select_images_folder.text())
@@ -3258,7 +3251,7 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
         self.new_log_gui.enable_process()
         self.new_log_gui.pb_process.setValue(0)
         obj.reset_variables()
-        obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(input_folder, tmc=tmc, exclude_patterns=["_CROP"], exclude_folders=["MINIATURAS"])
+        obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(input_folder, tmc=tmc, exclude_patterns=["_CROP"], exclude_folders=["MINIATURAS", "CSVs"])
         self.new_log_gui.te_summarize_process.appendPlainText("Número total de imágenes a procesar: {0}".format(obj.total_images_number, 0))
         self.show_log_window(log_window_title)
 

@@ -33,9 +33,7 @@ def test_rotate_and_save_respeta_quality_param_rgb(tmp_path, synthetic_jpeg):
     Image.Image.save = spy_save
     try:
         ci.rotate_and_save(
-            image_name, str(input_folder), str(input_folder), Image.ROTATE_90, 85,
-            "DJI_0001_rot.JPG", rgb_processing=True,
-            path_pb_v_miniaturas=str(input_folder), progress_callback=cb,
+            image_name, str(input_folder), Image.ROTATE_90, 85, progress_callback=cb,
         )
     finally:
         Image.Image.save = original_save

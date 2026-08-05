@@ -54,15 +54,14 @@ def test_margen_cero_no_rota_ni_con_el_yaw_exacto(tmp_path, logger, make_dji_jpe
     planta_folder, flight_folder = _flight_folder(tmp_path, make_dji_jpeg, yaw=-90.0)
     obj = gen_struct_folder.GenStructFolder(logger)
     obj.root_folder = str(planta_folder)
-    obj.miniaturas_root_folder = str(planta_folder / "MINIATURAS")
-    os.makedirs(obj.miniaturas_root_folder)
+    obj.csvs_root_folder = str(planta_folder / "CSVs")
 
     progress, _ = _recording_progress()
     # add_to_angle = 0 y subs_to_angle = 0 -> los cuatro límites colapsan.
     _run(obj, flight_folder, progress,
          lim_max_270=-90, lim_min_270=-90, lim_max_90=90, lim_min_90=90)
 
-    csv_path = os.path.join(obj.miniaturas_root_folder, "PB1_V01_miniaturas", "PB1_V01_Videofiles.csv")
+    csv_path = os.path.join(obj.csvs_root_folder, "PB1_V01", "PB1_V01_Videofiles.csv")
     df = pd.read_csv(csv_path)
     assert set(df["Degree"].unique()) == {0}, (
         "Con márgenes a 0 y yaw -90 exacto se rotó algo: el intervalo ya no está vacío."
@@ -76,15 +75,14 @@ def test_margen_amplio_si_rota_el_mismo_yaw(tmp_path, logger, make_dji_jpeg):
     planta_folder, flight_folder = _flight_folder(tmp_path, make_dji_jpeg, yaw=-90.0)
     obj = gen_struct_folder.GenStructFolder(logger)
     obj.root_folder = str(planta_folder)
-    obj.miniaturas_root_folder = str(planta_folder / "MINIATURAS")
-    os.makedirs(obj.miniaturas_root_folder)
+    obj.csvs_root_folder = str(planta_folder / "CSVs")
 
     progress, _ = _recording_progress()
     # add_to_angle = subs_to_angle = 80 -> (-170, -10) y (10, 170).
     _run(obj, flight_folder, progress,
          lim_max_270=-10, lim_min_270=-170, lim_max_90=170, lim_min_90=10)
 
-    csv_path = os.path.join(obj.miniaturas_root_folder, "PB1_V01_miniaturas", "PB1_V01_Videofiles.csv")
+    csv_path = os.path.join(obj.csvs_root_folder, "PB1_V01", "PB1_V01_Videofiles.csv")
     df = pd.read_csv(csv_path)
     assert set(df["Degree"].unique()) == {270}, (
         "El mismo yaw -90 con margen amplio debería rotar 270 — si no, el fallo no es el margen."

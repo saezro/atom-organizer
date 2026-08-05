@@ -1,8 +1,8 @@
 """Rotación AUTO del TIFF: el paso 6 consume el criterio que decidió el paso 5.
 
-La decisión de giro NO se recalcula en la conversión a TIFF: el paso de miniaturas
-la escribe en `MINIATURAS/<PBX_VXX>_miniaturas/<PBX_VXX>_Videofiles.csv` (columna
-`Degree`) y `convert_dji_image_to_tif(auto_rotate=True)` la relee de ahí. Ese
+La decisión de giro NO se recalcula en la conversión a TIFF: el paso de rotación
+la escribe en `CSVs/<PBX_VXX>/<PBX_VXX>_Videofiles.csv` (columna `Degree`) y
+`convert_dji_image_to_tif(auto_rotate=True)` la relee de ahí. Ese
 traspaso entre pasos, que es por FICHERO, no tenía ni un solo test: se probaba que
 el paso 5 escribe el CSV y que el paso 6 rota con los flags manuales, pero nunca
 que el paso 6 lea bien lo que el paso 5 escribió.
@@ -14,6 +14,8 @@ Casos cubiertos:
     reventar: antes `df["Degree"][0]` lanzaba KeyError, que el `except
     FileNotFoundError` no captura, y tumbaba la conversión de todo el vuelo.
   - CSV ausente -> sin rotar, avisando.
+  - CSV en la ubicación ANTIGUA (`MINIATURAS/`) -> se sigue leyendo, para poder
+    re-procesar carpetas generadas antes de que se quitaran las miniaturas.
 """
 import os
 import struct
@@ -29,17 +31,17 @@ def _noop_progress():
     return types.SimpleNamespace(emit=lambda *a, **k: None)
 
 
-def _monta_vuelo(tmp_path, make_dji_jpeg, contenido_csv):
+def _monta_vuelo(tmp_path, make_dji_jpeg, contenido_csv, carpeta_criterio="CSVs/PB24_V1"):
     """Crea <destino>/TERMICA/PB24/PB24_V1/DJI_0001_T.JPG y, si procede, el CSV de
-    criterio en <destino>/MINIATURAS/PB24_V1_miniaturas/. Devuelve (carpeta, jpg)."""
+    criterio en <destino>/<carpeta_criterio>/. Devuelve (carpeta, jpg)."""
     vuelo = tmp_path / "TERMICA" / "PB24" / "PB24_V1"
     vuelo.mkdir(parents=True)
     image_path = make_dji_jpeg(str(vuelo / "DJI_0001_T.JPG"))
 
     if contenido_csv is not None:
-        miniaturas = tmp_path / "MINIATURAS" / "PB24_V1_miniaturas"
-        miniaturas.mkdir(parents=True)
-        (miniaturas / "PB24_V1_Videofiles.csv").write_text(contenido_csv, encoding="utf-8")
+        criterio = tmp_path / carpeta_criterio
+        criterio.mkdir(parents=True)
+        (criterio / "PB24_V1_Videofiles.csv").write_text(contenido_csv, encoding="utf-8")
 
     return vuelo, image_path
 
@@ -112,3 +114,20 @@ def test_auto_rotate_sin_csv_no_rota_y_no_revienta(tmp_path, logger, make_dji_jp
     vuelo, image_path = _monta_vuelo(tmp_path, make_dji_jpeg, None)
     esperado, obtenido = _convierte(monkeypatch, logger, vuelo, image_path)
     np.testing.assert_array_equal(obtenido, esperado)
+
+
+def test_criterio_en_la_ubicacion_antigua_se_sigue_leyendo(tmp_path, logger, make_dji_jpeg, monkeypatch):
+    """Carpeta procesada por una versión con miniaturas: el criterio está en
+    `MINIATURAS/<vuelo>_miniaturas/` y no en `CSVs/`. Re-procesarla no puede dejar
+    de rotar el TIFF en silencio."""
+    vuelo, image_path = _monta_vuelo(
+        tmp_path, make_dji_jpeg,
+        "New Name,Original Name,Degree\nPB24_V1_0001.JPG,DJI_0001_T.JPG,270\n",
+        carpeta_criterio="MINIATURAS/PB24_V1_miniaturas",
+    )
+    esperado, tiff = _convierte(monkeypatch, logger, vuelo, image_path)
+
+    assert np.array_equal(tiff, np.rot90(esperado, 1, (0, 1))), (
+        "Con el criterio en la ubicación antigua el TIFF salió sin rotar: el fallback a "
+        "MINIATURAS no funciona y re-procesar una carpeta vieja deja de girar."
+    )

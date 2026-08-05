@@ -442,28 +442,27 @@ class CompressImage:
             if img is not None and getattr(img, "fp", None) is not None:
                 img.close()
 
-    def rotate_and_save(self, image_name: str, input_folder: str, output_folder: str, degrees: str, quality: int, new_name: str, rgb_processing: bool,
-                        path_pb_v_miniaturas: str, progress_callback) -> bool:
+    def rotate_and_save(self, image_name: str, input_folder: str, degrees: str, quality: int, progress_callback) -> bool:
         """
-        Función que rota las imágenes (realmente hace un transpose) con los grados proporcionados por el parámetro degrees
-        
+        Función que rota las imágenes RGB in-place (realmente hace un transpose) con los grados proporcionados por el parámetro degrees.
+
+        Solo aplica a RGB: la térmica ya no pasa por aquí. Su `*_T.JPG` crudo NO se
+        puede re-encodar (se perdería el payload radiométrico de DJI) y, desde que se
+        quitaron las miniaturas, no hay nada más que escribir en el paso de rotación;
+        su copia girada `_ROT` se genera al final, después de la conversión a TIFF.
+
         Arguments:
         ---------
         - image_name - el nombre de la imagen.
-        - input_folder - carpeta de entrada.
-        - output_folder - carpeta de salida.
+        - input_folder - carpeta de entrada. La imagen se sobrescribe girada aquí mismo.
         - degrees - los ángulos que se quieren girar.
         - quality - calidad de la compresión.
-        - new_name - nuevo nombre que se le quiere dar al archivo girado.
-        - rgb_processing - indica si estamos procesando una imagen rgb o térmica. True es rgb, False es térmica.
-        - path_pb_v_miniaturas - es el path del directorio donde guardar las miniaturas de las térmicas. Está dentro de MINIATURAS.
+        - progress_callback - Callback (los signals) que envían, mediante un emit(), información de texto desde el hilo correspondiente.
         """
+        output_folder = input_folder  # Se gira in-place: entrada y salida son la misma carpeta.
         self.organizer_logger.logger.debug("--------------------------------------------------------------------")
         self.organizer_logger.logger.debug("Image name: " + image_name)
         self.organizer_logger.logger.debug("Input folder: " + input_folder)
-        self.organizer_logger.logger.debug("Output folder: " + output_folder)
-        self.organizer_logger.logger.debug("New image name: " + new_name)
-        self.organizer_logger.logger.debug("RGB processing: " + str(bool(rgb_processing)))
         self.organizer_logger.logger.debug("Quality factor: " + str(quality))
         self.organizer_logger.logger.debug("Angle: " + str(degrees))  # 2 es 90º. 4 creo que -90º. Es porque transpose acepta constantes definidas como IMAGE.ROTATE_270 y IMAGE.ROTATE_90
 
@@ -485,24 +484,19 @@ class CompressImage:
                 crop_imagen_open = crop_imagen_open.transpose(degrees) 
                 cropped_images = True
 
-            if not rgb_processing:
-                image_open.save(os.path.join(path_pb_v_miniaturas, new_name), optimize=True, quality=quality)  # Estamos procesando térmicas. Grabamos en el path donde se guardan las miniaturas.
-                # No hace falta guardar datos de exif.
-                image_open.close()
-            else:  # Estamos procesando RGBs.
-                gimbal_data = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder, image_name))  # Obtenemos los datos de gimbal del archivo antes de guardarlo.
-                xmp_all_data = self.exif_management_obj.get_xmp_data(os.path.join(input_folder, image_name))  # Obtenemos el resto de datos xmp del archivo antes de guardarlo.
-                image_open.save(os.path.join(input_folder, image_name), quality=quality, optimize=True, exif=exif)
-                image_open.close()
+            gimbal_data = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder, image_name))  # Obtenemos los datos de gimbal del archivo antes de guardarlo.
+            xmp_all_data = self.exif_management_obj.get_xmp_data(os.path.join(input_folder, image_name))  # Obtenemos el resto de datos xmp del archivo antes de guardarlo.
+            image_open.save(os.path.join(input_folder, image_name), quality=quality, optimize=True, exif=exif)
+            image_open.close()
 
-                if crop_imagen_open:
-                    crop_imagen_open.save(os.path.join(input_folder, crop_image_name), quality=quality, optimize=True)
-                    crop_imagen_open.close()
+            if crop_imagen_open:
+                crop_imagen_open.save(os.path.join(input_folder, crop_image_name), quality=quality, optimize=True)
+                crop_imagen_open.close()
 
-                self.exif_management_obj.saving_gimbal_data_in_xmp(os.path.join(input_folder, image_name), gimbal_data)  # Se graban los datos en el mismo archivo de entrada, pero rotado.
-                self.exif_management_obj.saving_xmp_data_in_xmp(os.path.join(input_folder, image_name), xmp_all_data)  # Se graban los datos xmp en mismo archivo de entrada, pero rotado.
-                
-                self.check_and_fix_xmp_data(input_folder,image_name, gimbal_data, xmp_all_data, progress_callback)
+            self.exif_management_obj.saving_gimbal_data_in_xmp(os.path.join(input_folder, image_name), gimbal_data)  # Se graban los datos en el mismo archivo de entrada, pero rotado.
+            self.exif_management_obj.saving_xmp_data_in_xmp(os.path.join(input_folder, image_name), xmp_all_data)  # Se graban los datos xmp en mismo archivo de entrada, pero rotado.
+
+            self.check_and_fix_xmp_data(input_folder,image_name, gimbal_data, xmp_all_data, progress_callback)
             return cropped_images
         except FileNotFoundError as f:
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
@@ -648,7 +642,7 @@ class GenStructFolder:
 
         if not main_process and gen_thumbnails:
             progress_callback.emit("----------------------------------------------------\n")
-            progress_callback.emit("SUBPROCESO: GENERAR MINIATURAS\n")  # Enviamos el texto para indicar que arranca el proceso de generar miniaturas, pero que no es el proceso principal, siendo posterior.
+            progress_callback.emit("SUBPROCESO: ROTACIÓN\n")  # Enviamos el texto para indicar que arranca el proceso de rotación, pero que no es el proceso principal, siendo posterior.
             progress_callback.emit("----------------------------------------------------")
             
         if not main_process and convert_to_tiff:
@@ -672,7 +666,7 @@ class GenStructFolder:
 
         if self.compress_image_obj.error_compress > 0:
             error = True
-            summarize_dict["Error al rotar y generar miniaturas"] = "Ha habido {0} errores en la rotación y generación de miniaturas.".format(self.compress_image_obj.error_compress)
+            summarize_dict["Error al rotar"] = "Ha habido {0} errores en la rotación.".format(self.compress_image_obj.error_compress)
             summarize_dict["Imágenes con error"] = self.compress_image_obj.images_error_compress
 
         if self.error_gen_struct_folder > 0:
@@ -729,87 +723,6 @@ class GenStructFolder:
         # degenerado "TODO fuera del estadillo" y abortar con un mensaje útil,
         # en vez de dejar que las fases siguientes procesen 0 imágenes en verde.
         return thermal_folder_list_length, rgb_folder_list_length
-
-    def checking_results_gen_thumbnails_and_rotate(self, progress_callback, progress_summarize) -> None:
-        """
-        Recorre self.miniaturas_root_folder y para cada subcarpeta cuyo nombre termine en '_miniaturas',
-        elimina ese sufijo para obtener el nombre de la carpeta original, busca esa carpeta en
-        self.root_folder y compara el número de imágenes de ambas. Si no coinciden, lo registra
-        en el logger y en la lista de errores.
-        """
-        error = False
-        if not os.path.exists(self.miniaturas_root_folder):
-            self.organizer_logger.logger.warning(f"La carpeta de miniaturas no existe: {self.miniaturas_root_folder}")
-            return
-
-        try:
-            subfolders = [
-                d for d in os.listdir(self.miniaturas_root_folder)
-                if os.path.isdir(os.path.join(self.miniaturas_root_folder, d))
-            ]
-        except Exception as e:
-            self.organizer_logger.logger.error(f"Error al listar '{self.miniaturas_root_folder}': {e}")
-            return
-
-        for subfolder in subfolders:
-            suffix = "_miniaturas"
-            if subfolder.endswith(suffix):
-                original_name = subfolder[: -len(suffix)]
-            else:
-                original_name = subfolder
-
-            miniaturas_path = os.path.join(self.miniaturas_root_folder, subfolder)
-            termica_root = os.path.join(self.root_folder, "TERMICA")
-            original_path = None
-            for dirpath, dirnames, _ in os.walk(termica_root):
-                if original_name in dirnames:
-                    original_path = os.path.join(dirpath, original_name)
-                    break
-
-            try:
-                miniaturas_images = self.utils_obj.get_images_from_dir(miniaturas_path)
-                n_miniaturas = len(miniaturas_images)
-            except Exception as e:
-                self.organizer_logger.logger.error(f"Error al obtener imágenes de '{miniaturas_path}': {e}")
-                continue
-
-            if original_path is None:
-                msg = f"No se encuentra la carpeta original '{original_path}' para la miniatura '{subfolder}'."
-                self.organizer_logger.logger.warning(msg)
-                self.error_gen_struct_folder += 1
-                self.errors_type_gen_struct_folder.append(msg)
-                continue
-
-            try:
-                original_images = self.utils_obj.get_images_from_dir(original_path)
-                n_original = len(original_images)
-            except Exception as e:
-                self.organizer_logger.logger.error(f"Error al obtener imágenes de '{original_path}': {e}")
-                continue
-
-            if n_miniaturas == n_original:
-                self.organizer_logger.logger.info(
-                    f"OK - '{subfolder}': {n_miniaturas} miniaturas == {n_original} imágenes originales."
-                )
-                progress_callback.emit(f"\nOK - '{subfolder}': {n_miniaturas} miniaturas == {n_original} imágenes originales.\n")
-            else:
-                msg = (
-                    f"ERROR - '{subfolder}': {n_miniaturas} miniaturas != {n_original} imágenes "
-                    f"en '{original_name}'. No coinciden."
-                )
-                error = True
-                self.organizer_logger.logger.warning(msg)
-                self.error_gen_struct_folder += 1
-                self.errors_type_gen_struct_folder.append(msg)
-        
-        if error:
-            self.organizer_logger.logger.error(
-                f"Se encontraron carpeta(s) con discrepancias entre miniaturas e originales"
-            )
-        else:
-            self.organizer_logger.logger.info("Verificación completada sin errores.")
-            progress_summarize.emit("Verificación completada sin errores.\n")
-            progress_callback.emit("Verificación completada sin errores.\n")
 
     def gen_folder_struct(self, path_estadillo: str, input_folder: str, output_folder: str, organize_images: bool, seconds_range: float, desfase_horas: int, desfase_minutos: int,
                           progress_callback, progress_bar, extra_suffix: bool = False, include_v: bool = True) -> None:
@@ -1108,15 +1021,14 @@ class GenStructFolder:
 
         list_dir = os.listdir(input_folder)
         self.root_folder = input_folder  # Almacenamos el input_folder, que puede ser cualquiera.
-        self.miniaturas_root_folder = os.path.join(self.root_folder, "MINIATURAS") # Almacenamos el path de MINIATURAS.
-        self.csvs_root_folder = os.path.join(self.root_folder, "CSVs") # Almacenamos el path de CSVs, paralela a MINIATURAS.
+        self.csvs_root_folder = os.path.join(self.root_folder, "CSVs") # Almacenamos el path de CSVs, donde vive el criterio de giro.
 
         # Recorremos las carpetas del parámetro folders_to_check, para saber si es RGB o no (TERMICA).
         for folder in folders_to_check:
             if folder == "RGB":
                 rgb_processing = True
             else:
-                self.utils_obj.prepare_output_folder(input_folder, ["MINIATURAS", "CSVs"])  # Generamos las carpetas MINIATURAS y CSVs si no están.
+                self.utils_obj.prepare_output_folder(input_folder, ["CSVs"])  # Generamos la carpeta CSVs si no está. Ya no se generan miniaturas.
                 rgb_processing = False
             
             # Aquí radica el que podamos seguir trabajando en el caso de que se eligiera la carpeta con RGB y TERMICA como root. Si la carpeta de folders_to_check está en la
@@ -1139,23 +1051,95 @@ class GenStructFolder:
 
     def copy_flight_csvs_to_csvs_folder(self, input_folder: str, file: str) -> None:
         """
-        Copia el meta/location.csv del vuelo también a CSVs/<vuelo>_miniaturas, en paralelo a MINIATURAS.
+        Copia a `CSVs/<vuelo>` el meta.csv del vuelo térmico (`file`) y el location.csv
+        de su carpeta RGB equivalente.
+
+        SOBRESCRIBE a propósito. Se usaba `safe_copy2`, que en vez de sobrescribir versiona
+        (`unique_dest` -> `_1`, `_2`...): re-procesar el mismo destino dejaba
+        `<vuelo>_location.csv`, `<vuelo>_location_1.csv`, `<vuelo>_location_2.csv`, todos
+        idénticos y sin forma de saber cuál vale. El meta/location regenerado de un vuelo es
+        el mismo dato, no una versión nueva. Ese versionado sí tiene sentido para imágenes
+        distintas que colisionan de nombre, no aquí.
         """
-        from utils import safe_copy2
-        dest_subfolder = os.path.join(self.csvs_root_folder, os.path.basename(input_folder) + "_miniaturas")
+        dest_subfolder = os.path.join(self.csvs_root_folder, os.path.basename(input_folder))
         os.makedirs(dest_subfolder, exist_ok=True)
         rgb_dir = input_folder.replace("TERMICA", "RGB")
         rgb_file = file.replace("meta", "location")
-        try:
-            dest_file = os.path.join(dest_subfolder, os.path.basename(file))
-            safe_copy2(os.path.join(input_folder, file), dest_file)
-        except FileNotFoundError:
-            pass
-        try:
-            dest_rgb_file = os.path.join(dest_subfolder, os.path.basename(rgb_file))
-            safe_copy2(os.path.join(rgb_dir, rgb_file), dest_rgb_file)
-        except FileNotFoundError:
-            pass
+        for origen, destino in ((os.path.join(input_folder, file), os.path.join(dest_subfolder, os.path.basename(file))),
+                                (os.path.join(rgb_dir, rgb_file), os.path.join(dest_subfolder, os.path.basename(rgb_file)))):
+            try:
+                shutil.copy2(origen, destino)
+            except FileNotFoundError:
+                pass
+
+    def copy_flight_csvs(self, input_folder: str, progress_callback) -> None:
+        """
+        Copia el meta/location.csv del vuelo térmico a `CSVs/<vuelo>`, avisando si
+        alguno de los dos no está donde se espera.
+
+        Antes se copiaban DOS veces (a MINIATURAS y a CSVs). Al quitar las miniaturas queda
+        solo la de CSVs; el aviso de "no se ha encontrado meta/location.csv" tiene que seguir
+        saliendo igual, así que se comprueba la existencia en vez de esperar la excepción de
+        la copia (`copy_flight_csvs_to_csvs_folder` ignora en silencio los que faltan).
+
+        Solo se mira el meta: el par se deriva de él (`meta` -> `location`). Antes se iteraba
+        sobre TODOS los `.csv` de la carpeta y se copiaba el par entero una vez por cada uno,
+        así que un vuelo con más de un CSV repetía la copia del location tantas veces como
+        CSVs hubiera.
+        """
+        for file in os.listdir(input_folder):
+            if not file.endswith(".csv") or "meta" not in file:
+                continue
+            # Sustituimos en el input folder TERMICA por RGB, pues tendría que ser el mismo directorio, pero cambiando sólo esa parte.
+            # Para el archivo es lo mismo, pero meta por location.
+            rgb_dir = input_folder.replace("TERMICA", "RGB")
+            rgb_file = file.replace("meta", "location")
+            self._warn_if_flight_csv_missing(os.path.join(input_folder, file), "meta.csv", progress_callback)
+            self._warn_if_flight_csv_missing(os.path.join(rgb_dir, rgb_file), "location.csv", progress_callback)
+            self.copy_flight_csvs_to_csvs_folder(input_folder, file)
+
+    def _warn_if_flight_csv_missing(self, path: str, nombre: str, progress_callback) -> None:
+        """Registra el error si el meta/location del vuelo no existe en `path`."""
+        if os.path.exists(path):
+            return
+        self.organizer_logger.logger.info('------------------------------------------------------------------------------------------------------')
+        self.organizer_logger.logger.info(f"ERROR: No se ha encontrado el archivo {nombre}")
+        self.organizer_logger.logger.info(f"Ruta esperada: {path}")
+        self.organizer_logger.logger.info('------------------------------------------------------------------------------------------------------')
+        progress_callback.emit(f"\nERROR: No se ha encontrado el archivo {nombre}\n")
+        self.error_gen_struct_folder += 1
+        self.errors_type_gen_struct_folder.append(f"No se ha encontrado el archivo {nombre}")
+
+    def _rotate_original_if_rgb(self, image: str, input_folder: str, degrees, rgb_processing: bool, progress_callback) -> bool:
+        """
+        Gira el original in-place cuando es RGB. Con térmicas no hay nada que girar en este
+        paso: el `*_T.JPG` crudo no se puede re-encodar (perdería el payload radiométrico) y
+        las miniaturas ya no se generan; su copia girada `_ROT` se escribe al final, después
+        de la conversión a TIFF y con el mismo criterio (`read_auto_rotate_degree`).
+
+        Devuelve True si el vuelo tiene un `_CROP` asociado a esta imagen, para que la barra
+        de progreso siga contándolo igual en RGB y en térmica.
+        """
+        if rgb_processing:
+            return self.compress_image_obj.rotate_and_save(image, input_folder, degrees, 45, progress_callback)
+
+        file_splitted = os.path.splitext(image)
+        return os.path.exists(os.path.join(input_folder, file_splitted[0] + "_CROP" + file_splitted[1]))
+
+    def write_videofiles_csv(self, input_folder: str, df_videofiles) -> None:
+        """
+        Escribe el criterio de giro del vuelo (`<PBX_VXX>_Videofiles.csv`, columna `Degree`)
+        en `CSVs/<PBX_VXX>/`.
+
+        Vivía dentro de MINIATURAS hasta que se eliminaron las miniaturas. NO es un
+        subproducto descartable: es lo único que le dice a la conversión a TIFF y a la copia
+        girada `_ROT` cuánto tienen que girar (`read_auto_rotate_degree`). Si falta, ambas
+        dejan de rotar en silencio.
+        """
+        dest_folder = os.path.join(self.csvs_root_folder, os.path.basename(input_folder))
+        os.makedirs(dest_folder, exist_ok=True)
+        df_videofiles.to_csv(os.path.join(dest_folder, os.path.basename(input_folder) + "_Videofiles.csv"),
+                             sep=",", header=True, index=False)
 
     def gen_thumbnails_and_rotate(self, input_folder: str, rgb_processing: bool, max_error: int, lim_max_270: int, lim_min_270: int, lim_max_90: int, lim_min_90: int, progress_callback, progress_bar) -> None:
         """
@@ -1187,10 +1171,6 @@ class GenStructFolder:
             if len(images) != 0:
                 progress_callback.emit("\nProcesando {0} imágenes en el directorio {1}".format(len(images), input_folder) + "\n") # Se envía información al iniciar el procesado de un directorio solo si hay imágenes.
                 self.organizer_logger.logger.info(f"Procesando el directorio: {input_folder}.")
-                if rgb_processing is False:
-                    list_dir = os.listdir(self.miniaturas_root_folder)
-                if rgb_processing is False and os.path.basename(input_folder) + "_miniaturas" not in list_dir:  # Comprobamos si ya existe el directorio de miniaturas y que no estamos procesando RGBs.
-                    os.makedirs(os.path.join(self.miniaturas_root_folder, os.path.basename(input_folder) + "_miniaturas"))  # Generamos el directorio para las miniaturas
                 for index, image in enumerate(images):
                     gimbal_yaw = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder,image))[0]
                     if lim_max_90 > float(gimbal_yaw) > lim_min_90:
@@ -1224,7 +1204,7 @@ class GenStructFolder:
                         self.send_progress_to_bar(progress_bar, progress_callback)
                         # TODO: La siguiente llamada (y las de los otros elif) a get_gimbal_yaw_pitch (ahora comentada) no creo que haga falta. Me debió de quedar de cuando rotaba en el momento de obtener los datos del gimbal, pero ahora cuento antes si se debe rotar y luego roto.
                         # gimbal_yaw = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder,image))[0]
-                        cropped_images = self.compress_image_obj.rotate_and_save(image, input_folder, os.path.join(input_folder, os.path.basename(input_folder) + "_miniaturas"), Image.ROTATE_90, 45, os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", rgb_processing, os.path.join(self.miniaturas_root_folder, os.path.basename(input_folder) + "_miniaturas"),progress_callback)
+                        cropped_images = self._rotate_original_if_rgb(image, input_folder, Image.ROTATE_90, rgb_processing, progress_callback)
                         if(cropped_images):
                             self.send_progress_to_bar(progress_bar, progress_callback) # Si hay imágenes recortadas, contamos una más
                         
@@ -1241,7 +1221,7 @@ class GenStructFolder:
                         self.send_progress_to_bar(progress_bar, progress_callback)
                         
                         # gimbal_yaw = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder,image))[0]
-                        cropped_images = self.compress_image_obj.rotate_and_save(image, input_folder, os.path.join(input_folder, os.path.basename(input_folder) + "_miniaturas"), Image.ROTATE_270, 45, os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", rgb_processing, os.path.join(self.miniaturas_root_folder, os.path.basename(input_folder) + "_miniaturas"),progress_callback)
+                        cropped_images = self._rotate_original_if_rgb(image, input_folder, Image.ROTATE_270, rgb_processing, progress_callback)
                         if(cropped_images):
                             self.send_progress_to_bar(progress_bar, progress_callback) # Si hay imágenes recortadas, contamos una más
                         df_videofiles.loc[len(df_videofiles)] = {"New Name": os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", "Original Name": image, "Degree": 90}
@@ -1259,8 +1239,7 @@ class GenStructFolder:
                             self.send_progress_to_bar(progress_bar, progress_callback) # Si hay imágenes recortadas, contamos una más. Lo hago diferente aquí porque no estoy llamando a rotate_and_save
                         
                         # gimbal_yaw = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder,image))[0]
-                        if not rgb_processing:  # Si estamos con térmicas, no giramos la imagen pero la comprimimos y la guardamos en el directorio de miniaturas. Con RGB no hacemos nada.
-                            self.compress_image_obj.compress_image(image, input_folder, os.path.join(self.miniaturas_root_folder, os.path.basename(input_folder) + "_miniaturas"), 45, os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", progress_callback=progress_callback) 
+                        # No se rota nada (ni RGB ni térmica) y las miniaturas ya no se generan: aquí solo queda dejar constancia del Degree 0.
                         df_videofiles.loc[len(df_videofiles)] = {"New Name": os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", "Original Name": image, "Degree": 0}
                     self.organizer_logger.logger.info("Imágenes no rotadas")
                 else:
@@ -1271,49 +1250,19 @@ class GenStructFolder:
                    
 
                 if images_to_rotate and not rgb_processing:  # Comprobamos que procesamos térmicas y que además hemos rotado imágenes.
-                    for file in os.listdir(input_folder):
-                        # Sustituimos en el input folder TERMICA por RGB, pues tendría que ser el mismo directorio, pero cambiando sólo esa parte.
-                        # Para el archivo es lo mismo, pero meta por location.
-                        rgb_dir = input_folder.replace("TERMICA","RGB")
-                        rgb_file = file.replace("meta","location")
-                        if ".csv" in file: # Copiamos el meta o location a la carpeta de miniaturas sólo para las térmicas.
-                            # Este primero no haría falta, pues si no hay meta, ya no copia nada.
-                            try:
-                                shutil.copy2(os.path.join(input_folder, file), os.path.join(self.miniaturas_root_folder, os.path.basename(input_folder) + "_miniaturas"))
-                            except FileNotFoundError as e:
-                                self.organizer_logger.logger.info('------------------------------------------------------------------------------------------------------')
-                                self.organizer_logger.logger.info("ERROR: No se ha encontrado el archivo meta.csv")
-                                self.organizer_logger.logger.error(e.__str__)
-                                self.organizer_logger.logger.exception(e)
-                                self.organizer_logger.logger.info('------------------------------------------------------------------------------------------------------')       
-                                progress_callback.emit("\nERROR: No se ha encontrado el archivo meta.csv\n")
-                                self.error_gen_struct_folder += 1
-                                self.errors_type_gen_struct_folder.append("No se ha encontrado el archivo meta.csv") 
-
-                            # Por si acaso ponemos una excepción, no sea que no exista el location en la parte de las RGB.
-                            try:
-                                shutil.copy2(os.path.join(rgb_dir, rgb_file), os.path.join(self.miniaturas_root_folder, os.path.basename(input_folder) + "_miniaturas"))
-                            except FileNotFoundError as e:
-                                self.organizer_logger.logger.info('------------------------------------------------------------------------------------------------------')
-                                self.organizer_logger.logger.info("ERROR: No se ha encontrado el archivo location.csv")
-                                self.organizer_logger.logger.error(e.__str__)
-                                self.organizer_logger.logger.exception(e)
-                                self.organizer_logger.logger.info('------------------------------------------------------------------------------------------------------')       
-                                progress_callback.emit("\nERROR: No se ha encontrado el archivo location.csv\n")
-                                self.error_gen_struct_folder += 1
-                                self.errors_type_gen_struct_folder.append("No se ha encontrado el archivo location.csv")
-
-                            self.copy_flight_csvs_to_csvs_folder(input_folder, file)
+                    self.copy_flight_csvs(input_folder, progress_callback)
 
                 # Entiendo que sólo generamos el archivo _Videofiles.csv en el caso de las térmicas.
                 if not rgb_processing:
-                    df_videofiles_csv_name = os.path.basename(input_folder) + "_Videofiles.csv"
-                    df_videofiles.to_csv(os.path.join(self.miniaturas_root_folder, os.path.basename(input_folder) + "_miniaturas", df_videofiles_csv_name),sep=",", header=True, index=False)
+                    self.write_videofiles_csv(input_folder, df_videofiles)
                 return  # En este caso cortamos la recursividad para este directorio, porque si no, seguiría buscando en el directorio creado,
                     # por lo que volvería a crear otro dentro y así sucesivamente.
-            
+
         for dir in next(os.walk(input_folder))[1]:
-            if not self.stop and dir != "MINIATURAS":  # Comprobamos que no queremos parar el proceso. Si se para en medio de un procesado, acaba de procesarse ese directorio.
+            if not self.stop and dir not in ("MINIATURAS", "CSVs"):  # Comprobamos que no queremos parar el proceso. Si se para en medio de un procesado, acaba de procesarse ese directorio.
+                # MINIATURAS ya no se genera, pero se sigue excluyendo: una carpeta procesada por
+                # una versión anterior la tiene, y sus subcarpetas `PBX_VXX_miniaturas` casan con
+                # el patrón `PB*_V*` y se reprocesarían.
                 self.gen_thumbnails_and_rotate(os.path.join(input_folder,dir), rgb_processing, max_error, lim_max_270, lim_min_270, lim_max_90, lim_min_90, progress_callback, progress_bar)  # Volvemos a llamar recursivamente a la función para los demás directorios.
 
     def gen_thumbnails_and_rotate_manual(self, input_folder: str, rgb_processing: bool, rotation_value_90: bool, progress_callback, progress_bar):
@@ -1339,10 +1288,6 @@ class GenStructFolder:
             if len(images) != 0:
                 progress_callback.emit("\nProcesando {0} imágenes en el directorio {1}".format(len(images), input_folder) + "\n") # Se envía información al iniciar el procesado de un directorio solo si hay imágenes.
                 self.organizer_logger.logger.info("\nProcesando {0} imágenes en el directorio {1}".format(len(images), input_folder) + "\n")
-                if rgb_processing is False:
-                    list_dir = os.listdir(self.miniaturas_root_folder)
-                if rgb_processing is False and os.path.basename(input_folder) + "_miniaturas" not in list_dir:  # Comprobamos si ya existe el directorio de miniaturas y que no estamos procesando RGBs.
-                    os.makedirs(os.path.join(self.miniaturas_root_folder, os.path.basename(input_folder) + "_miniaturas"))  # Generamos el directorio para las miniaturas
                 if rotation_value_90:
                     progress_callback.emit("\nRotan todas las imágenes 90 grados\n")
                 else:
@@ -1353,10 +1298,10 @@ class GenStructFolder:
                     cropped_images = False
                     
                     if not rotation_value_90:
-                        cropped_images = self.compress_image_obj.rotate_and_save(image, input_folder, os.path.join(input_folder, os.path.basename(input_folder) + "_miniaturas"), Image.ROTATE_90, 45, os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", rgb_processing, os.path.join(self.miniaturas_root_folder, os.path.basename(input_folder) + "_miniaturas"),progress_callback)
+                        cropped_images = self._rotate_original_if_rgb(image, input_folder, Image.ROTATE_90, rgb_processing, progress_callback)
                     else:
-                        cropped_images = self.compress_image_obj.rotate_and_save(image, input_folder, os.path.join(input_folder, os.path.basename(input_folder) + "_miniaturas"), Image.ROTATE_270, 45, os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", rgb_processing, os.path.join(self.miniaturas_root_folder, os.path.basename(input_folder) + "_miniaturas"), progress_callback)
-                    
+                        cropped_images = self._rotate_original_if_rgb(image, input_folder, Image.ROTATE_270, rgb_processing, progress_callback)
+
                     if (cropped_images):
                         self.send_progress_to_bar(progress_bar, progress_callback)
 
@@ -1366,48 +1311,15 @@ class GenStructFolder:
                     df_videofiles.loc[len(df_videofiles)] = {"New Name": os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", "Original Name": image, "Degree": 90 if rotation_value_90 else 270}
 
                 if not rgb_processing:  # Comprobamos que procesamos térmicas
-                    for file in os.listdir(input_folder):
-                        # Sustituimos en el input folder TERMICA por RGB, pues tendría que ser el mismo directorio, pero cambiando sólo esa parte.
-                        # Para el archivo es lo mismo, pero meta por location.
-                        rgb_dir = input_folder.replace("TERMICA","RGB")
-                        rgb_file = file.replace("meta","location")
-                        if ".csv" in file: # Copiamos el meta o location a la carpeta de miniaturas sólo para las térmicas.
-                            # Este primero no haría falta, pues si no hay meta, ya no copia nada.
-                            try:
-                                shutil.copy2(os.path.join(input_folder, file), os.path.join(self.miniaturas_root_folder, os.path.basename(input_folder) + "_miniaturas"))
-                            except FileNotFoundError as e:
-                                self.organizer_logger.logger.info('------------------------------------------------------------------------------------------------------')
-                                self.organizer_logger.logger.info("ERROR: No se ha encontrado el archivo meta.csv")
-                                self.organizer_logger.logger.error(e.__str__)
-                                self.organizer_logger.logger.exception(e)
-                                self.organizer_logger.logger.info('------------------------------------------------------------------------------------------------------')       
-                                progress_callback.emit("\nERROR: No se ha encontrado el archivo meta.csv\n")
-                                self.error_gen_struct_folder += 1
-                                self.errors_type_gen_struct_folder.append("No se ha encontrado el archivo meta.csv") 
-
-                            # Por si acaso ponemos una excepción, no sea que no exista el location en la parte de las RGB.
-                            try:
-                                shutil.copy2(os.path.join(rgb_dir, rgb_file), os.path.join(self.miniaturas_root_folder, os.path.basename(input_folder) + "_miniaturas"))
-                            except FileNotFoundError as e:
-                                self.organizer_logger.logger.info('------------------------------------------------------------------------------------------------------')
-                                self.organizer_logger.logger.info("ERROR: No se ha encontrado el archivo location.csv")
-                                self.organizer_logger.logger.error(e.__str__)
-                                self.organizer_logger.logger.exception(e)
-                                self.organizer_logger.logger.info('------------------------------------------------------------------------------------------------------')       
-                                progress_callback.emit("\nERROR: No se ha encontrado el archivo location.csv\n")
-                                self.error_gen_struct_folder += 1
-                                self.errors_type_gen_struct_folder.append("No se ha encontrado el archivo location.csv")
-
-                            self.copy_flight_csvs_to_csvs_folder(input_folder, file)
+                    self.copy_flight_csvs(input_folder, progress_callback)
 
                 if not rgb_processing:
-                    df_videofiles_csv_name = os.path.basename(input_folder) + "_Videofiles.csv"
-                    df_videofiles.to_csv(os.path.join(self.miniaturas_root_folder, os.path.basename(input_folder) + "_miniaturas", df_videofiles_csv_name),sep=",", header=True, index=False)
+                    self.write_videofiles_csv(input_folder, df_videofiles)
                 return  # En este caso cortamos la recursividad para este directorio, porque si no, seguiría buscando en el directorio creado,
                     # por lo que volvería a crear otro dentro y así sucesivamente.
 
         for dir in next(os.walk(input_folder))[1]:
-            if not self.stop and dir != "MINIATURAS":  # Comprobamos que no queremos parar el proceso. Si se para en medio de un procesado, acaba de procesarse ese directorio.
+            if not self.stop and dir not in ("MINIATURAS", "CSVs"):  # Comprobamos que no queremos parar el proceso. Si se para en medio de un procesado, acaba de procesarse ese directorio.
                 self.gen_thumbnails_and_rotate_manual(os.path.join(input_folder,dir), rgb_processing, rotation_value_90, progress_callback, progress_bar)  # Volvemos a llamar recursivamente a la función para los demás directorios.
 
     def iterate_folders_and_rename(self, input_folder: str, progress_callback, progress_bar, desfase_horas: int = 0, desfase_minutos: int = 0) -> None:
@@ -2240,10 +2152,14 @@ class SplitImages:
         """Criterio de giro AUTO de un vuelo: 0, 90 o 270 grados (horario).
 
         La decisión NO se recalcula aquí: la toma el paso de rotación y la deja
-        escrita en `MINIATURAS/<PBX_VXX>_miniaturas/<PBX_VXX>_Videofiles.csv`
+        escrita en `CSVs/<PBX_VXX>/<PBX_VXX>_Videofiles.csv`
         (columna `Degree`). Este método es la ÚNICA lectura de ese criterio, para
         que la conversión a TIFF y la copia girada del JPG no puedan divergir:
         ambas tienen que girar lo mismo o el par TIFF/JPG deja de casar.
+
+        Ese CSV vivía en `MINIATURAS/` hasta que se eliminaron las miniaturas. Se
+        mantiene el fallback de lectura a MINIATURAS para poder re-procesar carpetas
+        generadas por versiones anteriores, que no tienen el CSV en `CSVs/`.
 
         Sin criterio legible (CSV ausente, vacío o sin la columna) devuelve 0 —
         no rotar — y lo dice; nunca revienta el vuelo.
@@ -2258,9 +2174,15 @@ class SplitImages:
         else:
             pb_v_name = os.path.basename(input_folder)
 
-        miniaturas_folder = os.path.join(input_folder.split("TERMICA")[0].rstrip("/\\"), "MINIATURAS", pb_v_name + "_miniaturas")
+        root_folder = input_folder.split("TERMICA")[0].rstrip("/\\")
+        csv_name = pb_v_name + "_Videofiles.csv"
+        csvs_folder = os.path.join(root_folder, "CSVs", pb_v_name)
+        legacy_folder = os.path.join(root_folder, "MINIATURAS", pb_v_name + "_miniaturas")  # Las carpetas antiguas sí llevaban el sufijo _miniaturas.
+        criterio_path = os.path.join(csvs_folder, csv_name)
+        if not os.path.exists(criterio_path) and os.path.exists(os.path.join(legacy_folder, csv_name)):
+            criterio_path = os.path.join(legacy_folder, csv_name)  # Carpeta procesada por una versión anterior: el criterio sigue en MINIATURAS.
         try:
-            df_pb_csv = pd.read_csv(os.path.join(miniaturas_folder, pb_v_name + "_Videofiles.csv"))
+            df_pb_csv = pd.read_csv(criterio_path)
             # El CSV puede existir y estar VACÍO (solo cabecera): pasa cuando el paso
             # de rotación se fue por la rama "hay demasiadas imágenes que no rotan
             # igual" y no escribió ninguna fila. Ahí `df["Degree"][0]` lanzaba KeyError,
@@ -2283,8 +2205,8 @@ class SplitImages:
             self.organizer_logger.logger.error(file_not_found.__str__)
             self.organizer_logger.logger.exception(file_not_found)
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            progress_callback.emit("\nNo se pudo leer el criterio de giro {0}. No se rota la imagen.\n".format(pb_v_name + "_Videofiles.csv"))
-            self._register_image_error(os.path.join(miniaturas_folder, pb_v_name + "_Videofiles.csv"))
+            progress_callback.emit("\nNo se pudo leer el criterio de giro {0}. No se rota la imagen.\n".format(csv_name))
+            self._register_image_error(criterio_path)
             return 0
 
     def convert_dji_image_to_tif(self, input_folder: str, output_folder: str, image_name: str, exiftool_exe:str, dji_utility: str, progress_callback, progress_bar, emissivity: float = 0.9, humidity: float = 50.0, auto_temp = False, up_threshold_temperature = 20, low_threshold_temperature = 0, rotate_90: bool = False, rotate_minus_90: bool = False, auto_rotate: bool = False, just_atom_selection = False, generate_gray_scale_images: bool = False, generate_colormap_images: bool = False, defer_exif: bool = False):

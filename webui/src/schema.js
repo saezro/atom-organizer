@@ -40,7 +40,7 @@ export const AEROTOOLS = [
   },
   {
     task: 'gen_thumbnails_aerotools',
-    title: 'Rotación y miniaturas',
+    title: 'Rotación',
     fields: [
       { name: 'aerotools_input_folder', type: 'folder', label: 'Carpeta origen' },
       { name: 'aerotools_rgb', type: 'bool', label: 'RGB', default: true },
@@ -105,7 +105,7 @@ export const OTROS = [
   },
   {
     task: 'gen_thumbnails',
-    title: 'Rotación y miniaturas',
+    title: 'Rotación',
     fields: [
       { name: 'input_folder', type: 'folder', label: 'Carpeta origen' },
       { name: 'rgb', type: 'bool', label: 'RGB', default: true },
@@ -226,9 +226,9 @@ export const SPLIT_ADVANCED = [
     ],
   },
   {
-    title: 'Miniaturas y rotación',
+    title: 'Rotación',
     fields: [
-      { name: 'gen_thumbnails', type: 'bool', label: 'Generar miniaturas', default: true },
+      { name: 'gen_thumbnails', type: 'bool', label: 'Rotar imágenes', default: true },
       { name: 'gen_thumbnails_rgb', type: 'bool', label: 'RGB', default: true },
       { name: 'gen_thumbnails_termica', type: 'bool', label: 'Térmicas', default: true },
       { name: 'choose_mode_auto', type: 'bool', label: 'Modo automático', default: true },

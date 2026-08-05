@@ -138,7 +138,7 @@ def test_con_los_limites_a_cero_la_barrera_rota_igual(tmp_path, logger, make_dji
         progress_callback=progress, progress_bar=progress,
     )
 
-    csv_path = os.path.join(planta_folder, "MINIATURAS", "PB1_V01_miniaturas", "PB1_V01_Videofiles.csv")
+    csv_path = os.path.join(planta_folder, "CSVs", "PB1_V01", "PB1_V01_Videofiles.csv")
     assert os.path.exists(csv_path), "No se llegó a procesar el vuelo."
     df = pd.read_csv(csv_path)
     assert set(df["Degree"].unique()) == {270}, (

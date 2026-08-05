@@ -141,8 +141,7 @@ def test_videofiles_csv_columns_and_degree(tmp_path, logger, make_dji_jpeg):
 
     obj = gen_struct_folder.GenStructFolder(logger)
     obj.root_folder = str(planta_folder)
-    obj.miniaturas_root_folder = str(planta_folder / "MINIATURAS")
-    os.makedirs(obj.miniaturas_root_folder)
+    obj.csvs_root_folder = str(planta_folder / "CSVs")
     obj.total_images_number = 2
     obj.current_image_number = 0
 
@@ -155,7 +154,7 @@ def test_videofiles_csv_columns_and_degree(tmp_path, logger, make_dji_jpeg):
         progress_callback=progress, progress_bar=progress,
     )
 
-    csv_path = os.path.join(obj.miniaturas_root_folder, "PB1_V01_miniaturas", "PB1_V01_Videofiles.csv")
+    csv_path = os.path.join(obj.csvs_root_folder, "PB1_V01", "PB1_V01_Videofiles.csv")
     assert os.path.exists(csv_path), (
         "No se generó el CSV _Videofiles — gen_struct/gen_struct_folder.py:649-652"
     )
@@ -167,49 +166,28 @@ def test_videofiles_csv_columns_and_degree(tmp_path, logger, make_dji_jpeg):
     assert set(df["Degree"].unique()) == {0}
 
 
-# --- 4. RGB gira con los mismos grados que las térmicas ---------------------
-# image_processing/compress_image.py:253-313 (rotate_and_save), rama RGB :299-303.
-def test_rgb_rotates_with_same_degrees_param_as_thermal(tmp_path, logger, make_dji_jpeg):
+# --- 4. La rotación RGB es un transpose real, in-place ----------------------
+# pipeline.py CompressImage.rotate_and_save. Solo queda la rama RGB: desde que se
+# quitaron las miniaturas la térmica no pasa por aquí (su *_T.JPG crudo no se re-encoda;
+# su copia girada _ROT se escribe al final, tras la conversión a TIFF).
+def test_rgb_rotates_in_place_with_a_real_transpose(tmp_path, logger, make_dji_jpeg):
     import pipeline as compress_image
 
     obj = compress_image.CompressImage(logger)
     progress = _noop_progress()
-    degrees = PILImage.ROTATE_90  # mismo valor que gen_struct_folder.py pasa para ambas ramas.
+    degrees = PILImage.ROTATE_90
 
-    # --- Rama térmica (rgb_processing=False): no necesita XMP, solo geometría. ---
-    thermal_in = tmp_path / "thermal_in"
-    thermal_in.mkdir()
-    thermal_mini = tmp_path / "thermal_mini"
-    thermal_mini.mkdir()
-    base = PILImage.new("RGB", (10, 6), color=(10, 20, 30))
-    base.save(thermal_in / "T.JPG")
-    original_size = base.size
-
-    obj.rotate_and_save(
-        "T.JPG", str(thermal_in), str(thermal_mini), degrees, 90,
-        "T_out.JPG", False, str(thermal_mini), progress,
-    )
-    thermal_result_size = PILImage.open(thermal_mini / "T_out.JPG").size
-    assert thermal_result_size == (original_size[1], original_size[0]), (
-        "ROTATE_90 debe intercambiar ancho/alto (transpose real, no crop) en la rama térmica."
-    )
-
-    # --- Rama RGB (rgb_processing=True): usa el MISMO `degrees`; requiere XMP DJI. ---
     rgb_dir = tmp_path / "rgb_in"
     rgb_dir.mkdir()
     rgb_img_path = make_dji_jpeg(str(rgb_dir / "R.JPG"))
     original_rgb_size = PILImage.open(rgb_img_path).size
 
-    obj.rotate_and_save(
-        "R.JPG", str(rgb_dir), str(rgb_dir), degrees, 90,
-        "R.JPG", True, str(rgb_dir), progress,
-    )
+    obj.rotate_and_save("R.JPG", str(rgb_dir), degrees, 90, progress)
     rgb_result_size = PILImage.open(rgb_img_path).size
 
     assert rgb_result_size == (original_rgb_size[1], original_rgb_size[0]), (
-        "La rama RGB de rotate_and_save (image_processing/compress_image.py:299-303) debe "
-        "aplicar el MISMO transpose(degrees) que la rama térmica (:296) — confirma que RGB "
-        "gira con los mismos grados que las térmicas."
+        "ROTATE_90 debe intercambiar ancho/alto (transpose real, no crop) y sobrescribir "
+        "el propio original: la rotación RGB es in-place."
     )
 
 

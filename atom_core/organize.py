@@ -282,7 +282,7 @@ _SPLIT_PHASES = (
     (lambda c: bool(getattr(c, "organize_images", False)), "Estructura de carpetas"),
     (lambda c: bool(getattr(c, "cropping_rgb", False)), "Recorte RGB"),
     (lambda c: bool(getattr(c, "gen_meta_location", False)), "Meta y geolocalización"),
-    (lambda c: bool(getattr(c, "gen_thumbnails", False)), "Miniaturas"),
+    (lambda c: bool(getattr(c, "gen_thumbnails", False)), "Rotación"),
     (lambda c: bool(getattr(c, "convert_to_tif", False)), "Convertir a TIF"),
 )
 

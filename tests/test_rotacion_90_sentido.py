@@ -2,7 +2,7 @@
 La rama de 90 del criterio automático rotaba en el sentido contrario.
 
 `gen_thumbnails_and_rotate` decide entre tres buckets (270 / 90 / no rotar) y
-llama a `rotate_and_save` con la constante de PIL correspondiente. PIL rota en
+llama a la rotación con la constante de PIL correspondiente. PIL rota en
 sentido ANTIHORARIO, así que para corregir un yaw de -90 hay que pasarle
 `Image.ROTATE_90` y para corregir un yaw de +90, `Image.ROTATE_270`. La rama de
 270 (pipeline.py:1227) lo hacía bien; la de 90 (pipeline.py:1244) pasaba también
@@ -38,27 +38,31 @@ def _flight_folder(tmp_path, make_dji_jpeg, yaw):
 
 
 def _obj_con_espia(logger, planta_folder):
-    """GenStructFolder listo para usar, que anota los `degrees` de cada rotate_and_save."""
+    """GenStructFolder listo para usar, que anota los `degrees` de cada rotación.
+
+    Desde que se quitaron las miniaturas, la térmica ya no pasa por `rotate_and_save`
+    (su JPG crudo no se re-encoda). El punto único donde se elige la constante de PIL
+    es `_rotate_original_if_rgb`, así que es ahí donde se espía.
+    """
     import pipeline as gen_struct_folder
 
     obj = gen_struct_folder.GenStructFolder(logger)
     obj.root_folder = str(planta_folder)
-    obj.miniaturas_root_folder = str(planta_folder / "MINIATURAS")
-    os.makedirs(obj.miniaturas_root_folder)
+    obj.csvs_root_folder = str(planta_folder / "CSVs")
 
     grados = []
-    original = obj.compress_image_obj.rotate_and_save
+    original = obj._rotate_original_if_rgb
 
-    def espia(image_name, input_folder, output_folder, degrees, *args, **kwargs):
+    def espia(image, input_folder, degrees, *args, **kwargs):
         grados.append(degrees)
-        return original(image_name, input_folder, output_folder, degrees, *args, **kwargs)
+        return original(image, input_folder, degrees, *args, **kwargs)
 
-    obj.compress_image_obj.rotate_and_save = espia
+    obj._rotate_original_if_rgb = espia
     return obj, grados
 
 
 def _leer_degrees(obj):
-    csv_path = os.path.join(obj.miniaturas_root_folder, "PB1_V01_miniaturas", "PB1_V01_Videofiles.csv")
+    csv_path = os.path.join(obj.csvs_root_folder, "PB1_V01", "PB1_V01_Videofiles.csv")
     return set(pd.read_csv(csv_path)["Degree"].unique())
 
 
