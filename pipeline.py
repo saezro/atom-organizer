@@ -1721,6 +1721,12 @@ class SplitImages:
         self.max_dji_workers = utils.workers_para_lote()
         # Protege las mutaciones de contadores de error compartidos entre workers.
         self._stats_lock = threading.Lock()
+        # Criterio de giro AUTO ya resuelto, por carpeta de vuelo. Es constante para
+        # todo el directorio (sale del CSV que escribió la fase de rotación, anterior),
+        # pero read_auto_rotate_degree se llamaba una vez POR IMAGEN: hasta 4
+        # os.path.exists + un pd.read_csv completo por cada térmica del vuelo.
+        self._criterio_giro_cache = {}
+        self._criterio_giro_lock = threading.Lock()
 
     def set_stop(self, stop: bool):
         """
@@ -1745,6 +1751,10 @@ class SplitImages:
         self.images_error_splitting_images.clear()
         self.compress_image_obj.images_error_compress.clear()
         self.exif_management_obj.images_error_exif_data.clear()
+        # El criterio de giro se relee en la siguiente corrida: entre una y otra el
+        # usuario puede haber cambiado el criterio de rotación de esa misma carpeta.
+        with self._criterio_giro_lock:
+            self._criterio_giro_cache.clear()
     
     def get_summarize(self) -> dict:
         """Función que resume diferentes datos al finalizar el proceso. Devuelve un diccionario en el que cada clave es una información del proceso, junto
@@ -2469,7 +2479,29 @@ class SplitImages:
             return 0
 
     def read_auto_rotate_degree(self, input_folder: str, progress_callback) -> int:
-        """Criterio de giro AUTO de un vuelo: 0, 90 o 270 grados (horario).
+        """Criterio de giro AUTO de un vuelo, MEMOIZADO por carpeta.
+
+        El criterio depende solo de `input_folder` y no cambia durante la corrida: lo
+        deja escrito la fase de rotación, que va ANTES que la conversión. Resolverlo
+        una vez por vuelo en vez de una vez por imagen ahorra, por cada térmica, hasta
+        4 `os.path.exists` y un `pd.read_csv` entero.
+
+        Cambio de comportamiento deliberado en el caso degradado: cuando el CSV no se
+        puede leer, el aviso al log y el registro del error ocurren **una vez por
+        vuelo**, no una vez por imagen. Antes el mismo path del CSV entraba 1300 veces
+        en «Imágenes con error» y repetía el mismo aviso en el log.
+        """
+        with self._criterio_giro_lock:
+            if input_folder in self._criterio_giro_cache:
+                return self._criterio_giro_cache[input_folder]
+            degree = self._leer_criterio_giro(input_folder, progress_callback)
+            self._criterio_giro_cache[input_folder] = degree
+            return degree
+
+    def _leer_criterio_giro(self, input_folder: str, progress_callback) -> int:
+        """Lectura real del criterio de giro. Ver `read_auto_rotate_degree`, que la memoiza.
+
+        Criterio de giro AUTO de un vuelo: 0, 90 o 270 grados (horario).
 
         La decisión NO se recalcula aquí: la toma el paso de rotación y la deja
         escrita en `CSVs/<PBX_VXX>_Videofiles.csv`
@@ -2727,7 +2759,6 @@ class SplitImages:
         # imageio.imwrite(output_path, array, format='TIFF', exif=exif_data)
         # exif_data = imageio.get_exif_data(input_path)
 
-        arr = np.zeros(size[0]*size[1])
         try:
             f = open(os.path.join(input_folder, image_name + ".raw"), "rb")
         except FileNotFoundError as file_not_found:
@@ -2755,12 +2786,24 @@ class SplitImages:
             return
 
         data = f.read()
-        format = "{:d}f".format(len(data)//4)
 
         # self.organizer_logger.logger.info("The length of the data is {0}".format(len(data)))
 
         # Hay imágenes térmicas de mayor tamaño, pero el sensor es igual de 640x512, por lo que el reshape tenemos que hacerlo del mismo modo. De hecho, podríamos usar siempre la línea "arr = arr.reshape(512, 640)", pero por ahora vamos a distinguir ambos casos.
-        arr = np.array(struct.unpack(format, data))
+        # El .raw que escribe el SDK (--measurefmt float32) es un array plano de float32
+        # little-endian: np.frombuffer lo mapea sin recorrerlo. Antes esto era
+        # `np.array(struct.unpack("<N>f", data))`, que materializaba una tupla de 327.680
+        # objetos float de Python por imagen -- 20,5 ms de intérprete RETENIENDO EL GIL,
+        # que era lo que impedía que el pool de conversión escalase con los hilos.
+        # Medido: 20,46 -> 0,16 ms por imagen (128x), con el .astype ya incluido.
+        # El .astype(np.float64) reproduce el tipo que daba struct.unpack (floats de
+        # Python, doble precisión). NO es lo que fija el formato del .tiff: PIL guarda
+        # en modo 'F', que es float32, así que el fichero entregado era y sigue siendo
+        # float32 -- verificado por sha256 en el A/B de 60 térmicas reales. Lo que
+        # preserva es la ARITMÉTICA intermedia: los umbrales y la normalización de la
+        # escala de grises operaban en float64. Hace además el array escribible, que
+        # np.frombuffer por sí solo no da (devuelve una vista de solo lectura).
+        arr = np.frombuffer(data, dtype="<f4").astype(np.float64)
         if size == (1280, 1024):
             arr = arr.reshape(512, 640)
         else:
@@ -2783,12 +2826,15 @@ class SplitImages:
             normalizedData = (array_to_normalize-np.min(array_to_normalize))/(np.max(array_to_normalize)-np.min(array_to_normalize))*255 # Normalizamos datos para grabar la imagen en escala de grises. Da igual si con auto_temp o no, ya que se ajusta a los datos del array.
             normalizedData = normalizedData.astype(np.uint8)
             im_normalized = Image.fromarray(normalizedData, 'L')
-            self.utils_obj.prepare_output_folder(input_folder, ["Escala_de_grises"])
+            # La carpeta ya se pre-crea en convert_dji_images_to_tif, antes del pool.
+            # Llamar aquí a prepare_output_folder repetía un os.listdir() de la carpeta
+            # del vuelo -- con sus 1300+ ficheros dentro -- una vez POR IMAGEN, para
+            # comprobar algo que ya es cierto. Además era la llamada no thread-safe que
+            # obligó a pre-crearlas.
             im_normalized.save(os.path.join(output_folder,"Escala_de_grises", image_name), format='JPEG')
 
         if generate_colormap_images:
             rgb_colormap = apply_thermal_colormap(array_to_normalize, low_threshold_temperature, up_threshold_temperature)
-            self.utils_obj.prepare_output_folder(input_folder, ["Color_gradiente"])
             Image.fromarray(rgb_colormap, 'RGB').save(os.path.join(output_folder, "Color_gradiente", image_name), format='JPEG')
 
         im = Image.fromarray(arr)
