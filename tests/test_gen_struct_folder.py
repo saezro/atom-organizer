@@ -55,9 +55,14 @@ def test_rename_images_no_sobreescribe_en_colision(tmp_path):
     assert len(resultado) == 2, f"Se esperaban 2 archivos tras renombrar, hay {resultado} (colisión perdió uno)"
 
 
-def test_gen_thumbnails_and_rotate_manual_no_reprocesa_miniaturas(tmp_path):
+def test_gen_thumbnails_and_rotate_manual_no_reprocesa_miniaturas(tmp_path, make_dji_jpeg):
     root = tmp_path / "PLANTA"
-    (root / "TERMICA").mkdir(parents=True)
+    vuelo = root / "PB1_V1"
+    vuelo.mkdir(parents=True)
+    (root / "TERMICA").mkdir()
+    # Una imagen de verdad fuera de MINIATURAS: sin ella no se rota nada y el test
+    # se cumpliría solo, sin llegar a comprobar que MINIATURAS queda fuera.
+    make_dji_jpeg(str(vuelo / "DJI_0001_D.JPG"))
     miniaturas_existentes = root / "MINIATURAS" / "PB1_V1_miniaturas"
     miniaturas_existentes.mkdir(parents=True)
     (miniaturas_existentes / "PB1_V1_0001.JPG").write_bytes(b"YA_GENERADA")
@@ -67,11 +72,15 @@ def test_gen_thumbnails_and_rotate_manual_no_reprocesa_miniaturas(tmp_path):
     gsf.miniaturas_root_folder = str(root / "MINIATURAS")
     gsf.total_images_number = 1
 
+    # Se espía `_rotate_images_batch` y no `rotate_and_save`: desde que la rotación RGB
+    # va en ProcessPool, `rotate_and_save` se ejecuta en un proceso hijo y este espía
+    # nunca se llamaría — el test pasaría sin comprobar nada.
     llamadas = []
-    gsf.compress_image_obj.rotate_and_save = lambda *args, **kwargs: llamadas.append(args[1]) or False
+    gsf._rotate_images_batch = lambda images, input_folder, *args, **kwargs: llamadas.append(input_folder)
 
     cb = FakeSignal()
     gsf.gen_thumbnails_and_rotate_manual(str(root), rgb_processing=True, rotation_value_90=True, progress_callback=cb, progress_bar=cb)
 
+    assert llamadas, "No se rotó nada: el test no está probando la exclusión de MINIATURAS."
     reprocesadas = [c for c in llamadas if "MINIATURAS" in c]
     assert reprocesadas == [], f"Se ha reprocesado contenido dentro de MINIATURAS: {reprocesadas}"

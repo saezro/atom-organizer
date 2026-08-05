@@ -23,6 +23,7 @@ from datetime import timedelta
 from dataclasses import dataclass
 import gc
 import glob
+import logging
 import os
 import pathlib
 import shutil
@@ -181,6 +182,93 @@ def process_one_image(path: str, cfg: ImageProcessConfig) -> str:
     finally:
         img.close()
     return cfg.output_path
+
+
+# --- Rotación en paralelo (fase 5) -------------------------------------------
+# La rotación era la única fase que seguía yendo en bucle secuencial. Su trabajo es
+# decode + transpose + encode del original y de su `_CROP`, que es justo lo que escala
+# en procesos. Todo lo que cruza al worker tiene que ser picklable, y ni el logger ni
+# los signals de Qt lo son: se sustituyen por los stand-ins de abajo, locales al
+# proceso hijo, y el padre re-emite lo que haya que sacar por pantalla.
+
+_ROTATION_JPEG_QUALITY = 45  # La calidad con la que se ha guardado siempre el giro.
+
+
+class _WorkerLogger:
+    """Stand-in de `utils.OrganizerLogger` dentro de un proceso worker.
+
+    Un hijo del pool NO debe construir un OrganizerLogger real: abriría un segundo
+    handler sobre el mismo fichero de log que el padre (en Windows lo dejaría
+    bloqueado) y su QueueListener moriría con el proceso. Lo que el código de
+    rotación manda al log de fichero se descarta aquí; lo que va a la ventana de log
+    del usuario viaja de vuelta en `_CollectingProgress` y lo emite el padre.
+    """
+
+    def __init__(self) -> None:
+        self.logger = logging.getLogger("atom.rotate_worker")
+        if not self.logger.handlers:
+            self.logger.addHandler(logging.NullHandler())
+        self.logger.propagate = False
+
+
+class _CollectingProgress:
+    """Stand-in del signal Qt `progress_callback` dentro de un proceso worker.
+
+    Los signals de Qt no son picklables y no cruzan a otro proceso. El worker acumula
+    aquí los mensajes y el padre los re-emite en el signal de verdad al recoger el
+    resultado, así que el usuario ve exactamente lo mismo que con el bucle secuencial.
+    """
+
+    def __init__(self) -> None:
+        self.messages = []
+
+    def emit(self, payload=None, *args, **kwargs) -> None:
+        if payload is not None:
+            self.messages.append(payload)
+
+
+_ROTATE_WORKER_OBJ = None
+
+
+def _rotate_worker_obj() -> "CompressImage":
+    """El `CompressImage` que reutilizan todas las imágenes que caen en el mismo worker.
+
+    Construirlo por imagen sería re-crear Utils + GeneralInformationFromImage decenas de
+    veces por vuelo sin motivo. Sus contadores de error se limpian en cada llamada
+    (`rotate_one_image`), porque se reportan por imagen.
+    """
+    global _ROTATE_WORKER_OBJ
+    if _ROTATE_WORKER_OBJ is None:
+        _ROTATE_WORKER_OBJ = CompressImage(_WorkerLogger())
+    return _ROTATE_WORKER_OBJ
+
+
+def rotate_one_image(image_name: str, input_folder: str, degrees, quality: int) -> dict:
+    """
+    Gira una imagen RGB (y su `_CROP`) in-place, dentro de un proceso worker.
+
+    Es el equivalente paralelizable de `CompressImage.rotate_and_save`: llama a la MISMA
+    función, con el logger y el `progress_callback` sustituidos por stand-ins locales al
+    proceso. Función de MÓDULO (no método, no closure) para ser picklable y poder
+    enviarse a un ProcessPoolExecutor (ver `utils.run_batch` y el aviso de la cabecera).
+
+    Returns:
+    --------
+    dict con "image" (el nombre), "cropped" (si además se giró un `_CROP`, que la barra
+    de progreso cuenta como una imagen más), "messages" (lo que hay que emitir a la
+    ventana de log) y "errors" (rutas que fallaron, para los contadores del padre).
+    """
+    obj = _rotate_worker_obj()
+    obj.error_compress = 0
+    obj.images_error_compress = []
+    progress = _CollectingProgress()
+    cropped = obj.rotate_and_save(image_name, input_folder, degrees, quality, progress)
+    return {
+        "image": image_name,
+        "cropped": bool(cropped),
+        "messages": progress.messages,
+        "errors": list(obj.images_error_compress),
+    }
 
 
 class CompressImage:
@@ -487,11 +575,14 @@ class CompressImage:
 
             gimbal_data = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder, image_name))  # Obtenemos los datos de gimbal del archivo antes de guardarlo.
             xmp_all_data = self.exif_management_obj.get_xmp_data(os.path.join(input_folder, image_name))  # Obtenemos el resto de datos xmp del archivo antes de guardarlo.
-            image_open.save(os.path.join(input_folder, image_name), quality=quality, optimize=True, exif=exif)
+            # Sin optimize=True a propósito: en un JPEG de 48 MP cuesta un +68 % de tiempo de
+            # encode (0,306 s vs 0,182 s medidos) para ahorrar un 3-5 % de tamaño. Este fichero
+            # se vuelve a tocar después (conversión/compresión), no es el entregable final.
+            image_open.save(os.path.join(input_folder, image_name), quality=quality, exif=exif)
             image_open.close()
 
             if crop_imagen_open:
-                crop_imagen_open.save(os.path.join(input_folder, crop_image_name), quality=quality, optimize=True)
+                crop_imagen_open.save(os.path.join(input_folder, crop_image_name), quality=quality)  # Sin optimize=True: ver el save del original.
                 crop_imagen_open.close()
 
             self.exif_management_obj.saving_gimbal_data_in_xmp(os.path.join(input_folder, image_name), gimbal_data)  # Se graban los datos en el mismo archivo de entrada, pero rotado.
@@ -1127,10 +1218,68 @@ class GenStructFolder:
         de progreso siga contándolo igual en RGB y en térmica.
         """
         if rgb_processing:
-            return self.compress_image_obj.rotate_and_save(image, input_folder, degrees, 45, progress_callback)
+            return self.compress_image_obj.rotate_and_save(image, input_folder, degrees, _ROTATION_JPEG_QUALITY, progress_callback)
 
         file_splitted = os.path.splitext(image)
         return os.path.exists(os.path.join(input_folder, file_splitted[0] + "_CROP" + file_splitted[1]))
+
+    def _rotate_images_batch(self, images: list[str], input_folder: str, degrees, rgb_processing: bool, progress_callback, progress_bar) -> None:
+        """
+        Gira el lote entero de imágenes de un vuelo; en paralelo cuando son RGB.
+
+        La rotación era la única fase del pipeline que seguía yendo en bucle secuencial:
+        ~0,74 s por par de ficheros (original + `_CROP`) × las imágenes del vuelo. Se
+        reparte con `utils.run_batch`, el mismo ProcessPool que ya usan la compresión, el
+        recorte y la separación. Cada worker escribe in-place sobre ficheros distintos, así
+        que no hay carrera entre ellos.
+
+        Con térmicas no se lanza pool: en este paso no hay nada que girar (el `*_T.JPG`
+        crudo no se puede re-encodar y se gira al final, tras la conversión a TIFF), solo
+        hay que contar los `_CROP` para que la barra avance igual que en RGB.
+
+        Arguments:
+        ---------
+        - images - nombres de las imágenes del vuelo, sin los `_CROP`.
+        - input_folder - carpeta del vuelo. Se gira in-place.
+        - degrees - la constante de PIL con la que rotar (`Image.ROTATE_90` / `ROTATE_270`).
+        - rgb_processing - True si son RGB, False si son térmicas.
+        - progress_callback - signal de texto a la ventana de log.
+        - progress_bar - signal de porcentaje a la barra de progreso.
+        """
+        if not rgb_processing:
+            for image in images:
+                self.send_progress_to_bar(progress_bar, progress_callback)
+                if self._rotate_original_if_rgb(image, input_folder, degrees, rgb_processing, progress_callback):
+                    self.send_progress_to_bar(progress_bar, progress_callback)  # Si hay imagen recortada, contamos una más.
+            return
+
+        if self.stop:  # Se comprueba que no se quiere parar el proceso antes de lanzar el batch completo.
+            return
+
+        def _worker_args_fn(image):
+            return (image, input_folder, degrees, _ROTATION_JPEG_QUALITY)
+
+        def _on_progress(_pct):
+            self.send_progress_to_bar(progress_bar, progress_callback)
+
+        result = utils.run_batch(images, rotate_one_image, _worker_args_fn, on_progress=_on_progress)
+
+        for payload in result["results"]:
+            for message in payload["messages"]:  # Lo que el worker quiso escribir en la ventana de log.
+                progress_callback.emit(message)
+            for image_path in payload["errors"]:
+                self.organizer_logger.logger.warning(f"ERROR: La imagen {image_path} no se ha podido rotar.")
+                self.compress_image_obj.error_compress += 1
+                self.compress_image_obj.images_error_compress.append(image_path)
+            if payload["cropped"]:
+                self.send_progress_to_bar(progress_bar, progress_callback)  # Si hay imagen recortada, contamos una más.
+
+        for image, error_str in result["errors"]:  # El worker murió: rotate_and_save ni llegó a capturarlo.
+            image_path = os.path.join(input_folder, image)
+            self.organizer_logger.logger.warning(f"ERROR: No se ha podido rotar la imagen {image_path}: {error_str}")
+            progress_callback.emit("\nERROR: Hay algún tipo de error con los datos de la imagen {0}.".format(image_path) + "\n")
+            self.compress_image_obj.error_compress += 1
+            self.compress_image_obj.images_error_compress.append(image_path)
 
     def write_videofiles_csv(self, input_folder: str, df_videofiles) -> None:
         """
@@ -1209,15 +1358,9 @@ class GenStructFolder:
                     self.organizer_logger.logger.info(f"OK: Más de un {max_error}% de las imágenes del vuelo tienen que rotar 270")
                     # logging.info(f"OK: More than {max_error}% of flight images need to be rotated 270")
                     progress_callback.emit(f"\nOK: Más de un {max_error}% de las imágenes del vuelo tienen que rotar 270\n")
-                    # Cuando se rota con PIL se rota en sentido antihorario. De ahí que pongamos ROTATE_90, ya que rotará los -90 si fuera en sentido horario                    
+                    # Cuando se rota con PIL se rota en sentido antihorario. De ahí que pongamos ROTATE_90, ya que rotará los -90 si fuera en sentido horario
+                    self._rotate_images_batch(images, input_folder, Image.ROTATE_90, rgb_processing, progress_callback, progress_bar)
                     for index, image in enumerate(images):
-                        self.send_progress_to_bar(progress_bar, progress_callback)
-                        # TODO: La siguiente llamada (y las de los otros elif) a get_gimbal_yaw_pitch (ahora comentada) no creo que haga falta. Me debió de quedar de cuando rotaba en el momento de obtener los datos del gimbal, pero ahora cuento antes si se debe rotar y luego roto.
-                        # gimbal_yaw = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder,image))[0]
-                        cropped_images = self._rotate_original_if_rgb(image, input_folder, Image.ROTATE_90, rgb_processing, progress_callback)
-                        if(cropped_images):
-                            self.send_progress_to_bar(progress_bar, progress_callback) # Si hay imágenes recortadas, contamos una más
-                        
                         df_videofiles.loc[len(df_videofiles)] = {"New Name": os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", "Original Name": image, "Degree": 270}
 
                     self.organizer_logger.logger.info("Imágenes rotadas 270º")
@@ -1227,13 +1370,8 @@ class GenStructFolder:
                     # logging.info(f"OK: More than {max_error}% of flight images need to be rotated 90")
                     progress_callback.emit(f"\nOK: Más de un {max_error}% de las imágenes del vuelo tienen que rotar 90\n")
                     # Cuando se rota con PIL se rota en sentido antihorario. De ahí que pongamos ROTATE_270, ya que rotará los 90 si fuera en sentido horario
+                    self._rotate_images_batch(images, input_folder, Image.ROTATE_270, rgb_processing, progress_callback, progress_bar)
                     for index, image in enumerate(images):
-                        self.send_progress_to_bar(progress_bar, progress_callback)
-                        
-                        # gimbal_yaw = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder,image))[0]
-                        cropped_images = self._rotate_original_if_rgb(image, input_folder, Image.ROTATE_270, rgb_processing, progress_callback)
-                        if(cropped_images):
-                            self.send_progress_to_bar(progress_bar, progress_callback) # Si hay imágenes recortadas, contamos una más
                         df_videofiles.loc[len(df_videofiles)] = {"New Name": os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", "Original Name": image, "Degree": 90}
                     self.organizer_logger.logger.info("Imágenes rotadas 90")
                     # logging.info("Images rotated 90")
@@ -1303,18 +1441,11 @@ class GenStructFolder:
                 else:
                     progress_callback.emit("\nRotan todas las imágenes -90 grados\n")
 
+                # PIL rota antihorario: un giro manual de 90 se corrige con ROTATE_270 y al revés.
+                degrees = Image.ROTATE_270 if rotation_value_90 else Image.ROTATE_90
+                self._rotate_images_batch(images, input_folder, degrees, rgb_processing, progress_callback, progress_bar)
+
                 for index, image in enumerate(images):
-                    self.send_progress_to_bar(progress_bar, progress_callback)
-                    cropped_images = False
-                    
-                    if not rotation_value_90:
-                        cropped_images = self._rotate_original_if_rgb(image, input_folder, Image.ROTATE_90, rgb_processing, progress_callback)
-                    else:
-                        cropped_images = self._rotate_original_if_rgb(image, input_folder, Image.ROTATE_270, rgb_processing, progress_callback)
-
-                    if (cropped_images):
-                        self.send_progress_to_bar(progress_bar, progress_callback)
-
                     # El Degree tiene que reflejar lo que se acaba de rotar: es lo que lee
                     # después el criterio de giro del TIFF. Escribir 270 fijo hacía que un
                     # vuelo rotado a mano 90 girase el TIFF al revés.
