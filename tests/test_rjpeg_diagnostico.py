@@ -105,7 +105,7 @@ def _preparar(tmp_path, monkeypatch, rc, imagen_bytes_desde, salida=""):
     with open(imagen_bytes_desde, "rb") as fh:
         (input_folder / image_name).write_bytes(fh.read())
 
-    dron_dir = tmp_path / "programas_externos" / "M2EA"
+    dron_dir = tmp_path / "programas_externos" / "DJI"
     dron_dir.mkdir(parents=True)
 
     monkeypatch.setattr(pipeline, "_is_windows", lambda: True)

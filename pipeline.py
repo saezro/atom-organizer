@@ -2255,7 +2255,7 @@ class SplitImages:
             self.organizer_logger.logger.error(_rjpeg_linea)
 
         if _is_windows():
-            # dji_utility apunta a programas_externos/<dron>/dji_irp.exe
+            # dji_utility apunta a programas_externos/DJI/dji_irp.exe (carpeta única)
             subproceso = '"{0}" -s "{1}" -a measure --humidity {2} --emissivity {3} --measurefmt float32 -o "{4}"'.format(
                 dji_utility, os.path.join(input_folder, image_name), humidity, emissivity, raw_path)
             # Se captura el resultado: si dji_irp.exe falla, el único síntoma era un .raw
@@ -2272,7 +2272,7 @@ class SplitImages:
                     # stdout/stderr, pero stdin seguía heredándose: DEVNULL le da uno
                     # válido en vez de un handle muerto.
                     stdin=subprocess.DEVNULL,
-                    # cwd = carpeta del dron. Es lo correcto (libdirp.dll lee
+                    # cwd = carpeta del SDK. Es lo correcto (libdirp.dll lee
                     # `libv_list.ini` por nombre relativo, o sea contra el CWD, para
                     # saber qué libv_*.dll cargar), pero que quede claro que NO era la
                     # causa del fallo de LA_ISLA, aunque el commit que lo introdujo lo
@@ -2287,8 +2287,9 @@ class SplitImages:
                     creationflags=0x08000000,  # CREATE_NO_WINDOW: sin parpadeo de consola
                 )
             except FileNotFoundError:
-                # El .exe del dron no está donde se espera (instalación incompleta o
-                # selector de dron apuntando a una carpeta que no existe).
+                # El .exe no está donde se espera: instalación incompleta. Desde la
+                # unificación del SDK solo hay UNA ruta posible, así que no puede ser
+                # un selector de dron apuntando a una carpeta inexistente.
                 self.organizer_logger.logger.error(
                     f"No se encuentra el conversor DJI en {dji_utility}. La conversión a TIFF no puede ejecutarse.")
                 progress_callback.emit(
@@ -2329,7 +2330,7 @@ class SplitImages:
                         "SDK DJI rechaza {0}: {1}".format(image_name, _causa))
         else:
             # En Linux no hay ejecutable dji_irp: usamos libdirp.so vía ctypes.
-            # Las librerías del SDK viven junto al .exe teórico -> carpeta del dron.
+            # Las librerías del SDK viven junto al .exe teórico -> carpeta única del SDK.
             lib_dir = os.path.dirname(dji_utility)
             self._dji_measure_to_raw_linux(
                 os.path.join(input_folder, image_name), raw_path, humidity, emissivity, lib_dir)

@@ -42,7 +42,7 @@ def _preparar(tmp_path, make_dji_jpeg, monkeypatch, rc, salida=""):
     image_name = "DJI_0001_T.JPG"
     make_dji_jpeg(str(input_folder / image_name))
 
-    dron_dir = tmp_path / "programas_externos" / "M2EA"
+    dron_dir = tmp_path / "programas_externos" / "DJI"
     dron_dir.mkdir(parents=True)
     dji_utility = str(dron_dir / "dji_irp.exe")
 

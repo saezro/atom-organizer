@@ -2333,8 +2333,8 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
                 self.new_log_gui.enable_process()
 
                 exiftool_exe = resource_path("programas_externos", "exiftool.exe")
-                dron_selector = self._resolve_dron_selector(cfg.convert_to_tif_dron_selector, os.path.join(cfg.output_folder, "TERMICA"), progress_callback)
-                dji_utility = resource_path("programas_externos", dron_selector, "dji_irp.exe")
+                self._resolve_dron_selector(cfg.convert_to_tif_dron_selector, os.path.join(cfg.output_folder, "TERMICA"), progress_callback)
+                dji_utility = config.dji_utility_path()
                 # os.path.join(cfg.output_folder, "TERMICA")
                 # self.split_images_obj.iterate_folders_for_DJI(f"{cfg.output_folder}//TERMICA", exiftool_exe, dji_utility,
                 self.split_images_obj.iterate_folders_for_DJI(os.path.join(cfg.output_folder, "TERMICA"), exiftool_exe, dji_utility,
@@ -2743,85 +2743,71 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
         return processing_time
 
     def _resolve_dron_selector(self, selector, termica_folder, progress_callback):
-        """Resuelve la carpeta de binarios DJI (programas_externos/<sel>/dji_irp.exe)
-        para la conversión a TIF. Si `selector` ya viene explícito (combo Qt o webui
-        con M2EA/M4T) lo respeta. Si viene vacío ('(automático)' del webui / default
-        headless) AUTODETECTA el modelo leyendo el campo EXIF "Image Model" de una
-        imagen térmica de muestra y lo mapea a la carpeta de binarios. Solo existen
-        binarios para M2EA y M4T. Devuelve el selector resuelto y VALIDA que la carpeta
-        de binarios del SO exista: si no, ABORTA con un único error claro (en vez de
-        dejar que falle imagen por imagen con N errores confusos aguas abajo)."""
-        resolved = selector
-        detected_model = None       # lo que dijo el EXIF (para el mensaje de error)
+        """Comprueba que el DJI Thermal SDK está disponible antes de convertir a TIF, y
+        deja constancia en el log de qué dron trae la muestra térmica.
+
+        Hasta la 3.3.2 esta función ELEGÍA carpeta de binarios: autodetectaba el modelo
+        por EXIF y lo mapeaba a programas_externos/M2EA o /M4T. Esas dos carpetas eran
+        byte a byte idénticas (mismo md5 en los 19 ficheros), así que la elección no
+        elegía nada: siempre acababa lanzando el mismo binario. Ahora hay una sola
+        carpeta (programas_externos/DJI) y una sola ruta posible — una variable menos
+        que descartar cuando el conversor falla en la máquina de un usuario.
+
+        El modelo se sigue leyendo y logueando porque es dato de diagnóstico útil (el
+        SDK resuelve el modelo por su cuenta desde el propio R-JPEG), pero YA NO decide
+        nada ni aborta la corrida: un dron fuera de la lista conocida se avisa y se
+        intenta igual. `selector` (combo Qt / webui, valores históricos M2EA/M4T) se
+        acepta por compatibilidad con configuraciones guardadas y se ignora."""
+        detected_model = None
         sample = None
-        if not selector:
-            # Modelo EXIF (campo "Image Model") -> carpeta de binarios en programas_externos/.
-            # Se compara NORMALIZADO (mayúsculas y sin separadores) porque el mismo dron
-            # escribe el modelo de formas distintas según firmware: 'M4T', 'Matrice 4T',
-            # 'MAVIC2-ENTERPRISE-ADVANCED', 'Mavic2 Enterprise Advanced'… Comparar el
-            # string literal hacía fallar la autodetección con drones que SÍ están soportados.
-            model_to_folder = {
-                "M4T": "M4T",
-                "MATRICE4T": "M4T",
-                "DJIMATRICE4T": "M4T",
-                "MAVIC2ENTERPRISEADVANCED": "M2EA",
-                "M2EA": "M2EA",
-                "DJIMAVIC2ENTERPRISEADVANCED": "M2EA",
-            }
 
-            def _norm(s):
-                return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
+        # Modelos conocidos, solo para el mensaje del log. Se compara NORMALIZADO
+        # (mayúsculas y sin separadores) porque el mismo dron escribe el modelo de
+        # formas distintas según firmware: 'M4T', 'Matrice 4T',
+        # 'MAVIC2-ENTERPRISE-ADVANCED', 'Mavic2 Enterprise Advanced'…
+        modelos_conocidos = {
+            "M4T", "MATRICE4T", "DJIMATRICE4T",
+            "MAVIC2ENTERPRISEADVANCED", "M2EA", "DJIMAVIC2ENTERPRISEADVANCED",
+        }
 
-            for root, _dirs, files in os.walk(termica_folder):
-                for name in files:
-                    if name.lower().endswith((".jpg", ".jpeg")):
-                        sample = os.path.join(root, name)
-                        break
-                if sample:
+        def _norm(s):
+            return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
+
+        for root, _dirs, files in os.walk(termica_folder):
+            for name in files:
+                if name.lower().endswith((".jpg", ".jpeg")):
+                    sample = os.path.join(root, name)
                     break
-            if not sample:
-                progress_callback.emit("AVISO: no se encontró imagen térmica para autodetectar el modelo de dron.\n")
+            if sample:
+                break
+        if not sample:
+            progress_callback.emit("AVISO: no se encontró imagen térmica de muestra para identificar el dron.\n")
+        else:
+            model = self.meta_location_obj.exif_management_obj.get_model(sample, progress_callback)
+            model = (model or "").strip("\x00").strip()
+            detected_model = model
+            if model and _norm(model) in modelos_conocidos:
+                progress_callback.emit(f"Dron detectado por EXIF: {model}.\n")
+            elif model:
+                progress_callback.emit(
+                    f"AVISO: dron '{model}' fuera de los modelos probados (M2EA/M4T). "
+                    "Se intenta la conversión igualmente: el SDK térmico es el mismo para todos.\n")
             else:
-                model = self.meta_location_obj.exif_management_obj.get_model(sample, progress_callback)
-                model = (model or "").strip("\x00").strip()
-                detected_model = model
-                folder = model_to_folder.get(_norm(model))
-                if folder:
-                    progress_callback.emit(f"Modelo de dron autodetectado por EXIF: {model} -> {folder}.\n")
-                    resolved = folder
-                elif model:
-                    progress_callback.emit(f"AVISO: modelo de dron '{model}' sin binarios TIF disponibles (solo M2EA/M4T).\n")
-                else:
-                    progress_callback.emit(
-                        f"AVISO: la imagen de muestra no trae modelo en el EXIF ({sample}).\n")
+                progress_callback.emit(
+                    f"AVISO: la imagen de muestra no trae modelo en el EXIF ({sample}).\n")
 
-        # GUARD: el dron resuelto DEBE tener su carpeta de binarios con el binario del SO
-        # (dji_irp.exe en Windows, libdirp.so en Linux). Si no, abortar fuerte upfront
-        # con UN error claro, en vez de N fallos por imagen aguas abajo.
-        if not config.has_dron_binaries(resolved):
+        # GUARD: el SDK DEBE traer el binario del SO (dji_irp.exe en Windows, libdirp.so
+        # en Linux). Si no, abortar fuerte upfront con UN error claro, en vez de N fallos
+        # por imagen aguas abajo. Ahora solo hay UN sitio donde puede faltar.
+        if not config.has_dji_binaries():
             bin_name = config.dji_bin_name()
-            if selector:
-                msg = (f"No hay binarios DJI para el dron seleccionado '{selector}' "
-                       f"(falta programas_externos/{selector}/{bin_name}). "
-                       f"Usa M2EA, M4T o '(automático)'.")
-            else:
-                # Mensaje ACCIONABLE: decir exactamente por qué falló la autodetección.
-                # El anterior mezclaba tres causas distintas ("sin muestra o modelo no
-                # soportado") y no decía qué modelo había leído, así que no había forma
-                # de saber si faltaba soporte para el dron o si el EXIF venía vacío.
-                if not sample:
-                    causa = f"no se encontró ninguna imagen térmica de muestra en {termica_folder}"
-                elif detected_model:
-                    causa = f"el dron detectado ('{detected_model}') no está soportado; sólo hay binarios para M2EA y M4T"
-                else:
-                    causa = "la imagen de muestra no trae el modelo de dron en el EXIF"
-                msg = (f"No se pudo autodetectar el dron: {causa}. "
-                       "Abre «Modo avanzado» y selecciona M2EA o M4T a mano "
-                       f"(binarios en programas_externos/<dron>/{bin_name}).")
+            msg = (f"Falta el conversor térmico DJI: no se encuentra {bin_name} en "
+                   f"{config.dji_sdk_dir()}. La instalación está incompleta — "
+                   "reinstala ATOM Organizer.")
             progress_callback.emit("ERROR: " + msg + "\n")
             raise ValueError(msg)
 
-        return resolved
+        return detected_model
 
     def do_convert_to_tif(self, cfg: ConvertToTifConfig, progress_callback = None, progress_bar=None, progress_summarize=None):
         """
@@ -2844,8 +2830,8 @@ QToolButton#gear_btn::menu-indicator {{ image: none; width: 0; }}
         self.new_log_gui.enable_process()
 
         exiftool_exe = resource_path("programas_externos", "exiftool.exe")
-        dron_selector = self._resolve_dron_selector(cfg.dron_selector, cfg.input_folder, progress_callback)
-        dji_utility = resource_path("programas_externos", dron_selector, "dji_irp.exe")
+        self._resolve_dron_selector(cfg.dron_selector, cfg.input_folder, progress_callback)
+        dji_utility = config.dji_utility_path()
 
         self.split_images_obj.iterate_folders_for_DJI(cfg.input_folder, exiftool_exe, dji_utility,
                                                       progress_callback, progress_bar, cfg.emissivity,

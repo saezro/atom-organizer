@@ -18,7 +18,7 @@
 #    Se excluye solo lo pesado que nadie usa (Qt3D, Charts, Multimedia, Quick3D, DataVisualization).
 #  - La UI React va como data en 'webui/dist'; app_webview.py la resuelve vía _MEIPASS.
 #  - Recursos del pipeline (config, programas_externos, assets) los resuelve external_tools.app_base_dir.
-#  - programas_externos/{exiftool.exe, M2EA/dji_irp.exe, M4T/dji_irp.exe} son binarios Windows: imprescindibles.
+#  - programas_externos/{exiftool.exe, DJI/dji_irp.exe} son binarios Windows: imprescindibles.
 from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 block_cipher = None

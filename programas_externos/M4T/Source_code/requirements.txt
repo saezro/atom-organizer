@@ -1,7 +1,0 @@
-pillow
-opencv-python
-numpy
-customtkinter
-exif
-piexif
-auto-py-to-exe

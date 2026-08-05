@@ -82,18 +82,38 @@ def is_feature_available(feature: str) -> bool:
     return _current_os() in FEATURE_MATRIX[feature]
 
 
+# Carpeta ÚNICA del DJI Thermal SDK dentro de programas_externos/.
+# Hasta la 3.3.2 había dos, M2EA/ y M4T/, elegidas por autodetección del modelo de
+# dron... siendo byte a byte idénticas (mismo md5 en los 19 ficheros de ambas, no solo
+# en dji_irp.exe y libdirp.dll). La separación no separaba nada: el SDK es uno solo y
+# resuelve el modelo leyendo el propio R-JPEG. Duplicaba 6,7 MB de instalador y añadía
+# una ruta variable —justo la pieza que hay que descartar cuando el conversor falla en
+# la máquina de un usuario—. Ahora hay una sola carpeta y una sola ruta posible.
+DJI_SDK_DIRNAME = "DJI"
+
+
 def dji_bin_name() -> str:
-    """Basename del binario DJI que debe existir en programas_externos/<dron>/ según el SO:
+    """Basename del binario DJI que debe existir en programas_externos/DJI/ según el SO:
     el .exe en Windows, la librería nativa libdirp.so en Linux (la que usa dji_irp_linux.py)."""
     return "dji_irp.exe" if _current_os() == "win" else "libdirp.so"
 
 
-def has_dron_binaries(selector: str) -> bool:
-    """True si `selector` (M2EA/M4T) mapea a una carpeta programas_externos/<selector>/
-    con el binario DJI correcto para el SO actual. Selector vacío o inexistente -> False."""
-    if not selector:
-        return False
-    return os.path.isfile(os.path.join(app_base_dir(), "programas_externos", selector, dji_bin_name()))
+def dji_sdk_dir() -> str:
+    """Ruta absoluta de la carpeta única del DJI Thermal SDK."""
+    return os.path.join(app_base_dir(), "programas_externos", DJI_SDK_DIRNAME)
+
+
+def dji_utility_path() -> str:
+    """Ruta del ejecutable dji_irp.exe que se lanza por imagen (Windows).
+
+    Es el ÚNICO sitio que construye esta ruta: si el conversor no aparece donde toca,
+    hay un solo candidato que comprobar, no uno por modelo de dron."""
+    return os.path.join(dji_sdk_dir(), "dji_irp.exe")
+
+
+def has_dji_binaries() -> bool:
+    """True si la carpeta única del SDK trae el binario DJI correcto para el SO actual."""
+    return os.path.isfile(os.path.join(dji_sdk_dir(), dji_bin_name()))
 
 
 def resolve_tool(name: str) -> str:
@@ -118,9 +138,9 @@ def resolve_tool(name: str) -> str:
         return "ffmpeg"
 
     if name == "dji_irp":
-        if is_windows:
-            return os.path.join(base, "programas_externos", "dji_irp.exe")
-        return os.path.join(base, "programas_externos", "libdirp.so")
+        # Apuntaba a programas_externos/ a pelo, donde el binario nunca ha estado
+        # (vivía en las subcarpetas por dron). Ahora la carpeta única lo hace correcto.
+        return os.path.join(dji_sdk_dir(), dji_bin_name())
 
     if name == "ThermoViewer":
         if not is_windows:

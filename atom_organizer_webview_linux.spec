@@ -27,7 +27,7 @@ a = Analysis(
         ('config/Config.ini', 'config'),
         ('Logo_atom_uas_horizonta-02.png', '.'),
         ('assets', 'assets'),
-        ('programas_externos', 'programas_externos'),  # M2EA/M4T libdirp.so + deps (Linux)
+        ('programas_externos', 'programas_externos'),  # DJI/ libdirp.so + deps (Linux)
     ] + pyexiv2_datas + mpl_datas,
     hiddenimports=[
         'pyexiv2', 'ipaddress',
