@@ -1014,3 +1014,47 @@ def run_batch(items, worker_fn, worker_args_fn, on_progress=None, max_workers=No
                 on_progress(safe_pct(current, total))
 
     return {"results": results, "errors": errors}
+
+
+# --- Giro del TIFF térmico: intención del front vs. default del backend -------
+#
+# El select de giro manda TRES bools mutuamente excluyentes dentro de
+# `advanced`, y `run_task` los aplica con `replace(cfg, **coerced)`, así que
+# PISAN el default de `_default_split_config` (rotate_auto=True).
+#
+# Problema (v3.4.4, log real de Daniel): los tres a false son IDÉNTICOS en dos
+# escenarios opuestos — el usuario eligió «Sin giro», o el front es anterior a
+# v3.4.3, donde `initialState` forzaba el índice 0 de todos los selects y
+# mandaba los tres a false sin que nadie tocara nada. Desde el log no se podía
+# decidir cuál era, y por tanto tampoco si el backend debía obedecer.
+#
+# `__tif_rot_mode` rompe el empate: es un SENTINEL de intención que solo manda
+# el front nuevo. No es un ajuste y no existe en `SplitImagesConfig` (la
+# coerción de `run_task` lo descarta por `k in hints`). Si no llega, la
+# elección no es expresable y los flags de giro no se aplican.
+TIF_ROTATION_INTENT_KEY = "__tif_rot_mode"
+TIF_ROTATION_KEYS = (
+    "convert_to_tiff_rotate_auto",
+    "convert_to_tiff_rotate_90",
+    "convert_to_tiff_rotate_minus_90",
+)
+
+
+def resolve_tif_rotation_intent(advanced):
+    """
+    Devuelve `(advanced_saneado, aviso_o_None)`.
+
+    Si `advanced` trae flags de giro pero NO el sentinel, se eliminan los flags
+    (el front no puede expresar intención -> manda el default del backend) y se
+    devuelve el aviso para el log. Con sentinel, `advanced` se devuelve intacto.
+    """
+    if not advanced:
+        return advanced, None
+    if advanced.get(TIF_ROTATION_INTENT_KEY) is not None:
+        return advanced, None
+    if not any(k in advanced for k in TIF_ROTATION_KEYS):
+        return advanced, None
+    limpio = {k: v for k, v in advanced.items() if k not in TIF_ROTATION_KEYS}
+    return limpio, ("Giro del TIFF: el front no manda __tif_rot_mode (build anterior "
+                    "a v3.4.5); se ignoran sus flags de giro y se aplica el criterio "
+                    "automático del backend.")

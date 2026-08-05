@@ -254,11 +254,19 @@ export const SPLIT_ADVANCED = [
         name: '__tif_rot', type: 'select', label: 'Giro',
         // Cada opción fija los TRES bools (mutuamente excluyentes); el default
         // de _default_split_config es rotate_auto=True → índice 1.
+        //
+        // `__tif_rot_mode` es un SENTINEL de intención, no un ajuste: viaja en
+        // `advanced` pero NO existe en SplitImagesConfig, así que la coerción de
+        // organize.py lo descarta. Su única función es que el backend distinga
+        // «el usuario eligió Sin giro» de «llegan tres bools a false porque el
+        // front es viejo». Los tres false son IDÉNTICOS en ambos casos, y por eso
+        // el log de v3.4.4 no permitía cerrar el diagnóstico. Sin el sentinel, el
+        // backend ignora el trío y aplica su default (auto).
         options: [
-          { label: 'Sin giro', params: { convert_to_tiff_rotate_auto: false, convert_to_tiff_rotate_90: false, convert_to_tiff_rotate_minus_90: false } },
-          { label: 'Auto', params: { convert_to_tiff_rotate_auto: true, convert_to_tiff_rotate_90: false, convert_to_tiff_rotate_minus_90: false } },
-          { label: '90º', params: { convert_to_tiff_rotate_auto: false, convert_to_tiff_rotate_90: true, convert_to_tiff_rotate_minus_90: false } },
-          { label: '-90º', params: { convert_to_tiff_rotate_auto: false, convert_to_tiff_rotate_90: false, convert_to_tiff_rotate_minus_90: true } },
+          { label: 'Sin giro', params: { __tif_rot_mode: 'none', convert_to_tiff_rotate_auto: false, convert_to_tiff_rotate_90: false, convert_to_tiff_rotate_minus_90: false } },
+          { label: 'Auto', params: { __tif_rot_mode: 'auto', convert_to_tiff_rotate_auto: true, convert_to_tiff_rotate_90: false, convert_to_tiff_rotate_minus_90: false } },
+          { label: '90º', params: { __tif_rot_mode: '90', convert_to_tiff_rotate_auto: false, convert_to_tiff_rotate_90: true, convert_to_tiff_rotate_minus_90: false } },
+          { label: '-90º', params: { __tif_rot_mode: '-90', convert_to_tiff_rotate_auto: false, convert_to_tiff_rotate_90: false, convert_to_tiff_rotate_minus_90: true } },
         ],
         default: 1,
       },

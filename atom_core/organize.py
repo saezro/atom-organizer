@@ -47,6 +47,7 @@ from gui import MainWindow  # solo se usan funciones (globals del módulo intact
 from utils import (
     ROTATION_MIN_AGREEMENT_PCT,
     ROTATION_YAW_MARGIN,
+    TIF_ROTATION_INTENT_KEY,
     CompressRgbsConfig,
     ConvertToTifConfig,
     ExtractionConfig,
@@ -60,6 +61,7 @@ from utils import (
     RgbCroppingConfig,
     SplitImagesConfig,
     TifRotatingConfig,
+    resolve_tif_rotation_intent,
 )
 
 EmitFn = Callable[[str, object], None]
@@ -414,6 +416,21 @@ def run_task(
         else:
             cfg = _build_generic(config_cls, params)
         if advanced:
+            # GIRO DEL TIFF. `advanced` puede traer los tres bools de giro a false
+            # por DOS motivos que el log de v3.4.4 no permitía distinguir (el dict
+            # resultante es byte a byte el mismo): porque el usuario eligió «Sin
+            # giro», o porque el front es anterior a v3.4.3 y forzaba el índice 0
+            # del select. `__tif_rot_mode` es un sentinel que SOLO manda el front
+            # nuevo (schema.js): si no llega, la elección no es expresable y no se
+            # pisan los flags -> manda el default sano del backend (auto=True).
+            # (la lógica vive en utils.resolve_tif_rotation_intent: `organize`
+            # arrastra Qt por `from gui import MainWindow` y no es testeable en CI)
+            _rot_mode = advanced.get(TIF_ROTATION_INTENT_KEY)
+            advanced, _rot_aviso = resolve_tif_rotation_intent(advanced)
+            if _rot_aviso:
+                emit("log", _rot_aviso)
+            elif _rot_mode is not None:
+                emit("log", f"Giro del TIFF: modo pedido por el front = {_rot_mode!r}.")
             # `advanced` llega del front con posibles números como string
             # (folder/file/number se envían crudos). `replace` no coacciona,
             # así que coaccionamos por tipo del dataclass antes de sustituir.
@@ -424,6 +441,17 @@ def run_task(
                 if k in hints
             }
             cfg = replace(cfg, **coerced)
+
+        # Y si el «Sin giro» ES la elección del usuario, que no sea silencioso: el
+        # TIFF sale 640x512 y sin copias _ROT, que es exactamente el síntoma que se
+        # reporta como fallo. En el canal `summary` (visible en la UI), no en `log`.
+        if getattr(cfg, "convert_to_tif", False) \
+                and not getattr(cfg, "convert_to_tiff_rotate_auto", False) \
+                and not getattr(cfg, "convert_to_tiff_rotate_90", False) \
+                and not getattr(cfg, "convert_to_tiff_rotate_minus_90", False):
+            emit("summary", "AVISO: el giro del TIFF está en «Sin giro»; el TIFF "
+                            "térmico saldrá sin girar y no se escribirán copias _ROT. "
+                            "Cámbialo en Avanzado → Convertir DJI → TIF → Giro.")
 
         # Normalización radiométrica (red de seguridad): emissivity/humidity DEBEN
         # caer en el rango del DJI SDK (emissivity [0.10~1.00], humidity [20~100]).
