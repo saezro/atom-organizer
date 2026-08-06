@@ -648,7 +648,12 @@ function BucketScreen({ ready }) {
             ? catalogo.error
             : catalogo?.origen === 'cache'
               ? `${inspecciones.length} inspecciones de la última descarga (no se pudo consultar ahora).`
-              : `${inspecciones.length} inspecciones. Los datos se guardarán en «${prefijo || '…'}/».`}
+              : catalogo?.origen === 'bucket'
+                // Respaldo: la Suite no respondió y esta lista se genera a mano,
+                // así que puede no traer las inspecciones creadas hoy. Decirlo
+                // evita que el operador busque una que existe y no aparece.
+                ? `${inspecciones.length} inspecciones de la lista de respaldo (puede estar desactualizada).`
+                : `${inspecciones.length} inspecciones. Los datos se guardarán en «${prefijo || '…'}/».`}
         </span>
       </div>
 

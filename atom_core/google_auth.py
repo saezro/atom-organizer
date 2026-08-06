@@ -175,6 +175,11 @@ class GoogleAuth:
         self._access_token: str | None = None
         self._expires_at: float = 0.0
         self._refresh_token: str | None = None
+        # No se persiste a propósito: vive lo mismo que el access token (1 h) y
+        # guardarlo en disco añadiría un secreto en reposo sin ganar nada, porque
+        # al arrancar habría caducado igual. Se obtiene del refresh, que devuelve
+        # `id_token` mientras el scope `openid` siga concedido.
+        self._id_token: str | None = None
         self._identity: Identity | None = None
         self._load()
 
@@ -294,6 +299,7 @@ class GoogleAuth:
             token = self._refresh_token
             self._refresh_token = None
             self._access_token = None
+            self._id_token = None
             self._expires_at = 0.0
             self._identity = None
             try:
@@ -330,11 +336,46 @@ class GoogleAuth:
             self._aplicar_access(tokens)
             return self._access_token  # type: ignore[return-value]
 
+    def id_token(self) -> str:
+        """`id_token` vigente de Google, para autenticarse ante ATOM Suite.
+
+        El backend (`GET /api/organizer/inspecciones`) verifica este JWT contra
+        las claves públicas de Google y exige `hd=aerotools.es`. Es lo que evita
+        meter un secreto de larga vida en un `.exe` público: el id_token caduca
+        en 1 h y se renueva con el mismo refresh que ya usa la subida.
+
+        Se pide junto al access token: el grant de refresh devuelve ambos
+        mientras el scope `openid` siga concedido, así que renovarlo no cuesta
+        una llamada de red extra.
+        """
+        with self._lock:
+            vigente = (self._id_token
+                       and time.time() < self._expires_at - EXPIRY_MARGIN)
+            if vigente:
+                return self._id_token  # type: ignore[return-value]
+        # Fuera del `with` no por el lock (es reentrante), sino porque
+        # `access_token` ya sabe pedir y guardar ambos tokens: duplicar aquí la
+        # llamada a `_token_request` sería una segunda implementación del
+        # refresh, con su propio manejo de `invalid_grant`.
+        self.access_token(force_refresh=True)
+        with self._lock:
+            if not self._id_token:
+                # Sesión iniciada antes de que la app pidiera `openid`, o scope
+                # retirado en la cuenta de Google. Se arregla volviendo a entrar.
+                raise AuthError(
+                    "Google no devolvió identidad (id_token). "
+                    "Cierra sesión y vuelve a iniciarla con Google.")
+            return self._id_token
+
     def _aplicar_access(self, tokens: dict) -> None:
         token = tokens.get("access_token")
         if not token:
             raise AuthError("Google no devolvió access token.")
         self._access_token = token
+        # Se reasigna siempre, también a None: un id_token de la tanda anterior
+        # caduca a la vez que el access token que sustituimos, así que dejarlo
+        # colgado sería servir un JWT muerto que el backend rechaza con 401.
+        self._id_token = tokens.get("id_token") or None
         self._expires_at = time.time() + float(tokens.get("expires_in", 3600))
 
     # -- HTTP -------------------------------------------------------------
@@ -349,6 +390,7 @@ class GoogleAuth:
                 with self._lock:
                     self._refresh_token = None
                     self._access_token = None
+                    self._id_token = None
                 try:
                     self.store_path.unlink()
                 except OSError:

@@ -55,6 +55,10 @@ class FakeGoogle:
         self.refrescos = 0
         self.revocados: list[str] = []
         self.error_en_refresh: int | None = None
+        # Google devuelve `id_token` también en el grant de refresh mientras el
+        # scope `openid` siga concedido. Se puede apagar para simular una sesión
+        # anterior a que la app lo pidiera.
+        self.id_token_en_refresh = True
 
     def urlopen(self, req, timeout=None):
         campos = dict(urllib.parse.parse_qsl(req.data.decode()))
@@ -73,10 +77,13 @@ class FakeGoogle:
                         {"error": "invalid_grant",
                          "error_description": "Token has been expired or revoked."}
                     ).encode()))
-            return _Resp(json.dumps({
+            cuerpo = {
                 "access_token": f"acceso-{self.refrescos}",
                 "expires_in": self.expires_in,
-            }).encode())
+            }
+            if self.id_token_en_refresh:
+                cuerpo["id_token"] = _id_token(self.email, self.hd)
+            return _Resp(json.dumps(cuerpo).encode())
 
         return _Resp(json.dumps({
             "access_token": "acceso-0",
@@ -292,6 +299,66 @@ def test_force_refresh_pide_uno_nuevo_aunque_el_actual_valga(auth, google):
     assert auth.access_token() == "acceso-0"
     assert auth.access_token(force_refresh=True) == "acceso-1"
     assert google.refrescos == 1
+
+
+# --------------------------------------------------------------------------
+# id_token: lo que autentica al organizer ante ATOM Suite
+# --------------------------------------------------------------------------
+
+def test_el_id_token_del_login_queda_disponible(auth, google):
+    """Antes de 3.4.20 se leía la identidad y se tiraba el token. Ahora hace
+    falta entero: es la credencial contra `/api/organizer/inspecciones`."""
+    holder: dict = {}
+    auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
+    assert auth.id_token() == _id_token("ofi@aerotools.es", "aerotools.es")
+    assert google.refrescos == 0, "el del login vale, no hay que pedir otro"
+
+
+def test_el_id_token_caducado_se_renueva_solo(tmp_path, monkeypatch):
+    """Caduca en 1 h como el access token. Si no se renovara, el operador vería
+    401 al abrir la app por la mañana."""
+    fake = FakeGoogle(expires_in=1)
+    monkeypatch.setattr(ga.urllib.request, "urlopen", fake.urlopen)
+    auth = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=tmp_path / "s.json")
+    holder: dict = {}
+    auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
+
+    assert auth.id_token()
+    assert fake.refrescos == 1, "expires_in=1 está dentro del margen: toca renovar"
+
+
+def test_el_id_token_no_se_guarda_en_disco(auth, google, tmp_path):
+    """Vive 1 h: al arrancar mañana estaría caducado igual. Persistirlo solo
+    añadiría un JWT con el email del operador en un fichero."""
+    holder: dict = {}
+    auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
+    guardado = json.loads((tmp_path / "google_auth.json").read_text())
+    assert "id_token" not in guardado
+    assert set(guardado) == {"refresh_token", "email"}
+
+
+def test_un_refresh_sin_id_token_lo_dice_en_vez_de_mandar_uno_muerto(tmp_path, monkeypatch):
+    """Sesión iniciada antes de que la app pidiera `openid`, o scope retirado.
+    Reutilizar el id_token viejo daría un 401 opaco del backend; el mensaje
+    tiene que decirle al operador que vuelva a entrar."""
+    fake = FakeGoogle(expires_in=1)
+    monkeypatch.setattr(ga.urllib.request, "urlopen", fake.urlopen)
+    auth = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=tmp_path / "s.json")
+    holder: dict = {}
+    auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
+
+    fake.id_token_en_refresh = False
+    with pytest.raises(ga.AuthError, match="vuelve a iniciarla"):
+        auth.id_token()
+
+
+def test_el_logout_se_lleva_tambien_el_id_token(auth, google):
+    holder: dict = {}
+    auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
+    assert auth.id_token()
+    auth.logout()
+    with pytest.raises(ga.AuthError, match="No hay sesión iniciada"):
+        auth.id_token()
 
 
 def test_sin_sesion_el_token_falla_con_un_mensaje_util(tmp_path):

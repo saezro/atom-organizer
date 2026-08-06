@@ -67,10 +67,12 @@ export const api = {
   // {configured, logged_in, email, bucket, help?}; cloudLogin abre el navegador
   // y responde por el evento `atom:cloud`; cloudPrepare {ok, prefix, files,
   // bytes, existing}; cloudUpload arranca la subida (progreso por `atom:cloud`).
-  // cloudInspecciones devuelve el catálogo {ok, inspecciones[], origen, error}:
-  // sale de `_inspecciones.json` en el bucket, no de la BD de Aerotools. El
-  // prefijo destino ya NO se deriva del nombre de la carpeta: lo manda la UI
-  // con la inspección elegida.
+  // cloudInspecciones devuelve el catálogo {ok, inspecciones[], origen, error}.
+  // `origen` dice de dónde salió y hay que enseñarlo: 'api' es ATOM Suite (al
+  // día), 'bucket' es el `_inspecciones.json` de respaldo (se genera a mano y
+  // puede estar viejo) y 'cache' es la última descarga local. El prefijo
+  // destino ya NO se deriva del nombre de la carpeta: lo manda la UI con la
+  // inspección elegida.
   cloudStatus: () => call('cloud_status'),
   cloudLogin: () => call('cloud_login'),
   cloudLogout: () => call('cloud_logout'),

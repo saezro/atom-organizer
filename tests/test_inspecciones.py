@@ -104,6 +104,9 @@ class _Auth:
     def access_token(self, *, force_refresh: bool = False) -> str:
         return "tok"
 
+    def id_token(self) -> str:
+        return "idtok"
+
 
 def _falsa_descarga(payload, capturado: dict):
     def urlopen(req, timeout=None):
@@ -148,6 +151,100 @@ def test_si_el_bucket_falla_se_tira_de_la_ultima_lista_bajada(monkeypatch, tmp_p
     assert out["origen"] == "cache"
     assert out["inspecciones"][0]["prefijo"] == UNA.prefijo
     assert "sin red" in out["error"]
+
+
+# --- catálogo vivo: API de ATOM Suite ---------------------------------------
+
+def test_el_catalogo_se_pide_a_la_suite_con_el_id_token(monkeypatch):
+    """La app se autentica con el `id_token`, NO con el access token de Storage:
+    el backend verifica el JWT contra Google y exige `hd=aerotools.es`. Mandar
+    aquí el access token daría 401 y nadie sabría por qué."""
+    cap: dict = {}
+    monkeypatch.setattr(ins.urllib.request, "urlopen", _falsa_descarga(
+        {"inspecciones": [{"id": 184, "empresa": "METLEN", "planta": "CLEVE_HILL",
+                           "anio": "2027", "tipo": "T_Modulos",
+                           "fase": "Confirmada"}]}, cap))
+    lista = ins.descargar_catalogo_api(_Auth())
+    assert [i.prefijo for i in lista] == ["METLEN--CLEVE_HILL--2027--T_Modulos"]
+    assert cap["url"].endswith("/api/organizer/inspecciones")
+    assert cap["auth"] == "Bearer idtok"
+
+
+def test_el_catalogo_vivo_manda_sobre_el_bucket(monkeypatch, tmp_path):
+    """El `_inspecciones.json` del bucket se generaba a mano y envejecía en
+    silencio. Si la API responde, es la que vale."""
+    monkeypatch.setattr(ins, "_ruta_cache", lambda: tmp_path / "cache.json")
+
+    def urlopen(req, timeout=None):
+        assert "/api/organizer/inspecciones" in req.full_url, "no debe tocar el bucket"
+        return _Resp(json.dumps(
+            {"inspecciones": [{"id": 9, "empresa": "E", "planta": "P",
+                               "anio": "2026", "tipo": "T_Modulos"}]}).encode())
+
+    monkeypatch.setattr(ins.urllib.request, "urlopen", urlopen)
+    out = ins.cargar_catalogo("b", _Auth())
+    assert out["origen"] == "api"
+    assert out["ok"] and out["error"] is None
+    assert [i["id"] for i in out["inspecciones"]] == [9]
+
+
+def test_si_la_suite_no_responde_se_cae_al_bucket(monkeypatch, tmp_path):
+    """La Suite caída no puede dejar al operador sin poder subir: el bucket
+    sigue siendo la red de seguridad."""
+    monkeypatch.setattr(ins, "_ruta_cache", lambda: tmp_path / "cache.json")
+
+    def urlopen(req, timeout=None):
+        if "/api/organizer/" in req.full_url:
+            raise urllib.error.HTTPError("u", 502, "Bad Gateway",
+                                         email.message.Message(), None)
+        return _Resp(json.dumps(
+            {"inspecciones": [{"id": 7, "empresa": "E", "planta": "P",
+                               "anio": "2025", "tipo": "T_Modulos"}]}).encode())
+
+    monkeypatch.setattr(ins.urllib.request, "urlopen", urlopen)
+    out = ins.cargar_catalogo("b", _Auth())
+    assert out["origen"] == "bucket"
+    assert [i["id"] for i in out["inspecciones"]] == [7]
+
+
+def test_al_llegar_a_la_cache_se_conservan_los_dos_fallos(monkeypatch, tmp_path):
+    """Un 403 de la API (cuenta no registrada en la Suite) no puede quedar
+    tapado por el fallo posterior del bucket: son problemas distintos y el de
+    arriba es el que hay que arreglar."""
+    monkeypatch.setattr(ins, "_ruta_cache", lambda: tmp_path / "cache.json")
+    ins.guardar_cache([UNA])
+
+    def urlopen(req, timeout=None):
+        if "/api/organizer/" in req.full_url:
+            raise urllib.error.HTTPError("u", 403, "usuario-no-registrado",
+                                         email.message.Message(), None)
+        raise urllib.error.URLError("sin red")
+
+    monkeypatch.setattr(ins.urllib.request, "urlopen", urlopen)
+    out = ins.cargar_catalogo("b", _Auth())
+    assert out["origen"] == "cache"
+    assert "403" in out["error"] and "sin red" in out["error"]
+
+
+def test_la_api_devuelve_campos_crudos_y_el_slug_lo_monta_la_app(monkeypatch):
+    """Contrato con el backend: el endpoint NO manda `prefijo`. Si algún día lo
+    mandara, seguiría mandando la regla local — una implementación, no dos."""
+    cap: dict = {}
+    monkeypatch.setattr(ins.urllib.request, "urlopen", _falsa_descarga(
+        {"inspecciones": [{"id": 1, "empresa": "Ocaña", "planta": "El Niño",
+                           "anio": "2025", "tipo": "N_serie",
+                           "prefijo": "BASURA--QUE--NO--MANDA"}]}, cap))
+    assert ins.descargar_catalogo_api(_Auth())[0].prefijo == "Ocana--El_Nino--2025--N_serie"
+
+
+def test_el_anio_llega_como_string_aunque_postgres_lo_de_numerico(monkeypatch):
+    """`a_o` es bigint y el driver `pg` lo devuelve como string, pero eso puede
+    cambiar. El prefijo tiene que salir igual en los dos casos."""
+    cap: dict = {}
+    monkeypatch.setattr(ins.urllib.request, "urlopen", _falsa_descarga(
+        {"inspecciones": [{"id": 1, "empresa": "E", "planta": "P",
+                           "anio": 2026, "tipo": "T"}]}, cap))
+    assert ins.descargar_catalogo_api(_Auth())[0].anio == "2026"
 
 
 def test_un_fallo_de_descarga_no_pasa_por_lista_vacia(monkeypatch):

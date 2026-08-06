@@ -6,16 +6,28 @@ repartida en dos carpetas quedaba partida en dos prefijos). Ahora lo elige el
 operador de una lista, y esa elección es lo que nombra el prefijo.
 
 **De dónde sale la lista.** La fuente de verdad es la BD de Aerotools
-(`aerotools-db` → `public.inspecciones_pv`, con join a `plantas`/`empresas`
+(`aerotools-db` → `public.inspecciones_pv`, con join a `plantas_pv`/`empresas`
 porque la tabla no tiene columna de nombre). Pero el organizer es un `.exe`
 público que corre en el PC del operador: meter ahí las credenciales de una BD
 de PRODUCCIÓN sería regalarlas a cualquiera que abra el binario con un editor
 hexadecimal — el mismo razonamiento que ya llevó a no meter una service
-account key en `cloud_upload`. Así que la app **no habla con la BD**: lee un
-objeto `_inspecciones.json` que vive en el propio bucket, con la misma sesión
-de Google que ya usa para subir. Cero credenciales nuevas, cero infra nueva.
-Quien vuelca la BD a ese objeto es `tools/exportar_inspecciones.py`, fuera de
-la app.
+account key en `cloud_upload`. Así que la app **no habla con la BD**: se lo
+pregunta a ATOM Suite, que sí la tiene delante.
+
+Desde 3.4.20 el catálogo se pide a `GET /api/organizer/inspecciones` (backend
+Atom-suite), autenticándose con el `id_token` de la misma sesión de Google que
+ya usa la subida — ningún secreto nuevo en el binario, y el backend aplica el
+filtro de visibilidad por rol, así que un externo no ve el catálogo entero.
+
+Se conservan dos respaldos por debajo, en este orden:
+
+1. `_inspecciones.json` en el bucket — el mecanismo anterior. Sigue vivo como
+   red de seguridad para el día que la Suite esté caída y el operador tenga que
+   subir igual. Lo genera `tools/exportar_inspecciones.py`, fuera de la app.
+2. La caché local del último catálogo bajado, para trabajar sin red.
+
+Un fallo de la API no es «no hay inspecciones»: se cae al siguiente escalón y
+se dice en `origen` de dónde salió la lista.
 
 **El prefijo se monta y se desmonta.** Regla de Cas (2026-08-06): «con el
 nombre se debería poder sacar igual que montamos el nombre lo podemos
@@ -32,6 +44,7 @@ sea siempre cuatro y `parse_prefijo()` no tenga que adivinar.
 from __future__ import annotations
 
 import json
+import os
 import time
 import unicodedata
 import urllib.parse
@@ -42,9 +55,12 @@ from pathlib import Path
 __all__ = [
     "Inspeccion",
     "OBJETO_CATALOGO",
+    "API_BASE",
+    "RUTA_CATALOGO",
     "SEPARADOR",
     "prefijo_de_inspeccion",
     "parse_prefijo",
+    "descargar_catalogo_api",
     "descargar_catalogo",
     "leer_cache",
     "guardar_cache",
@@ -55,6 +71,12 @@ __all__ = [
 # confunde con un prefijo de inspección al listar el bucket a ojo, y el Cloud
 # Run que organiza puede saltárselo con una regla trivial.
 OBJETO_CATALOGO = "_inspecciones.json"
+
+# Backend de ATOM Suite. La env existe para poder apuntar a dev
+# (`https://saez.dev.suite.atom-uas.com`) y validar el endpoint sin recompilar
+# el `.exe`; en el PC del operador nunca está definida y vale el default.
+API_BASE = os.environ.get("ATOM_SUITE_API_BASE") or "https://suite.atom-uas.com"
+RUTA_CATALOGO = "/api/organizer/inspecciones"
 
 SEPARADOR = "--"
 VACIO = "_"
@@ -170,6 +192,33 @@ def _desde_json(data: dict) -> list[Inspeccion]:
     return out
 
 
+def descargar_catalogo_api(auth, *,
+                           base: str | None = None,
+                           timeout: int = TIMEOUT) -> list[Inspeccion]:
+    """Pide el catálogo vivo a ATOM Suite con el `id_token` del operador.
+
+    Es la fuente preferente desde 3.4.20: el `_inspecciones.json` del bucket se
+    generaba a mano y envejecía en silencio mientras las inspecciones se crean
+    a diario.
+
+    El backend devuelve **campos crudos** (sin `prefijo`): el slug lo sigue
+    montando `prefijo_de_inspeccion`, aquí, para que haya una sola
+    implementación de la regla y no dos que puedan divergir.
+
+    Propaga si falla, igual que `descargar_catalogo`: quien llama decide si baja
+    al siguiente escalón. Un 403 aquí es informativo — significa que la cuenta
+    no está dada de alta en la Suite, no que no haya inspecciones.
+    """
+    url = f"{(base or API_BASE).rstrip('/')}{RUTA_CATALOGO}"
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Authorization", f"Bearer {auth.id_token()}")
+    req.add_header("User-Agent", USER_AGENT)
+    req.add_header("Accept", "application/json")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8") or "{}")
+    return _desde_json(data)
+
+
 def descargar_catalogo(bucket: str, auth, *,
                        base: str = "https://storage.googleapis.com",
                        timeout: int = TIMEOUT) -> list[Inspeccion]:
@@ -224,19 +273,37 @@ def guardar_cache(inspecciones: list[Inspeccion]) -> None:
 
 
 def cargar_catalogo(bucket: str, auth) -> dict:
-    """Catálogo para la UI: bucket si se puede, caché si no.
+    """Catálogo para la UI, con tres escalones: API → bucket → caché.
 
-    Devuelve `{"ok", "inspecciones": [...], "origen": "bucket"|"cache",
+    Devuelve `{"ok", "inspecciones": [...], "origen": "api"|"bucket"|"cache",
     "error": str|None}`. Nunca lanza: la pantalla de subida tiene que poder
     dibujarse aunque el catálogo falle, y el operador siempre puede teclear
     una inspección a mano.
+
+    El orden importa: la API es la única fuente que está al día. El bucket es
+    la red de seguridad para cuando la Suite no responde, y la caché para
+    cuando no hay red en absoluto. Se cachea lo que venga de los dos primeros,
+    para que el escalón de abajo siga sirviendo mañana.
+
+    Cuando se llega a la caché, `error` lleva **los dos** fallos encadenados: si
+    solo se contase el último, un 403 de la API quedaría tapado por un «objeto
+    no encontrado» del bucket y nadie sabría que el operador no está dado de
+    alta en la Suite.
     """
-    try:
-        inspecciones = descargar_catalogo(bucket, auth)
-    except Exception as exc:  # noqa: BLE001 - se enseña, no se traga
-        cacheadas, cuando = leer_cache()
-        return {"ok": bool(cacheadas), "inspecciones": [i.to_dict() for i in cacheadas],
-                "origen": "cache", "bajado_en": cuando, "error": str(exc)}
-    guardar_cache(inspecciones)
-    return {"ok": True, "inspecciones": [i.to_dict() for i in inspecciones],
-            "origen": "bucket", "bajado_en": time.time(), "error": None}
+    errores: list[str] = []
+    for origen, bajar in (
+        ("api", lambda: descargar_catalogo_api(auth)),
+        ("bucket", lambda: descargar_catalogo(bucket, auth)),
+    ):
+        try:
+            inspecciones = bajar()
+        except Exception as exc:  # noqa: BLE001 - se enseña, no se traga
+            errores.append(f"{origen}: {exc}")
+            continue
+        guardar_cache(inspecciones)
+        return {"ok": True, "inspecciones": [i.to_dict() for i in inspecciones],
+                "origen": origen, "bajado_en": time.time(), "error": None}
+
+    cacheadas, cuando = leer_cache()
+    return {"ok": bool(cacheadas), "inspecciones": [i.to_dict() for i in cacheadas],
+            "origen": "cache", "bajado_en": cuando, "error": " · ".join(errores)}
