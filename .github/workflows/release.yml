@@ -77,6 +77,13 @@ jobs:
           npm ci
           npm run lint
           npm test
+      # tests/test_smoke.py comprueba que exiftool y ffmpeg están en el PATH
+      # porque el pipeline los invoca como subproceso. El runner no los trae:
+      # sin esto la puerta falla siempre, aunque el código esté bien.
+      - name: Binarios externos del pipeline
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libimage-exiftool-perl ffmpeg
       - name: Python deps
         run: |
           python -m pip install --upgrade pip
