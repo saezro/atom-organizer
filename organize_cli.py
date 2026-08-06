@@ -109,6 +109,20 @@ def main(argv: list[str] | None = None) -> int:
         elif kind == "error":
             errores.append(str(payload))
             print(f"[error] {payload}", file=sys.stderr, flush=True)
+        elif kind == "done" and isinstance(payload, dict):
+            # El pipeline NO aborta ante fallos por-imagen: los cuenta y sigue, y
+            # `run_task` los agrega aquí. Sin esta rama el CLI solo miraba el canal
+            # `error` (excepciones que se propagan) y salía 0 aunque hubiese fallado
+            # el 100% de las imágenes: en v3.4.24 las 3.743 térmicas de ANTOLIN se
+            # quedaron sin un solo TIFF y Cloud Run marcó la ejecución como ÉXITO.
+            # Un vuelo con imágenes perdidas es un fallo del vuelo, no un aviso.
+            n = int(payload.get("errors") or 0)
+            if n:
+                errores.append(
+                    f"el pipeline terminó con {n} error(es) por imagen/carpeta "
+                    f"(status={payload.get('status')}); revisa «Imágenes con error» "
+                    f"en el resumen de arriba")
+            print(f"[done] {payload}", flush=True)
         elif kind in ("stats", "summary", "plan"):
             if not args.quiet:
                 print(f"[{kind}] {payload}", flush=True)
