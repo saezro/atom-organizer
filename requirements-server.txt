@@ -1,0 +1,29 @@
+# Dependencias del pipeline SIN interfaz, para el contenedor del Cloud Run Job.
+#
+# No es requirements-linux.txt menos cosas al tuntún: esa lleva PySide6, shiboken,
+# pyinstaller, ipykernel y jupyter, que en un contenedor que no pinta nada ni
+# construye nada son ~400 MB de imagen y superficie de dependencias a mantener.
+# Aquí solo está lo que el pipeline importa de verdad (atom_core, pipeline, exif,
+# utils). Las transitivas (dateutil, pytz, six, fonttools…) las resuelve pip.
+#
+# Las versiones se mantienen clavadas a las de requirements-linux.txt: el
+# contenedor debe procesar el vuelo EXACTAMENTE igual que el escritorio, y una
+# numpy distinta ya es una diferencia numérica que nadie va a estar buscando.
+# Qt entra aunque aquí no se pinte nada: `atom_core/organize.py` toma las fases
+# del pipeline de `MainWindow.<método>` (gui.py), así que importar el pipeline
+# importa PySide6. Es ~400 MB de imagen por una dependencia que el contenedor no
+# usa para nada visible. Quitarlo es sacar esos métodos de la clase Qt a un
+# módulo propio: el refactor correcto, pero no uno que se cuele de tapadillo en
+# un Dockerfile. Mientras tanto, se instala y se corre con QT_QPA_PLATFORM=offscreen.
+PySide6-Essentials==6.4.2
+ExifRead==3.0.0
+geopy==2.4.1
+matplotlib==3.8.0
+natsort==8.4.0
+numpy==1.24.2
+pandas==1.5.3
+piexif==1.1.3
+Pillow==10.0.1
+psutil==5.9.6
+pyexiv2==2.8.1
+tifffile==2023.9.26
