@@ -29,8 +29,14 @@ INSTANCIA = "aerotools-db"
 BUCKET = "datos_para_organizar"
 OBJETO = "_inspecciones.json"
 
-# `plantas` y `empresas` no tienen un nombre de columna garantizado y la tabla
-# de inspecciones tampoco trae el nombre legible. En vez de fijar un nombre a
+# Los nombres de tabla salen de las claves ajenas reales de `inspecciones_pv`
+# (comprobado 2026-08-06): `plantas_id` apunta a `plantas_pv`, NO a `plantas`
+# — esa tabla no existe y darla por hecha hacía reventar el JOIN entero.
+TABLA_PLANTAS = "plantas_pv"
+TABLA_EMPRESAS = "empresas"
+
+# Ninguna de las dos tiene un nombre de columna garantizado, y la tabla de
+# inspecciones tampoco trae el nombre legible. En vez de fijar un nombre a
 # ciegas, se busca el primero que exista de esta lista: si mañana la columna se
 # llama de otra forma, el arreglo es añadirla aquí y no depurar un SQL roto.
 CANDIDATAS_NOMBRE = ["nombre", "name", "denominacion", "razon_social",
@@ -93,8 +99,8 @@ FROM (
          coalesce(i.tipo::text, '')    AS tipo,
          coalesce(i.fase::text, '')    AS fase
   FROM public.inspecciones_pv i
-  LEFT JOIN public.plantas  p ON p.id = i.plantas_id
-  LEFT JOIN public.empresas e ON e.id = i.empresas_id
+  LEFT JOIN public.{TABLA_PLANTAS}  p ON p.id = i.plantas_id
+  LEFT JOIN public.{TABLA_EMPRESAS} e ON e.id = i.empresas_id
 ) t;
 """
 
@@ -107,11 +113,12 @@ def main() -> int:
     args = ap.parse_args()
 
     db = Db()
-    col_p = db.columna_nombre("plantas")
-    col_e = db.columna_nombre("empresas")
+    col_p = db.columna_nombre(TABLA_PLANTAS)
+    col_e = db.columna_nombre(TABLA_EMPRESAS)
     if not col_p or not col_e:
         print(f"aviso: sin columna de nombre en "
-              f"{'plantas ' if not col_p else ''}{'empresas' if not col_e else ''}"
+              f"{TABLA_PLANTAS + ' ' if not col_p else ''}"
+              f"{TABLA_EMPRESAS if not col_e else ''}"
               f" → se usará el id como nombre.", file=sys.stderr)
 
     filas = json.loads(db.consulta(construir_sql(col_p, col_e)) or "[]")
