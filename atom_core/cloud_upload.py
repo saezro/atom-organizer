@@ -74,9 +74,12 @@ _CHUNK_MULTIPLE = 256 * 1024
 CHUNK_SIZE = 16 * 1024 * 1024
 assert CHUNK_SIZE % _CHUNK_MULTIPLE == 0
 
-# Subidas simultáneas. Por encima de ~8 la línea doméstica ya está saturada y
-# solo se gana contención y timeouts.
-DEFAULT_CONCURRENCY = 4
+# Subidas simultáneas. Medido sobre ANTOLIN (2518 ficheros, 8,5 GB) el
+# 2026-08-06: con 4 la línea se pasa el rato esperando round-trips (cada
+# fichero paga la apertura de sesión resumable) y no se satura ni una conexión
+# mala. Misma red, mismo momento: 4 → 4,4 Mbps · 16 → 11 Mbps. Por cable, 16
+# da 60 Mbps. Con 32 no se ganó nada medible, así que 16 es el punto.
+DEFAULT_CONCURRENCY = 16
 
 TIMEOUT = 60
 MAX_RETRIES = 5
