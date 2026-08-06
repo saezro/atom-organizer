@@ -515,3 +515,277 @@ def test_el_proveedor_falla_claro_si_el_endpoint_no_devuelve_url(monkeypatch):
                         lambda req, timeout=None: _Resp(200, body=b'{"error":"no"}'))
     with pytest.raises(RuntimeError, match="no devolvió URL"):
         cu.SignedUrlProvider("https://api/firma", "tok").upload_url("a.jpg", 1)
+
+
+# --------------------------------------------------------------------------
+# Reconciliación contra el bucket
+# --------------------------------------------------------------------------
+# El manifiesto local (`.atom-upload.json`) vive DENTRO de la carpeta del vuelo
+# y se pierde con facilidad: se copia el vuelo a otro disco, se reinstala la
+# app, alguien limpia ocultos. Antes eso costaba resubir los 8,7 GB enteros
+# aunque el bucket ya los tuviera. Lo que se comprueba aquí es que la fuente de
+# verdad pasa a ser el bucket, y el manifiesto solo una caché.
+
+class ListingProvider(StaticProvider):
+    """Como `StaticProvider`, pero además sabe qué hay en el destino."""
+
+    def __init__(self, remotos: dict[str, cu.RemoteObject] | None = None,
+                 *, explota: bool = False):
+        super().__init__()
+        self.remotos = remotos or {}
+        self.explota = explota
+        self.listados = 0
+
+    def listar_remotos(self, prefix: str):
+        self.listados += 1
+        if self.explota:
+            raise urllib.error.URLError("sin red para listar")
+        return dict(self.remotos)
+
+
+def _remoto(plan, indices: list[int], *, md5: str = "") -> dict[str, cu.RemoteObject]:
+    """Simula que ciertos ficheros del plan ya están en el bucket."""
+    return {
+        plan.items[i].remote: cu.RemoteObject(plan.items[i].remote,
+                                              plan.items[i].size, md5)
+        for i in indices
+    }
+
+
+def test_sin_manifiesto_no_resube_lo_que_el_bucket_ya_tiene(tmp_path, gcs):
+    """El caso que motivó todo esto: manifiesto perdido, bucket lleno.
+
+    Antes se resubía el vuelo entero. Ahora no se manda ni un byte.
+    """
+    root = _vuelo(tmp_path, {"a.jpg": b"a" * 500, "b.jpg": b"b" * 700})
+    plan = cu.build_plan(root, prefix="v")
+    assert not (root / cu.Manifest.FILENAME).exists()  # nunca hubo manifiesto
+
+    provider = ListingProvider(_remoto(plan, [0, 1]))
+    res = cu.upload_plan(plan, provider)
+
+    assert res.uploaded == 0
+    assert res.skipped == 2
+    assert res.skipped_remoto == 2
+    assert res.reconciliado is True
+    assert gcs.puts == 0        # no se abrió ni una transferencia
+    assert provider.calls == []
+
+
+def test_solo_se_suben_los_que_faltan(tmp_path, gcs):
+    root = _vuelo(tmp_path, {"a.jpg": b"a" * 500, "b.jpg": b"b" * 700,
+                             "c.jpg": b"c" * 300})
+    plan = cu.build_plan(root, prefix="v")
+
+    provider = ListingProvider(_remoto(plan, [0, 2]))
+    res = cu.upload_plan(plan, provider)
+
+    assert res.uploaded == 1
+    assert res.skipped == 2
+    assert [r for r, _ in provider.calls] == [plan.items[1].remote]
+
+
+def test_se_resube_si_el_tamano_del_bucket_no_coincide(tmp_path, gcs):
+    """Mismo nombre y distinto tamaño = no es el mismo fichero.
+
+    Es el caso de dos vuelos distintos bajo la misma inspección: las imágenes
+    de dron se llaman igual (`DJI_0001.JPG`) en todos.
+    """
+    root = _vuelo(tmp_path, {"a.jpg": b"a" * 500})
+    plan = cu.build_plan(root, prefix="v")
+    remotos = {plan.items[0].remote: cu.RemoteObject(plan.items[0].remote, 999)}
+
+    res = cu.upload_plan(plan, ListingProvider(remotos))
+
+    assert res.uploaded == 1
+    assert res.skipped == 0
+
+
+def test_se_resube_si_el_md5_del_bucket_contradice_al_manifiesto(tmp_path, gcs):
+    """Coincidir en tamaño no basta si los hashes dicen lo contrario."""
+    root = _vuelo(tmp_path, {"a.jpg": b"a" * 500})
+    plan = cu.build_plan(root, prefix="v")
+
+    manifest = cu.Manifest(root / cu.Manifest.FILENAME)
+    manifest.mark(plan.items[0], "md5-del-que-subi-yo")
+    remotos = {plan.items[0].remote: cu.RemoteObject(plan.items[0].remote, 500,
+                                                     "md5-de-otra-cosa")}
+
+    res = cu.upload_plan(plan, ListingProvider(remotos), manifest=manifest)
+
+    assert res.uploaded == 1
+
+
+def test_el_manifiesto_se_reconstruye_con_lo_que_hay_en_el_bucket(tmp_path, gcs):
+    """Tras reconciliar, el registro local vuelve a reflejar la realidad."""
+    root = _vuelo(tmp_path, {"a.jpg": b"a" * 500})
+    plan = cu.build_plan(root, prefix="v")
+    remotos = _remoto(plan, [0], md5="hash-del-bucket")
+
+    cu.upload_plan(plan, ListingProvider(remotos))
+
+    guardado = json.loads((root / cu.Manifest.FILENAME).read_text())
+    assert guardado["done"][plan.items[0].remote]["md5"] == "hash-del-bucket"
+
+
+def test_si_no_se_puede_listar_se_sube_con_el_manifiesto_local(tmp_path, gcs):
+    """Sin listado (signed URL, o la consulta falla) se vuelve al comportamiento
+    de antes: el manifiesto manda. Lo que NO puede pasar es que no se suba."""
+    root = _vuelo(tmp_path, {"a.jpg": b"a" * 500})
+    plan = cu.build_plan(root, prefix="v")
+
+    res = cu.upload_plan(plan, ListingProvider(explota=True))
+
+    assert res.uploaded == 1
+    assert res.reconciliado is False
+
+
+def test_un_provider_que_no_sabe_listar_no_rompe_la_subida(tmp_path, gcs):
+    """`SignedUrlProvider` no tiene permiso de listado: devuelve None."""
+    root = _vuelo(tmp_path, {"a.jpg": b"a" * 500})
+    plan = cu.build_plan(root, prefix="v")
+
+    res = cu.upload_plan(plan, StaticProvider())
+
+    assert res.uploaded == 1
+    assert res.reconciliado is False
+
+
+def test_listar_objetos_remotos_recorre_todas_las_paginas(monkeypatch):
+    """Un vuelo pasa de 1000 objetos: sin paginar se daría por subido de menos."""
+    paginas = [
+        {"items": [{"name": "v/a.jpg", "size": "10", "md5Hash": "h1"}],
+         "nextPageToken": "t1"},
+        {"items": [{"name": "v/b.jpg", "size": "20", "md5Hash": "h2"}]},
+    ]
+    vistas: list[str] = []
+
+    def fake_urlopen(req, timeout=None):
+        vistas.append(req.full_url)
+        return _Resp(200, body=json.dumps(paginas[len(vistas) - 1]).encode())
+
+    monkeypatch.setattr(cu.urllib.request, "urlopen", fake_urlopen)
+
+    class Auth:
+        def access_token(self, force_refresh=False):
+            return "tok"
+
+    out = cu.listar_objetos_remotos("bucket", "v", Auth())
+
+    assert set(out) == {"v/a.jpg", "v/b.jpg"}
+    assert out["v/a.jpg"] == cu.RemoteObject("v/a.jpg", 10, "h1")
+    assert "pageToken=t1" in vistas[1]
+
+
+# --------------------------------------------------------------------------
+# Diagnóstico: reintentos y progreso
+# --------------------------------------------------------------------------
+
+def test_los_reintentos_por_corte_de_red_se_cuentan(tmp_path, monkeypatch):
+    """Distinguir «la línea es lenta» de «la conexión se cae» exige contarlos."""
+    server = FakeGCS(fail_at_byte=500)
+    monkeypatch.setattr(cu.urllib.request, "urlopen", server.urlopen)
+    monkeypatch.setattr(cu, "CHUNK_SIZE", 256)
+    monkeypatch.setattr(cu.time, "sleep", lambda _s: None)
+
+    root = _vuelo(tmp_path, {"a.jpg": b"a" * 2000})
+    plan = cu.build_plan(root, prefix="v")
+
+    res = cu.upload_plan(plan, StaticProvider())
+
+    assert res.uploaded == 1      # se recuperó
+    assert res.retries == 1       # y quedó constancia
+
+
+def test_on_stats_informa_del_progreso_para_poder_pintarlo(tmp_path, gcs):
+    root = _vuelo(tmp_path, {"a.jpg": b"a" * 4000, "b.jpg": b"b" * 4000})
+    plan = cu.build_plan(root, prefix="v")
+    recogido: list[dict] = []
+
+    cu.upload_plan(plan, StaticProvider(), on_stats=recogido.append)
+
+    assert recogido, "la UI se queda sin datos que enseñar"
+    ultimo = recogido[-1]
+    assert ultimo["final"] is True
+    assert ultimo["files_done"] == 2
+    assert ultimo["files_total"] == 2
+    assert ultimo["bytes_done"] == 8000
+    assert ultimo["bytes_total"] == 8000
+    assert ultimo["elapsed"] > 0
+
+
+def test_el_progreso_no_ahoga_a_la_ui_con_un_evento_por_trozo(tmp_path, gcs):
+    """Con 8,7 GB, un evento por chunk son miles de repintados."""
+    root = _vuelo(tmp_path, {"a.jpg": b"a" * 50_000})  # ~49 chunks de 1 KB
+    plan = cu.build_plan(root, prefix="v")
+    recogido: list[dict] = []
+
+    cu.upload_plan(plan, StaticProvider(), on_stats=recogido.append)
+
+    # Throttle de 1 s: en un test que dura milisegundos solo debe salir el
+    # evento final forzado (y como mucho el del fichero completado).
+    assert len(recogido) <= 3
+
+
+def test_se_resube_si_el_fichero_local_cambio_despues_de_subirlo(tmp_path, gcs):
+    """Reemplazar una imagen por otra del MISMO tamaño no puede pasar en balde.
+
+    El bucket seguiría teniendo la versión vieja y el tamaño coincide, así que
+    la comparación contra el destino da «ya está». Lo que lo detecta es el
+    mtime que guardó el manifiesto al subirlo.
+    """
+    root = _vuelo(tmp_path, {"a.jpg": b"a" * 500})
+    plan = cu.build_plan(root, prefix="v")
+
+    manifest = cu.Manifest(root / cu.Manifest.FILENAME)
+    manifest.mark(plan.items[0], "md5-viejo")
+
+    # Mismo tamaño, contenido distinto, mtime posterior.
+    (root / "a.jpg").write_bytes(b"z" * 500)
+    os.utime(root / "a.jpg", (10_000_000, 10_000_000))
+
+    remotos = {plan.items[0].remote: cu.RemoteObject(plan.items[0].remote, 500,
+                                                     "md5-viejo")}
+    res = cu.upload_plan(cu.build_plan(root, prefix="v"),
+                         ListingProvider(remotos), manifest=manifest)
+
+    assert res.uploaded == 1, "se quedó la versión vieja en el bucket"
+
+
+def test_un_fichero_intacto_no_se_resube_por_tener_manifiesto(tmp_path, gcs):
+    """El contrapunto del anterior: si no ha cambiado, no se toca."""
+    root = _vuelo(tmp_path, {"a.jpg": b"a" * 500})
+    plan = cu.build_plan(root, prefix="v")
+
+    manifest = cu.Manifest(root / cu.Manifest.FILENAME)
+    manifest.mark(plan.items[0], "md5-igual")
+    remotos = {plan.items[0].remote: cu.RemoteObject(plan.items[0].remote, 500,
+                                                     "md5-igual")}
+
+    res = cu.upload_plan(plan, ListingProvider(remotos), manifest=manifest)
+
+    assert res.uploaded == 0
+    assert res.skipped == 1
+
+
+def test_el_listado_avisa_si_se_queda_corto(tmp_path, monkeypatch):
+    """Truncar el inventario hace resubir de más; callarlo lo haría inexplicable."""
+    def fake_urlopen(req, timeout=None):
+        return _Resp(200, body=json.dumps(
+            {"items": [{"name": "v/a.jpg", "size": "1"}],
+             "nextPageToken": "siempre-hay-mas"}).encode())
+
+    monkeypatch.setattr(cu.urllib.request, "urlopen", fake_urlopen)
+
+    class Auth:
+        def access_token(self, force_refresh=False):
+            return "tok"
+
+    avisos: list[str] = []
+    monkeypatch.setattr(cu._log, "warning",
+                        lambda msg, *a: avisos.append(msg % a if a else msg))
+
+    out = cu.listar_objetos_remotos("bucket", "v", Auth(), max_paginas=3)
+
+    assert out  # devuelve lo que pudo ver
+    assert avisos and "más de" in avisos[0]

@@ -741,3 +741,96 @@ select.glass-input option {
   justify-content: flex-end;
   gap: 0.7rem;
 }
+
+/* --- Subir al bucket: buscador de inspección ------------------------------ */
+/* Son >300 inspecciones y antes vivían en un <select> nativo: había que
+   recorrerlas a ojo y en WebView2 la lista desplegada se salía de la ventana.
+   Aquí el filtro va en un input normal y los resultados son botones de verdad
+   (enfocables, navegables con teclado), no <option>. */
+.insp-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-height: 15rem;
+  overflow-y: auto;
+  border-radius: 10px;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.2);
+}
+.insp-item {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.insp-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+.insp-item:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: -2px;
+}
+.insp-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.insp-nueva {
+  color: var(--orange);
+}
+.insp-vacio {
+  padding: 0.6rem;
+  font-size: 0.78rem;
+  color: var(--muted, #8b93a1);
+}
+
+/* --- Subir al bucket: progreso en vivo ------------------------------------ */
+/* Una subida son entre 5 minutos y una hora mirando una pantalla. Lo que hace
+   falta saber es siempre lo mismo: cuánto lleva, cuánto queda y si sigue
+   avanzando — de ahí que el tiempo transcurrido sea la cifra destacada. */
+.subida-panel {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 10px;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.2);
+}
+.subida-barra {
+  height: 0.5rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+.subida-relleno {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--orange);
+  /* Acompaña al dato, no lo anima por gusto: la barra avanza a saltos según
+     confirma GCS cada trozo de 16 MB, y sin transición eso se ve a tirones. */
+  transition: width 0.9s linear;
+}
+.subida-cifras {
+  margin-top: 0.6rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.1rem;
+  font-size: 0.78rem;
+  color: var(--muted, #8b93a1);
+}
+.subida-cifras strong {
+  color: var(--text);
+  font-weight: 600;
+}
+@media (prefers-reduced-motion: reduce) {
+  .subida-relleno {
+    transition: none;
+  }
+}

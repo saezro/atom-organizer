@@ -527,12 +527,13 @@ class Api:
         return root, limpio, ""
 
     def cloud_prepare(self, folder: str, prefix: str | None = None) -> dict:
-        """Qué se subiría: nº de ficheros, tamaño y prefijo destino.
+        """Qué se subiría de verdad: total, lo que ya está y lo que falta.
 
-        También mira si el prefijo YA tiene objetos: dos vuelos de la misma
-        inspección repiten nombre de fichero (`DJI_0001.JPG`), así que subir
-        encima pisaría el anterior. Aquí sólo se informa; el bloqueo lo hace
-        `cloud_upload`.
+        Lista el prefijo destino y lo cruza con la carpeta, así que lo que
+        enseña es el trabajo REAL pendiente, no el tamaño de la carpeta. Sobre
+        una inspección ya subida esto responde «0 pendientes» en un par de
+        segundos, que es justo lo que el usuario necesita saber antes de darle
+        a subir.
         """
         from atom_core import cloud_config, cloud_upload
 
@@ -546,7 +547,8 @@ class Api:
 
         out = {"ok": True, "prefix": prefix, "files": len(plan.items),
                "bytes": plan.total_bytes, "bucket": cloud_config.BUCKET_DATOS,
-               "existing": None}
+               "existing": None, "pendientes": None, "bytes_pendientes": None,
+               "ya_subidos": None}
         if not plan.items:
             out["error"] = ("La carpeta no tiene ningún fichero subible "
                             "(imágenes, vídeos, CSV o estadillos).")
@@ -556,19 +558,30 @@ class Api:
         auth = self._get_auth()
         if auth is not None and auth.is_logged_in():
             try:
-                out["existing"] = cloud_upload.objetos_en_prefijo(
+                remotos = cloud_upload.listar_objetos_remotos(
                     cloud_config.BUCKET_DATOS, prefix, auth)
             except Exception:  # noqa: BLE001 - informativo; no bloquea el paso previo
-                out["existing"] = None
+                pass
+            else:
+                pendientes, hechos = cloud_upload.reconciliar(plan, remotos)
+                out["existing"] = len(remotos)
+                out["ya_subidos"] = len(hechos)
+                out["pendientes"] = len(pendientes)
+                out["bytes_pendientes"] = sum(i.size for i in pendientes)
         return out
 
     def cloud_upload(self, folder: str, force: bool = False,
                      prefix: str | None = None) -> dict:
-        """Sube la carpeta entera al bucket. El progreso va por `atom:cloud`."""
+        """Sube la carpeta entera al bucket. El progreso va por `atom:cloud`.
+
+        `force` se mantiene por compatibilidad con llamadas antiguas y se
+        ignora: ya no hay nada que forzar, porque subir sobre un destino con
+        datos dejó de ser destructivo (ver el comentario en `worker`).
+        """
         if self._uploading:
             return {"started": False, "reason": "Ya hay una subida en curso."}
 
-        from atom_core import cloud_config, cloud_upload
+        from atom_core import cloud_config, cloud_upload, upload_log
 
         auth = self._get_auth()
         if auth is None:
@@ -590,38 +603,34 @@ class Api:
                 if not plan.items:
                     raise RuntimeError("La carpeta no tiene ficheros subibles.")
 
-                # Guarda anti-pisado. Si la consulta falla no se asume vacío: se
-                # aborta, porque el fallo puede ser justo lo que oculta que ya
-                # había datos ahí.
-                if not force:
-                    ya = cloud_upload.objetos_en_prefijo(
-                        cloud_config.BUCKET_DATOS, prefix, auth)
-                    if ya:
-                        raise RuntimeError(
-                            f"En «{prefix}/» ya hay datos subidos. Si es la misma "
-                            "inspección y quieres continuar donde se quedó, marca "
-                            "«continuar subida». Si es otra inspección, elígela "
-                            "en la lista: subir encima pisaría lo anterior.")
-
                 provider = cloud_upload.GcsOAuthProvider(
                     cloud_config.BUCKET_DATOS, auth)
 
                 self._push_cloud({"kind": "start", "files": len(plan.items),
                                   "bytes": plan.total_bytes, "prefix": prefix})
 
+                # Ya no hay guarda anti-pisado ni «continuar subida»: lo que
+                # ya está en el destino se identifica objeto a objeto y se
+                # descarta (`reconciliar`), en vez de bloquear la subida entera
+                # y pedirle al operador que confirme a ciegas. Subir dos veces
+                # la misma carpeta es ahora una operación segura y barata.
                 res = cloud_upload.upload_plan(
                     plan, provider,
                     on_progress=lambda t: self._push_cloud({"kind": "log", "text": t}),
+                    on_stats=lambda s: self._push_cloud({"kind": "stats", **s}),
                     should_stop=lambda: self._cancel_upload,
                 )
                 self._push_cloud({
                     "kind": "done", "ok": res.ok,
                     "uploaded": res.uploaded, "skipped": res.skipped,
+                    "skipped_remoto": res.skipped_remoto,
+                    "reconciliado": res.reconciliado,
                     "bytes": res.bytes_sent, "elapsed": res.elapsed,
-                    "mbps": round(res.mbps, 1),
+                    "mbps": round(res.mbps, 1), "retries": res.retries,
                     "failed": [{"objeto": o, "error": e} for o, e in res.failed[:20]],
                     "failed_total": len(res.failed),
                     "cancelled": self._cancel_upload,
+                    "log": str(upload_log.ruta()),
                 })
             except Exception as exc:  # noqa: BLE001 - llega a la UI como error
                 self._push_cloud({"kind": "error", "text": str(exc)})

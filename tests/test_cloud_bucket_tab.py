@@ -104,10 +104,23 @@ def test_el_bridge_js_llama_al_mismo_nombre(metodo):
     assert f"'{metodo}'" in _fuente(os.path.join("webui", "src", "bridge.js"))
 
 
-def test_la_subida_comprueba_el_destino_salvo_que_se_fuerce():
+def test_la_subida_reconcilia_el_destino_en_vez_de_bloquearse():
+    """Subir sobre un destino con datos dejó de necesitar confirmación.
+
+    Antes, encontrar objetos en el prefijo abortaba la subida y obligaba al
+    operador a marcar «continuar subida» — una confirmación a ciegas, porque
+    no se le decía qué había allí ni qué se iba a pisar. Ahora se identifica
+    objeto a objeto lo que ya está y se descarta, así que relanzar la misma
+    carpeta es seguro y barato, y no hay nada que forzar.
+    """
     src = _fuente("app_webview.py")
-    assert "if not force:" in src
-    assert "objetos_en_prefijo" in src
+    assert "listar_objetos_remotos" in src
+    assert "if not force:" not in src
+
+
+def test_la_ui_ya_no_pide_confirmar_para_continuar_una_subida():
+    src = _fuente(os.path.join("webui", "src", "App.jsx"))
+    assert "Continuar la subida en ese destino" not in src
 
 
 def test_la_subida_exige_sesion_iniciada():
