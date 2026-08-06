@@ -596,7 +596,6 @@ function BucketScreen({ ready }) {
     if (!path) return
     setCarpeta(path)
     setResult(null)
-    setForce(false)
     await preparar(path, prefijo)
   }
 

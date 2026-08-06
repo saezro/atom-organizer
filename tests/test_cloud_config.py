@@ -9,9 +9,25 @@ from atom_core import cloud_config
 
 
 @pytest.fixture(autouse=True)
-def _sin_entorno(monkeypatch):
+def _sin_entorno(monkeypatch, tmp_path):
+    """Aísla las credenciales del entorno REAL de quien corre los tests.
+
+    No basta con vaciar las variables: `client_file_candidates` mira también la
+    raíz del árbol de código y `~/.config/atom-organizer`. Con un
+    `google_client.json` de verdad en cualquiera de esas dos (el caso cuando se
+    ejecuta la app desde fuente), los tests de «no hay credenciales» encuentran
+    las del operador y fallan sin que nada esté roto.
+    """
     monkeypatch.delenv("ATOM_GOOGLE_CLIENT_ID", raising=False)
     monkeypatch.delenv("ATOM_GOOGLE_CLIENT_SECRET", raising=False)
+
+    vacio = tmp_path / "sin-credenciales"
+    vacio.mkdir()
+    monkeypatch.setattr(cloud_config, "_REPO_DIR", vacio)
+
+    from atom_core import google_auth
+
+    monkeypatch.setattr(google_auth, "user_data_dir", lambda: vacio)
 
 
 def test_entorno_gana(monkeypatch, tmp_path):
