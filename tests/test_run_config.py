@@ -6,14 +6,19 @@ PySide6 NO está instalado en este entorno de test (no hace falta instalarlo: es
 escritorio, no se ejecuta aquí) y `MainWindow` no se puede importar directamente sin arrastrar
 todo Qt.
 
-Por eso, en lugar de `from gui import MainWindow`, este módulo:
+Las 14 funciones de negocio ya NO viven en esa clase Qt: se extrajeron a
+`atom_core/phases.py` (`PipelinePhasesMixin`), que no importa PySide6 y del que
+heredan tanto `gui.MainWindow` como el host headless. Por eso este módulo:
 1. Verifica el módulo PURO `utils.py` (RunConfig y sub-configs, dataclasses sin Qt) directamente.
-2. Extrae, vía `ast`, el código fuente de `call_to_compress_image` (una función concreta,
-   representativa del patrón mecánico) y lo ejecuta de forma aislada (sin importar PySide6),
-   comprobando que opera exclusivamente a partir de `cfg`, igual que describe el plan.
-3. Verifica, también vía `ast` (sin ejecutar/importar nada), que las 14 funciones de negocio
-   de la Task 13 aceptan su `cfg: <SubConfig>` y ya no leen ningún widget Qt (`self.le_*`,
-   `self.sb_*`, `self.cb_*`, `self.rb_*`, `self.cob_*`) en su cuerpo.
+2. Importa `call_to_compress_image` del mixin (una función concreta, representativa
+   del patrón mecánico) y la ejecuta sobre un host mínimo, comprobando que opera
+   exclusivamente a partir de `cfg`. Antes había que extraerla con `ast` y hacer
+   `exec` para no arrastrar Qt; con el mixin basta un import.
+3. Verifica, vía `ast` (sin ejecutar nada), que las 14 funciones de negocio aceptan
+   su `cfg: <SubConfig>` y no leen ningún widget Qt (`self.le_*`, `self.sb_*`,
+   `self.cb_*`, `self.rb_*`, `self.cob_*`) en su cuerpo.
+4. Verifica sobre `gui.py` lo que SIGUE siendo de la GUI: `_capture_run_config`
+   y el reparto de sub-configs en `run_thread`.
 """
 import ast
 import os
@@ -25,7 +30,10 @@ import pytest
 from utils import RunConfig, CompressRgbsConfig
 
 
-MAIN_APP_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gui.py")
+_RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MAIN_APP_PATH = os.path.join(_RAIZ, "gui.py")
+# Las fases del pipeline (las 14 funciones de negocio) viven fuera de la clase Qt.
+PHASES_PATH = os.path.join(_RAIZ, "atom_core", "phases.py")
 
 BUSINESS_FUNCTIONS_AND_CFG_TYPES = {
     "call_to_compress_image": "CompressRgbsConfig",
@@ -76,7 +84,7 @@ def _find_class_and_methods(source: str, class_name: str) -> dict:
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name == class_name:
             return {n.name: n for n in node.body if isinstance(n, ast.FunctionDef)}
-    raise AssertionError(f"No se encontró la clase {class_name} en {MAIN_APP_PATH}")
+    raise AssertionError(f"No se encontró la clase {class_name}")
 
 
 @pytest.fixture(scope="module")
@@ -86,8 +94,19 @@ def main_app_source() -> str:
 
 
 @pytest.fixture(scope="module")
+def phases_source() -> str:
+    with open(PHASES_PATH, "r", encoding="utf-8") as fh:
+        return fh.read()
+
+
+@pytest.fixture(scope="module")
 def main_window_methods(main_app_source) -> dict:
     return _find_class_and_methods(main_app_source, "MainWindow")
+
+
+@pytest.fixture(scope="module")
+def phase_methods(phases_source) -> dict:
+    return _find_class_and_methods(phases_source, "PipelinePhasesMixin")
 
 
 def test_run_config_dataclasses_son_puras_y_frozen():
@@ -99,13 +118,13 @@ def test_run_config_dataclasses_son_puras_y_frozen():
 
 
 @pytest.mark.parametrize("function_name,cfg_type_name", list(BUSINESS_FUNCTIONS_AND_CFG_TYPES.items()))
-def test_funcion_de_negocio_recibe_cfg_y_no_lee_widgets_qt(main_window_methods, function_name, cfg_type_name):
+def test_funcion_de_negocio_recibe_cfg_y_no_lee_widgets_qt(phase_methods, phases_source, function_name, cfg_type_name):
     """Cada una de las 14 funciones de negocio debe:
     - Aceptar `cfg: <SubConfig>` como primer argumento posicional tras `self`.
     - No contener en su cuerpo ninguna lectura de widget Qt (self.le_*/sb_*/cb_*/rb_*/cob_*).
     """
-    assert function_name in main_window_methods, f"{function_name} no está definida en MainWindow"
-    func_node = main_window_methods[function_name]
+    assert function_name in phase_methods, f"{function_name} no está definida en PipelinePhasesMixin"
+    func_node = phase_methods[function_name]
 
     args = func_node.args.args
     assert len(args) >= 2, f"{function_name} debe aceptar (self, cfg, ...)"
@@ -116,7 +135,7 @@ def test_funcion_de_negocio_recibe_cfg_y_no_lee_widgets_qt(main_window_methods, 
     annotation_name = cfg_arg.annotation.id if isinstance(cfg_arg.annotation, ast.Name) else ast.dump(cfg_arg.annotation)
     assert annotation_name == cfg_type_name, f"{function_name}: cfg debe anotarse como {cfg_type_name}, es {annotation_name}"
 
-    body_source = ast.get_source_segment(open(MAIN_APP_PATH, encoding="utf-8").read(), func_node)
+    body_source = ast.get_source_segment(phases_source, func_node)
     for node in ast.walk(func_node):
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self":
             assert not node.attr.startswith(FORBIDDEN_WIDGET_PREFIXES), (
@@ -128,9 +147,12 @@ def test_funcion_de_negocio_recibe_cfg_y_no_lee_widgets_qt(main_window_methods, 
 def test_call_to_compress_image_usa_run_config_sin_leer_widgets_qt(organizer_logger_stub, tmp_path):
     """call_to_compress_image debe operar completamente a partir de cfg.compress_rgbs, sin acceder a self.le_*/self.sb_*/self.cb_*.
 
-    Se extrae el código fuente REAL de la función (vía ast) desde gui.py y se ejecuta en un
-    namespace aislado, sin necesidad de importar PySide6 (no instalado ni necesario en este entorno de test).
+    Se ejecuta la función REAL, importada de `atom_core.phases`, sobre un host mínimo.
+    Antes había que extraerla con `ast` y hacer `exec` en un namespace aislado porque
+    vivía dentro de la clase Qt y no se podía importar sin PySide6 (no instalado ni
+    necesario en este entorno de test); ahora el mixin es Qt-free y basta el import.
     """
+    from atom_core.phases import PipelinePhasesMixin
     from pipeline import CompressImage
     import utils as utils_module
 
@@ -144,9 +166,9 @@ def test_call_to_compress_image_usa_run_config_sin_leer_widgets_qt(organizer_log
     compress_image_obj = CompressImage(organizer_logger_stub)
     utils_obj = utils_module.Utils(organizer_logger_stub)
 
-    # Objeto mínimo que reproduce la parte de MainWindow que usa call_to_compress_image, SIN heredar de QWidget
+    # Host mínimo con los objetos de negocio que la fase espera, SIN heredar de QWidget
     # ni tocar Qt: así se prueba la lógica pura extraída, no la GUI.
-    class _FakeMainWindowPart:
+    class _HostMinimo(PipelinePhasesMixin):
         def __init__(self):
             self.compress_image_obj = compress_image_obj
             self.utils_obj = utils_obj
@@ -156,19 +178,8 @@ def test_call_to_compress_image_usa_run_config_sin_leer_widgets_qt(organizer_log
         def show_summarize(self, summarize_dict, progress_summarize):
             pass
 
-    source = open(MAIN_APP_PATH, encoding="utf-8").read()
-    methods = _find_class_and_methods(source, "MainWindow")
-    func_node = methods["call_to_compress_image"]
-    func_source = ast.get_source_segment(source, func_node)
-    # ast.get_source_segment devuelve el bloque con su indentación original (4 espacios); hay que "dedentarlo"
-    # para poder compilarlo como función de módulo.
-    dedented = "\n".join(line[4:] if line.startswith("    ") else line for line in func_source.splitlines())
-
-    namespace = {"CompressRgbsConfig": CompressRgbsConfig}
-    exec(compile(dedented, MAIN_APP_PATH, "exec"), namespace)
-    bound_call_to_compress_image = namespace["call_to_compress_image"].__get__(_FakeMainWindowPart(), _FakeMainWindowPart)
-
-    fake = bound_call_to_compress_image.__self__
+    fake = _HostMinimo()
+    bound_call_to_compress_image = fake.call_to_compress_image
 
     progress_callback = MagicMock()
     progress_bar = MagicMock()

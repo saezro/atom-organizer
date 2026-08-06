@@ -1,10 +1,11 @@
 """Dispatcher headless del pipeline de ATOM Organizer (sin Qt).
 
 `run_task(task, params, emit, advanced=None)` construye la sub-config del task y
-ejecuta la orquestación REAL de la GUI (`MainWindow.<método>`) sobre un host
-duck-typed. No duplica ni diverge del pipeline. El único acoplamiento Qt del
-pipeline son los callbacks de progreso (solo usan `.emit()`), sustituidos aquí
-por shims Python que reenvían a `emit(kind, payload)`.
+ejecuta la orquestación REAL del pipeline (`atom_core.phases`, el mismo módulo
+del que hereda la GUI Qt) sobre un host propio. No duplica ni diverge del
+pipeline. El único acoplamiento Qt del pipeline son los callbacks de progreso
+(solo usan `.emit()`), sustituidos aquí por shims Python que reenvían a
+`emit(kind, payload)`.
 
 Contrato de `emit`:
   emit('log', str) · emit('summary', str) · emit('progress', int)
@@ -43,7 +44,7 @@ import exif as meta_location
 import pipeline
 import utils
 from atom_core.progress_stats import StatsTracker
-from gui import MainWindow  # solo se usan funciones (globals del módulo intactos)
+from atom_core.phases import PipelinePhasesMixin
 from utils import (
     ROTATION_MIN_AGREEMENT_PCT,
     ROTATION_YAW_MARGIN,
@@ -93,32 +94,15 @@ class _LogStub:
                 obj.set_stop(False)
 
 
-class HeadlessHost:
-    """Host duck-typed con los mismos objetos de negocio y métodos que
-    MainWindow, para invocar la orquestación real sin arrancar Qt."""
+class HeadlessHost(PipelinePhasesMixin):
+    """Host con los objetos de negocio que las fases del pipeline esperan.
 
-    # Métodos reutilizados TAL CUAL de la GUI (se rebindan a este host).
-    split_images = MainWindow.split_images
-    gen_meta_location = MainWindow.gen_meta_location
-    call_to_compress_image = MainWindow.call_to_compress_image
-    gen_thumbnails = MainWindow.gen_thumbnails
-    gen_thumbnails_for_aerotools = MainWindow.gen_thumbnails_for_aerotools
-    rename_images = MainWindow.rename_images
-    do_extraction = MainWindow.do_extraction
-    gen_struct_folder = MainWindow.gen_struct_folder
-    do_rgb_aerotools_processing = MainWindow.do_rgb_aerotools_processing
-    do_manual_geotagging = MainWindow.do_manual_geotagging
-    do_convert_to_tif = MainWindow.do_convert_to_tif
-    # Autodetección de dron por EXIF para la conversión a TIF. La llaman TANTO
-    # split_images (subfase TIF, gui.py:2301) COMO do_convert_to_tif (task
-    # standalone, gui.py:2761). Sin rebindarla aquí, cualquier corrida con
-    # convert_to_tif=True bajo el host headless (== build Windows, donde el gate
-    # sys.platform=='win32' la activa) revienta con AttributeError. No usa Qt:
-    # solo self.meta_location_obj (ya presente), os.walk y progress_callback.
-    _resolve_dron_selector = MainWindow._resolve_dron_selector
-    do_rgb_cropping = MainWindow.do_rgb_cropping
-    do_tif_rotating = MainWindow.do_tif_rotating
-    show_summarize = MainWindow.show_summarize
+    Las fases (`split_images`, `do_convert_to_tif`, …) se HEREDAN de
+    `atom_core.phases`, el mismo módulo del que las hereda `gui.MainWindow`:
+    una sola definición para las dos rutas. Antes se rebindaban a mano una a una
+    desde `MainWindow`, lo que arrastraba PySide6 a la imagen de servidor y
+    dejaba fuera cualquier método que se olvidara en la lista (pasó con
+    `_resolve_dron_selector`: AttributeError en cuanto se activaba el TIF)."""
 
     def __init__(self) -> None:
         log = OrganizerLogger(
@@ -438,8 +422,9 @@ def run_task(
             # del select. `__tif_rot_mode` es un sentinel que SOLO manda el front
             # nuevo (schema.js): si no llega, la elección no es expresable y no se
             # pisan los flags -> manda el default sano del backend (auto=True).
-            # (la lógica vive en utils.resolve_tif_rotation_intent: `organize`
-            # arrastra Qt por `from gui import MainWindow` y no es testeable en CI)
+            # (la lógica vive en utils.resolve_tif_rotation_intent, extraída en
+            # su día porque `organize` arrastraba Qt y no era testeable en CI;
+            # ya no lo hace, pero la función sigue ahí y con sus tests propios)
             _rot_mode = advanced.get(TIF_ROTATION_INTENT_KEY)
             advanced, _rot_aviso = resolve_tif_rotation_intent(advanced)
             if _rot_aviso:

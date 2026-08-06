@@ -215,12 +215,16 @@ def test_carpeta_inexistente_no_revienta(organizer_logger_stub, tmp_path):
 
 def test_el_giro_va_despues_de_la_conversion_a_tiff():
     """Girar el `*_T.JPG` lo re-encoda y le quita el payload radiométrico, así que
-    a partir de ahí ya no se puede convertir a TIFF. En `gui.py` el giro TIENE que
-    invocarse después de `checking_convert_to_tif`, nunca antes."""
+    a partir de ahí ya no se puede convertir a TIFF. En la orquestación de las
+    fases el giro TIENE que invocarse después de `checking_convert_to_tif`,
+    nunca antes."""
     import re
 
     raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    with open(os.path.join(raiz, "gui.py"), encoding="utf-8") as fh:
+    # Las fases del pipeline salieron de gui.py a atom_core/phases.py (para que
+    # el host headless no arrastre Qt); el orden que vigila este test es el de
+    # `split_images`, que vive ahí.
+    with open(os.path.join(raiz, "atom_core", "phases.py"), encoding="utf-8") as fh:
         fuente = fh.read()
 
     giros = [m.start() for m in re.finditer(r"rotate_thermal_jpgs_in_place", fuente)]

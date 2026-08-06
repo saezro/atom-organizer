@@ -13,8 +13,9 @@
 #    Chromium embebido), IGUAL que Linux (ver app_webview.py: `webview.start(gui="qt")`).
 #    Se abandonó WebView2 (v3.8.x): con ese backend `window.pywebview` no se inyectaba y
 #    el bridge JS↔Python quedaba muerto. QtWebEngine SÍ se empaqueta aquí (antes se excluía).
-#  - El pipeline importa gui.py (`from gui import MainWindow` en atom_core/organize.py) y
-#    gui.py importa PySide6.{QtWidgets,QtCore,QtGui} a nivel módulo → PySide6 core imprescindible.
+#  - PySide6 core es imprescindible por el backend de pywebview (línea de arriba), NO por el
+#    pipeline: desde que las fases viven en atom_core/phases.py, `atom_core.organize` ya no
+#    importa gui.py ni PySide6 (eso es lo que permite una imagen de servidor sin Qt).
 #    Se excluye solo lo pesado que nadie usa (Qt3D, Charts, Multimedia, Quick3D, DataVisualization).
 #  - La UI React va como data en 'webui/dist'; app_webview.py la resuelve vía _MEIPASS.
 #  - Recursos del pipeline (config, programas_externos, assets) los resuelve external_tools.app_base_dir.
