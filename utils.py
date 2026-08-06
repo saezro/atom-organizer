@@ -437,10 +437,14 @@ class Utils:
         - output_folder - carpeta de salida.
         - words_list - lista de carpetas para comprobar y, si no existen, crear.
         """
-        list_dir = os.listdir(output_folder)
+        # `exist_ok=True` y no el `if w not in list_dir` a secas: entre el listado y
+        # el makedirs hay una ventana en la que otro proceso puede haber creado la
+        # misma carpeta, y entonces esto reventaba con FileExistsError. Deja de ser
+        # teórico desde que el trabajo se reparte entre N tareas que escriben en el
+        # MISMO destino (atom_core/sharding): las N llaman aquí con ["RGB",
+        # "TERMICA"] nada más arrancar, a la vez.
         for w in words_list:
-            if w not in list_dir:
-                os.makedirs(os.path.join(output_folder, w))  # Crea carpeta si no existe
+            os.makedirs(os.path.join(output_folder, w), exist_ok=True)  # Crea carpeta si no existe
 
     def get_nombres_columnas(self, columns_list: list[str]) -> dict[str, str]:
         """

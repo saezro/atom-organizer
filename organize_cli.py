@@ -35,6 +35,11 @@ import sys
 import time
 from pathlib import Path
 
+# `atom_core.sharding` solo importa `os`: se puede traer arriba sin pagar los
+# segundos de imports pesados que sí cuesta `atom_core.organize` (numpy, PIL,
+# SDK térmico), que por eso se importa dentro de `main`.
+from atom_core import sharding
+
 
 def _formatear(segundos: float) -> str:
     """`1h 04m 12s`. Un vuelo entero se mide en decenas de minutos, y leer
@@ -69,7 +74,38 @@ def main(argv: list[str] | None = None) -> int:
                              "que lo lea un script en vez de una persona.")
     parser.add_argument("--quiet", action="store_true",
                         help="Solo fases y resumen; sin el detalle por imagen.")
+    # --- reparto entre N tareas -------------------------------------------
+    # Una corrida completa de ANTOLIN son 33m 06s en una sola tarea de 8 vCPU, y
+    # el 90 % es trabajo carpeta a carpeta sin dependencias. Con estas tres
+    # opciones el MISMO Job se lanza tres veces (split -> struct -> post) y las
+    # etapas repartibles se abren en N tareas paralelas. Ver atom_core/sharding.
+    #
+    # Los defaults dejan el comportamiento intacto: `--etapa todo` sin shard es
+    # exactamente lo que hacía el CLI antes, que es lo que usa la app de
+    # escritorio y lo que espera cualquier script existente.
+    parser.add_argument("--etapa", choices=sharding.ETAPAS, default="todo",
+                        help="Parte del pipeline a ejecutar. `todo` (por "
+                             "defecto) = las fases de siempre, de principio a "
+                             "fin. `split` = separación RGB/térmica (repartible). "
+                             "`struct` = estructura de carpetas (una sola tarea). "
+                             "`post` = recorte, meta, rotación y TIF (repartible).")
+    parser.add_argument("--shard-index", dest="shard_index", default=None,
+                        help="Índice de esta tarea, de 0 a shard-count-1. Por "
+                             "defecto, $CLOUD_RUN_TASK_INDEX.")
+    parser.add_argument("--shard-count", dest="shard_count", default=None,
+                        help="Número total de tareas entre las que se reparte la "
+                             "etapa. Por defecto, $CLOUD_RUN_TASK_COUNT (1 fuera "
+                             "de Cloud Run).")
     args = parser.parse_args(argv)
+
+    # El shard explícito manda sobre el entorno: así se puede reproducir en local
+    # exactamente la partición que le tocó a una tarea concreta del Job.
+    if args.shard_index is None and args.shard_count is None:
+        shard_index, shard_count = sharding.shard_desde_entorno()
+    else:
+        shard_index, shard_count = sharding.normalizar_shard(
+            args.shard_index if args.shard_index is not None else 0,
+            args.shard_count if args.shard_count is not None else 1)
 
     origen = Path(args.origen).expanduser().resolve()
     destino = Path(args.destino).expanduser().resolve()
@@ -87,7 +123,9 @@ def main(argv: list[str] | None = None) -> int:
     from atom_core.organize import run_task
 
     params: dict = {"origen": str(origen), "destino": str(destino),
-                    "estadillo": args.estadillo}
+                    "estadillo": args.estadillo,
+                    "etapa": args.etapa,
+                    "shard_index": shard_index, "shard_count": shard_count}
     avanzado = {"convert_to_tif": False} if args.sin_tif else None
 
     fases: list[dict] = []
@@ -132,7 +170,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"origen   : {origen}")
     print(f"destino  : {destino}")
     print(f"estadillo: {args.estadillo or '(ninguno)'}")
-    print(f"task     : {args.task}\n", flush=True)
+    print(f"task     : {args.task}")
+    # La etapa y el shard van en la cabecera porque sin ellos un log de una tarea
+    # de Cloud Run es indistinguible del de otra: las N escriben lo mismo salvo
+    # QUÉ carpetas les tocaron, y al diagnosticar un vuelo incompleto lo primero
+    # que hace falta saber es si una tarea se quedó sin trabajo.
+    print(f"etapa    : {args.etapa}")
+    print(f"shard    : {shard_index + 1}/{shard_count}\n", flush=True)
 
     try:
         run_task(args.task, params, emit, avanzado)
@@ -155,6 +199,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({
             "ok": not errores, "segundos": round(total, 1), "fases": fases,
             "errores": errores, "origen": str(origen), "destino": str(destino),
+            "etapa": args.etapa, "shard_index": shard_index,
+            "shard_count": shard_count,
             "host": platform.node(), "cpus": os.cpu_count(),
         }, ensure_ascii=False))
 

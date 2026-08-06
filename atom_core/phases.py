@@ -29,6 +29,7 @@ import re
 
 import external_tools as config
 import utils
+from atom_core import sharding
 from external_tools import resource_path
 from utils import (
     CompressRgbsConfig,
@@ -48,6 +49,86 @@ from utils import (
 
 class PipelinePhasesMixin:
     """Orquestación de las fases del pipeline, independiente del front."""
+
+    # ---- reparto entre tareas (ver atom_core/sharding) ----------------------
+    # Estos tres helpers son lo único que sabe de shards dentro de la
+    # orquestación. Todos devuelven "todo" cuando no hay reparto, así que las
+    # fases se escriben una sola vez y la GUI Qt no cambia de comportamiento.
+
+    def _imagenes_origen_del_shard(self, input_folder: str, shard_index: int,
+                                   shard_count: int, progress_callback) -> dict:
+        """`{carpeta del origen: [imágenes de esta tarea]}` para la separación.
+
+        Se reparte por IMAGEN y no por carpeta porque los vuelos reales tienen
+        muy pocas carpetas: ANTOLIN son 2.516 fotos en DOS `DJI_*`, y por carpeta
+        un Job de 8 tareas dejaría seis paradas.
+        """
+        carpetas = sharding.carpetas_con_imagenes(
+            input_folder, self.utils_obj.get_images_from_dir)
+        reparto = sharding.repartir_imagenes(
+            carpetas, self.utils_obj.get_images_from_dir, shard_index, shard_count)
+        mias = sum(len(v) for v in reparto.values())
+        progress_callback.emit(
+            f"\nReparto de la separación: {mias} imágenes de {len(carpetas)} carpeta(s) "
+            f"de origen para la tarea {shard_index + 1}/{shard_count}.\n")
+        self.organizer_logger_obj.logger.info(
+            f"Shard {shard_index + 1}/{shard_count}: {mias} imágenes de "
+            f"{sorted(reparto)}")
+        if not mias and carpetas:
+            # No es un error, pero sí algo que hay que poder ver en el log.
+            progress_callback.emit(
+                "\nAVISO: a esta tarea no le ha tocado ninguna imagen. No es un "
+                "fallo; sobra paralelismo para lo que hay en el origen.\n")
+        return reparto
+
+    def _pbs_del_shard(self, output_folder: str, shard_index: int,
+                       shard_count: int, progress_callback) -> list[str]:
+        """Carpetas `PB*` del destino que le tocan a esta tarea."""
+        todos = sharding.pbs_del_destino(output_folder)
+        mios = sharding.repartir(
+            todos, shard_index, shard_count,
+            peso=lambda pb: sharding.peso_de_pb(
+                output_folder, pb, self.utils_obj.contar_imagenes_or_tmc))
+        progress_callback.emit(
+            f"\nReparto del post-proceso: {len(mios)} de {len(todos)} PB para la "
+            f"tarea {shard_index + 1}/{shard_count} -> {', '.join(mios) or '(ninguno)'}\n")
+        self.organizer_logger_obj.logger.info(
+            f"Shard {shard_index + 1}/{shard_count}: PBs {mios} de {todos}")
+        if not mios and todos:
+            progress_callback.emit(
+                "\nAVISO: a esta tarea no le ha tocado ningún PB (hay menos PB que "
+                "tareas). No es un fallo; sobra paralelismo.\n")
+        return mios
+
+    def _rutas_del_shard(self, output_folder: str, subcarpetas: list[str],
+                         mis_pbs) -> list[str]:
+        """Rutas concretas sobre las que iterar: las raíces (`destino/TERMICA`)
+        si no hay reparto, o `destino/TERMICA/PBx` por cada PB propio si lo hay.
+
+        Las funciones del pipeline que reciben estas rutas son recursivas y no
+        miran dónde empieza el árbol, así que arrancar en el PB en vez de en la
+        raíz hace exactamente el mismo trabajo sobre menos carpetas."""
+        rutas = []
+        for sub in subcarpetas:
+            raiz = os.path.join(output_folder, sub)
+            if mis_pbs is None:
+                if os.path.isdir(raiz):
+                    rutas.append(raiz)
+                continue
+            for pb in mis_pbs:
+                pb_path = os.path.join(raiz, pb)
+                if os.path.isdir(pb_path):
+                    rutas.append(pb_path)
+        return rutas
+
+    def _contar_del_shard(self, output_folder: str, subcarpetas: list[str], mis_pbs,
+                          exclude_patterns=None, exclude_folders=None) -> int:
+        """Imágenes que va a procesar ESTA tarea, para que la barra de progreso
+        llegue al 100 % en vez de quedarse en la fracción que le tocó."""
+        return sum(
+            self.utils_obj.contar_imagenes_or_tmc(
+                ruta, exclude_patterns=exclude_patterns, exclude_folders=exclude_folders)
+            for ruta in self._rutas_del_shard(output_folder, subcarpetas, mis_pbs))
 
     #%% Funciones que llaman a los objetos correspondientes
     def call_to_compress_image(self, cfg: CompressRgbsConfig, progress_callback, progress_bar, progress_summarize) -> None:
@@ -131,10 +212,29 @@ class PipelinePhasesMixin:
         - cfg - Configuración capturada en el hilo GUI (`_capture_run_config().split_images`) con todos los valores necesarios.
         - progress_callback - Callback (los signals) que envían, mediante un emit(), información de texto desde el hilo correspondiente.
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
+
+        Reparto entre tareas (opcional): el host puede fijar `etapa`,
+        `shard_index` y `shard_count` (los pone `atom_core.organize.run_task` a
+        partir de la línea de comandos o de las variables de Cloud Run). Sin
+        ellos, los defaults de aquí dejan el método EXACTAMENTE como estaba —
+        que es como lo sigue llamando la GUI Qt. Ver `atom_core/sharding`.
         """
         self.organizer_logger_obj.logger.info("###################################################################")
         self.organizer_logger_obj.logger.info("PROCESO: ORGANIZAR COMPLETO")
         self.organizer_logger_obj.logger.info("###################################################################")
+
+        etapa = getattr(self, "etapa", "todo")
+        shard_index, shard_count = sharding.normalizar_shard(
+            getattr(self, "shard_index", 0), getattr(self, "shard_count", 1))
+        hacer_split = etapa in ("todo", "split")
+        hacer_struct = etapa in ("todo", "struct")
+        hacer_post = etapa in ("todo", "post")
+        repartido = shard_count > 1
+        if etapa != "todo" or repartido:
+            progress_callback.emit(
+                f"\nEtapa: {etapa} · tarea {shard_index + 1} de {shard_count}\n")
+            self.organizer_logger_obj.logger.info(
+                f"Etapa={etapa} shard={shard_index + 1}/{shard_count}")
 
         if(cfg.end_rgb_extra_files != "" and (cfg.end_thermo_files == ""
                                                                          or cfg.end_rgb_files == "")):
@@ -143,29 +243,56 @@ class PipelinePhasesMixin:
             progress_callback.emit("\nNo se puede iniciar el proceso: Es necesario cubrir la altura de vuelo\n")
         else:
             processing_time = self.utils_obj.logging_time()
-            self.organizer_logger_obj.logger.info("---------------------------------------------------------------------")
-            self.organizer_logger_obj.logger.info("SUBPROCESO: SEPARACIÓN DE IMÁGENES ENTRE RGB Y TÉRMICAS.")
-            self.organizer_logger_obj.logger.info("---------------------------------------------------------------------")
 
-            progress_callback.emit('\n-----------------------------------------------------------------\n')
-            progress_callback.emit("SUBPROCESO: SEPARACIÓN DE IMÁGENES ENTRE RGB Y TÉRMICAS.\n")
-            progress_callback.emit('-----------------------------------------------------------------\n')
+            # Imágenes del ORIGEN que le tocan a esta tarea, agrupadas por
+            # carpeta. En modo no repartido es None y se recorre el árbol entero
+            # como siempre.
+            mis_imagenes_origen = None
+            if hacer_split and repartido:
+                mis_imagenes_origen = self._imagenes_origen_del_shard(
+                    cfg.input_folder, shard_index, shard_count, progress_callback)
 
-            progress_summarize.emit("__________________")
-            progress_summarize.emit("---> SUBPROCESO: SEPARACIÓN DE IMÁGENES ENTRE RGB Y TÉRMICAS.")
+            if hacer_split:
+                self.organizer_logger_obj.logger.info("---------------------------------------------------------------------")
+                self.organizer_logger_obj.logger.info("SUBPROCESO: SEPARACIÓN DE IMÁGENES ENTRE RGB Y TÉRMICAS.")
+                self.organizer_logger_obj.logger.info("---------------------------------------------------------------------")
 
-            self.utils_obj.prepare_output_folder(cfg.output_folder, ["RGB", "TERMICA"])
-            self.split_images_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.input_folder)
-            self.split_images_obj.iterate_folders(cfg.input_folder, cfg.output_folder,
-            cfg.choose_mode_size, cfg.max_size, cfg.end_thermo_files,
-            cfg.end_rgb_files, cfg.compress_rgb, cfg.compress_level,
-            progress_callback, cfg.rename_images, progress_bar, cfg.mismatch_hours, cfg.mismatch_minutes)
+                progress_callback.emit('\n-----------------------------------------------------------------\n')
+                progress_callback.emit("SUBPROCESO: SEPARACIÓN DE IMÁGENES ENTRE RGB Y TÉRMICAS.\n")
+                progress_callback.emit('-----------------------------------------------------------------\n')
 
-            summarize_dict = self.split_images_obj.get_summarize()
-            self.show_summarize(summarize_dict, progress_summarize)
+                progress_summarize.emit("__________________")
+                progress_summarize.emit("---> SUBPROCESO: SEPARACIÓN DE IMÁGENES ENTRE RGB Y TÉRMICAS.")
+
+                self.utils_obj.prepare_output_folder(cfg.output_folder, ["RGB", "TERMICA"])
+                if mis_imagenes_origen is None:
+                    self.split_images_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.input_folder)
+                    self.split_images_obj.iterate_folders(cfg.input_folder, cfg.output_folder,
+                    cfg.choose_mode_size, cfg.max_size, cfg.end_thermo_files,
+                    cfg.end_rgb_files, cfg.compress_rgb, cfg.compress_level,
+                    progress_callback, cfg.rename_images, progress_bar, cfg.mismatch_hours, cfg.mismatch_minutes)
+                else:
+                    # Se llama a `split_images` (una carpeta, y solo con las
+                    # imágenes de esta tarea) y NO a `iterate_folders`, que
+                    # recursaría por el árbol y volvería a procesar lo de las
+                    # demás tareas.
+                    self.split_images_obj.total_images_number = sum(
+                        len(v) for v in mis_imagenes_origen.values())
+                    for carpeta, imagenes in sorted(mis_imagenes_origen.items()):
+                        if getattr(self.split_images_obj, "stop", False):
+                            break
+                        progress_callback.emit("Analizando directorio: " + carpeta + "\n")
+                        self.split_images_obj.split_images(carpeta, cfg.output_folder,
+                        cfg.choose_mode_size, cfg.max_size, cfg.end_thermo_files,
+                        cfg.end_rgb_files, cfg.compress_rgb, cfg.compress_level,
+                        progress_callback, cfg.rename_images, progress_bar, cfg.mismatch_hours, cfg.mismatch_minutes,
+                        solo_imagenes=imagenes)
+
+                summarize_dict = self.split_images_obj.get_summarize()
+                self.show_summarize(summarize_dict, progress_summarize)
 
             # Si se ha cubierto el textbox del sufijo extra, entonces procesamos las imágenes con ese sufijo después de los sufijos, digamos, normales.
-            if(cfg.end_rgb_extra_files != ""):
+            if(hacer_split and cfg.end_rgb_extra_files != ""):
                 self.organizer_logger_obj.logger.info("---------------------------------------------------------------------")
                 self.organizer_logger_obj.logger.info("SUBPROCESO: CREANDO Y PROCESANDO CARPETA RGB_EXTRA.")
                 self.organizer_logger_obj.logger.info("---------------------------------------------------------------------")
@@ -180,14 +307,29 @@ class PipelinePhasesMixin:
                 self.utils_obj.prepare_output_folder(cfg.output_folder, ["RGB_Extra"])
                 # Reseteamos las variables para volver a contar.
                 self.split_images_obj.reset_variables()
-                self.split_images_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.input_folder)
                 self.new_log_gui.enable_process()
 
-                self.split_images_obj.iterate_folders(cfg.input_folder, cfg.output_folder,
-                False, "0", "", cfg.end_rgb_extra_files, cfg.compress_rgb,
-                cfg.compress_level, progress_callback, cfg.rename_images, progress_bar, cfg.mismatch_hours, cfg.mismatch_minutes, True)
+                if mis_imagenes_origen is None:
+                    self.split_images_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.input_folder)
+                    self.split_images_obj.iterate_folders(cfg.input_folder, cfg.output_folder,
+                    False, "0", "", cfg.end_rgb_extra_files, cfg.compress_rgb,
+                    cfg.compress_level, progress_callback, cfg.rename_images, progress_bar, cfg.mismatch_hours, cfg.mismatch_minutes, True)
+                else:
+                    # Mismo reparto que la separación normal: el sufijo extra se
+                    # busca en las MISMAS imágenes que le tocaron a esta tarea,
+                    # así ninguna queda sin dueño ni con dos.
+                    self.split_images_obj.total_images_number = sum(
+                        len(v) for v in mis_imagenes_origen.values())
+                    for carpeta, imagenes in sorted(mis_imagenes_origen.items()):
+                        if getattr(self.split_images_obj, "stop", False):
+                            break
+                        progress_callback.emit("Analizando directorio: " + carpeta + "\n")
+                        self.split_images_obj.split_images(carpeta, cfg.output_folder,
+                        False, "0", "", cfg.end_rgb_extra_files, cfg.compress_rgb,
+                        cfg.compress_level, progress_callback, cfg.rename_images, progress_bar, cfg.mismatch_hours, cfg.mismatch_minutes, True,
+                        solo_imagenes=imagenes)
 
-            if cfg.organize_images:
+            if hacer_struct and cfg.organize_images:
                 self.organizer_logger_obj.logger.info("---------------------------------------------------------------------")
                 self.organizer_logger_obj.logger.info("SUBPROCESO: GENERAR ESTRUCTURA DE CARPETAS.")
                 self.organizer_logger_obj.logger.info("---------------------------------------------------------------------")
@@ -234,7 +376,16 @@ class PipelinePhasesMixin:
                 summarize_dict = self.gen_struct_folder_obj.get_summarize()
                 self.show_summarize(summarize_dict, progress_summarize)
 
-            if cfg.cropping_rgb:
+            # PBs del destino que le tocan a esta tarea. Las fases que siguen
+            # (recorte, meta, rotación, TIF) trabajan sobre el destino YA
+            # estructurado y deciden carpeta a carpeta, así que repartir por PB
+            # da el mismo resultado que procesarlos todos seguidos.
+            mis_pbs = None
+            if hacer_post and repartido:
+                mis_pbs = self._pbs_del_shard(cfg.output_folder, shard_index,
+                                              shard_count, progress_callback)
+
+            if hacer_post and cfg.cropping_rgb:
                 progress_callback.emit('\n-----------------------------------------------------------------\n')
                 progress_callback.emit("SUBPROCESO: RECORTE DE IMÁGENES RGB.\n")
                 progress_callback.emit('-----------------------------------------------------------------\n')
@@ -246,24 +397,36 @@ class PipelinePhasesMixin:
                 progress_summarize.emit("__________________")
                 progress_summarize.emit("---> SUBPROCESO: RECORTE DE IMÁGENES RGB.")
 
+                rgb_root = os.path.join(cfg.output_folder, "RGB")
                 self.rgb_cropping_obj.reset_variables()
-                self.rgb_cropping_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder,"RGB"))
                 self.new_log_gui.enable_process()
 
-                self.rgb_cropping_obj.iterate_folders_for_rgb_cropping(os.path.join(cfg.output_folder,"RGB"), progress_callback, progress_bar, self.config_obj.percentage_by_models, cfg.cropping_mode_auto, cfg.crop_percentage)
+                if mis_pbs is None:
+                    self.rgb_cropping_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(rgb_root)
+                    self.rgb_cropping_obj.iterate_folders_for_rgb_cropping(rgb_root, progress_callback, progress_bar, self.config_obj.percentage_by_models, cfg.cropping_mode_auto, cfg.crop_percentage)
+                else:
+                    self.rgb_cropping_obj.total_images_number = sum(
+                        self.utils_obj.contar_imagenes_or_tmc(os.path.join(rgb_root, pb))
+                        for pb in mis_pbs if os.path.isdir(os.path.join(rgb_root, pb)))
+                    for pb in mis_pbs:
+                        pb_path = os.path.join(rgb_root, pb)
+                        if os.path.isdir(pb_path):
+                            self.rgb_cropping_obj.iterate_folders_for_rgb_cropping(pb_path, progress_callback, progress_bar, self.config_obj.percentage_by_models, cfg.cropping_mode_auto, cfg.crop_percentage)
 
-                self.rgb_cropping_obj.checking_results_rgb_cropping(os.path.join(cfg.output_folder,"RGB"), progress_callback, progress_summarize)
+                # La verificación se acota a MIS PBs: las otras tareas están
+                # escribiendo en los suyos en este mismo momento y verlos a medias
+                # daría un "no coinciden" que no es un fallo, sino una foto movida.
+                self.rgb_cropping_obj.checking_results_rgb_cropping(rgb_root, progress_callback, progress_summarize, only_pb=mis_pbs)
 
                 summarize_dict = self.rgb_cropping_obj.get_summarize()
                 self.show_summarize(summarize_dict, progress_summarize)
 
-            if cfg.gen_meta_location:
+            if hacer_post and cfg.gen_meta_location:
                 self.organizer_logger_obj.logger.info("-----------------------------------------------------------------")
                 self.organizer_logger_obj.logger.info("SUBPROCESO: Generación de los archivo meta y location.")
                 self.organizer_logger_obj.logger.info("-----------------------------------------------------------------")
 
                 self.meta_location_obj.reset_variables(main_process=False, progress_callback=progress_callback)
-                self.meta_location_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.output_folder, exclude_patterns=["_CROP"])
                 self.new_log_gui.enable_process()
                 # self.organizer_logger_obj.logger.debug(f"Imágenes para meta y location: {self.meta_location_obj.total_images_number}")
 
@@ -273,16 +436,27 @@ class PipelinePhasesMixin:
                 self.utils_obj.prepare_output_folder(cfg.output_folder, ["CSVs"])
                 csv_folder = os.path.join(cfg.output_folder, "CSVs")
 
-                if self.meta_location_obj.check_input_folder_and_iterate(cfg.output_folder, progress_callback, progress_bar, csv_folder, cfg.flight_height, cfg.calculate_proyected_distance) is False:
+                if mis_pbs is None:
+                    self.meta_location_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.output_folder, exclude_patterns=["_CROP"])
+                else:
+                    self.meta_location_obj.total_images_number = sum(
+                        self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, sub, pb), exclude_patterns=["_CROP"])
+                        for sub in ("RGB", "TERMICA", "RGB_Extra") for pb in mis_pbs
+                        if os.path.isdir(os.path.join(cfg.output_folder, sub, pb)))
+
+                # Los CSV van todos a `destino/CSVs`, compartido por las N tareas,
+                # pero el nombre de cada uno lleva el prefijo `PBx_Vy`: PBs
+                # distintos no pueden colisionar, así que no hace falta lock.
+                if self.meta_location_obj.check_input_folder_and_iterate(cfg.output_folder, progress_callback, progress_bar, csv_folder, cfg.flight_height, cfg.calculate_proyected_distance, only_pb=mis_pbs) is False:
                     progress_callback.emit("\nNo se puede iniciar el proceso: No se han podido generar los archivos meta y location.\n")
                     self.organizer_logger_obj.logger.info("No se puede iniciar el proceso: No se han podido generar los archivos meta y location.")
 
-                self.meta_location_obj.checking_results_meta_location(cfg.output_folder, progress_callback, progress_summarize)
+                self.meta_location_obj.checking_results_meta_location(cfg.output_folder, progress_callback, progress_summarize, only_pb=mis_pbs)
 
                 summarize_dict = self.meta_location_obj.get_summarize()
                 self.show_summarize(summarize_dict, progress_summarize)
 
-            if cfg.gen_thumbnails:
+            if hacer_post and cfg.gen_thumbnails:
                 self.organizer_logger_obj.logger.info("-----------------------------------------------------------------")
                 self.organizer_logger_obj.logger.info("SUBPROCESO: ROTACIÓN.")
                 self.organizer_logger_obj.logger.info("-----------------------------------------------------------------")
@@ -303,35 +477,38 @@ class PipelinePhasesMixin:
                 # self.organizer_logger_obj.logger.debug(f"Lim max 270: {lim_max_270}")
                 # self.organizer_logger_obj.logger.debug(f"Lim min 270: {lim_min_270}")
 
+                # El criterio de giro se calcula POR CARPETA `PBx_Vy` (mira el yaw
+                # de sus imágenes y decide si gira el vuelo entero), así que
+                # repartir por PB no cambia lo que sale: cada carpeta la ve una
+                # sola tarea, completa.
                 if cfg.gen_thumbnails_rgb and not cfg.gen_thumbnails_termica:
-                    self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, "RGB"), exclude_folders=["MINIATURAS", "CSVs"])
-                    # logging.info(f"Number of total images for miniatures: {self.gen_struct_folder_obj.total_images_number}")
-                    if self.gen_struct_folder_obj.check_input_folder_and_iterate(cfg.output_folder,["RGB"], cfg.gen_thumbnails_max_error,
-                                                                                lim_max_270, lim_min_270,
-                                                                                lim_max_90, lim_min_90, cfg.choose_mode_auto, cfg.gen_thumbnails_rotate_90, progress_callback, progress_bar) is False:
-                        progress_callback.emit("\nNo se puede iniciar el proceso: El directorio RGB no se encuentra en la carpeta de entrada.\n")
-                        self.organizer_logger_obj.logger.info("No se puede iniciar el proceso: El directorio RGB no se encuentra en la carpeta de entrada.")
+                    carpetas_rot = ["RGB"]
+                    aviso_rot = "El directorio RGB no se encuentra en la carpeta de entrada."
                 elif cfg.gen_thumbnails_termica and not cfg.gen_thumbnails_rgb:
-                    self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, "TERMICA"), exclude_folders=["MINIATURAS", "CSVs"])
-                    # self.organizer_logger_obj.logger.info(f"Number of total images for miniatures: {self.gen_struct_folder_obj.total_images_number}")
-                    if self.gen_struct_folder_obj.check_input_folder_and_iterate(cfg.output_folder,["TERMICA"], cfg.gen_thumbnails_max_error,
-                                                                                lim_max_270, lim_min_270,
-                                                                                lim_max_90, lim_min_90, cfg.choose_mode_auto, cfg.gen_thumbnails_rotate_90, progress_callback, progress_bar) is False:
-                        progress_callback.emit("\nNo se puede iniciar el proceso: El directorio TERMICA no se encuentra en la carpeta de entrada.\n")
-                        self.organizer_logger_obj.logger.info("No se puede iniciar el proceso: El directorio TERMICA no se encuentra en la carpeta de entrada.")
+                    carpetas_rot = ["TERMICA"]
+                    aviso_rot = "El directorio TERMICA no se encuentra en la carpeta de entrada."
                 elif cfg.gen_thumbnails_rgb and cfg.gen_thumbnails_termica:
-                    self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.output_folder, exclude_folders=["MINIATURAS", "CSVs"])
+                    carpetas_rot = ["TERMICA", "RGB"]
+                    aviso_rot = "Los directorios RGB y TERMICA no se encuentran en la carpeta de entrada."
+                else:
+                    carpetas_rot = []
+                    aviso_rot = ""
+
+                if carpetas_rot:
+                    self.gen_struct_folder_obj.total_images_number = self._contar_del_shard(
+                        cfg.output_folder, carpetas_rot, mis_pbs,
+                        exclude_folders=["MINIATURAS", "CSVs"])
                     # logging.info(f"Number of total images for miniatures: {self.gen_struct_folder_obj.total_images_number}")
-                    if self.gen_struct_folder_obj.check_input_folder_and_iterate(cfg.output_folder,["TERMICA", "RGB"], cfg.gen_thumbnails_max_error,
+                    if self.gen_struct_folder_obj.check_input_folder_and_iterate(cfg.output_folder, carpetas_rot, cfg.gen_thumbnails_max_error,
                                                                                 lim_max_270, lim_min_270,
-                                                                                lim_max_90, lim_min_90, cfg.choose_mode_auto, cfg.gen_thumbnails_rotate_90, progress_callback, progress_bar) is False:
-                        progress_callback.emit("\nNo se puede iniciar el proceso: Los directorios RGB y TERMICA no se encuentran en la carpeta de entrada.\n")
-                        self.organizer_logger_obj.logger.info("No se puede iniciar el proceso: Los directorios RGB y TERMICA no se encuentran en la carpeta de entrada.")
+                                                                                lim_max_90, lim_min_90, cfg.choose_mode_auto, cfg.gen_thumbnails_rotate_90, progress_callback, progress_bar, only_pb=mis_pbs) is False:
+                        progress_callback.emit(f"\nNo se puede iniciar el proceso: {aviso_rot}\n")
+                        self.organizer_logger_obj.logger.info(f"No se puede iniciar el proceso: {aviso_rot}")
 
                 summarize_dict = self.gen_struct_folder_obj.get_summarize()
                 self.show_summarize(summarize_dict, progress_summarize)
 
-            if cfg.convert_to_tif:
+            if hacer_post and cfg.convert_to_tif:
                 self.organizer_logger_obj.logger.info("-----------------------------------------------------------------")
                 self.organizer_logger_obj.logger.info("SUBPROCESO: CONVERTIR IMÁGENES DJI A TIFF.")
                 self.organizer_logger_obj.logger.info("-----------------------------------------------------------------")
@@ -343,33 +520,40 @@ class PipelinePhasesMixin:
                 progress_summarize.emit("__________________")
                 progress_summarize.emit("---> SUBPROCESO: CONVERTIR IMÁGENES A TIF.")
 
+                termica_root = os.path.join(cfg.output_folder, "TERMICA")
                 self.split_images_obj.reset_variables()
-                self.split_images_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, "TERMICA"), exclude_patterns=[utils.ROTATED_JPG_SUFFIX])  # legado 3.4.5: las copias `_ROT` de una carpeta ya procesada no se convierten, contarlas dejaria la barra a medias
+                self.split_images_obj.total_images_number = self._contar_del_shard(
+                    cfg.output_folder, ["TERMICA"], mis_pbs,
+                    exclude_patterns=[utils.ROTATED_JPG_SUFFIX])  # legado 3.4.5: las copias `_ROT` de una carpeta ya procesada no se convierten, contarlas dejaria la barra a medias
                 self.new_log_gui.enable_process()
 
                 exiftool_exe = resource_path("programas_externos", "exiftool.exe")
-                self._resolve_dron_selector(cfg.convert_to_tif_dron_selector, os.path.join(cfg.output_folder, "TERMICA"), progress_callback)
+                # Con la RAÍZ de TERMICA a propósito, también en modo repartido:
+                # esta función busca una térmica de muestra para deducir el modelo
+                # de dron, y si esta tarea no tuviera ninguna en sus PBs se
+                # quedaría sin selector y fallaría la conversión entera.
+                self._resolve_dron_selector(cfg.convert_to_tif_dron_selector, termica_root, progress_callback)
                 dji_utility = config.dji_utility_path()
-                # os.path.join(cfg.output_folder, "TERMICA")
-                # self.split_images_obj.iterate_folders_for_DJI(f"{cfg.output_folder}//TERMICA", exiftool_exe, dji_utility,
-                self.split_images_obj.iterate_folders_for_DJI(os.path.join(cfg.output_folder, "TERMICA"), exiftool_exe, dji_utility,
-                                                      progress_callback, progress_bar, cfg.convert_to_tif_emissivity,
-                                                      cfg.convert_to_tif_humidity, cfg.convert_to_tif_temp_auto,
-                                                      cfg.convert_to_tif_up_temperature, cfg.convert_to_tif_low_temperature,
-                                                      cfg.convert_to_tiff_rotate_90, cfg.convert_to_tiff_rotate_minus_90,
-                                                      cfg.convert_to_tiff_rotate_auto, cfg.convert_to_tif_solo_seleccion_atom,
-                                                      cfg.convert_to_tif_create_gray_scale_images)
+                for carpeta_tif in self._rutas_del_shard(cfg.output_folder, ["TERMICA"], mis_pbs):
+                    self.split_images_obj.iterate_folders_for_DJI(carpeta_tif, exiftool_exe, dji_utility,
+                                                          progress_callback, progress_bar, cfg.convert_to_tif_emissivity,
+                                                          cfg.convert_to_tif_humidity, cfg.convert_to_tif_temp_auto,
+                                                          cfg.convert_to_tif_up_temperature, cfg.convert_to_tif_low_temperature,
+                                                          cfg.convert_to_tiff_rotate_90, cfg.convert_to_tiff_rotate_minus_90,
+                                                          cfg.convert_to_tiff_rotate_auto, cfg.convert_to_tif_solo_seleccion_atom,
+                                                          cfg.convert_to_tif_create_gray_scale_images)
 
-                self.split_images_obj.checking_convert_to_tif(os.path.join(cfg.output_folder, "TERMICA"), progress_callback, progress_summarize)
+                self.split_images_obj.checking_convert_to_tif(termica_root, progress_callback, progress_summarize, only_pb=mis_pbs)
 
                 # Giro in-place del JPG térmico, para que case con su TIFF. Va DESPUÉS
                 # de la conversión y de su verificación a propósito: girarlo destruye
                 # el payload radiométrico del R-JPEG, así que el conversor tiene que
                 # haber terminado ya con él.
-                self.split_images_obj.rotate_thermal_jpgs_in_place(
-                    os.path.join(cfg.output_folder, "TERMICA"), progress_callback, progress_bar,
-                    cfg.convert_to_tiff_rotate_90, cfg.convert_to_tiff_rotate_minus_90,
-                    cfg.convert_to_tiff_rotate_auto)
+                for carpeta_rot in self._rutas_del_shard(cfg.output_folder, ["TERMICA"], mis_pbs):
+                    self.split_images_obj.rotate_thermal_jpgs_in_place(
+                        carpeta_rot, progress_callback, progress_bar,
+                        cfg.convert_to_tiff_rotate_90, cfg.convert_to_tiff_rotate_minus_90,
+                        cfg.convert_to_tiff_rotate_auto)
 
                 summarize_dict = self.split_images_obj.get_summarize()
                 self.show_summarize(summarize_dict, progress_summarize)

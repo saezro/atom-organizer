@@ -45,6 +45,7 @@ import pipeline
 import utils
 from atom_core.progress_stats import StatsTracker
 from atom_core.phases import PipelinePhasesMixin
+from atom_core.sharding import ETAPAS, normalizar_shard
 from utils import (
     ROTATION_MIN_AGREEMENT_PCT,
     ROTATION_YAW_MARGIN,
@@ -266,24 +267,33 @@ def _default_split_config(params: dict) -> SplitImagesConfig:
 # ---- fases del modal de progreso ---------------------------------------------
 # Secuencia canónica de las 7 fases de `split_images` (mismo ORDEN en que
 # gui.py emite `progress_summarize.emit("---> SUBPROCESO: ...")`). Cada entrada:
-# (condición sobre la cfg, nombre legible para el modal). El orden aquí DEBE
-# coincidir con el orden de emisión en gui.py:2124/2146/2168/2192/2216/2239/2293.
+# (etapa a la que pertenece, condición sobre la cfg, nombre legible para el
+# modal). El orden aquí DEBE coincidir con el orden de emisión en
+# gui.py:2124/2146/2168/2192/2216/2239/2293.
+#
+# La etapa es la que decide el reparto entre tareas (ver atom_core/sharding):
+# `split` y `post` se abren en N tareas paralelas, `struct` va en una sola.
 _SPLIT_PHASES = (
-    (lambda c: True, "Separación RGB / térmica"),
-    (lambda c: bool(getattr(c, "end_rgb_extra_files", "")), "Carpeta RGB_EXTRA"),
-    (lambda c: bool(getattr(c, "organize_images", False)), "Estructura de carpetas"),
-    (lambda c: bool(getattr(c, "cropping_rgb", False)), "Recorte RGB"),
-    (lambda c: bool(getattr(c, "gen_meta_location", False)), "Meta y geolocalización"),
-    (lambda c: bool(getattr(c, "gen_thumbnails", False)), "Rotación"),
-    (lambda c: bool(getattr(c, "convert_to_tif", False)), "Convertir a TIF"),
+    ("split", lambda c: True, "Separación RGB / térmica"),
+    ("split", lambda c: bool(getattr(c, "end_rgb_extra_files", "")), "Carpeta RGB_EXTRA"),
+    ("struct", lambda c: bool(getattr(c, "organize_images", False)), "Estructura de carpetas"),
+    ("post", lambda c: bool(getattr(c, "cropping_rgb", False)), "Recorte RGB"),
+    ("post", lambda c: bool(getattr(c, "gen_meta_location", False)), "Meta y geolocalización"),
+    ("post", lambda c: bool(getattr(c, "gen_thumbnails", False)), "Rotación"),
+    ("post", lambda c: bool(getattr(c, "convert_to_tif", False)), "Convertir a TIF"),
 )
 
 _PHASE_PREFIX = "---> SUBPROCESO:"
 
 
-def _active_split_phases(cfg) -> list:
-    """Nombres de las fases que realmente correrán, en orden, según los flags."""
-    return [name for cond, name in _SPLIT_PHASES if cond(cfg)]
+def _active_split_phases(cfg, etapa: str = "todo") -> list:
+    """Nombres de las fases que realmente correrán, en orden, según los flags.
+
+    Con una etapa distinta de `todo` se queda solo con las suyas: el modal y el
+    contador `[fase i/N]` del CLI cuentan sobre esta lista, y si no se filtrara,
+    una tarea de `--etapa post` diría «fase 1/6» mientras corre la cuarta."""
+    return [name for et, cond, name in _SPLIT_PHASES
+            if cond(cfg) and (etapa == "todo" or et == etapa)]
 
 
 def _derive_plant(params: dict) -> str:
@@ -510,26 +520,65 @@ def run_task(
                           "(p. ej. \"_T\") o cambia a separación por tamaño.")
             return
 
+        # --- reparto entre N tareas (ver atom_core/sharding) -------------------
+        # Llegan por `params` desde el CLI. Se cuelgan del HOST y no de la cfg a
+        # propósito: los dataclasses de config se serializan hacia los procesos
+        # worker, y estos tres valores solo los mira la orquestación de
+        # `phases.split_images`, que corre en el proceso padre.
+        etapa = str(params.get("etapa") or "todo")
+        if etapa not in ETAPAS:
+            emit("error", f"Etapa desconocida: {etapa!r}. Válidas: {', '.join(ETAPAS)}.")
+            return
+        shard_index, shard_count = normalizar_shard(
+            params.get("shard_index", 0), params.get("shard_count", 1))
+
+        # `todo` repartido NO existe, y hay que rechazarlo en vez de dejarlo
+        # correr: la etapa `struct` lee el estadillo y MUEVE el destino entero,
+        # así que N tareas haciéndola a la vez se pisan los ficheros unas a otras
+        # y el vuelo sale corrupto — sin que ningún check lo detecte, porque cada
+        # tarea vería su parte cuadrada. El reparto exige las tres ejecuciones
+        # separadas: split (N) -> struct (1) -> post (N).
+        if etapa == "todo" and shard_count > 1:
+            emit("error",
+                 f"--etapa todo no se puede repartir (llegan {shard_count} tareas). "
+                 "La estructura de carpetas mueve el destino completo y no admite "
+                 "concurrencia. Lanza tres ejecuciones: --etapa split con N tareas, "
+                 "luego --etapa struct con 1, luego --etapa post con N.")
+            return
+
         # Guarda: la carpeta de SALIDA debe estar vacía (decisión de Cas
         # 2026-07-22). Si tiene residuos de una corrida previa, la separación no
         # parte de cero: `unique_dest` genera duplicados `_1/_2` y el recorte
         # re-procesa `_CROP` viejos -> errores "image file is truncated". Mejor
         # rechazar en claro que fusionar en silencio. El usuario vacía la carpeta
         # o elige una nueva.
+        #
+        # En modo repartido NO aplica, y no es un descuido: las N tareas escriben
+        # en el MISMO destino, así que solo la primera en arrancar lo vería vacío
+        # y las demás abortarían; y las etapas `struct` y `post` trabajan por
+        # definición sobre un destino que ya tiene lo que dejó la etapa anterior.
+        # Quien orquesta el reparto es responsable de partir de un destino limpio
+        # (el Job crea uno nuevo por corrida). Se avisa para que la ausencia del
+        # guard quede en el log de todas formas.
         if task == "split_images":
             _out = getattr(cfg, "output_folder", "")
-            if _out and os.path.isdir(_out) and os.listdir(_out):
+            _guard_activo = (etapa in ("todo", "split")) and shard_count == 1
+            if _guard_activo and _out and os.path.isdir(_out) and os.listdir(_out):
                 emit("error", "La carpeta de salida no está vacía: "
                               f"\"{_out}\". Vacíala o elige una carpeta vacía "
                               "antes de organizar (una corrida sobre residuos "
                               "genera duplicados y errores de recorte).")
                 return
+            if not _guard_activo:
+                emit("log", f"Modo repartido (etapa={etapa}, tarea "
+                            f"{shard_index + 1}/{shard_count}): no se exige que la "
+                            f"carpeta de salida esté vacía.")
 
         # --- modal de progreso: título + checklist de fases -------------------
         plant = _derive_plant(params)
         if plant:
             emit("plant", plant)
-        plan_names = _active_split_phases(cfg) if task == "split_images" else []
+        plan_names = _active_split_phases(cfg, etapa) if task == "split_images" else []
         if plan_names:
             emit("plan", plan_names)
 
@@ -618,6 +667,12 @@ def run_task(
             emit("log", text)
 
         host = HeadlessHost()
+        # `phases.split_images` los lee con getattr y default neutro, así que la
+        # GUI Qt (que hereda el mismo mixin y no pasa por aquí) sigue corriendo
+        # el pipeline entero sin enterarse de que existe el reparto.
+        host.etapa = etapa
+        host.shard_index = shard_index
+        host.shard_count = shard_count
         pcb = _Signal(_on_log)
         pbar = _Signal(lambda i: emit("progress", int(i)))
         psum = _Signal(_on_summary)

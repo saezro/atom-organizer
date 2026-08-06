@@ -1160,7 +1160,7 @@ class GenStructFolder:
                 # print('Moviendo la imagen:',imagen)
                 utils.safe_move(os.path.join(pathCarpetaOrigen,imagen), os.path.join(pathCarpetaDestino,imagen))
 
-    def check_input_folder_and_iterate(self, input_folder: str, folders_to_check: list[str], max_error: int, lim_max_270: int, lim_min_270: int, lim_max_90: int, lim_min_90: int, rotation_mode_auto: bool, rotation_value_90: bool, progress_callback, progress_bar) -> bool:
+    def check_input_folder_and_iterate(self, input_folder: str, folders_to_check: list[str], max_error: int, lim_max_270: int, lim_min_270: int, lim_max_90: int, lim_min_90: int, rotation_mode_auto: bool, rotation_value_90: bool, progress_callback, progress_bar, only_pb: list[str] | None = None) -> bool:
         """
         Función que comprueba que los directorios TERMICA y RGB se encuentran en input folder. Si existen, recorre todas las carpetas y todas las imágenes 
         dentro de las carpetas y genera las miniaturas y las rota (en el caso TERMICA), o solo las rota (caso RGB).
@@ -1176,6 +1176,11 @@ class GenStructFolder:
         - lim_min_90 - límite mínimo de margen para las imágenes que hay que rotar 90 grados.
         - progress_callback - Callback (los signals) que envían, mediante un emit(), información de texto desde el hilo correspondiente.
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
+        - only_pb - si se pasa, se rotan SOLO esas carpetas `PBx` en vez del árbol entero.
+          Es lo que permite repartir la rotación entre varias tareas paralelas: el criterio
+          de giro se decide POR carpeta `PBx_Vy` (con el yaw de sus imágenes y de ninguna
+          otra), así que procesar un subconjunto de PB da el mismo resultado que
+          procesarlos todos. A None (por defecto) el comportamiento es el de siempre.
         """
         # ÚLTIMA BARRERA del criterio de rotación, y la única por la que pasan las tres
         # rutas (webview, GUI Qt "Generar miniaturas" y la de Aerotools).
@@ -1219,10 +1224,21 @@ class GenStructFolder:
             # Si no lo está, entonces llevamos a cabo el proceso indicado en la carpeta de entrada, sea la que sea, sin diferenciar RGB o TERMICA. Es algo que tendrán
             # que tener en cuenta ellos.
             if folder in list_dir:
-                if rotation_mode_auto:
-                    self.gen_thumbnails_and_rotate(os.path.join(input_folder, folder), rgb_processing, max_error, lim_max_270, lim_min_270, lim_max_90, lim_min_90, progress_callback, progress_bar)
+                # Con reparto, se arranca en cada PB propio en vez de en la raíz de
+                # RGB/TERMICA. `gen_thumbnails_and_rotate` es recursiva y no mira dónde
+                # empieza el árbol, y `root_folder`/`csvs_root_folder` (de donde sale el
+                # criterio de giro) se han fijado arriba a la raíz de verdad, así que el
+                # resultado es idéntico.
+                if only_pb is None:
+                    raices = [os.path.join(input_folder, folder)]
                 else:
-                    self.gen_thumbnails_and_rotate_manual(os.path.join(input_folder, folder), rgb_processing, rotation_value_90, progress_callback, progress_bar)
+                    raices = [os.path.join(input_folder, folder, pb) for pb in only_pb
+                              if os.path.isdir(os.path.join(input_folder, folder, pb))]
+                for raiz in raices:
+                    if rotation_mode_auto:
+                        self.gen_thumbnails_and_rotate(raiz, rgb_processing, max_error, lim_max_270, lim_min_270, lim_max_90, lim_min_90, progress_callback, progress_bar)
+                    else:
+                        self.gen_thumbnails_and_rotate_manual(raiz, rgb_processing, rotation_value_90, progress_callback, progress_bar)
 
             else:
                 if rotation_mode_auto:
@@ -1788,7 +1804,7 @@ class SplitImages:
             summarize_dict["ERROR"] = "HAN EXISTIDO ERRORES"
         return summarize_dict
     
-    def checking_convert_to_tif(self, input_folder: str, progress_callback, progress_summarize) -> dict:
+    def checking_convert_to_tif(self, input_folder: str, progress_callback, progress_summarize, only_pb: list[str] | None = None) -> dict:
         """
         Detecta las carpetas dentro de input_folder que empiezan por 'PB' y, para cada
         subcarpeta que contengan, comprueba que el número de imágenes con extensión .tiff
@@ -1820,6 +1836,12 @@ class SplitImages:
         except Exception as e:
             self.organizer_logger.logger.error(f"Error al listar '{input_folder}': {e}")
             return results
+
+        # Con el trabajo repartido, esta tarea solo verifica SUS PB: las otras están
+        # convirtiendo los suyos ahora mismo y verlos a medias daría un
+        # "jpg y tiff no coinciden" que no es un fallo, sino una foto movida.
+        if only_pb is not None:
+            pb_folders = [d for d in pb_folders if d in set(only_pb)]
 
         if not pb_folders:
             self.organizer_logger.logger.info(f"No se encontraron carpetas PB en: {input_folder}")
@@ -1923,7 +1945,8 @@ class SplitImages:
                 self.iterate_folders(os.path.join(input_folder,dir), output_folder, mode, min_size, thermal_sufix, rgb_sufix, compress_checked, quality, progress_callback, rename, progress_bar, mismatch_hours, mismatch_minutes, extra_suffix)
         
     def split_images(self, input_folder: str, output_folder: str, mode: bool,  min_size: str, thermal_sufix: str, rgb_sufix: str,
-                     compress_checked: bool, quality: int, progress_callback, rename: bool, progress_bar, mismatch_hours: int, mismatch_minutes: int, extra_suffix: bool = False) -> None:
+                     compress_checked: bool, quality: int, progress_callback, rename: bool, progress_bar, mismatch_hours: int, mismatch_minutes: int, extra_suffix: bool = False,
+                     solo_imagenes: list[str] | None = None) -> None:
         """
         Función que obtiene las imágenes existentes en el directorio de entrada, recorre dichas imágenes en un bucle y procesa cada una de las imágenes
         en una función independiente, copiándolas (y/o comprimiéndolas y/o renombrándolas) si se ha marcado la opción correspondiente) en el directorio de salida.
@@ -1942,8 +1965,19 @@ class SplitImages:
         - rename - si es True se lleva a cabo el renombrado de las imágenes. En caso contrario, no.
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
         - extra_suffix - si es True indica que el sufijo rgb es el extra que se añade en el interfaz. En caso contrario, seguimos el flujo habitual con sufijo térmico y rgb.
-        """               
+        - solo_imagenes - si se pasa, se procesan SOLO esos nombres de fichero de la carpeta
+          en vez de todos. Es lo que permite repartir la separación entre varias tareas
+          paralelas con la IMAGEN como unidad y no la carpeta: un vuelo real puede tener
+          2.500 fotos en dos carpetas, y por carpeta no habría forma de usar más de dos
+          tareas (ver atom_core/sharding). A None (por defecto), todas las de la carpeta.
+        """
         images = self.utils_obj.get_images_from_dir(input_folder)
+        if solo_imagenes is not None:
+            # Se INTERSECA con lo que hay en disco en vez de usar la lista tal cual:
+            # entre el reparto y este momento la carpeta pudo cambiar, y un nombre
+            # que ya no existe reventaría dentro del worker en vez de aquí.
+            permitidas = set(solo_imagenes)
+            images = [img for img in images if img in permitidas]
         progress_callback.emit("Procesando {0} imágenes".format(len(images)) + "\n") # Se envía información al iniciar el procesado de un directorio. Si no hay imágenes
         # se enviará 0 imágenes.
 
@@ -2964,7 +2998,7 @@ class RGBCropping:
             summarize_dict["ERROR"] = "HAN EXISTIDO ERRORES"
         return summarize_dict
     
-    def checking_results_rgb_cropping(self, input_folder: str, progress_callback, progress_summarize) -> dict:
+    def checking_results_rgb_cropping(self, input_folder: str, progress_callback, progress_summarize, only_pb: list[str] | None = None) -> dict:
         """
         Comprueba que, para cada subcarpeta dentro de las carpetas que empiezan por 'PB'
         en input_folder/RGB, el número de imágenes con la palabra CROP en el nombre coincide
@@ -2995,6 +3029,11 @@ class RGBCropping:
         except Exception as e:
             self.organizer_logger.logger.error(f"Error al listar la carpeta RGB '{input_folder}': {e}")
             return results
+
+        # Igual que en checking_convert_to_tif: con reparto, cada tarea verifica
+        # solo los PB que ha recortado ella.
+        if only_pb is not None:
+            pb_folders = [d for d in pb_folders if d in set(only_pb)]
 
         if not pb_folders:
             self.organizer_logger.logger.info(f"No se encontraron carpetas PB en: {input_folder}")

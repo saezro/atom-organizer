@@ -727,7 +727,20 @@ class MetaLocation:
             summarize_dict["ERROR"] = "HAN EXISTIDO ERRORES"
         return summarize_dict
 
-    def checking_results_meta_location(self, input_folder: str, progress_callback, progress_summarize) -> dict:
+    @staticmethod
+    def _walk_varias(raices: list[str], excluded_folders: set[str]):
+        """`os.walk` sobre varias raíces, podando las carpetas excluidas.
+
+        La poda tiene que hacerse in-place sobre `dirnames` (así funciona os.walk)
+        y por eso no vale con filtrar lo que sale: sin esto se bajaría a `CSVs`,
+        donde vive un csv por vuelo y ninguna imagen, y cada uno contaría como
+        una discrepancia."""
+        for raiz in raices:
+            for dirpath, dirnames, filenames in os.walk(raiz):
+                dirnames[:] = [d for d in dirnames if d not in excluded_folders]
+                yield dirpath, dirnames, filenames
+
+    def checking_results_meta_location(self, input_folder: str, progress_callback, progress_summarize, only_pb: list[str] | None = None) -> dict:
         """
         Recorre el árbol de directorios de input_folder buscando archivos *.csv.
         Para cada carpeta que contenga algún csv, comprueba que el número de líneas
@@ -736,6 +749,10 @@ class MetaLocation:
         Arguments:
         ---------
         - input_folder - Carpeta raíz desde la que iniciar la búsqueda.
+        - only_pb - si se pasa, solo se verifican esas carpetas `PBx`. Con el trabajo
+          repartido entre varias tareas, las demás están escribiendo en SUS PB en este
+          mismo momento: mirarlos daría un "csv y fotos no coinciden" que no es un fallo,
+          sino una foto movida. A None (por defecto) se verifica el árbol entero.
 
         Returns:
         --------
@@ -752,9 +769,14 @@ class MetaLocation:
             self.organizer_logger.logger.warning(f"La carpeta de entrada no existe: {input_folder}")
             return results
 
+        raices = [input_folder]
+        if only_pb is not None:
+            raices = [os.path.join(input_folder, sub, pb)
+                      for sub in ("RGB", "TERMICA", "RGB_Extra") for pb in only_pb
+                      if os.path.isdir(os.path.join(input_folder, sub, pb))]
+
         excluded_folders = {"CSVs", "ESTADILLOS", "MINIATURAS"}
-        for dirpath, dirnames, filenames in os.walk(input_folder):
-            dirnames[:] = [d for d in dirnames if d not in excluded_folders]
+        for dirpath, dirnames, filenames in self._walk_varias(raices, excluded_folders):
             csv_files = [f for f in filenames if f.lower().endswith(".csv")]
             if not csv_files:
                 continue
@@ -968,7 +990,7 @@ class MetaLocation:
             if not self.stop:
                 self.iterate_folders(os.path.join(input_folder,dir), filename, progress_callback, progress_bar,csv_folder, flight_height, calculate_proyected_distance)
 
-    def check_input_folder_and_iterate(self, input_folder: str, progress_callback, progress_bar, csv_folder: str, flight_height: float, calculate_proyected_distance: bool) -> bool:
+    def check_input_folder_and_iterate(self, input_folder: str, progress_callback, progress_bar, csv_folder: str, flight_height: float, calculate_proyected_distance: bool, only_pb: list[str] | None = None) -> bool:
         """
         Función que comprueba que los directorios TERMICA y RGB se encuentran en input folder, y acto seguido recorre todas las carpetas y todas las imágenes
         dentro de esa carpeta para poder generar los archivos meta y location.
@@ -978,6 +1000,10 @@ class MetaLocation:
         - input_folder - carpeta de entrada
         - progress_callback - Callback (los signals) que envían, mediante un emit(), información de texto desde el hilo correspondiente.
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
+        - only_pb - si se pasa, se procesan SOLO esas carpetas `PBx` de RGB/TERMICA/RGB_Extra
+          en vez del árbol entero. Es lo que permite repartir esta fase entre varias tareas
+          paralelas sin que ninguna pise el trabajo de otra (ver atom_core/sharding).
+          A None (por defecto) el comportamiento es el de siempre.
         """
         list_dir = os.listdir(input_folder)
 
@@ -986,10 +1012,22 @@ class MetaLocation:
             progress_callback.emit("\nNo se encuentran los directorios TERMICA y RGB\n")
             return False
         else:
-            self.iterate_folders(os.path.join(input_folder, "RGB") , "location.csv", progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance)
-            self.iterate_folders(os.path.join(input_folder, "TERMICA") , "meta.csv", progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance)
+            def _raices(sub: str) -> list[str]:
+                base = os.path.join(input_folder, sub)
+                if only_pb is None:
+                    return [base]
+                # `iterate_folders` es recursiva y no mira dónde arranca el árbol,
+                # así que empezar en el PB hace el mismo trabajo sobre menos carpetas.
+                return [os.path.join(base, pb) for pb in only_pb
+                        if os.path.isdir(os.path.join(base, pb))]
+
+            for raiz in _raices("RGB"):
+                self.iterate_folders(raiz, "location.csv", progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance)
+            for raiz in _raices("TERMICA"):
+                self.iterate_folders(raiz, "meta.csv", progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance)
             if "RGB_Extra" in list_dir:  # Si se ha creado la carpeta RGB_Extra, creamos el location.csv dentro de cada carpeta PBX_VX
-                self.iterate_folders(os.path.join(input_folder, "RGB_Extra") , "location.csv", progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance)
+                for raiz in _raices("RGB_Extra"):
+                    self.iterate_folders(raiz, "location.csv", progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance)
             return True
 
 
