@@ -60,12 +60,19 @@ def _from_env() -> OAuthClient | None:
     return None
 
 
+# Raíz del árbol de código. Constante de módulo (y no una expresión dentro de
+# `client_file_candidates`) para que los tests puedan apuntarla a un directorio
+# vacío: si no, un `google_client.json` real en la raíz se cuela como candidato
+# y los casos «sin credenciales» pasan a encontrar las del operador.
+_REPO_DIR = Path(__file__).resolve().parent.parent
+
+
 def client_file_candidates(base_dir: Path | None = None) -> list[Path]:
     """Dónde se busca `google_client.json`, en orden."""
     out: list[Path] = []
     if base_dir is not None:
         out.append(Path(base_dir) / CLIENT_FILENAME)
-    out.append(Path(__file__).resolve().parent.parent / CLIENT_FILENAME)
+    out.append(_REPO_DIR / CLIENT_FILENAME)
     try:
         from atom_core.google_auth import user_data_dir
 

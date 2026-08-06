@@ -37,6 +37,25 @@ if "winreg" not in sys.modules:
 import utils as organizer_logger_mod  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _subidas_log_aislado(tmp_path):
+    """El `subidas.log` de los tests nunca puede caer en el del usuario.
+
+    `upload_plan` llama a `upload_log.get_logger()` sin argumentos, así que sin
+    esto la suite escribe en `~/.config/atom-organizer/Logs/subidas.log` — el
+    mismo fichero que se le pide al operador cuando reporta un problema. Con los
+    tests dentro, ese log cuenta subidas de `a.jpg` que nunca existieron.
+    """
+    from atom_core import upload_log
+
+    upload_log._reset_para_tests()
+    upload_log.get_logger(tmp_path / "Logs-subidas")
+    try:
+        yield
+    finally:
+        upload_log._reset_para_tests()
+
+
 @pytest.fixture
 def logger(tmp_path):
     """Logger real, pero sin escribir a fichero (create_file_handler=False)."""

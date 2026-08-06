@@ -25,6 +25,18 @@ function formatBytes(n) {
   return `${(n / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${u[i]}`
 }
 
+// Duración en lenguaje llano: «18 min 12 s», «1 h 04 min», «45 s». Se usa
+// tanto para el tiempo que lleva la subida como para el que acabó tardando, y
+// por eso no lleva ni «hace» ni «quedan»: lo pone quien la llama.
+function formatDuracion(segundos) {
+  if (segundos == null || !Number.isFinite(segundos) || segundos < 0) return '—'
+  const s = Math.round(segundos)
+  if (s < 60) return `${s} s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} min ${String(s % 60).padStart(2, '0')} s`
+  return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`
+}
+
 // « a las 17:42 » para la última comprobación de sesión. Devuelve cadena vacía
 // si no hay fecha, para poder concatenarla sin condicionales en el JSX.
 function horaCorta(epochSegundos) {
@@ -443,7 +455,16 @@ function BucketScreen({ ready }) {
   const [plan, setPlan] = useState(null) // {ok, prefix, files, bytes, existing, error}
   const [busy, setBusy] = useState(false) // login o preparación en curso
   const [uploading, setUploading] = useState(false)
-  const [force, setForce] = useState(false)
+  // Última foto del progreso que mandó el backend (kind 'stats'), con bytes,
+  // ficheros, velocidad y ETA.
+  const [stats, setStats] = useState(null)
+  // Cronómetro propio de la UI. NO se usa el `elapsed` del backend para pintar
+  // el reloj: si la red se cae del todo no llegan eventos, y un contador
+  // congelado justo cuando algo va mal es la peor señal posible. Aquí el
+  // tiempo corre siempre y es el resto de cifras lo que deja de moverse.
+  const [desde, setDesde] = useState(null) // Date.now() al empezar la subida
+  const [ahora, setAhora] = useState(0) // segundos transcurridos
+  const [texto, setTexto] = useState('') // buscador de inspección
   const [lines, setLines] = useState([])
   const [result, setResult] = useState(null) // {ok, ...} | {error}
   // Estado REAL de la sesión, el que sale de preguntarle a Google. Aparte de
@@ -531,12 +552,16 @@ function BucketScreen({ ready }) {
           case 'start':
             setLines([`Subiendo ${d.files} ficheros (${formatBytes(d.bytes)}) a ${d.prefix}/`])
             break
+          case 'stats':
+            setStats(d)
+            break
           case 'log':
             if (d.text) setLines((l) => [...l, d.text])
             break
           case 'done':
             setUploading(false)
             setResult(d)
+            setStats(null)
             break
           case 'error':
             setUploading(false)
@@ -571,7 +596,6 @@ function BucketScreen({ ready }) {
     if (!path) return
     setCarpeta(path)
     setResult(null)
-    setForce(false)
     await preparar(path, prefijo)
   }
 
@@ -580,7 +604,6 @@ function BucketScreen({ ready }) {
   function elegir(valor) {
     setEleccion(valor)
     setPlan(null)
-    setForce(false)
     setResult(null)
   }
 
@@ -599,18 +622,49 @@ function BucketScreen({ ready }) {
   async function subir() {
     setResult(null)
     setLines([])
+    setStats(null)
+    setDesde(Date.now())
+    setAhora(0)
     setUploading(true)
-    const r = await api.cloudUpload(carpeta, force, prefijo)
+    const r = await api.cloudUpload(carpeta, false, prefijo)
     if (r && r.started === false) {
       setUploading(false)
+      setDesde(null)
       setResult({ error: r.reason })
     }
   }
+
+  // El reloj de la subida. Late en la UI mientras `uploading`, con
+  // independencia de que lleguen o no eventos del backend.
+  useEffect(() => {
+    if (!uploading || !desde) return undefined
+    const id = setInterval(() => setAhora((Date.now() - desde) / 1000), 1000)
+    return () => clearInterval(id)
+  }, [uploading, desde])
 
   const logged = !!status?.logged_in
   const ocupado = busy || uploading
   const inspecciones = catalogo?.inspecciones || []
   const puedeSubir = ready && logged && !!prefijo && plan?.ok && !ocupado
+
+  // Filtro del buscador de inspecciones. Son >300 y el desplegable llano
+  // obligaba a recorrerlas a ojo; se parte la búsqueda en palabras y se exigen
+  // todas, así «antolin 2026» encuentra lo que ni «antolin» ni «2026» acotan
+  // por separado. Sin acentos ni mayúsculas: nadie escribe «T_Módulos» bien a
+  // la primera.
+  const normaliza = (s) =>
+    (s || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+  const palabras = normaliza(texto).split(/\s+/).filter(Boolean)
+  const filtradas = palabras.length
+    ? inspecciones.filter((i) => {
+        const heno = normaliza(`${i.etiqueta} ${i.prefijo}`)
+        return palabras.every((p) => heno.includes(p))
+      })
+    : inspecciones
+  const elegida = inspecciones.find((i) => i.prefijo === eleccion)
 
   if (status && status.configured === false) {
     return (
@@ -690,30 +744,89 @@ function BucketScreen({ ready }) {
 
       <div className="field">
         <span className="field-label">Inspección</span>
-        <div className="field-row">
-          <select
-            className="glass-input"
-            value={eleccion}
-            onChange={(e) => elegir(e.target.value)}
-            disabled={ocupado}
-          >
-            <option value="">— Elige la inspección —</option>
-            {inspecciones.map((i) => (
-              <option key={i.prefijo} value={i.prefijo}>
-                {i.etiqueta}
-              </option>
-            ))}
-            <option value={NUEVA}>+ Inspección nueva…</option>
-          </select>
-          <button
-            type="button"
-            className="btn-ghost"
-            onClick={cargarInspecciones}
-            disabled={ocupado}
-          >
-            Actualizar lista
-          </button>
-        </div>
+        {/* Una inspección ya elegida se enseña como un hecho, no como un
+            desplegable abierto: lo normal es acertar a la primera y seguir. El
+            buscador solo aparece cuando hace falta buscar. */}
+        {elegida && eleccion !== NUEVA ? (
+          <div className="field-row">
+            <input className="glass-input" type="text" value={elegida.etiqueta} readOnly />
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => {
+                elegir('')
+                setTexto('')
+              }}
+              disabled={ocupado}
+            >
+              Cambiar
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="field-row">
+              <input
+                className="glass-input"
+                type="text"
+                value={texto}
+                onChange={(e) => setTexto(e.target.value)}
+                placeholder="Escribe para buscar: empresa, planta, año…"
+                disabled={ocupado}
+                autoComplete="off"
+              />
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={cargarInspecciones}
+                disabled={ocupado}
+              >
+                Actualizar lista
+              </button>
+            </div>
+            {/* Se listan como mucho 50: con el buscador delante, tener que
+                bajar más allá significa que la búsqueda hay que afinarla, no
+                que falte scroll. */}
+            <ul className="insp-list">
+              {filtradas.slice(0, 50).map((i) => (
+                <li key={i.prefijo}>
+                  <button
+                    type="button"
+                    className="insp-item"
+                    onClick={() => {
+                      elegir(i.prefijo)
+                      setTexto('')
+                    }}
+                    disabled={ocupado}
+                  >
+                    {i.etiqueta}
+                  </button>
+                </li>
+              ))}
+              {filtradas.length === 0 && (
+                <li className="insp-vacio">
+                  Ninguna inspección coincide con «{texto}». Comprueba el nombre o crea una
+                  nueva.
+                </li>
+              )}
+              <li>
+                <button
+                  type="button"
+                  className="insp-item insp-nueva"
+                  onClick={() => elegir(NUEVA)}
+                  disabled={ocupado}
+                >
+                  + Inspección nueva…
+                </button>
+              </li>
+            </ul>
+            {filtradas.length > 50 && (
+              <span className="field-hint">
+                {filtradas.length} coinciden; se muestran las 50 primeras. Escribe más para
+                acotar.
+              </span>
+            )}
+          </>
+        )}
         {eleccion === NUEVA && (
           <input
             className="glass-input"
@@ -770,19 +883,61 @@ function BucketScreen({ ready }) {
       )}
       {plan && !plan.ok && <span className="field-hint hint-warn">{plan.error}</span>}
 
-      {plan?.ok && plan.existing > 0 && (
-        <>
-          <span className="field-hint hint-warn">
-            En «{plan.prefix}/» ya hay datos subidos. Si es esta misma carpeta, puedes
-            continuar donde se quedó. Si son datos de otro vuelo, comprueba que la inspección
-            elegida es la correcta: las imágenes de dron se llaman igual en todos los vuelos y
-            subir encima pisaría lo anterior.
-          </span>
-          <label className="check">
-            <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
-            <span>Continuar la subida en ese destino</span>
-          </label>
-        </>
+      {/* Lo que de verdad se va a subir. Ya no se pide confirmar nada: lo que
+          está en el destino se reconoce y se descarta, así que volver a lanzar
+          la misma carpeta es seguro. */}
+      {plan?.ok && plan.pendientes != null && plan.ya_subidos > 0 && (
+        <span className={`field-hint ${plan.pendientes ? '' : 'hint-ok'}`}>
+          {plan.pendientes === 0
+            ? `Esta carpeta ya está subida entera en «${plan.prefix}/». No hay nada que hacer.`
+            : `En «${plan.prefix}/» ya están ${plan.ya_subidos} de estos ${plan.files} ficheros. ` +
+              `Se subirán solo los ${plan.pendientes} que faltan (${formatBytes(plan.bytes_pendientes)}).`}
+        </span>
+      )}
+
+      {/* Panel de progreso: cuánto lleva, cuánto queda y a qué velocidad. El
+          reloj corre aunque el backend deje de mandar datos — es la diferencia
+          entre «va lento» y «se ha colgado». */}
+      {uploading && (
+        <div className="subida-panel">
+          <div
+            className="subida-barra"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={
+              stats?.bytes_total ? Math.round((stats.bytes_done / stats.bytes_total) * 100) : 0
+            }
+          >
+            <span
+              className="subida-relleno"
+              style={{
+                width: stats?.bytes_total
+                  ? `${Math.min(100, (stats.bytes_done / stats.bytes_total) * 100).toFixed(1)}%`
+                  : '0%',
+              }}
+            />
+          </div>
+          <div className="subida-cifras">
+            <span>
+              <strong>{formatDuracion(ahora)}</strong> transcurridos
+            </span>
+            <span>
+              {stats?.eta != null ? `quedan ~${formatDuracion(stats.eta)}` : 'calculando…'}
+            </span>
+            <span>
+              {stats
+                ? `${stats.files_done}/${stats.files_total} ficheros · ${formatBytes(stats.bytes_done)} de ${formatBytes(stats.bytes_total)}`
+                : 'preparando…'}
+            </span>
+            <span>{stats ? `${stats.mbps.toFixed(0)} Mbps` : ''}</span>
+            {stats?.retries > 0 && (
+              <span className="hint-warn">
+                {stats.retries} reintento{stats.retries === 1 ? '' : 's'} por cortes de red
+              </span>
+            )}
+          </div>
+        </div>
       )}
 
       {lines.length > 0 && (
@@ -799,13 +954,20 @@ function BucketScreen({ ready }) {
       {result && !result.error && (
         <span className={`field-hint ${result.ok ? 'hint-ok' : 'hint-warn'}`}>
           {result.cancelled
-            ? `Subida cancelada. ${result.uploaded} ficheros subidos; al volver a lanzarla continúa donde se quedó.`
+            ? `Subida cancelada tras ${formatDuracion(result.elapsed)}. ${result.uploaded} ficheros subidos; al volver a lanzarla continúa donde se quedó.`
             : result.ok
-              ? `Subida completa: ${result.uploaded} ficheros (${formatBytes(result.bytes)}) a ${result.mbps} Mbps.` +
-                (result.skipped ? ` ${result.skipped} ya estaban.` : '')
-              : `Terminó con ${result.failed_total} fallo(s): ${(result.failed || [])
+              ? `Subida completa en ${formatDuracion(result.elapsed)}: ${result.uploaded} ficheros ` +
+                `(${formatBytes(result.bytes)}) a ${result.mbps} Mbps.` +
+                (result.skipped ? ` ${result.skipped} ya estaban subidos.` : '') +
+                (result.retries
+                  ? ` Hubo ${result.retries} reintento${result.retries === 1 ? '' : 's'} por cortes de red.`
+                  : '')
+              : `Terminó tras ${formatDuracion(result.elapsed)} con ${result.failed_total} fallo(s): ${(
+                  result.failed || []
+                )
                   .map((f) => `${f.objeto} (${f.error})`)
                   .join('; ')}. Vuelve a lanzarla: sólo reintenta lo que falta.`}
+          {result.log ? ` Detalle en ${result.log}` : ''}
         </span>
       )}
 

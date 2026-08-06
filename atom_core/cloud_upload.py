@@ -13,6 +13,16 @@ más la robustez de la transferencia que cualquier microoptimización:
   - **Resumable de verdad.** Un corte a los 8 GB no puede costar empezar de
     cero. Se usa el protocolo resumable de GCS y, además, un manifiesto en
     disco: si se cierra la app a mitad, al reabrirla continúa donde iba.
+  - **El bucket es la fuente de verdad de lo ya subido.** El manifiesto es
+    solo una caché: vive dentro de la carpeta del vuelo, y si se borra, se
+    copia el vuelo a otro disco o se reinstala la app, desaparece — y antes
+    eso significaba resubir los 8,7 GB enteros aunque GCS ya los tuviera. Por
+    eso al arrancar se **lista el prefijo destino** y se descarta lo que ya
+    está allí con el mismo tamaño (ver `reconciliar`). Es una petición por
+    cada 1000 objetos: dos segundos que ahorran media hora de subida.
+  - **Todo queda escrito.** Reintentos, cortes de red, tokens caducados y
+    reanudaciones por offset van a `subidas.log` (ver `upload_log`). Sin eso,
+    un «va lento» o un «se quedó colgado» no se puede diagnosticar después.
   - **Sin credenciales en el cliente.** Una service account key dentro del
     `.exe` es escritura en el bucket para cualquiera que lo abra con un editor
     hexadecimal. Quien autoriza es una identidad **del usuario**, vía
@@ -43,6 +53,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import threading
 import time
@@ -54,17 +65,28 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
+from . import upload_log
+
 __all__ = [
     "UploadItem",
     "UploadPlan",
     "UploadResult",
+    "RemoteObject",
     "UrlProvider",
     "GcsOAuthProvider",
     "SignedUrlProvider",
     "build_plan",
     "upload_plan",
     "objetos_en_prefijo",
+    "listar_objetos_remotos",
+    "reconciliar",
 ]
+
+# El logger se OBTIENE aquí pero se CONFIGURA en `upload_plan`: importar este
+# módulo no debe crear ficheros por su cuenta (los tests lo importan, y la app
+# lo importa antes de que el usuario decida subir nada). Un logger sin handlers
+# descarta lo que reciba sin fallar, así que las llamadas sueltas son seguras.
+_log = logging.getLogger(upload_log.LOGGER_NAME)
 
 # GCS exige que todo chunk intermedio de una subida resumable sea múltiplo de
 # 256 KiB. 16 MiB es el compromiso habitual: suficientemente grande para no
@@ -192,6 +214,146 @@ def objetos_en_prefijo(bucket: str, prefix: str, auth, *,
     return len(data.get("items") or [])
 
 
+@dataclass(frozen=True)
+class RemoteObject:
+    """Un objeto que YA está en el bucket, tal y como GCS lo describe."""
+
+    name: str
+    size: int
+    md5: str = ""
+
+
+def listar_objetos_remotos(bucket: str, prefix: str, auth, *,
+                           base: str = "https://storage.googleapis.com",
+                           timeout: int = TIMEOUT,
+                           max_paginas: int = 50) -> dict[str, RemoteObject]:
+    """Inventario COMPLETO de lo que hay bajo `prefix`, indexado por nombre.
+
+    Esta es la pieza que hace que reseleccionar la misma carpeta no vuelva a
+    subir nada: el manifiesto local dice lo que *esta* instalación subió, pero
+    el bucket dice lo que hay de verdad. Un vuelo entero cabe en 3 páginas de
+    1000, así que el coste son un par de segundos frente a los GB que ahorra.
+
+    Se piden `size` y `md5Hash` porque son los dos criterios de comparación (y
+    vienen ya calculados por GCS: no cuestan nada extra).
+
+    `max_paginas` acota lo que puede tardar esto: 50 páginas son 50.000
+    objetos, veinte veces un vuelo grande. Existe porque esta consulta se hace
+    de forma síncrona antes de dejar seguir al usuario, y un prefijo degenerado
+    no puede dejar la pantalla colgada. Cortar por lo sano es seguro: los
+    objetos que no se lleguen a ver se tratan como no subidos, así que como
+    mucho se resube de más — nunca de menos.
+    """
+    prefijo = prefix.strip("/")
+    prefijo = prefijo + "/" if prefijo else ""
+    encontrados: dict[str, RemoteObject] = {}
+    token = ""
+    bucket_q = urllib.parse.quote(bucket)
+
+    for _ in range(max_paginas):
+        params = {
+            "prefix": prefijo,
+            "maxResults": 1000,
+            "fields": "items(name,size,md5Hash),nextPageToken",
+        }
+        if token:
+            params["pageToken"] = token
+        url = f"{base.rstrip('/')}/storage/v1/b/{bucket_q}/o?{urllib.parse.urlencode(params)}"
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("Authorization", f"Bearer {auth.access_token()}")
+        req.add_header("User-Agent", USER_AGENT)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8") or "{}")
+
+        for it in data.get("items") or []:
+            nombre = it.get("name")
+            if not nombre:
+                continue
+            try:
+                tam = int(it.get("size", 0))
+            except (TypeError, ValueError):
+                tam = -1  # tamaño ilegible: nunca casará, se resube. Correcto.
+            encontrados[nombre] = RemoteObject(nombre, tam, it.get("md5Hash") or "")
+
+        token = data.get("nextPageToken") or ""
+        if not token:
+            break
+    else:
+        # Se agotaron las páginas con `nextPageToken` todavía pendiente: el
+        # inventario está incompleto y hay que decirlo, porque explica que se
+        # resuba algo que en realidad ya estaba.
+        _log.warning("el destino tiene más de %d objetos; me quedo con los "
+                     "primeros %d y el resto se tratará como no subido",
+                     max_paginas * 1000, len(encontrados))
+
+    return encontrados
+
+
+def reconciliar(plan: UploadPlan, remotos: dict[str, RemoteObject],
+                manifest: "Manifest | None" = None) -> tuple[list[UploadItem], list[UploadItem]]:
+    """Parte el plan en `(pendientes, ya_subidos)` cruzando local, bucket y manifiesto.
+
+    Un fichero se da por subido si el bucket tiene un objeto con **su mismo
+    nombre y su mismo tamaño**. El tamaño es la comparación barata y en la
+    práctica decisiva: dos JPG distintos de un dron no coinciden al byte.
+
+    Cuando además el manifiesto guarda el MD5 de cuando se subió y GCS
+    devuelve el suyo, se comparan: si difieren, el objeto remoto **no** es
+    este fichero (o se subió corrupto) y se vuelve a subir. Es verificación
+    gratis — los dos hashes ya están calculados, no hay que releer el disco.
+
+    El manifiesto se usa de dos formas, y ninguna es «fuente de verdad»:
+
+    - Como **refuerzo**: si dice que algo está subido pero el bucket no lo
+      tiene, manda el bucket.
+    - Como **detector de cambios locales**: si el fichero fue subido y desde
+      entonces ha cambiado en disco (`is_done` compara tamaño y mtime), se
+      resube aunque el bucket tenga un objeto del mismo tamaño — porque lo que
+      hay allí es la versión vieja. Sin esto, reemplazar una imagen por otra
+      del mismo peso dejaría el bucket con la anterior y sin avisar.
+
+    Queda un caso que esta función NO puede distinguir: un fichero local nunca
+    subido cuyo nombre y tamaño coinciden por casualidad con un objeto que ya
+    estaba en el destino (dos vuelos distintos bajo la misma inspección, donde
+    las imágenes se llaman igual: `DJI_0001.JPG`). Se da por subido. Descartarlo
+    del todo exigiría leer y hashear los 8,7 GB locales en cada arranque, que
+    cuesta más que la propia subida; la protección real es que cada vuelo vaya
+    a su inspección, que es lo que la pantalla obliga a elegir.
+    """
+    pendientes: list[UploadItem] = []
+    hechos: list[UploadItem] = []
+
+    for item in plan.items:
+        remoto = remotos.get(item.remote)
+        if remoto is None:
+            pendientes.append(item)
+            continue
+        if remoto.size != item.size:
+            _log.debug("resubo %s: tamaño distinto (local %d, bucket %d)",
+                       item.remote, item.size, remoto.size)
+            pendientes.append(item)
+            continue
+
+        conocido = manifest is not None and manifest.md5_de(item) != ""
+        if conocido and not manifest.is_done(item):
+            _log.info("resubo %s: el fichero local ha cambiado desde que se "
+                      "subió", item.remote)
+            pendientes.append(item)
+            continue
+
+        md5_local = manifest.md5_de(item) if manifest is not None else ""
+        if md5_local and remoto.md5 and md5_local != remoto.md5:
+            _log.warning("resubo %s: el MD5 del bucket no coincide con el del "
+                         "manifiesto (bucket %s, manifiesto %s)",
+                         item.remote, remoto.md5, md5_local)
+            pendientes.append(item)
+            continue
+
+        hechos.append(item)
+
+    return pendientes, hechos
+
+
 # --------------------------------------------------------------------------
 # Proveedor de URLs firmadas
 # --------------------------------------------------------------------------
@@ -228,6 +390,15 @@ class UrlProvider:
         """
         return False
 
+    def listar_remotos(self, prefix: str) -> dict[str, RemoteObject] | None:
+        """Qué hay ya en el destino, para no resubirlo.
+
+        `None` significa «no puedo saberlo», no «está vacío»: quien no pueda
+        listar (p.ej. una signed URL, que autoriza un objeto concreto y no da
+        permiso de listado) se queda con el manifiesto local como antes.
+        """
+        return None
+
 
 class GcsOAuthProvider(UrlProvider):
     """Autoriza con la cuenta de Google del usuario (ver `google_auth`).
@@ -263,6 +434,10 @@ class GcsOAuthProvider(UrlProvider):
         # levanta AuthError y la subida falla con un mensaje que se entiende.
         self.auth.access_token(force_refresh=True)
         return True
+
+    def listar_remotos(self, prefix: str) -> dict[str, RemoteObject] | None:
+        return listar_objetos_remotos(self.bucket, prefix, self.auth,
+                                      base=self.base)
 
 
 class SignedUrlProvider(UrlProvider):
@@ -350,6 +525,16 @@ class Manifest:
         return (rec.get("size") == stat.st_size
                 and int(rec.get("mtime", -1)) == int(stat.st_mtime))
 
+    def md5_de(self, item: UploadItem) -> str:
+        """MD5 registrado al subir este objeto, si lo hay.
+
+        Sirve para contrastar contra el `md5Hash` que devuelve el bucket sin
+        tener que releer el fichero del disco.
+        """
+        with self._lock:
+            rec = self._done.get(item.key)
+            return (rec or {}).get("md5", "") or ""
+
     def mark(self, item: UploadItem, md5_b64: str) -> None:
         try:
             stat = item.local.stat()
@@ -362,6 +547,41 @@ class Manifest:
                 "md5": md5_b64,
             }
             self._flush_locked()
+
+    def hidratar(self, items: Sequence[UploadItem],
+                 remotos: dict[str, "RemoteObject"]) -> int:
+        """Anota como hechos los objetos que el bucket ya tenía.
+
+        Reconstruye el manifiesto cuando se ha perdido (carpeta copiada a otro
+        disco, reinstalación, borrado a mano). No es imprescindible —la
+        reconciliación contra el bucket ya funciona sin esto— pero deja el
+        registro local coherente con la realidad y guarda el MD5 del bucket,
+        que en la siguiente pasada permite verificar sin releer nada.
+
+        Se escribe **una sola vez** al final, no por fichero: son cientos de
+        entradas y `mark` reescribe el JSON entero cada vez.
+
+        Devuelve cuántas entradas nuevas se anotaron.
+        """
+        nuevas = 0
+        with self._lock:
+            for item in items:
+                remoto = remotos.get(item.remote)
+                if remoto is None or item.key in self._done:
+                    continue
+                try:
+                    stat = item.local.stat()
+                except OSError:
+                    continue
+                self._done[item.key] = {
+                    "size": stat.st_size,
+                    "mtime": int(stat.st_mtime),
+                    "md5": remoto.md5,
+                }
+                nuevas += 1
+            if nuevas:
+                self._flush_locked()
+        return nuevas
 
 
 # --------------------------------------------------------------------------
@@ -489,15 +709,21 @@ def _is_retryable(exc: Exception) -> bool:
 
 def upload_file(item: UploadItem, provider: UrlProvider, *,
                 on_bytes: Callable[[int], None] | None = None,
-                should_stop: Callable[[], bool] | None = None) -> str:
+                should_stop: Callable[[], bool] | None = None,
+                on_retry: Callable[[], None] | None = None) -> str:
     """Sube un fichero completo. Devuelve su MD5 en base64.
 
     Reintenta con backoff exponencial ante errores de red o 5xx, reanudando
     desde el offset que GCS confirme — no desde el principio.
+
+    `on_retry` se avisa en cada reintento para poder contarlos: son la señal de
+    que la red va mal, y sin contarlos un «tardó tres horas» no se distingue de
+    un «tardó tres horas porque hubo 400 microcortes».
     """
     total = item.size
     session_uri: str | None = None
     delay = 1.0
+    empezado = time.monotonic()
 
     for attempt in range(MAX_RETRIES):
         try:
@@ -507,6 +733,9 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
                 offset = 0
             else:
                 offset = _committed_offset(session_uri, total, provider.headers())
+                _log.info("reanudo %s en el byte %d de %d (%.0f%% ya confirmado "
+                          "en el bucket)", item.remote, offset, total,
+                          100.0 * offset / total if total else 100.0)
 
             if total == 0:
                 # Un fichero vacío se cierra con un PUT de longitud cero.
@@ -528,13 +757,24 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
                     if on_bytes is not None:
                         on_bytes(len(chunk))
 
+            duracion = time.monotonic() - empezado
+            _log.debug("subido %s (%.1f MB en %.1fs%s)", item.remote,
+                       total / 1024 ** 2, duracion,
+                       f", {attempt} reintento(s)" if attempt else "")
             return _file_md5_b64(item.local)
 
         except InterruptedError:
             raise
         except Exception as exc:  # noqa: BLE001 - se reclasifica justo debajo
             if attempt == MAX_RETRIES - 1 or not _is_retryable(exc):
+                _log.error("%s FALLA definitivamente tras %d intento(s): %s: %s",
+                           item.remote, attempt + 1, type(exc).__name__, exc)
                 raise
+            if on_retry is not None:
+                on_retry()
+            _log.warning("%s: %s: %s — reintento %d/%d en %.0fs",
+                         item.remote, type(exc).__name__, exc,
+                         attempt + 1, MAX_RETRIES - 1, delay)
             if _needs_new_session(exc):
                 # 401/403: la autorización murió a mitad. Con OAuth basta
                 # refrescar el token y la sesión resumable sigue viva (los
@@ -543,8 +783,15 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
                 try:
                     if not provider.recover_auth():
                         session_uri = None
-                except Exception:  # noqa: BLE001 - el error original manda
+                        _log.info("%s: credencial caducada, abro sesión nueva",
+                                  item.remote)
+                    else:
+                        _log.info("%s: token refrescado, la sesión resumable sigue",
+                                  item.remote)
+                except Exception as exc2:  # noqa: BLE001 - el error original manda
                     session_uri = None
+                    _log.warning("%s: no se pudo recuperar la autorización (%s)",
+                                 item.remote, exc2)
             time.sleep(delay)
             delay = min(delay * 2, 30)
 
@@ -562,6 +809,16 @@ class UploadResult:
     bytes_sent: int = 0
     elapsed: float = 0.0
     failed: list[tuple[str, str]] = field(default_factory=list)
+    # Reintentos totales de la corrida. Es la medida de lo mal que fue la red:
+    # una subida lenta con 0 reintentos es una línea lenta, y una subida lenta
+    # con 300 es una conexión que se cae. Sin esto no se distinguen.
+    retries: int = 0
+    # Cuántos de los `skipped` se descartaron por estar ya en el bucket (frente
+    # a los que ya constaban en el manifiesto local).
+    skipped_remoto: int = 0
+    # Si se pudo consultar el bucket. False = se subió a ciegas, fiándose solo
+    # del manifiesto local, y por tanto el `skipped` puede quedarse corto.
+    reconciliado: bool = False
 
     @property
     def ok(self) -> bool:
@@ -578,19 +835,69 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
                 concurrency: int = DEFAULT_CONCURRENCY,
                 manifest: Manifest | None = None,
                 on_progress: Callable[[str], None] | None = None,
-                should_stop: Callable[[], bool] | None = None) -> UploadResult:
-    """Sube todos los ficheros del plan, en paralelo y reanudando.
+                on_stats: Callable[[dict], None] | None = None,
+                should_stop: Callable[[], bool] | None = None,
+                remotos: dict[str, RemoteObject] | None = None) -> UploadResult:
+    """Sube todos los ficheros del plan, en paralelo, reanudando y sin repetir.
+
+    Antes de mover un byte se pregunta al bucket qué hay ya en el destino y se
+    descarta de la lista (ver `reconciliar`). Eso es lo que hace que volver a
+    elegir la misma carpeta cueste dos segundos en vez de media hora, incluso
+    si el manifiesto local se ha perdido.
 
     `on_progress` recibe líneas ya formateadas, listas para la UI. No se le
     manda un evento por chunk: con 8,7 GB serían miles de refrescos y la
-    interfaz se pasaría el rato repintando en vez de subiendo.
+    interfaz se pasaría el rato repintando en vez de subiendo. El detalle fino
+    (fichero a fichero, reintentos, cortes) va al log, no a la UI.
+
+    `remotos` permite inyectar un inventario ya consultado, sobre todo para
+    poder probar la reconciliación sin red. La pantalla previa NO lo reutiliza:
+    `cloud_prepare` y `cloud_upload` son dos llamadas independientes del bridge
+    y entre una y otra el operador puede tardar lo que quiera, así que el
+    inventario se vuelve a pedir al empezar de verdad — dos segundos a cambio
+    de no decidir sobre una foto caducada del bucket.
     """
+    upload_log.get_logger()  # asegura que hay fichero donde escribir
     result = UploadResult()
     if manifest is None:
         manifest = Manifest(plan.root / Manifest.FILENAME)
 
-    pending = [i for i in plan.items if not manifest.is_done(i)]
+    _log.info("=" * 70)
+    _log.info("SUBIDA · %s → %s/ · %d ficheros · %.2f GB",
+              plan.root, plan.prefix, len(plan.items),
+              plan.total_bytes / 1024 ** 3)
+
+    # --- qué hay ya en el destino -----------------------------------------
+    if remotos is None:
+        t0 = time.monotonic()
+        try:
+            remotos = provider.listar_remotos(plan.prefix)
+        except Exception as exc:  # noqa: BLE001
+            # No poder listar no puede impedir subir: se cae al manifiesto
+            # local, que es exactamente el comportamiento de antes.
+            _log.warning("no se pudo listar el destino (%s: %s); sigo solo con "
+                         "el manifiesto local", type(exc).__name__, exc)
+            remotos = None
+        else:
+            if remotos is not None:
+                _log.info("el destino ya tiene %d objetos (consultado en %.1fs)",
+                          len(remotos), time.monotonic() - t0)
+
+    if remotos is not None:
+        result.reconciliado = True
+        pending, hechos = reconciliar(plan, remotos, manifest)
+        result.skipped_remoto = len(hechos)
+        nuevas = manifest.hidratar(hechos, remotos)
+        if nuevas:
+            _log.info("manifiesto reconstruido con %d entradas que solo "
+                      "constaban en el bucket", nuevas)
+    else:
+        pending = [i for i in plan.items if not manifest.is_done(i)]
+
     result.skipped = len(plan.items) - len(pending)
+    bytes_pendientes = sum(i.size for i in pending)
+    _log.info("ya subidos: %d · pendientes: %d (%.2f GB)",
+              result.skipped, len(pending), bytes_pendientes / 1024 ** 3)
 
     if on_progress is not None:
         gb = plan.total_bytes / 1024 ** 3
@@ -598,20 +905,72 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
                     f"{result.skipped} ya subidos · {len(pending)} pendientes")
 
     if not pending:
+        _log.info("no hay nada que subir: el destino ya está completo")
         return result
 
     sent_lock = threading.Lock()
-    counter = {"bytes": 0, "files": 0}
+    counter = {"bytes": 0, "files": 0, "retries": 0, "ultimo_aviso": 0.0}
     started = time.monotonic()
+
+    def _stats(final: bool = False) -> dict:
+        """Foto del progreso, pensada para pintarla tal cual."""
+        elapsed = max(time.monotonic() - started, 1e-6)
+        enviados = counter["bytes"]
+        bps = enviados / elapsed
+        restantes = max(bytes_pendientes - enviados, 0)
+        return {
+            "files_done": counter["files"],
+            "files_total": len(pending),
+            "bytes_done": enviados,
+            "bytes_total": bytes_pendientes,
+            "elapsed": elapsed,
+            # ETA a la velocidad media de lo que va de subida. Se manda `None`
+            # hasta tener 3 s de muestra: al principio la media oscila tanto que
+            # el número saltaría de «2 min» a «4 horas» y no serviría de nada.
+            "eta": (restantes / bps) if (bps > 0 and elapsed > 3) else None,
+            "mbps": bps * 8 / 1_000_000,
+            "retries": counter["retries"],
+            "final": final,
+        }
+
+    def _avisar(forzar: bool = False) -> None:
+        """Manda el progreso a la UI, como mucho una vez por segundo.
+
+        El throttle es por TIEMPO y no por número de ficheros: un fichero de 2
+        GB tarda minutos, y contando ficheros la pantalla se quedaría clavada
+        justo cuando el usuario más mira si aquello sigue vivo.
+
+        Reservar el turno y anotar la marca de tiempo ocurre **dentro del
+        lock**: los 16 hilos de subida llaman aquí a la vez, y comprobar fuera
+        dejaba pasar a varios en la misma ventana. `on_stats` acaba en
+        `evaluate_js`, así que un aviso duplicado son dos saltos al motor JS,
+        no solo una línea de más.
+        """
+        if on_stats is None:
+            return
+        with sent_lock:
+            ahora = time.monotonic()
+            if not forzar and ahora - counter["ultimo_aviso"] < 1.0:
+                return
+            counter["ultimo_aviso"] = ahora
+            foto = _stats(final=forzar)
+        # La llamada, fuera del lock: cruza a la UI y no debe bloquear a los
+        # otros 15 hilos mientras tanto.
+        on_stats(foto)
 
     def _bump(n: int) -> None:
         with sent_lock:
             counter["bytes"] += n
+        _avisar()
+
+    def _retry() -> None:
+        with sent_lock:
+            counter["retries"] += 1
 
     def _one(item: UploadItem) -> tuple[UploadItem, str | None, str | None]:
         try:
             md5 = upload_file(item, provider, on_bytes=_bump,
-                              should_stop=should_stop)
+                              should_stop=should_stop, on_retry=_retry)
             return item, md5, None
         except InterruptedError:
             return item, None, "cancelado"
@@ -629,13 +988,25 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
                 result.failed.append((item.remote, err or "error desconocido"))
 
             counter["files"] += 1
+            _avisar()
             if on_progress is not None and counter["files"] % 25 == 0:
                 done_gb = counter["bytes"] / 1024 ** 3
                 elapsed = max(time.monotonic() - started, 1e-6)
                 speed = (counter["bytes"] * 8) / elapsed / 1_000_000
-                on_progress(f"{counter['files']}/{len(pending)} · "
-                            f"{done_gb:.2f} GB · {speed:.0f} Mbps")
+                linea = (f"{counter['files']}/{len(pending)} · "
+                         f"{done_gb:.2f} GB · {speed:.0f} Mbps")
+                on_progress(linea)
+                _log.info("%s · %d reintentos acumulados", linea, counter["retries"])
 
+    _avisar(forzar=True)
     result.bytes_sent = counter["bytes"]
     result.elapsed = time.monotonic() - started
+    result.retries = counter["retries"]
+
+    _log.info("FIN · %d subidos · %d omitidos · %.2f GB en %.0fs (%.0f Mbps) · "
+              "%d reintentos · %d fallos",
+              result.uploaded, result.skipped, result.bytes_sent / 1024 ** 3,
+              result.elapsed, result.mbps, result.retries, len(result.failed))
+    for objeto, motivo in result.failed:
+        _log.error("FALLÓ %s → %s", objeto, motivo)
     return result
