@@ -419,18 +419,28 @@ function OrganizarScreen({ ready, running, onRun }) {
   )
 }
 
-// Subir al bucket «datos para organizar»: elegir la carpeta del vuelo y subirla
-// entera. El destino dentro del bucket sale del nombre de la carpeta; no se
-// pide nada más al operador.
+// Subir al bucket «datos para organizar»: elegir la INSPECCIÓN a la que
+// pertenecen los datos y la carpeta del vuelo, y subirla entera. El destino
+// dentro del bucket lo nombra la inspección elegida — antes salía del nombre de
+// la carpeta local, y eso hacía chocar dos «Nueva carpeta» de vuelos distintos.
+const NUEVA = '__nueva__'
+
 function BucketScreen({ ready }) {
   const [status, setStatus] = useState(null) // {configured, logged_in, email, bucket, help}
   const [carpeta, setCarpeta] = useState('')
+  const [catalogo, setCatalogo] = useState(null) // {ok, inspecciones[], origen, error}
+  const [eleccion, setEleccion] = useState('') // prefijo elegido | NUEVA | ''
+  const [nueva, setNueva] = useState('') // nombre tecleado si eleccion === NUEVA
   const [plan, setPlan] = useState(null) // {ok, prefix, files, bytes, existing, error}
   const [busy, setBusy] = useState(false) // login o preparación en curso
   const [uploading, setUploading] = useState(false)
   const [force, setForce] = useState(false)
   const [lines, setLines] = useState([])
   const [result, setResult] = useState(null) // {ok, ...} | {error}
+
+  // Lo que se manda al backend como destino. Con «nueva» va el texto crudo: la
+  // normalización (acentos, espacios) es cosa del backend, que es quien manda.
+  const prefijo = eleccion === NUEVA ? nueva.trim() : eleccion
 
   async function refresh() {
     try {
@@ -440,8 +450,19 @@ function BucketScreen({ ready }) {
     }
   }
 
+  async function cargarInspecciones() {
+    try {
+      setCatalogo(await api.cloudInspecciones())
+    } catch (e) {
+      setCatalogo({ ok: false, inspecciones: [], error: String(e) })
+    }
+  }
+
   useEffect(() => {
-    if (ready) refresh()
+    if (ready) {
+      refresh()
+      cargarInspecciones()
+    }
   }, [ready])
 
   useEffect(
@@ -450,8 +471,12 @@ function BucketScreen({ ready }) {
         switch (d.kind) {
           case 'login':
             setBusy(false)
-            if (d.ok) refresh()
-            else setResult({ error: d.text || 'No se pudo iniciar sesión.' })
+            if (d.ok) {
+              refresh()
+              // El catálogo vive en el bucket: hasta ahora no había con qué
+              // pedirlo, así que se baja en cuanto hay sesión.
+              cargarInspecciones()
+            } else setResult({ error: d.text || 'No se pudo iniciar sesión.' })
             break
           case 'start':
             setLines([`Subiendo ${d.files} ficheros (${formatBytes(d.bytes)}) a ${d.prefix}/`])
@@ -496,13 +521,23 @@ function BucketScreen({ ready }) {
     setCarpeta(path)
     setResult(null)
     setForce(false)
-    await preparar(path)
+    await preparar(path, prefijo)
   }
 
-  async function preparar(path) {
+  // Cambiar de inspección cambia el destino, así que el plan anterior (y sobre
+  // todo su aviso de «ya hay datos ahí») deja de valer: se recalcula.
+  function elegir(valor) {
+    setEleccion(valor)
+    setPlan(null)
+    setForce(false)
+    setResult(null)
+  }
+
+  async function preparar(path, pref) {
+    if (!pref) return
     setBusy(true)
     try {
-      setPlan(await api.cloudPrepare(path))
+      setPlan(await api.cloudPrepare(path, pref))
     } catch (e) {
       setPlan({ ok: false, error: String(e) })
     } finally {
@@ -514,7 +549,7 @@ function BucketScreen({ ready }) {
     setResult(null)
     setLines([])
     setUploading(true)
-    const r = await api.cloudUpload(carpeta, force)
+    const r = await api.cloudUpload(carpeta, force, prefijo)
     if (r && r.started === false) {
       setUploading(false)
       setResult({ error: r.reason })
@@ -523,7 +558,8 @@ function BucketScreen({ ready }) {
 
   const logged = !!status?.logged_in
   const ocupado = busy || uploading
-  const puedeSubir = ready && logged && plan?.ok && !ocupado
+  const inspecciones = catalogo?.inspecciones || []
+  const puedeSubir = ready && logged && !!prefijo && plan?.ok && !ocupado
 
   if (status && status.configured === false) {
     return (
@@ -569,6 +605,53 @@ function BucketScreen({ ready }) {
         </span>
       </div>
 
+      <div className="field">
+        <span className="field-label">Inspección</span>
+        <div className="field-row">
+          <select
+            className="glass-input"
+            value={eleccion}
+            onChange={(e) => elegir(e.target.value)}
+            disabled={ocupado}
+          >
+            <option value="">— Elige la inspección —</option>
+            {inspecciones.map((i) => (
+              <option key={i.prefijo} value={i.prefijo}>
+                {i.etiqueta}
+              </option>
+            ))}
+            <option value={NUEVA}>+ Inspección nueva…</option>
+          </select>
+          <button
+            type="button"
+            className="btn-ghost"
+            onClick={cargarInspecciones}
+            disabled={ocupado}
+          >
+            Actualizar lista
+          </button>
+        </div>
+        {eleccion === NUEVA && (
+          <input
+            className="glass-input"
+            type="text"
+            value={nueva}
+            onChange={(e) => {
+              setNueva(e.target.value)
+              setPlan(null)
+            }}
+            placeholder="Empresa--Planta--Año--Tipo"
+          />
+        )}
+        <span className="field-hint">
+          {catalogo?.error
+            ? catalogo.error
+            : catalogo?.origen === 'cache'
+              ? `${inspecciones.length} inspecciones de la última descarga (no se pudo consultar ahora).`
+              : `${inspecciones.length} inspecciones. Los datos se guardarán en «${prefijo || '…'}/».`}
+        </span>
+      </div>
+
       <FileField
         label="Carpeta a subir"
         value={carpeta}
@@ -576,10 +659,20 @@ function BucketScreen({ ready }) {
         onType={setCarpeta}
         placeholder="La carpeta completa del vuelo"
       />
-      {carpeta && !plan && (
-        <button type="button" className="btn-ghost" onClick={() => preparar(carpeta)} disabled={ocupado}>
+      {carpeta && prefijo && !plan && (
+        <button
+          type="button"
+          className="btn-ghost"
+          onClick={() => preparar(carpeta, prefijo)}
+          disabled={ocupado}
+        >
           Comprobar carpeta
         </button>
+      )}
+      {carpeta && !prefijo && (
+        <span className="field-hint hint-warn">
+          Elige la inspección a la que pertenece este vuelo antes de subirlo.
+        </span>
       )}
 
       {plan && plan.ok && (
@@ -593,8 +686,9 @@ function BucketScreen({ ready }) {
         <>
           <span className="field-hint hint-warn">
             En «{plan.prefix}/» ya hay datos subidos. Si es esta misma carpeta, puedes
-            continuar donde se quedó. Si es otro vuelo, renómbrala: las imágenes de dron se
-            llaman igual en todos y subir encima pisaría el anterior.
+            continuar donde se quedó. Si son datos de otro vuelo, comprueba que la inspección
+            elegida es la correcta: las imágenes de dron se llaman igual en todos los vuelos y
+            subir encima pisaría lo anterior.
           </span>
           <label className="check">
             <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />

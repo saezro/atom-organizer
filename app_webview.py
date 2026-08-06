@@ -452,24 +452,59 @@ class Api:
             return {"ok": False, "error": str(exc)}
         return {"ok": True}
 
-    def cloud_prepare(self, folder: str) -> dict:
-        """Qué se subiría: nº de ficheros, tamaño y prefijo destino.
+    def cloud_inspecciones(self) -> dict:
+        """Catálogo de inspecciones para el desplegable.
 
-        También mira si el prefijo YA tiene objetos: dos carpetas distintas
-        pueden llamarse igual y los ficheros de dron se repiten
-        (`DJI_0001.JPG`), así que subir encima pisaría el vuelo anterior. Aquí
-        sólo se informa; el bloqueo lo hace `cloud_upload`.
+        Sale de `_inspecciones.json` en el propio bucket, leído con la sesión
+        del operador — la app no habla con la BD de Aerotools (ver
+        `atom_core/inspecciones.py`). Sin sesión no hay catálogo, pero eso no
+        es un error: el operador puede teclear la inspección a mano.
         """
-        from atom_core import cloud_config, cloud_upload
+        from atom_core import cloud_config, inspecciones
+
+        auth = self._get_auth()
+        if auth is None or not auth.is_logged_in():
+            cacheadas, cuando = inspecciones.leer_cache()
+            return {"ok": bool(cacheadas),
+                    "inspecciones": [i.to_dict() for i in cacheadas],
+                    "origen": "cache", "bajado_en": cuando,
+                    "error": None if cacheadas else "Inicia sesión para ver las inspecciones."}
+        return inspecciones.cargar_catalogo(cloud_config.BUCKET_DATOS, auth)
+
+    def _destino(self, folder: str, prefix: str | None) -> tuple[Path | None, str, str]:
+        """Carpeta y prefijo destino ya validados. Devuelve `(root, prefix, error)`.
+
+        El prefijo lo manda la UI: es la inspección elegida. **No se cae al
+        nombre de la carpeta si falta.** Ese era el mecanismo anterior y es
+        justo el que se quita: dos «Nueva carpeta» de vuelos distintos
+        aterrizaban en el mismo prefijo y se pisaban. Sin inspección no hay
+        destino, y la app lo dice en vez de inventárselo.
+        """
+        from atom_core import cloud_config
 
         root = Path(folder or "")
         if not root.is_dir():
-            return {"ok": False, "error": "Esa carpeta no existe."}
+            return None, "", "Esa carpeta no existe."
 
-        prefix = cloud_config.prefijo_desde_carpeta(root.name)
-        if not prefix:
-            return {"ok": False,
-                    "error": "El nombre de la carpeta no da un destino válido."}
+        limpio = cloud_config.prefijo_desde_carpeta((prefix or "").strip())
+        if not limpio:
+            return None, "", ("Elige una inspección: sin ella no hay destino "
+                              "válido dentro del bucket.")
+        return root, limpio, ""
+
+    def cloud_prepare(self, folder: str, prefix: str | None = None) -> dict:
+        """Qué se subiría: nº de ficheros, tamaño y prefijo destino.
+
+        También mira si el prefijo YA tiene objetos: dos vuelos de la misma
+        inspección repiten nombre de fichero (`DJI_0001.JPG`), así que subir
+        encima pisaría el anterior. Aquí sólo se informa; el bloqueo lo hace
+        `cloud_upload`.
+        """
+        from atom_core import cloud_config, cloud_upload
+
+        root, prefix, error = self._destino(folder, prefix)
+        if error:
+            return {"ok": False, "error": error}
         try:
             plan = cloud_upload.build_plan(root, prefix)
         except Exception as exc:  # noqa: BLE001
@@ -493,7 +528,8 @@ class Api:
                 out["existing"] = None
         return out
 
-    def cloud_upload(self, folder: str, force: bool = False) -> dict:
+    def cloud_upload(self, folder: str, force: bool = False,
+                     prefix: str | None = None) -> dict:
         """Sube la carpeta entera al bucket. El progreso va por `atom:cloud`."""
         if self._uploading:
             return {"started": False, "reason": "Ya hay una subida en curso."}
@@ -507,14 +543,9 @@ class Api:
             return {"started": False,
                     "reason": "Primero inicia sesión con tu cuenta de Aerotools."}
 
-        root = Path(folder or "")
-        if not root.is_dir():
-            return {"started": False, "reason": "Esa carpeta no existe."}
-
-        prefix = cloud_config.prefijo_desde_carpeta(root.name)
-        if not prefix:
-            return {"started": False,
-                    "reason": "El nombre de la carpeta no da un destino válido."}
+        root, prefix, error = self._destino(folder, prefix)
+        if error:
+            return {"started": False, "reason": error}
 
         self._uploading = True
         self._cancel_upload = False
@@ -534,9 +565,9 @@ class Api:
                     if ya:
                         raise RuntimeError(
                             f"En «{prefix}/» ya hay datos subidos. Si es la misma "
-                            "carpeta y quieres continuar donde se quedó, marca "
-                            "«continuar subida». Si es otro vuelo, renombra la "
-                            "carpeta: subir encima pisaría el anterior.")
+                            "inspección y quieres continuar donde se quedó, marca "
+                            "«continuar subida». Si es otra inspección, elígela "
+                            "en la lista: subir encima pisaría lo anterior.")
 
                 provider = cloud_upload.GcsOAuthProvider(
                     cloud_config.BUCKET_DATOS, auth)

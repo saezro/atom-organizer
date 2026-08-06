@@ -155,6 +155,27 @@
   box-shadow: 0 0 0 3px rgba(238, 117, 58, 0.2);
 }
 
+/* El desplegable de inspección es el primer <select> de la app. Hereda la caja
+   de `.glass-input`, pero el control nativo necesita dos cosas más: la flecha
+   dibujada a mano (sobre fondo oscuro la del sistema no se ve) y un color de
+   fondo explícito en las <option>, que en WebView2 se pintan con el tema del
+   sistema y quedarían texto claro sobre blanco. */
+select.glass-input {
+  appearance: none;
+  cursor: pointer;
+  padding-right: 2rem;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text) 50%),
+    linear-gradient(135deg, var(--text) 50%, transparent 50%);
+  background-position: right 1.1rem center, right 0.75rem center;
+  background-size: 0.35rem 0.35rem, 0.35rem 0.35rem;
+  background-repeat: no-repeat;
+}
+
+select.glass-input option {
+  color: var(--text);
+  background: #1b1b1f;
+}
+
 .btn-ghost {
   font: inherit;
   cursor: pointer;
