@@ -71,11 +71,12 @@ jobs:
           node-version: '22'
       # `no-undef` es la regla que caza los identificadores que dejó atrás un
       # refactor. Sin ella el bundle compila tan feliz y falla al pulsar.
-      - name: Lint de la UI (oxlint)
+      - name: Lint y tests de la UI
         working-directory: webui
         run: |
           npm ci
           npm run lint
+          npm test
       - name: Python deps
         run: |
           python -m pip install --upgrade pip
