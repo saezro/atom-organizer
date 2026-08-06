@@ -90,7 +90,7 @@ def test_un_fallo_de_consulta_no_se_confunde_con_vacio(monkeypatch):
 
 # --- Cableado del bridge -----------------------------------------------------
 
-BRIDGE_METODOS = ["cloud_status", "cloud_login", "cloud_logout",
+BRIDGE_METODOS = ["cloud_status", "cloud_verify", "cloud_login", "cloud_logout",
                   "cloud_prepare", "cloud_upload", "cloud_cancel"]
 
 
@@ -118,3 +118,39 @@ def test_hay_pestana_de_bucket_en_la_ui():
     src = _fuente(os.path.join("webui", "src", "App.jsx"))
     assert "SUBIR AL BUCKET" in src
     assert "BucketScreen" in src
+
+
+# --- Confirmación de la sesión ----------------------------------------------
+# «Hay un token guardado» y «la sesión funciona» son cosas distintas, y la
+# pantalla las enseñaba como una sola: con el token cacheado solo se veía
+# «Cerrar sesión», sin decir de quién ni si servía.
+
+def test_el_estado_no_finge_saber_si_la_sesion_vive():
+    """`cloud_status` no puede hacer red (bloquearía el arranque), así que no
+    debe afirmar que la sesión es válida: solo dice cuándo se comprobó."""
+    src = _fuente("app_webview.py")
+    assert "def cloud_status(" in src
+    assert '"validada_en": auth.validada_en' in src
+
+
+def test_comprobar_la_sesion_no_bloquea_el_bridge():
+    """Un refresh con mala red tarda segundos; hacerlo síncrono congelaría la
+    ventana igual que pasaba con el login."""
+    src = _fuente("app_webview.py")
+    inicio = src.index("def cloud_verify(")
+    cuerpo = src[inicio:src.index("def cloud_logout(", inicio)]
+    assert "threading.Thread" in cuerpo
+    assert '"kind": "session"' in cuerpo
+
+
+def test_la_ui_ensena_quien_esta_dentro_y_si_la_sesion_vale():
+    src = _fuente(os.path.join("webui", "src", "App.jsx"))
+    assert "cloudVerify" in src
+    assert "Sesión activa y comprobada" in src
+    assert "Volver a iniciar sesión" in src
+
+
+def test_la_ui_avisa_cuando_el_almacen_no_se_puede_leer():
+    """Perfil copiado a otro equipo: sin esto solo se vería un «sin iniciar
+    sesión» que no encaja con lo que el operador recuerda."""
+    assert "status?.aviso" in _fuente(os.path.join("webui", "src", "App.jsx"))

@@ -25,6 +25,9 @@ además, **se vuelve a comprobar sobre el `id_token` recibido**. El parámetro `
 por sí solo es una sugerencia de UI, no una garantía; la comprobación de verdad
 es la de vuelta.
 
+La sesión (el `refresh_token`) se guarda **cifrada en una BD local**; el cómo
+está en `session_store.py`, no aquí.
+
 Solo stdlib, misma razón que en `updater.py` y `cloud_upload.py`: no engordar el
 bundle de PyInstaller con `google-auth` y sus dependencias.
 """
@@ -46,6 +49,8 @@ import urllib.request
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
+
+from .session_store import LEGACY_STORE_NAME, STORE_NAME, SessionStore
 
 __all__ = [
     "GoogleAuth",
@@ -147,18 +152,21 @@ class GoogleAuth:
     """Mantiene la sesión de Google del usuario y entrega access tokens.
 
     El `refresh_token` se guarda en el perfil del usuario para no obligar a
-    repetir el login en cada arranque. **No está cifrado**: en Windows lo
-    protege el ACL del perfil y en Linux el modo 0600. Quien ya tiene lectura
-    del perfil del usuario tiene cosas peores a mano; y el daño está acotado
-    por IAM, que es donde vive el permiso de verdad.
+    repetir el login en cada arranque, **cifrado** en la BD local que gestiona
+    `session_store` (DPAPI en Windows, keyfile 0600 en Linux). El permiso de
+    verdad sigue estando en IAM: esto acota el daño de que el fichero se pasee
+    por un backup, no sustituye al control de acceso.
     """
 
-    STORE_NAME = "google_auth.json"
+    # Se reexpone como atributo de clase porque `cloud_upload` y los tests lo
+    # usan como «el nombre del almacén»; el valor lo manda `session_store`.
+    STORE_NAME = STORE_NAME  # noqa: PLW0127 - alias deliberado del módulo
 
     def __init__(self, client_id: str, client_secret: str, *,
                  hosted_domain: str | None = None,
                  scopes: tuple[str, ...] = SCOPES,
-                 store_path: Path | None = None):
+                 store_path: Path | None = None,
+                 store: SessionStore | None = None):
         if not client_id:
             raise ValueError("client_id vacío")
         self.client_id = client_id
@@ -166,6 +174,7 @@ class GoogleAuth:
         self.hosted_domain = hosted_domain
         self.scopes = tuple(scopes)
         self.store_path = Path(store_path) if store_path else user_data_dir() / self.STORE_NAME
+        self._store = store if store is not None else SessionStore(self.store_path)
 
         # Reentrante a propósito: `access_token` sostiene el lock mientras llama
         # a `_token_request`, y esa, al ver un `invalid_grant`, vuelve a tomarlo
@@ -181,30 +190,71 @@ class GoogleAuth:
         # `id_token` mientras el scope `openid` siga concedido.
         self._id_token: str | None = None
         self._identity: Identity | None = None
+        self._validada_en: float | None = None
+        self._aviso_store: str | None = None
         self._load()
 
     # -- estado persistido ------------------------------------------------
     def _load(self) -> None:
+        sesion = self._store.leer()
+        if sesion is None:
+            # Sin sesión en la BD: puede ser un perfil que viene de la versión
+            # anterior, con el JSON en claro. Se importa una sola vez y el
+            # fichero se retira; el operador no nota el cambio de formato.
+            #
+            # Se intenta **aunque la BD haya dado error**: si no, un `session.db`
+            # dañado dejaría la sesión heredada sin migrar para siempre, con el
+            # JSON bueno ahí al lado y ninguna forma de recuperarlo desde la app.
+            aviso_lectura = self._store.error_lectura
+            if self._migrar_legacy():
+                sesion = self._store.leer()
+            if sesion is None:
+                # El aviso de la migración, si lo hubo, manda sobre el de lectura:
+                # es el más cercano a lo que el operador acaba de perder.
+                if self._aviso_store is None:
+                    self._aviso_store = aviso_lectura
+                return
+        self._refresh_token = sesion.refresh_token
+        self._validada_en = sesion.validada_en
+        if sesion.email:
+            self._identity = Identity(email=sesion.email,
+                                      domain=sesion.email.rsplit("@", 1)[-1])
+
+    def _migrar_legacy(self) -> bool:
+        """Importa el `google_auth.json` de versiones anteriores, si lo hay.
+
+        Nada de lo que pase aquí puede impedir que la app abra: `_load` corre
+        dentro del constructor, y una excepción aquí dejaría `cloud_status` —y
+        con él la pestaña entera— lanzando un traceback en cada intento. El
+        peor caso aceptable es pedir login otra vez.
+        """
+        legacy = self.store_path.parent / LEGACY_STORE_NAME
+        # `store_path` es configurable (tests, instalaciones a medida): si
+        # apuntara al propio nombre heredado, migrar sería leerse a sí mismo.
+        if legacy == self.store_path or not legacy.exists():
+            return False
         try:
-            data = json.loads(self.store_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return
-        self._refresh_token = data.get("refresh_token")
-        email = data.get("email")
-        if email:
-            self._identity = Identity(email=email, domain=email.rsplit("@", 1)[-1])
+            return self._store.importar_legacy(legacy)
+        except Exception as exc:  # noqa: BLE001 - disco lleno, permisos, DPAPI…
+            self._aviso_store = (
+                "No se pudo recuperar la sesión anterior de este equipo "
+                f"({exc}). Inicia sesión de nuevo.")
+            return False
 
     def _save(self) -> None:
-        self.store_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.store_path.with_suffix(".tmp")
-        payload = {
-            "refresh_token": self._refresh_token,
-            "email": self._identity.email if self._identity else None,
-        }
-        tmp.write_text(json.dumps(payload), encoding="utf-8")
-        if not sys.platform.startswith("win"):
-            os.chmod(tmp, 0o600)
-        os.replace(tmp, self.store_path)
+        if not self._refresh_token:
+            return
+        self._store.guardar(self._identity.email if self._identity else None,
+                            self._refresh_token)
+
+    def _olvidar_local(self) -> None:
+        """Tira la sesión de memoria y de disco. No habla con Google."""
+        self._refresh_token = None
+        self._access_token = None
+        self._id_token = None
+        self._expires_at = 0.0
+        self._validada_en = None
+        self._store.borrar()
 
     # -- consultas --------------------------------------------------------
     @property
@@ -215,6 +265,48 @@ class GoogleAuth:
         """Hay sesión recordada. No garantiza que siga siendo válida: eso solo
         se sabe al usarla (el usuario pudo revocar el acceso desde su cuenta)."""
         return bool(self._refresh_token)
+
+    @property
+    def validada_en(self) -> float | None:
+        """Cuándo se comprobó por última vez contra Google que la sesión vive."""
+        return self._validada_en
+
+    @property
+    def aviso_store(self) -> str | None:
+        """Problema del almacén local que el usuario debería ver, si lo hay.
+
+        Caso típico: perfil copiado a otro equipo, donde DPAPI ya no puede
+        descifrar. La sesión se descarta sola, pero conviene decir por qué en
+        vez de dejar un «sin iniciar sesión» inexplicable.
+        """
+        return self._aviso_store
+
+    def verificar(self) -> tuple[bool, str]:
+        """¿Sigue viva la sesión? Pregunta a Google — hace red.
+
+        Devuelve `(válida, mensaje)`. Es lo que convierte «hay un token
+        guardado» en «tu sesión funciona», que es lo que el operador quiere
+        saber antes de empezar una subida de dos horas.
+        """
+        if not self._refresh_token:
+            return False, "No hay sesión iniciada."
+        try:
+            self.access_token(force_refresh=True)
+        except AuthError as exc:
+            return False, str(exc)
+        with self._lock:
+            # El refresh suelta el lock al terminar, así que entre medias el
+            # usuario ha podido darle a «Cerrar sesión». Decir «sesión válida»
+            # de algo que ya no existe dejaría la UI mintiendo hasta el
+            # siguiente refresco.
+            if not self._refresh_token:
+                return False, "No hay sesión iniciada."
+            self._validada_en = time.time()
+        try:
+            self._store.marcar_validada(self._validada_en)
+        except Exception:  # noqa: BLE001 - anotar la fecha es cortesía, no requisito
+            pass
+        return True, "Sesión válida."
 
     # -- login ------------------------------------------------------------
     def login(self, *, open_browser=webbrowser.open,
@@ -289,23 +381,26 @@ class GoogleAuth:
         with self._lock:
             self._refresh_token = refresh
             self._identity = identidad
+            self._aviso_store = None
             self._aplicar_access(tokens)
+            # Acabamos de canjear el código: la sesión está viva por definición,
+            # y anotarlo evita que la UI salga preguntando a Google otra vez
+            # justo después de entrar.
+            self._validada_en = time.time()
             self._save()
+            try:
+                self._store.marcar_validada(self._validada_en)
+            except Exception:  # noqa: BLE001
+                pass
         return identidad
 
     def logout(self) -> None:
         """Olvida la sesión local y revoca el refresh token en Google."""
         with self._lock:
             token = self._refresh_token
-            self._refresh_token = None
-            self._access_token = None
-            self._id_token = None
-            self._expires_at = 0.0
             self._identity = None
-            try:
-                self.store_path.unlink()
-            except OSError:
-                pass
+            self._aviso_store = None
+            self._olvidar_local()
         if token:
             try:
                 self._post(REVOKE_URI, {"token": token})
@@ -388,13 +483,7 @@ class GoogleAuth:
                 # `invalid_grant` = el usuario revocó el acceso o cambió la
                 # contraseña. La sesión guardada ya no sirve para nada.
                 with self._lock:
-                    self._refresh_token = None
-                    self._access_token = None
-                    self._id_token = None
-                try:
-                    self.store_path.unlink()
-                except OSError:
-                    pass
+                    self._olvidar_local()
                 raise AuthError(
                     f"La sesión de Google ya no es válida ({detalle}). "
                     "Vuelve a iniciar sesión.") from exc

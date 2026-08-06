@@ -118,6 +118,7 @@ class Api:
         # a subir nada en toda la sesión.
         self._auth = None
         self._logging_in = False
+        self._verifying = False
         self._uploading = False
         self._cancel_upload = False
 
@@ -413,8 +414,42 @@ class Api:
         return {"ok": True, "configured": True,
                 "logged_in": auth.is_logged_in(),
                 "email": ident.email if ident else None,
+                # Lo que se sabe SIN preguntar a Google: si la sesión sigue
+                # viva se comprueba aparte (`cloud_verify`), porque eso es una
+                # llamada de red y el estado inicial no puede esperarla.
+                "validada_en": auth.validada_en,
+                "aviso": auth.aviso_store,
                 "bucket": cloud_config.BUCKET_DATOS,
                 "uploading": self._uploading}
+
+    def cloud_verify(self) -> dict:
+        """Comprueba contra Google que la sesión guardada sigue sirviendo.
+
+        Va por hilo y contesta con un evento `atom:cloud` (`kind: 'session'`):
+        un refresh puede tardar segundos con mala red y bloquear el bridge
+        dejaría la ventana congelada en el arranque.
+        """
+        auth = self._get_auth()
+        if auth is None or not auth.is_logged_in():
+            return {"started": False, "logged_in": False}
+        if self._verifying:
+            return {"started": False, "reason": "Ya se está comprobando."}
+        self._verifying = True
+
+        def worker() -> None:
+            try:
+                valida, texto = auth.verificar()
+                ident = auth.identity
+                self._push_cloud({"kind": "session", "ok": valida, "text": texto,
+                                  "email": ident.email if ident else None,
+                                  "validada_en": auth.validada_en})
+            except Exception as exc:  # noqa: BLE001 - se enseña, no se traga
+                self._push_cloud({"kind": "session", "ok": False, "text": str(exc)})
+            finally:
+                self._verifying = False
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"started": True}
 
     def cloud_login(self) -> dict:
         """Abre el navegador para el consentimiento. Devuelve al instante; el

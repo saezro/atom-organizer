@@ -73,7 +73,12 @@ export const api = {
   // puede estar viejo) y 'cache' es la última descarga local. El prefijo
   // destino ya NO se deriva del nombre de la carpeta: lo manda la UI con la
   // inspección elegida.
+  // cloudStatus dice lo que se sabe SIN red (hay token guardado y de quién);
+  // cloudVerify pregunta a Google si ese token sigue sirviendo y contesta por
+  // el evento `atom:cloud` (kind 'session'). Son dos cosas distintas y la UI
+  // las enseña por separado: «sesión recordada» no es «sesión válida».
   cloudStatus: () => call('cloud_status'),
+  cloudVerify: () => call('cloud_verify'),
   cloudLogin: () => call('cloud_login'),
   cloudLogout: () => call('cloud_logout'),
   cloudInspecciones: () => call('cloud_inspecciones'),
@@ -113,7 +118,9 @@ export function onUpdate(handler) {
 }
 
 // Eventos de la subida al bucket (Python → JS), canal propio:
-//   kind 'login' -> ok, email | text (error)
+//   kind 'login'   -> ok, email | text (error)
+//   kind 'session' -> ok (la sesión guardada sigue valiendo), email,
+//                     validada_en (epoch), text (motivo si ok=false)
 //   kind 'start' -> files, bytes, prefix
 //   kind 'log'   -> text (línea ya formateada por cloud_upload)
 //   kind 'done'  -> ok, uploaded, skipped, bytes, elapsed, mbps, failed[]

@@ -25,6 +25,15 @@ function formatBytes(n) {
   return `${(n / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${u[i]}`
 }
 
+// « a las 17:42 » para la última comprobación de sesión. Devuelve cadena vacía
+// si no hay fecha, para poder concatenarla sin condicionales en el JSX.
+function horaCorta(epochSegundos) {
+  if (!epochSegundos) return ''
+  const d = new Date(epochSegundos * 1000)
+  if (Number.isNaN(d.getTime())) return ''
+  return ` a las ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+}
+
 // Marca la fase `index` (1-based) como activa y las previas como hechas. Si el
 // backend no mandó `plan` (tasks sin fases predefinidas), añade la fase que
 // llega de forma dinámica.
@@ -437,6 +446,14 @@ function BucketScreen({ ready }) {
   const [force, setForce] = useState(false)
   const [lines, setLines] = useState([])
   const [result, setResult] = useState(null) // {ok, ...} | {error}
+  // Estado REAL de la sesión, el que sale de preguntarle a Google. Aparte de
+  // `status.logged_in`, que solo dice que hay un token guardado: puede estar
+  // revocado o caducado y hasta que no se usa nadie lo sabe. Se separan porque
+  // enseñar «sesión iniciada» sobre un token muerto es justo la confusión que
+  // esta pantalla tiene que quitar.
+  //   null = aún sin comprobar · {ok, text, validada_en} = ya comprobada
+  const [sesion, setSesion] = useState(null)
+  const [comprobando, setComprobando] = useState(false)
 
   // Lo que se manda al backend como destino. Con «nueva» va el texto crudo: la
   // normalización (acentos, espacios) es cosa del backend, que es quien manda.
@@ -447,6 +464,23 @@ function BucketScreen({ ready }) {
       setStatus(await api.cloudStatus())
     } catch (e) {
       setStatus({ ok: false, configured: false, help: String(e) })
+    }
+  }
+
+  // Pregunta a Google si el token guardado sigue sirviendo. La respuesta llega
+  // por el evento `atom:cloud` (kind 'session'), no por el return.
+  async function comprobarSesion() {
+    setComprobando(true)
+    try {
+      const r = await api.cloudVerify()
+      if (r && r.started === false) {
+        setComprobando(false)
+        // Sin sesión guardada no hay nada que comprobar; no es un error.
+        if (r.logged_in === false) setSesion(null)
+      }
+    } catch (e) {
+      setComprobando(false)
+      setSesion({ ok: false, text: String(e) })
     }
   }
 
@@ -462,6 +496,9 @@ function BucketScreen({ ready }) {
     if (ready) {
       refresh()
       cargarInspecciones()
+      // Al abrir la pantalla se confirma la sesión de una vez, en vez de que el
+      // operador se entere de que caducó cuando ya lleva media subida.
+      comprobarSesion()
     }
   }, [ready])
 
@@ -473,10 +510,23 @@ function BucketScreen({ ready }) {
             setBusy(false)
             if (d.ok) {
               refresh()
+              // El canje del código acaba de funcionar: la sesión está viva sin
+              // necesidad de volver a preguntar.
+              setSesion({ ok: true, text: 'Sesión válida.', validada_en: Date.now() / 1000 })
               // El catálogo vive en el bucket: hasta ahora no había con qué
               // pedirlo, así que se baja en cuanto hay sesión.
               cargarInspecciones()
             } else setResult({ error: d.text || 'No se pudo iniciar sesión.' })
+            break
+          case 'session':
+            setComprobando(false)
+            setSesion({ ok: !!d.ok, text: d.text, validada_en: d.validada_en })
+            // Siempre se relee el estado, no solo al fallar: una sesión revocada
+            // deja de estar «iniciada» también en el backend (el refresh fallido
+            // borra el token), y al revés, la comprobación puede terminar justo
+            // después de que el usuario cerrara sesión. En ambos casos la UI
+            // seguiría enseñando algo que ya no es verdad.
+            refresh()
             break
           case 'start':
             setLines([`Subiendo ${d.files} ficheros (${formatBytes(d.bytes)}) a ${d.prefix}/`])
@@ -512,6 +562,7 @@ function BucketScreen({ ready }) {
   async function logout() {
     await api.cloudLogout()
     setPlan(null)
+    setSesion(null)
     refresh()
   }
 
@@ -579,24 +630,56 @@ function BucketScreen({ ready }) {
       <div className="field">
         <span className="field-label">Cuenta de Google</span>
         {logged ? (
-          <div className="field-row">
-            <input className="glass-input" type="text" value={status.email || 'sesión iniciada'} readOnly />
-            <button type="button" className="btn-ghost" onClick={logout} disabled={ocupado}>
-              Cerrar sesión
-            </button>
-          </div>
+          <>
+            <div className="field-row">
+              <input className="glass-input" type="text" value={status.email || 'sesión iniciada'} readOnly />
+              {/* Una sesión caducada no se arregla cerrándola: se vuelve a
+                  entrar. El botón principal cambia según el estado real. */}
+              {sesion && !sesion.ok ? (
+                <button type="button" className="btn-ghost" onClick={login} disabled={!ready || busy}>
+                  {busy ? 'Esperando…' : 'Volver a iniciar sesión'}
+                </button>
+              ) : null}
+              <button type="button" className="btn-ghost" onClick={logout} disabled={ocupado}>
+                Cerrar sesión
+              </button>
+            </div>
+            <span className={`field-hint ${sesion ? (sesion.ok ? 'hint-ok' : 'hint-warn') : ''}`}>
+              {comprobando || !sesion
+                ? 'Comprobando que la sesión sigue activa…'
+                : sesion.ok
+                  ? `Sesión activa y comprobada${horaCorta(sesion.validada_en)}.`
+                  : sesion.text || 'La sesión ya no es válida. Vuelve a iniciar sesión.'}
+              {!comprobando ? (
+                <>
+                  {' '}
+                  <button type="button" className="link-inline" onClick={comprobarSesion}>
+                    Comprobar de nuevo
+                  </button>
+                </>
+              ) : null}
+            </span>
+          </>
         ) : (
-          <div className="field-row">
-            <input
-              className="glass-input"
-              type="text"
-              value="Sin iniciar sesión"
-              readOnly
-            />
-            <button type="button" className="btn-ghost" onClick={login} disabled={!ready || busy}>
-              {busy ? 'Esperando…' : 'Iniciar sesión'}
-            </button>
-          </div>
+          <>
+            <div className="field-row">
+              <input
+                className="glass-input"
+                type="text"
+                value="Sin iniciar sesión"
+                readOnly
+              />
+              <button type="button" className="btn-ghost" onClick={login} disabled={!ready || busy}>
+                {busy ? 'Esperando…' : 'Iniciar sesión'}
+              </button>
+            </div>
+            {/* Por qué no hay sesión, cuando el motivo no es «nunca entraste»:
+                un perfil copiado de otro equipo deja el almacén ilegible y sin
+                esto el operador solo vería un «sin iniciar sesión» inexplicable. */}
+            {status?.aviso ? (
+              <span className="field-hint hint-warn">{status.aviso}</span>
+            ) : null}
+          </>
         )}
         <span className="field-hint">
           Se abre el navegador para identificarte con tu cuenta de Aerotools. Los datos van

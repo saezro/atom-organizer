@@ -329,12 +329,14 @@ def test_el_id_token_caducado_se_renueva_solo(tmp_path, monkeypatch):
 
 def test_el_id_token_no_se_guarda_en_disco(auth, google, tmp_path):
     """Vive 1 h: al arrancar mañana estaría caducado igual. Persistirlo solo
-    añadiría un JWT con el email del operador en un fichero."""
+    añadiría un JWT con el email del operador en el almacén."""
     holder: dict = {}
     auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
-    guardado = json.loads((tmp_path / "google_auth.json").read_text())
-    assert "id_token" not in guardado
-    assert set(guardado) == {"refresh_token", "email"}
+    crudo = (tmp_path / "google_auth.json").read_bytes()
+    assert auth.id_token().encode() not in crudo
+    # Y de paso: el refresh token tampoco aparece legible, que es el motivo de
+    # que el almacén dejara de ser un JSON en claro.
+    assert b"refresh-1" not in crudo
 
 
 def test_un_refresh_sin_id_token_lo_dice_en_vez_de_mandar_uno_muerto(tmp_path, monkeypatch):
@@ -383,7 +385,9 @@ def test_si_el_usuario_revoca_el_acceso_se_olvida_la_sesion(tmp_path, monkeypatc
         auth.access_token()
 
     assert not auth.is_logged_in()
-    assert not store.exists()
+    # Lo que importa no es que el fichero desaparezca, sino que no quede sesión
+    # que rescatar: al volver a abrir la app tiene que pedir login.
+    assert ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=store).is_logged_in() is False
 
 
 def test_logout_borra_y_revoca(auth, google, tmp_path):
@@ -393,7 +397,8 @@ def test_logout_borra_y_revoca(auth, google, tmp_path):
     auth.logout()
 
     assert not auth.is_logged_in()
-    assert not auth.store_path.exists()
+    otra = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=auth.store_path)
+    assert not otra.is_logged_in()
     assert google.revocados == ["refresh-1"]
 
 
@@ -473,3 +478,181 @@ def test_un_token_caducado_a_mitad_no_pierde_los_bytes_ya_subidos(tmp_path, monk
     assert server.objects["a.jpg"] == b"z" * 3000
     assert server.opened == 1          # la sesión NO se reabrió
     assert "tok-nuevo" in fake_auth.emitidos  # pero el token sí se renovó
+
+
+# --------------------------------------------------------------------------
+# Almacén cifrado: migración desde el JSON en claro y estado de la sesión
+# --------------------------------------------------------------------------
+
+def test_el_operador_no_tiene_que_volver_a_entrar_al_actualizar(tmp_path, google):
+    """La v3.4.20 dejaba la sesión en `google_auth.json`. Al actualizar, esa
+    sesión tiene que seguir sirviendo: obligar a todo el mundo a entrar otra
+    vez por un cambio de formato interno es un coste que no hace falta pagar."""
+    (tmp_path / ga.LEGACY_STORE_NAME).write_text(
+        json.dumps({"refresh_token": "refresh-viejo", "email": "ofi@aerotools.es"}),
+        encoding="utf-8")
+
+    auth = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET,
+                         store_path=tmp_path / ga.STORE_NAME)
+
+    assert auth.is_logged_in()
+    assert auth.identity.email == "ofi@aerotools.es"
+    assert auth.access_token() == "acceso-1"  # el token viejo sigue refrescando
+
+
+def test_al_migrar_el_token_deja_de_estar_en_claro(tmp_path, google):
+    legacy = tmp_path / ga.LEGACY_STORE_NAME
+    legacy.write_text(json.dumps({"refresh_token": "refresh-viejo",
+                                  "email": "ofi@aerotools.es"}), encoding="utf-8")
+
+    ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=tmp_path / ga.STORE_NAME)
+
+    assert not legacy.exists()
+    assert b"refresh-viejo" not in (tmp_path / ga.STORE_NAME).read_bytes()
+
+
+def test_la_migracion_ocurre_una_sola_vez(tmp_path, google):
+    """Si el JSON siguiera ahí, cada arranque pisaría la sesión buena con la
+    vieja — incluida una que el usuario acabara de cerrar."""
+    (tmp_path / ga.LEGACY_STORE_NAME).write_text(
+        json.dumps({"refresh_token": "refresh-viejo", "email": "ofi@aerotools.es"}),
+        encoding="utf-8")
+    store = tmp_path / ga.STORE_NAME
+
+    ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=store).logout()
+
+    assert not ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=store).is_logged_in()
+
+
+def test_la_sesion_sobrevive_a_cerrar_la_app(auth, google, tmp_path):
+    holder: dict = {}
+    auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
+
+    otra = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, hosted_domain="aerotools.es",
+                         store_path=auth.store_path)
+
+    assert otra.is_logged_in()
+    assert otra.identity.email == "ofi@aerotools.es"
+    assert otra.access_token()
+
+
+def test_verificar_confirma_que_la_sesion_sigue_viva(auth, google):
+    holder: dict = {}
+    auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
+
+    valida, texto = auth.verificar()
+
+    assert valida
+    assert "válida" in texto
+    assert auth.validada_en
+
+
+def test_verificar_detecta_la_sesion_revocada(tmp_path, monkeypatch):
+    """El caso que motiva todo esto: la app enseñaba «sesión iniciada» sobre un
+    token muerto y el operador no se enteraba hasta media subida."""
+    fake = FakeGoogle()
+    monkeypatch.setattr(ga.urllib.request, "urlopen", fake.urlopen)
+    auth = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=tmp_path / ga.STORE_NAME)
+    holder: dict = {}
+    auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
+
+    fake.error_en_refresh = 400
+    valida, texto = auth.verificar()
+
+    assert not valida
+    assert "Vuelve a iniciar sesión" in texto
+    assert not auth.is_logged_in()
+
+
+def test_verificar_sin_sesion_lo_dice_sin_llamar_a_google(tmp_path, google):
+    auth = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=tmp_path / ga.STORE_NAME)
+
+    valida, texto = auth.verificar()
+
+    assert not valida
+    assert "No hay sesión iniciada" in texto
+    assert google.peticiones == []
+
+
+def test_la_fecha_de_validacion_sobrevive_al_reinicio(auth, google):
+    holder: dict = {}
+    auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
+    auth.verificar()
+
+    otra = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, hosted_domain="aerotools.es",
+                         store_path=auth.store_path)
+
+    assert otra.validada_en == pytest.approx(auth.validada_en)
+
+
+def test_una_sesion_que_no_se_puede_descifrar_se_explica(tmp_path, google):
+    """Perfil copiado a otro equipo. Sin el aviso, el operador solo vería un
+    «sin iniciar sesión» que no encaja con lo que él recuerda."""
+    store = tmp_path / ga.STORE_NAME
+    auth = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=store)
+    holder: dict = {}
+    auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
+
+    (tmp_path / "session.key").unlink()
+    otra = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=store)
+
+    assert not otra.is_logged_in()
+    assert otra.aviso_store and "descifrar" in otra.aviso_store
+
+
+def test_una_bd_danada_no_impide_recuperar_la_sesion_heredada(tmp_path, google):
+    """El caso feo: se actualiza, la BD nueva se queda a medias (disco lleno,
+    antivirus) y el `google_auth.json` sigue ahí intacto. Si la BD rota
+    bloqueara la migración, el operador perdería la sesión sin motivo."""
+    (tmp_path / ga.LEGACY_STORE_NAME).write_text(
+        json.dumps({"refresh_token": "refresh-viejo", "email": "ofi@aerotools.es"}),
+        encoding="utf-8")
+    (tmp_path / ga.STORE_NAME).write_bytes(b"a medio escribir")
+
+    auth = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=tmp_path / ga.STORE_NAME)
+
+    assert auth.is_logged_in()
+    assert auth.identity.email == "ofi@aerotools.es"
+
+
+def test_si_la_migracion_revienta_la_app_sigue_abriendo(tmp_path, google, monkeypatch):
+    """`_load` corre en el constructor: una excepción aquí dejaría la pestaña
+    entera lanzando traceback en cada intento, no solo sin sesión."""
+    (tmp_path / ga.LEGACY_STORE_NAME).write_text(
+        json.dumps({"refresh_token": "refresh-viejo", "email": "ofi@aerotools.es"}),
+        encoding="utf-8")
+
+    from atom_core import session_store
+
+    def revienta(self, *a, **k):
+        raise OSError("disco lleno")
+
+    monkeypatch.setattr(session_store.SessionStore, "importar_legacy", revienta)
+
+    auth = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=tmp_path / ga.STORE_NAME)
+
+    assert not auth.is_logged_in()
+    assert auth.aviso_store and "disco lleno" in auth.aviso_store
+
+
+def test_cerrar_sesion_a_media_comprobacion_no_da_un_falso_valida(tmp_path, monkeypatch):
+    """La comprobación suelta el lock tras el refresh: si el usuario cierra
+    sesión justo ahí, no puede contestarse «sesión válida»."""
+    fake = FakeGoogle()
+    monkeypatch.setattr(ga.urllib.request, "urlopen", fake.urlopen)
+    auth = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=tmp_path / ga.STORE_NAME)
+    holder: dict = {}
+    auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
+
+    original = auth.access_token
+
+    def refresca_y_cierra(*a, **k):
+        token = original(*a, **k)
+        auth.logout()  # el usuario le da a «Cerrar sesión» en ese hueco
+        return token
+
+    monkeypatch.setattr(auth, "access_token", refresca_y_cierra)
+    valida, texto = auth.verificar()
+
+    assert not valida
+    assert "No hay sesión iniciada" in texto
