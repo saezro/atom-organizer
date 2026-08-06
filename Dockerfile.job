@@ -45,7 +45,15 @@ COPY organize_cli.py external_tools.py utils.py version.py dji_irp_linux.py \
 
 # Solo la parte Linux del SDK DJI (.so). Los .exe y .dll son ~500 KB de peso
 # muerto en una imagen que nunca va a correr en Windows.
-COPY programas_externos/DJI/*.so* ./programas_externos/DJI/
+#
+# `libv_list.ini` NO es documentación: es el índice con el que libdirp decide qué
+# plugin cargar (sección [linux_release_dll_list] -> libv_dirp/girp/iirp/hirp.so),
+# y lo busca en SU PROPIO directorio. Sin él, libdirp carga pero no activa ningún
+# plugin y `dirp_create_from_rjpeg` devuelve -15 en TODAS las imágenes. Eso es lo
+# que pasó en v3.4.24: el glob `*.so*` se dejaba el .ini fuera, la ejecución de
+# ANTOLIN salió con 0 TIFF en los 7 bloques de TERMICA y el Job la dio por buena.
+COPY programas_externos/DJI/*.so* programas_externos/DJI/libv_list.ini \
+     ./programas_externos/DJI/
 
 # El SDK carga libdirp.so con dlopen por nombre, no por ruta absoluta.
 ENV LD_LIBRARY_PATH=/app/programas_externos/DJI

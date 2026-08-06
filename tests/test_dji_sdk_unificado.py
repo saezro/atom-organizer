@@ -99,3 +99,44 @@ def test_las_libs_que_declara_el_sdk_existen(seccion):
     assert not faltan, (
         f"libv_list.ini [{seccion}] declara librerias que no estan en el paquete: {faltan}. "
         "El SDK fallara con -16 (create R-JPEG dirp handle failed) en esa plataforma.")
+
+
+def _copias_del_dockerfile_job() -> list:
+    """Patrones de origen de todas las instrucciones COPY de Dockerfile.job."""
+    texto = (REPO / "Dockerfile.job").read_text(encoding="utf-8")
+    texto = texto.replace("\\\n", " ")  # continuaciones de linea
+    patrones = []
+    for linea in texto.splitlines():
+        linea = linea.strip()
+        if not linea.upper().startswith("COPY "):
+            continue
+        tokens = [t for t in linea.split()[1:] if not t.startswith("--")]
+        patrones.extend(tokens[:-1])  # el ultimo token es el destino
+    return patrones
+
+
+def test_la_imagen_del_job_se_lleva_el_sdk_linux_entero():
+    """Dockerfile.job debe copiar TODO lo que libdirp necesita en runtime Linux.
+
+    Hermano del test de arriba, y del mismo fallo por el otro lado: alli el .ini
+    declaraba libs ausentes, aqui el .ini era el ausente. La v3.4.24 copiaba
+    `programas_externos/DJI/*.so*`, que se deja fuera `libv_list.ini` — el indice con
+    el que libdirp elige su plugin, y que busca en su propio directorio. La imagen
+    arrancaba, cargaba libdirp y devolvia -15 en las 3.743 termicas de ANTOLIN: cero
+    TIFF, y el Job marcado como EXITO.
+
+    Se comprueba contra el contenido REAL de la carpeta del SDK (no una lista a mano)
+    para que un fichero nuevo del SDK no se quede fuera en silencio.
+    """
+    import fnmatch
+
+    patrones = _copias_del_dockerfile_job()
+    requeridos = ["libv_list.ini"] + sorted(
+        p.name for p in SDK_DIR.iterdir() if p.suffix == ".so" or ".so." in p.name)
+    faltan = [n for n in requeridos
+              if not any(fnmatch.fnmatch(f"programas_externos/DJI/{n}", pat)
+                         for pat in patrones)]
+    assert not faltan, (
+        f"Dockerfile.job no copia {faltan} a la imagen del Cloud Run Job. "
+        "Sin el SDK Linux completo, dirp_create_from_rjpeg falla en TODAS las "
+        "imagenes termicas y el vuelo sale sin un solo TIFF.")
