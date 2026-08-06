@@ -55,8 +55,41 @@ jobs:
             echo "prerelease=${{ inputs.prerelease }}" >> "$GITHUB_OUTPUT"
           fi
 
+  # Puerta de calidad ANTES de gastar los dos builds. Nació de v3.4.24: un
+  # `setForce(false)` huérfano (estado que se quitó en 4140633) reventaba
+  # `pickCarpeta` en runtime, y como aquí no corría ni lint ni tests, lo único
+  # que lo habría cazado era abrir la ventana a mano y mirar la consola.
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # `no-undef` es la regla que caza los identificadores que dejó atrás un
+      # refactor. Sin ella el bundle compila tan feliz y falla al pulsar.
+      - name: Lint de la UI (oxlint)
+        working-directory: webui
+        run: |
+          npm ci
+          npm run lint
+      - name: Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-linux.txt
+          pip install -r requirements-webview.txt
+          pip install pytest
+      # test_dark_theme.py falla EN RECOLECCIÓN desde antes de este workflow;
+      # se excluye para no bloquear la puerta con deuda preexistente, no porque
+      # sea prescindible. Arreglarlo y quitar el --ignore es tarea aparte.
+      - name: Tests
+        run: python -m pytest tests/ -q --ignore=tests/test_dark_theme.py
+
   build-linux:
-    needs: meta
+    needs: [meta, checks]
     # Era ubuntu-22.04, por construir contra la glibc más vieja posible y que el
     # AppImage corriera en cualquier sitio. Esa imagen ya no se sirve: los dos
     # intentos de v3.4.22 murieron sin ejecutar un solo paso ("The job was not
@@ -105,7 +138,7 @@ jobs:
           if-no-files-found: error
 
   build-windows:
-    needs: meta
+    needs: [meta, checks]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
