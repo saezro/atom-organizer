@@ -116,45 +116,6 @@ def _falsa_descarga(payload, capturado: dict):
     return urlopen
 
 
-def test_el_catalogo_se_baja_del_bucket_con_la_sesion_del_operador(monkeypatch):
-    cap: dict = {}
-    monkeypatch.setattr(ins.urllib.request, "urlopen", _falsa_descarga(
-        {"inspecciones": [{"id": 1, "empresa": "E", "planta": "P",
-                           "anio": 2026, "tipo": "T_Modulos"}]}, cap))
-    lista = ins.descargar_catalogo("datos_para_organizar", _Auth())
-    assert [i.prefijo for i in lista] == ["E--P--2026--T_Modulos"]
-    assert ins.OBJETO_CATALOGO.replace("_", "_") in cap["url"]
-    assert "alt=media" in cap["url"]
-    assert cap["auth"] == "Bearer tok"
-
-
-def test_una_fila_sin_datos_utiles_no_entra_en_la_lista(monkeypatch):
-    """Una inspección sin prefijo no se puede elegir: enseñarla sería ofrecer
-    un destino que no existe."""
-    cap: dict = {}
-    monkeypatch.setattr(ins.urllib.request, "urlopen", _falsa_descarga(
-        {"inspecciones": [{"id": 2}, "basura", {"id": 3, "planta": "P"}]}, cap))
-    assert [i.id for i in ins.descargar_catalogo("b", _Auth())] == [3]
-
-
-def test_si_el_bucket_falla_se_tira_de_la_ultima_lista_bajada(monkeypatch, tmp_path):
-    """Sin red el operador tiene que poder seguir subiendo: la lista de ayer
-    sirve, pero se dice de dónde sale."""
-    monkeypatch.setattr(ins, "_ruta_cache", lambda: tmp_path / "cache.json")
-    ins.guardar_cache([UNA])
-
-    def revienta(req, timeout=None):
-        raise urllib.error.URLError("sin red")
-
-    monkeypatch.setattr(ins.urllib.request, "urlopen", revienta)
-    out = ins.cargar_catalogo("b", _Auth())
-    assert out["origen"] == "cache"
-    assert out["inspecciones"][0]["prefijo"] == UNA.prefijo
-    assert "sin red" in out["error"]
-
-
-# --- catálogo vivo: API de ATOM Suite ---------------------------------------
-
 def test_el_catalogo_se_pide_a_la_suite_con_el_id_token(monkeypatch):
     """La app se autentica con el `id_token`, NO con el access token de Storage:
     el backend verifica el JWT contra Google y exige `hd=aerotools.es`. Mandar
@@ -170,11 +131,10 @@ def test_el_catalogo_se_pide_a_la_suite_con_el_id_token(monkeypatch):
     assert cap["auth"] == "Bearer idtok"
 
 
-def test_el_catalogo_vivo_manda_sobre_el_bucket(monkeypatch, tmp_path):
-    """El `_inspecciones.json` del bucket se generaba a mano y envejecía en
-    silencio. Si la API responde, es la que vale."""
-    monkeypatch.setattr(ins, "_ruta_cache", lambda: tmp_path / "cache.json")
-
+def test_el_catalogo_sale_de_la_api_y_de_ningun_otro_sitio(monkeypatch):
+    """Ni el `_inspecciones.json` del bucket ni la caché en disco: los dos se
+    generaban aparte y envejecían en silencio, y de esta lista sale el destino
+    de la subida."""
     def urlopen(req, timeout=None):
         assert "/api/organizer/inspecciones" in req.full_url, "no debe tocar el bucket"
         return _Resp(json.dumps(
@@ -186,44 +146,6 @@ def test_el_catalogo_vivo_manda_sobre_el_bucket(monkeypatch, tmp_path):
     assert out["origen"] == "api"
     assert out["ok"] and out["error"] is None
     assert [i["id"] for i in out["inspecciones"]] == [9]
-
-
-def test_si_la_suite_no_responde_se_cae_al_bucket(monkeypatch, tmp_path):
-    """La Suite caída no puede dejar al operador sin poder subir: el bucket
-    sigue siendo la red de seguridad."""
-    monkeypatch.setattr(ins, "_ruta_cache", lambda: tmp_path / "cache.json")
-
-    def urlopen(req, timeout=None):
-        if "/api/organizer/" in req.full_url:
-            raise urllib.error.HTTPError("u", 502, "Bad Gateway",
-                                         email.message.Message(), None)
-        return _Resp(json.dumps(
-            {"inspecciones": [{"id": 7, "empresa": "E", "planta": "P",
-                               "anio": "2025", "tipo": "T_Modulos"}]}).encode())
-
-    monkeypatch.setattr(ins.urllib.request, "urlopen", urlopen)
-    out = ins.cargar_catalogo("b", _Auth())
-    assert out["origen"] == "bucket"
-    assert [i["id"] for i in out["inspecciones"]] == [7]
-
-
-def test_al_llegar_a_la_cache_se_conservan_los_dos_fallos(monkeypatch, tmp_path):
-    """Un 403 de la API (cuenta no registrada en la Suite) no puede quedar
-    tapado por el fallo posterior del bucket: son problemas distintos y el de
-    arriba es el que hay que arreglar."""
-    monkeypatch.setattr(ins, "_ruta_cache", lambda: tmp_path / "cache.json")
-    ins.guardar_cache([UNA])
-
-    def urlopen(req, timeout=None):
-        if "/api/organizer/" in req.full_url:
-            raise urllib.error.HTTPError("u", 403, "usuario-no-registrado",
-                                         email.message.Message(), None)
-        raise urllib.error.URLError("sin red")
-
-    monkeypatch.setattr(ins.urllib.request, "urlopen", urlopen)
-    out = ins.cargar_catalogo("b", _Auth())
-    assert out["origen"] == "cache"
-    assert "403" in out["error"] and "sin red" in out["error"]
 
 
 def test_la_api_devuelve_campos_crudos_y_el_slug_lo_monta_la_app(monkeypatch):
@@ -249,14 +171,36 @@ def test_el_anio_llega_como_string_aunque_postgres_lo_de_numerico(monkeypatch):
 
 def test_un_fallo_de_descarga_no_pasa_por_lista_vacia(monkeypatch):
     """«No hay inspecciones» y «no he podido mirar» llevan a decisiones
-    distintas, así que `descargar_catalogo` propaga."""
+    distintas, así que `descargar_catalogo_api` propaga."""
     def revienta(req, timeout=None):
         raise urllib.error.HTTPError("u", 404, "Not Found",
                                      email.message.Message(), None)
 
     monkeypatch.setattr(ins.urllib.request, "urlopen", revienta)
     with pytest.raises(urllib.error.HTTPError):
-        ins.descargar_catalogo("b", _Auth())
+        ins.descargar_catalogo_api(_Auth())
+
+
+def test_si_la_api_falla_no_se_sirve_una_lista_de_otro_sitio(monkeypatch):
+    """Antes se caía al bucket y luego a la caché. Una lista vieja con el mismo
+    aspecto que la buena lleva a subir a un destino que ya no existe, y no se
+    nota hasta que los ficheros están arriba. Mejor decir que no se pudo."""
+    def revienta(req, timeout=None):
+        raise urllib.error.HTTPError("u", 502, "Bad Gateway",
+                                     email.message.Message(), None)
+
+    monkeypatch.setattr(ins.urllib.request, "urlopen", revienta)
+    out = ins.cargar_catalogo("b", _Auth())
+    assert out["ok"] is False
+    assert out["inspecciones"] == []
+    assert out["origen"] == "api"
+    assert "502" in out["error"]
+
+
+def test_ya_no_existe_ninguna_via_alternativa_al_catalogo():
+    """Que las funciones sigan ahí es que alguien puede volver a llamarlas."""
+    for muerta in ("descargar_catalogo", "leer_cache", "guardar_cache", "_ruta_cache"):
+        assert not hasattr(ins, muerta), f"{muerta} deberia haber desaparecido"
 
 
 def test_la_ui_recibe_prefijo_y_etiqueta_ya_hechos():

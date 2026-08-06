@@ -57,7 +57,13 @@ jobs:
 
   build-linux:
     needs: meta
-    runs-on: ubuntu-22.04
+    # Era ubuntu-22.04, por construir contra la glibc más vieja posible y que el
+    # AppImage corriera en cualquier sitio. Esa imagen ya no se sirve: los dos
+    # intentos de v3.4.22 murieron sin ejecutar un solo paso ("The job was not
+    # acquired by Runner of type hosted"). El suelo de glibc sube a la de 24.04;
+    # el AppImage lo usa Linux moderno (Windows va por su instalador), así que
+    # el coste es teórico y el de no publicar no lo era.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

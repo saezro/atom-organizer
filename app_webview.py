@@ -490,20 +490,19 @@ class Api:
     def cloud_inspecciones(self) -> dict:
         """Catálogo de inspecciones para el desplegable.
 
-        Sale de `_inspecciones.json` en el propio bucket, leído con la sesión
-        del operador — la app no habla con la BD de Aerotools (ver
-        `atom_core/inspecciones.py`). Sin sesión no hay catálogo, pero eso no
-        es un error: el operador puede teclear la inspección a mano.
+        Sale de la BD de Aerotools, vía la API de ATOM Suite y con la sesión
+        del operador — la app no habla con la BD directamente (ver
+        `atom_core/inspecciones.py`). Esa es la única fuente: sin sesión o sin
+        API no hay lista, y se dice. No se sirve una copia local vieja, porque
+        de esta lista sale el destino de la subida.
         """
         from atom_core import cloud_config, inspecciones
 
         auth = self._get_auth()
         if auth is None or not auth.is_logged_in():
-            cacheadas, cuando = inspecciones.leer_cache()
-            return {"ok": bool(cacheadas),
-                    "inspecciones": [i.to_dict() for i in cacheadas],
-                    "origen": "cache", "bajado_en": cuando,
-                    "error": None if cacheadas else "Inicia sesión para ver las inspecciones."}
+            return {"ok": False, "inspecciones": [], "origen": "api",
+                    "bajado_en": 0.0,
+                    "error": "Inicia sesión para ver las inspecciones."}
         return inspecciones.cargar_catalogo(cloud_config.BUCKET_DATOS, auth)
 
     def _destino(self, folder: str, prefix: str | None) -> tuple[Path | None, str, str]:
