@@ -46,10 +46,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 
+from .host_env import abrir_en_navegador
 from .session_store import LEGACY_STORE_NAME, STORE_NAME, SessionStore
 
 __all__ = [
@@ -309,7 +309,7 @@ class GoogleAuth:
         return True, "Sesión válida."
 
     # -- login ------------------------------------------------------------
-    def login(self, *, open_browser=webbrowser.open,
+    def login(self, *, open_browser=abrir_en_navegador,
               timeout: int = LOGIN_TIMEOUT) -> Identity:
         """Abre el navegador, espera el consentimiento y guarda la sesión."""
         verifier = base64.urlsafe_b64encode(secrets.token_bytes(64)).rstrip(b"=").decode()

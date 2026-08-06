@@ -3,4 +3,46 @@ HERE="$(dirname "$(readlink -f "$0")")"
 # QtWebEngine dentro de AppImage: sandbox setuid no disponible → desactivarlo
 export QTWEBENGINE_DISABLE_SANDBOX=1
 export QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --enable-features=UseOzonePlatform"
+
+# --- Certificados de la CA del sistema ---------------------------------------
+# El bundle trae su propio OpenSSL, compilado con las rutas de CA de la distro
+# donde se construye (Ubuntu). En Arch/Fedora/SUSE esas rutas no existen y
+# CUALQUIER petición HTTPS —incluido el login de Google— muere con
+# "certificate verify failed: unable to get local issuer certificate".
+# Se localiza el almacén de la distro y se le dice a OpenSSL dónde está. Si el
+# usuario ya ha fijado el suyo, manda el suyo.
+if [ -z "${SSL_CERT_FILE:-}" ]; then
+    for _ca in /etc/ssl/certs/ca-certificates.crt \
+               /etc/pki/tls/certs/ca-bundle.crt \
+               /etc/ssl/ca-bundle.pem \
+               /etc/ssl/cert.pem; do
+        if [ -r "$_ca" ]; then
+            SSL_CERT_FILE="$_ca"; export SSL_CERT_FILE
+            REQUESTS_CA_BUNDLE="$_ca"; export REQUESTS_CA_BUNDLE
+            break
+        fi
+    done
+    unset _ca
+fi
+if [ -z "${SSL_CERT_DIR:-}" ] && [ -d /etc/ssl/certs ]; then
+    SSL_CERT_DIR=/etc/ssl/certs; export SSL_CERT_DIR
+fi
+
+# --- Teclado: libxkbcommon la pone el sistema --------------------------------
+# La libxkbcommon del bundle revienta contra los datos de xkeyboard-config del
+# sistema cuando este es más nuevo: SIGSEGV dentro de la propia librería, con la
+# app ya arrancada y en uso, y sin traza de Python que ayude. Librería y datos
+# van a la par, y los datos son del sistema — así que la librería, también.
+# Se antepone con LD_PRELOAD porque el bundle fija su LD_LIBRARY_PATH más tarde.
+# Si la distro no la trae, no se precarga nada y sigue valiendo la del bundle:
+# preferimos el fallo raro al fallo de no arrancar.
+for _libdir in /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
+    if [ -e "$_libdir/libxkbcommon.so.0" ]; then
+        LD_PRELOAD="$_libdir/libxkbcommon.so.0${LD_PRELOAD:+:$LD_PRELOAD}"
+        export LD_PRELOAD
+        break
+    fi
+done
+unset _libdir
+
 exec "$HERE/usr/lib/atom_organizer/ATOM-Organizer" "$@"
