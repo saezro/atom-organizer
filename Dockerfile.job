@@ -15,16 +15,16 @@ FROM python:3.11-slim-bookworm
 # exiftool y ffmpeg se invocan por nombre en Linux (external_tools.resolve_tool):
 # no van empaquetados como en Windows, se esperan en el PATH del sistema.
 # libexpat/libgl los pide pyexiv2; sin ellos el import peta en runtime, no al build.
+#
+# libegl1/libxkbcommon0/libdbus-1-3/libfontconfig1 estaban aquí SOLO por PySide6,
+# que ya no se instala (el pipeline dejó de importar Qt): fuera. libexpat1,
+# libgl1 y libglib2.0-0 se quedan — las piden pyexiv2 y matplotlib, no Qt.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libimage-exiftool-perl \
         ffmpeg \
         libexpat1 \
         libgl1 \
         libglib2.0-0 \
-        libegl1 \
-        libxkbcommon0 \
-        libdbus-1-3 \
-        libfontconfig1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -36,12 +36,12 @@ COPY requirements-server.txt ./
 RUN pip install --no-cache-dir -r requirements-server.txt
 
 COPY atom_core/ ./atom_core/
-COPY qt_designer_files/ ./qt_designer_files/
 COPY config/ ./config/
-# pipeline.py y exif.py son módulos sueltos en la raíz, no paquetes. gui.py entra
-# porque organize.py saca de él las fases (ver requirements-server.txt).
+# pipeline.py y exif.py son módulos sueltos en la raíz, no paquetes. gui.py y
+# qt_designer_files/ NO entran: las fases del pipeline salieron de la clase Qt a
+# atom_core/phases.py, así que la ruta headless no toca nada de la GUI.
 COPY organize_cli.py external_tools.py utils.py version.py dji_irp_linux.py \
-     pipeline.py exif.py gui.py ./
+     pipeline.py exif.py ./
 
 # Solo la parte Linux del SDK DJI (.so). Los .exe y .dll son ~500 KB de peso
 # muerto en una imagen que nunca va a correr en Windows.
@@ -54,9 +54,9 @@ ENV LD_LIBRARY_PATH=/app/programas_externos/DJI
 # un cuelgue silencioso hasta que Cloud Run mate el job por timeout.
 ENV MPLBACKEND=Agg
 
-# Qt sin servidor gráfico: sin esto el import de QtWidgets aborta con
-# «could not connect to display» en cuanto el Job arranque.
-ENV QT_QPA_PLATFORM=offscreen
+# (Aquí vivía QT_QPA_PLATFORM=offscreen. Ya no hay Qt en la imagen que ponerle
+# plataforma: si algún día vuelve a hacer falta, es que el acoplamiento se ha
+# reintroducido y `tests/test_pipeline_sin_qt.py` debería haberlo parado antes.)
 
 # Args (--origen, --destino, --estadillo) los pasa el trigger como
 # containerOverrides. Sale 0 si el pipeline terminó y 1 si emitió un error, que

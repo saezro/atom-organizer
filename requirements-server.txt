@@ -9,13 +9,13 @@
 # Las versiones se mantienen clavadas a las de requirements-linux.txt: el
 # contenedor debe procesar el vuelo EXACTAMENTE igual que el escritorio, y una
 # numpy distinta ya es una diferencia numérica que nadie va a estar buscando.
-# Qt entra aunque aquí no se pinte nada: `atom_core/organize.py` toma las fases
-# del pipeline de `MainWindow.<método>` (gui.py), así que importar el pipeline
-# importa PySide6. Es ~400 MB de imagen por una dependencia que el contenedor no
-# usa para nada visible. Quitarlo es sacar esos métodos de la clase Qt a un
-# módulo propio: el refactor correcto, pero no uno que se cuele de tapadillo en
-# un Dockerfile. Mientras tanto, se instala y se corre con QT_QPA_PLATFORM=offscreen.
-PySide6-Essentials==6.4.2
+# Qt NO está y no debe volver. Las fases del pipeline vivían dentro de la clase
+# Qt `MainWindow`, así que importar el pipeline importaba PySide6: ~400 MB de
+# imagen por una dependencia que el contenedor no usa para nada visible. Ahora
+# viven en `atom_core/phases.py`, sin Qt, y de ahí las heredan tanto la GUI como
+# el host headless. `tests/test_pipeline_sin_qt.py` importa `atom_core.organize`
+# con PySide6 vetado: si alguien reintroduce el acoplamiento, CI lo para antes
+# de que la imagen vuelva a engordar.
 ExifRead==3.0.0
 geopy==2.4.1
 matplotlib==3.8.0
