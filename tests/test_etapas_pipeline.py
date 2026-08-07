@@ -44,6 +44,9 @@ class _ObjetoQueApunta:
         # carpetas y qué PB le tocaron a cada tarea, no solo qué fases corrieron.
         self._detalle = detalle if detalle is not None else []
         self.total_images_number = 0
+        # Numérico y no apuntador: las etapas repartidas le suman los sobrantes
+        # («las que no encajan en ningún vuelo») antes de pedir el resumen.
+        self.current_image_number = 0
         self.stop = False
 
     def __getattr__(self, metodo):
@@ -65,9 +68,12 @@ class _UtilsFalso(_ObjetoQueApunta):
     """`utils_obj` necesita devolver DATOS y no None: los contadores de imágenes
     alimentan sumas y el apuntador genérico las reventaría con un TypeError."""
 
+    filtros_recibidos: list = []
+
     def contar_imagenes_or_tmc(self, folder, tmc=False, exclude_patterns=None,
-                               exclude_folders=None):
+                               exclude_folders=None, filtro_nombre=None):
         self._registro.append("utils_obj.contar_imagenes_or_tmc")
+        self.filtros_recibidos.append((folder, filtro_nombre))
         return 0
 
     imagenes_por_carpeta: dict = {}
@@ -316,3 +322,86 @@ def test_el_post_repartido_solo_convierte_sus_vuelos(monkeypatch):
     assert all(r.startswith(os.path.join("/destino", "TERMICA", "PB")) for r in rutas)
     assert all(os.path.basename(r).startswith("PB") and "_V" in os.path.basename(r)
                for r in rutas), f"no se arrancó en la carpeta del vuelo: {rutas}"
+
+
+# --- el total esperado de la estructura, con reparto --------------------------
+
+def _filtro_del_destino(host, cfg):
+    """El `filtro_nombre` con el que la fase Estructura contó el total esperado."""
+    return next(f for carpeta, f in host.utils_obj.filtros_recibidos
+                if carpeta == cfg.output_folder)
+
+
+def test_struct_repartido_cuenta_solo_las_imagenes_de_su_tarea(monkeypatch):
+    """Las OCHO tareas de v3.4.31 salieron con exit 1 en la primera corrida real:
+    cada una comparaba las ~300 que movía contra las 2.516 del destino entero.
+    El reparto estaba sano; el que mentía era el contador."""
+    cfg = _cfg()
+    nombres = [f"DJI_{i:04d}.JPG" for i in range(1, 200)]
+    duenas = {}
+
+    for index in range(8):
+        host = _HostDePrueba(etapa="struct", shard_index=index, shard_count=8)
+        host.utils_obj.filtros_recibidos = []
+        monkeypatch.setattr("atom_core.phases.os.path.isdir", lambda _p: True)
+        host.split_images(cfg, _SignalFalsa(), _SignalFalsa(), _SignalFalsa())
+
+        filtro = _filtro_del_destino(host, cfg)
+        assert filtro is not None, "sin filtro, la tarea espera el destino entero"
+        for nombre in nombres:
+            if filtro(nombre):
+                duenas.setdefault(nombre, []).append(index)
+
+    assert len(duenas) == len(nombres), "hay imágenes que no espera ninguna tarea"
+    assert all(len(d) == 1 for d in duenas.values()), "hay imágenes esperadas por dos tareas"
+
+
+def test_sin_reparto_el_total_sigue_siendo_el_del_destino_entero(monkeypatch):
+    """La app de escritorio corre `todo` con una sola tarea: ahí el total es el
+    global y el filtro sobra."""
+    cfg = _cfg()
+    host = _HostDePrueba(etapa="todo")
+    host.utils_obj.filtros_recibidos = []
+    monkeypatch.setattr("atom_core.phases.os.path.isdir", lambda _p: True)
+    host.split_images(cfg, _SignalFalsa(), _SignalFalsa(), _SignalFalsa())
+    assert _filtro_del_destino(host, cfg) is None
+
+
+def _con_sobrantes(host, nombres):
+    """Deja `nombres` sueltos en la raíz de RGB/TERMICA del destino: son las
+    imágenes que no encajan en la franja horaria de ningún vuelo."""
+    host.utils_obj.imagenes_por_carpeta = {
+        os.path.join("/destino", "TERMICA"): list(nombres),
+        os.path.join("/destino", "RGB"): list(nombres),
+    }
+
+
+def test_struct_cuenta_como_procesadas_las_que_no_encajan_en_ningun_vuelo(monkeypatch):
+    """Con `--etapa struct` el barrido a SIN_ORDENAR ya no corre aquí, sino en
+    `post`. Las imágenes fuera del estadillo se quedan en la raíz sin pasar por
+    `_mover_pares`: si no se cuentan, el cuadre de `get_summarize` sale en ROJO
+    con un reparto perfectamente sano."""
+    from atom_core import sharding
+
+    nombres = [f"DJI_{i:04d}.JPG" for i in range(1, 100)]
+    host = _HostDePrueba(etapa="struct", shard_index=0, shard_count=8)
+    _con_sobrantes(host, nombres)
+    monkeypatch.setattr("atom_core.phases.os.path.isdir", lambda _p: True)
+    host.split_images(_cfg(), _SignalFalsa(), _SignalFalsa(), _SignalFalsa())
+
+    mias = sum(1 for n in nombres if sharding.toca_imagen(n, 0, 8))
+    assert host.gen_struct_folder_obj.current_image_number == mias * 2, (
+        "la tarea tiene que contar sus sobrantes de TERMICA y de RGB")
+
+
+def test_en_todo_los_sobrantes_los_cuenta_el_barrido_y_no_se_suman_dos_veces(monkeypatch):
+    """En `todo` sí corre `checking_results_gen_struct_folder`, que ya los suma
+    al apartarlos. Contarlos otra vez aquí los duplicaría y volvería a
+    descuadrar, esta vez por exceso."""
+    host = _HostDePrueba(etapa="todo")
+    _con_sobrantes(host, [f"DJI_{i:04d}.JPG" for i in range(1, 100)])
+    monkeypatch.setattr("atom_core.phases.os.path.isdir", lambda _p: True)
+    host.split_images(_cfg(), _SignalFalsa(), _SignalFalsa(), _SignalFalsa())
+
+    assert host.gen_struct_folder_obj.current_image_number == 0
+    assert "gen_struct_folder_obj.checking_results_gen_struct_folder" in host.llamadas

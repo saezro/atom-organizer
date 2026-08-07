@@ -25,6 +25,12 @@ class FakeSignal:
         pass
 
 
+def _utils(tmp_path):
+    from utils import Utils
+    return Utils(ol("test_reparto_struct", log_dir=str(tmp_path / "Logs"),
+                    create_file_handler=False))
+
+
 def _make_gsf(tmp_path):
     logger = ol("test_reparto_struct", log_dir=str(tmp_path / "Logs"),
                 create_file_handler=False)
@@ -209,3 +215,72 @@ def test_el_estadillo_se_copia_una_sola_vez(tmp_path):
     arbol = _corre_struct(tmp_path, "estadillo", 8)
     copias = [r for r in arbol if "ESTADILLOS" in r]
     assert len(copias) == 1, f"el estadillo se copió {len(copias)} veces: {copias}"
+
+
+# --- cuadre de contadores por tarea ------------------------------------------
+#
+# El reparto movía bien las imágenes, pero las OCHO tareas salían con exit 1 en
+# la primera corrida real (v3.4.31, 2026-08-07): `get_summarize` compara el
+# total esperado con las procesadas, y ambos números habían dejado de ser
+# comparables por tarea. Es un fallo de contabilidad, no de datos —pero tiñe el
+# run de rojo y aborta el pipeline, así que vale lo mismo que uno de datos.
+
+def test_el_total_esperado_de_cada_tarea_es_solo_el_suyo(tmp_path):
+    """Contar el destino ENTERO deja a las ocho comparando ~300 contra 2.516."""
+    utils_obj = _utils(tmp_path)
+
+    destino = tmp_path / "destino"
+    _destino_plano(destino, _IMAGENES)
+
+    global_ = utils_obj.contar_imagenes_or_tmc(str(destino))
+    por_shard = [
+        utils_obj.contar_imagenes_or_tmc(
+            str(destino),
+            filtro_nombre=lambda n, i=i: sharding.toca_imagen(n, i, 8))
+        for i in range(8)]
+
+    assert global_ == len(_IMAGENES) * 2
+    # Partición: ninguna tarea espera de más ni de menos, y entre todas suman el total.
+    assert sum(por_shard) == global_
+    assert max(por_shard) < global_, "el filtro no está filtrando nada"
+
+
+def test_las_que_no_caen_en_ningun_vuelo_cuentan_como_procesadas(tmp_path):
+    """Sin barrido en `struct`, las imágenes fuera del estadillo se quedan en la
+    raíz sin pasar por `_mover_pares`. Si no se cuentan, el cuadre falla aunque
+    no se haya perdido nada: es exactamente el falso rojo de v3.4.31."""
+    from atom_core.phases import PipelinePhasesMixin
+
+    destino = tmp_path / "destino"
+    _destino_plano(destino, _IMAGENES)
+
+    host = PipelinePhasesMixin.__new__(PipelinePhasesMixin)
+    host.utils_obj = _utils(tmp_path)
+
+    sobrantes = [host._contar_sobrantes_propios(str(destino), i, 8) for i in range(8)]
+    assert sum(sobrantes) == len(_IMAGENES) * 2, (
+        "los sobrantes de las ocho tareas tienen que sumar todo lo que quedó suelto")
+
+    # Y solo los propios: lo que cuenta una tarea no lo cuenta ninguna otra.
+    una_sola = host._contar_sobrantes_propios(str(destino), 0, 1)
+    assert una_sola == len(_IMAGENES) * 2
+    assert sobrantes[0] < una_sola
+
+
+def test_una_imagen_perdida_de_verdad_sigue_descuadrando(tmp_path):
+    """El fix no puede convertir el cuadre en un adorno que siempre da verde:
+    si falta una imagen de las suyas, la tarea tiene que seguir viéndolo."""
+    from atom_core.phases import PipelinePhasesMixin
+
+    destino = tmp_path / "destino"
+    _destino_plano(destino, _IMAGENES)
+    host = PipelinePhasesMixin.__new__(PipelinePhasesMixin)
+    host.utils_obj = _utils(tmp_path)
+
+    mias = [n for n in _IMAGENES if sharding.toca_imagen(n, 0, 8)]
+    assert mias, "el shard 0 tiene que tener alguna imagen para que el test valga"
+
+    antes = host._contar_sobrantes_propios(str(destino), 0, 8)
+    (destino / "RGB" / mias[0]).unlink()
+    despues = host._contar_sobrantes_propios(str(destino), 0, 8)
+    assert despues == antes - 1

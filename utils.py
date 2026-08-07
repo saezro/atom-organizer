@@ -608,7 +608,7 @@ class Utils:
         else:
             return False
 
-    def contar_imagenes_or_tmc(self, folder: str, tmc: bool = False, exclude_patterns: list[str] = None, exclude_folders: list[str] = None) -> int:
+    def contar_imagenes_or_tmc(self, folder: str, tmc: bool = False, exclude_patterns: list[str] = None, exclude_folders: list[str] = None, filtro_nombre = None) -> int:
         """
         Cuenta las imágenes que hay dentro de todos los directorios que existen en la carpeta de entrada.
         Devuelve el número de imágenes existentes dentro de la carpeta de entrada y de todos sus subdirectorios.
@@ -619,6 +619,10 @@ class Utils:
         - tmc - si True, cuenta archivos TMC en lugar de imágenes.
         - exclude_patterns - lista de strings que si están presentes en el nombre del archivo, lo excluyen del conteo.
         - exclude_folders - lista de nombres de carpetas que se excluirán del recorrido junto con todos sus subdirectorios.
+        - filtro_nombre - callable nombre -> bool. Solo se cuentan los archivos que
+          lo pasan. Lo usa el reparto entre tareas (`sharding.toca_imagen`) para
+          contar SOLO las imágenes de una tarea: el total esperado de un shard es
+          el suyo, no el del destino entero.
         """
         excluded_folders_set = set(exclude_folders) if exclude_folders else set()
         # SIN_ORDENAR es una carpeta de aparcado de imágenes huérfanas (fuera del
@@ -632,6 +636,8 @@ class Utils:
             directorios[:] = [d for d in directorios if d not in excluded_folders_set]
             for archivo in archivos:
                 if exclude_patterns and any(pattern in archivo for pattern in exclude_patterns):
+                    continue
+                if filtro_nombre is not None and not filtro_nombre(archivo):
                     continue
                 if not tmc and archivo.endswith(('jpg', 'png', 'JPG')):  # mismo predicado que get_images_from_dir (evita descuadre total/procesadas → falso "no correspondencia" en fase Separación)
                     contador += 1

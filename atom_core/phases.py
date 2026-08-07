@@ -180,6 +180,31 @@ class PipelinePhasesMixin:
                 ruta, exclude_patterns=exclude_patterns, exclude_folders=exclude_folders)
             for ruta in self._rutas_del_shard(output_folder, subcarpetas, mis_pbs))
 
+    def _contar_sobrantes_propios(self, output_folder: str, shard_index: int,
+                                  shard_count: int) -> int:
+        """Imágenes de ESTA tarea que siguen sueltas en la raíz de TERMICA/RGB
+        tras generar la estructura: las que no encajan en ningún vuelo.
+
+        Se cuentan, no se mueven. Quien las aparta a `SIN_ORDENAR` es el barrido,
+        que con `--etapa struct` corre después, ya en `post` (ver
+        `_barrido_sin_ordenar`). Pero `get_summarize` compara el total esperado
+        con las procesadas, y una imagen que se queda en la raíz nunca pasa por
+        `_mover_pares`: sin sumarlas aquí, un reparto perfectamente sano sale en
+        ROJO por «no hay correspondencia entre número inicial y final».
+
+        Mirar la raíz mientras las demás tareas trabajan es seguro porque se
+        filtra por `toca_imagen`: las imágenes propias ya están colocadas o
+        descartadas, y ninguna otra tarea las toca.
+        """
+        total = 0
+        for sub in ("TERMICA", "RGB", "RGB_extra"):
+            carpeta = os.path.join(output_folder, sub)
+            if not os.path.isdir(carpeta):
+                continue
+            total += sum(1 for imagen in self.utils_obj.get_images_from_dir(carpeta)
+                         if sharding.toca_imagen(imagen, shard_index, shard_count))
+        return total
+
     #%% Funciones que llaman a los objetos correspondientes
     def call_to_compress_image(self, cfg: CompressRgbsConfig, progress_callback, progress_bar, progress_summarize) -> None:
         """Función que llama a la clase CompressImage para proceder a la compresión de imágenes.
@@ -385,7 +410,14 @@ class PipelinePhasesMixin:
                 self.organizer_logger_obj.logger.info("---------------------------------------------------------------------")
 
                 self.gen_struct_folder_obj.reset_variables(main_process=False, progress_callback=progress_callback)
-                self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.output_folder)
+                # El total esperado es el de ESTA tarea: con el reparto, cada una
+                # mueve solo las imágenes que le asigna `toca_imagen`, así que
+                # contar el destino entero dejaría a las ocho comparando ~300
+                # procesadas contra 2.516 y saliendo en rojo.
+                self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(
+                    cfg.output_folder,
+                    filtro_nombre=(None if shard_count <= 1
+                                   else lambda n: sharding.toca_imagen(n, shard_index, shard_count)))
                 self.new_log_gui.enable_process()
 
                 progress_summarize.emit("__________________")
@@ -407,6 +439,13 @@ class PipelinePhasesMixin:
                 # Ver `_barrido_sin_ordenar`.
                 if etapa == "todo":
                     self._barrido_sin_ordenar(cfg, progress_callback)
+                else:
+                    # Sin barrido aquí, las imágenes fuera del estadillo se quedan
+                    # en la raíz sin pasar por `_mover_pares`. Se cuentan para que
+                    # el cuadre de `get_summarize` siga siendo una verificación
+                    # real (si falta una de verdad, sigue saliendo en rojo).
+                    self.gen_struct_folder_obj.current_image_number += self._contar_sobrantes_propios(
+                        cfg.output_folder, shard_index, shard_count)
 
                 summarize_dict = self.gen_struct_folder_obj.get_summarize()
                 self.show_summarize(summarize_dict, progress_summarize)
