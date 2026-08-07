@@ -14,6 +14,7 @@ Lo que estos tests sujetan:
 3. Que el checklist de fases que ve el usuario cuente sobre las fases de SU etapa
    (si no, una tarea de `post` diría «fase 1/6» corriendo la cuarta).
 """
+import os
 import sys
 import types
 
@@ -235,7 +236,7 @@ def test_el_plan_respeta_los_flags_apagados():
 # --- el reparto llega hasta las llamadas del pipeline ------------------------
 
 def _correr_repartido(etapa, monkeypatch, shard_index, shard_count,
-                      origen=None, pbs=()):
+                      origen=None, vuelos=()):
     """`origen` es {carpeta: [imágenes]}, el árbol de origen que se simula."""
     origen = origen or {}
     host = _HostDePrueba(etapa=etapa, shard_index=shard_index,
@@ -243,9 +244,10 @@ def _correr_repartido(etapa, monkeypatch, shard_index, shard_count,
     monkeypatch.setattr("atom_core.phases.os.path.isdir", lambda _p: True)
     monkeypatch.setattr("atom_core.sharding.carpetas_con_imagenes",
                         lambda _root, _get: sorted(origen))
-    monkeypatch.setattr("atom_core.sharding.pbs_del_destino", lambda _d: list(pbs))
-    monkeypatch.setattr("atom_core.sharding.peso_de_pb",
-                        lambda _d, _pb, _contar: 1)
+    monkeypatch.setattr("atom_core.sharding.vuelos_del_destino",
+                        lambda _d: list(vuelos))
+    monkeypatch.setattr("atom_core.sharding.peso_de_ruta",
+                        lambda _d, _rel, _contar: 1)
     host.utils_obj.imagenes_por_carpeta = origen
     host.split_images(_cfg(), _SignalFalsa(), _SignalFalsa(), _SignalFalsa())
     return host.llamadas, host.detalle
@@ -284,29 +286,33 @@ def test_las_tareas_de_separacion_cubren_todas_las_imagenes(monkeypatch):
     assert len(procesadas) == len(set(procesadas))
 
 
-def test_el_post_repartido_pasa_sus_pbs_al_verificador(monkeypatch):
-    """El `checking_*` de una tarea NO puede mirar los PB de las demás: los están
-    escribiendo ahora mismo y verlos a medias daría un falso 'no coinciden'."""
-    todos = ["PB1", "PB2", "PB3", "PB4"]
+def test_el_post_repartido_pasa_sus_vuelos_al_verificador(monkeypatch):
+    """El `checking_*` de una tarea NO puede mirar los vuelos de las demás: los
+    están escribiendo ahora mismo y verlos a medias daría un falso 'no coinciden'."""
+    todos = ["PB1/PB1_V1", "PB1/PB1_V2", "PB2/PB2_V1", "PB2/PB2_V2"]
     vistos = []
     for i in range(2):
         _llamadas, detalle = _correr_repartido(
-            "post", monkeypatch, shard_index=i, shard_count=2, pbs=todos)
+            "post", monkeypatch, shard_index=i, shard_count=2, vuelos=todos)
         checks = [kw.get("only_pb") for metodo, _args, kw in detalle
                   if metodo == "checking_convert_to_tif"]
         assert checks, "no se verificó la conversión a TIF"
         assert checks[0] is not None, "el verificador miró el destino entero"
         assert len(checks[0]) == 2
         vistos.extend(checks[0])
-    # Entre las dos tareas se verifican los cuatro PB, cada uno una sola vez.
+    # Entre las dos tareas se verifican los cuatro vuelos, cada uno una sola vez.
     assert sorted(vistos) == todos
 
 
-def test_el_post_repartido_solo_convierte_sus_pbs(monkeypatch):
+def test_el_post_repartido_solo_convierte_sus_vuelos(monkeypatch):
+    """Y arranca en la carpeta del VUELO, no en la del PB: si arrancara en el PB
+    convertiría también los vuelos hermanos, que son de otra tarea."""
     _llamadas, detalle = _correr_repartido(
         "post", monkeypatch, shard_index=0, shard_count=2,
-        pbs=["PB1", "PB2", "PB3", "PB4"])
+        vuelos=["PB1/PB1_V1", "PB1/PB1_V2", "PB2/PB2_V1", "PB2/PB2_V2"])
     rutas = [args[0] for metodo, args, _kw in detalle
              if metodo == "iterate_folders_for_DJI"]
-    assert len(rutas) == 2, "la tarea debería convertir 2 de los 4 PB"
-    assert all(r.startswith("/destino/TERMICA/PB") for r in rutas)
+    assert len(rutas) == 2, "la tarea debería convertir 2 de los 4 vuelos"
+    assert all(r.startswith(os.path.join("/destino", "TERMICA", "PB")) for r in rutas)
+    assert all(os.path.basename(r).startswith("PB") and "_V" in os.path.basename(r)
+               for r in rutas), f"no se arrancó en la carpeta del vuelo: {rutas}"

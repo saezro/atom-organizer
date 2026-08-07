@@ -217,7 +217,7 @@ def test_las_carpetas_sin_imagenes_propias_no_aparecen(tmp_path):
     assert reparto == {}
 
 
-def test_peso_de_pb_suma_rgb_y_termica(tmp_path):
+def test_peso_de_ruta_suma_rgb_y_termica(tmp_path):
     for sub, n in (("RGB", 3), ("TERMICA", 5)):
         d = tmp_path / sub / "PB1"
         d.mkdir(parents=True)
@@ -227,4 +227,102 @@ def test_peso_de_pb_suma_rgb_y_termica(tmp_path):
     def contar(ruta):
         return len(_get_images(ruta))
 
-    assert sharding.peso_de_pb(str(tmp_path), "PB1", contar) == 8
+    assert sharding.peso_de_ruta(str(tmp_path), "PB1", contar) == 8
+
+
+# --- reparto del post-proceso: la unidad es el VUELO HOJA -------------------
+
+def _destino_falso(tmp_path, por_sub):
+    """`{"RGB": {"PBA/PBA_V1": 3, ...}, ...}` -> árbol con esas imágenes."""
+    for sub, vuelos in por_sub.items():
+        for rel, n in vuelos.items():
+            d = tmp_path / sub
+            for parte in rel.split("/"):
+                d = d / parte
+            d.mkdir(parents=True, exist_ok=True)
+            for i in range(n):
+                (d / f"{rel.replace('/', '_')}_{i}.JPG").write_bytes(b"x")
+
+
+def test_vuelos_del_destino_une_las_subcarpetas(tmp_path):
+    """Un vuelo puede tener térmica y no RGB. Tiene que caer en la MISMA tarea en
+    las tres: la rotación de la térmica lee el `location.csv` del RGB hermano."""
+    _destino_falso(tmp_path, {
+        "RGB": {"PBA/PBA_V1": 2, "PBA/PBA_V2": 2},
+        "TERMICA": {"PBA/PBA_V2": 2, "PBB/PBB_V1": 2},
+    })
+
+    assert sharding.vuelos_del_destino(str(tmp_path)) == [
+        "PBA/PBA_V1", "PBA/PBA_V2", "PBB/PBB_V1"]
+
+
+def test_un_pb_sin_vuelos_no_se_pierde_del_reparto(tmp_path):
+    """Destino a medio hacer: mejor repartir el PB entero que dejarlo fuera."""
+    (tmp_path / "RGB" / "PBA").mkdir(parents=True)
+    assert sharding.vuelos_del_destino(str(tmp_path)) == ["PBA"]
+
+
+def test_el_vuelo_equilibra_donde_el_pb_no_puede(tmp_path):
+    """El caso real de ANTOLIN: 7 PB para 8 tareas. Repartiendo por PB una tarea
+    se queda vacía y el PB mayor marca el suelo; por vuelo, no."""
+    vuelos = {f"PB{p}/PB{p}_V{v}": 60 for p in "ABCDEFG" for v in range(1, 5)}
+    _destino_falso(tmp_path, {"TERMICA": vuelos})
+
+    def contar(ruta):
+        return len(_get_images(ruta))
+
+    destino = str(tmp_path)
+    todos = sharding.vuelos_del_destino(destino)
+    cargas = []
+    for i in range(8):
+        mios = sharding.repartir(todos, i, 8,
+                                 peso=lambda r: sharding.peso_de_ruta(destino, r, contar))
+        cargas.append(sum(contar(sharding.ruta_de_relativo(
+            os.path.join(destino, "TERMICA"), r)) for r in mios))
+
+    assert all(c > 0 for c in cargas), "alguna tarea se quedó sin trabajo"
+    assert max(cargas) - min(cargas) <= 60, f"reparto desequilibrado: {cargas}"
+
+    # Y el contraste: con la unidad vieja (el PB) no hay reparto posible — son 7
+    # unidades para 8 tareas, así que una se queda a cero pese a pesarlas bien.
+    pbs = sharding.pbs_del_destino(destino)
+    cargas_pb = [sum(sharding.peso_de_ruta(destino, pb, contar)
+                     for pb in sharding.repartir(
+                         pbs, i, 8,
+                         peso=lambda pb: sharding.peso_de_ruta(destino, pb, contar)))
+                 for i in range(8)]
+    assert min(cargas_pb) == 0
+
+
+def test_el_reparto_de_vuelos_es_una_particion(tmp_path):
+    _destino_falso(tmp_path, {"RGB": {f"PB{p}/PB{p}_V{v}": 1
+                                      for p in "ABC" for v in range(1, 6)}})
+    destino = str(tmp_path)
+    todos = sharding.vuelos_del_destino(destino)
+
+    vistos = [r for i in range(4) for r in sharding.repartir(todos, i, 4)]
+    assert sorted(vistos) == todos
+    assert len(vistos) == len(set(vistos))
+
+
+# --- filtro de las verificaciones (`only_pb`) ------------------------------
+
+def test_indice_seleccion_agrupa_por_pb():
+    indice = sharding.indice_seleccion(["PBA/PBA_V1", "PBA/PBA_V3", "PBB/PBB_V1"])
+    assert indice == {"PBA": {"PBA_V1", "PBA_V3"}, "PBB": {"PBB_V1"}}
+
+
+def test_un_pb_a_secas_selecciona_el_pb_entero():
+    """Compatibilidad con el destino a medio hacer: si la unidad fue el PB, la
+    verificación tiene que mirar TODOS sus vuelos, no ninguno."""
+    indice = sharding.indice_seleccion(["PBA"])
+    assert sharding.seleccion_incluye(indice, "PBA", "PBA_V9") is True
+
+
+def test_seleccion_deja_fuera_los_vuelos_de_otras_tareas():
+    """El motivo de existir del filtro: verificar un vuelo que otra tarea está
+    procesando ahora mismo da un "jpg y tiff no coinciden" que no es un fallo."""
+    indice = sharding.indice_seleccion(["PBA/PBA_V1"])
+    assert sharding.seleccion_incluye(indice, "PBA", "PBA_V1") is True
+    assert sharding.seleccion_incluye(indice, "PBA", "PBA_V2") is False
+    assert sharding.seleccion_incluye(indice, "PBB", "PBB_V1") is False

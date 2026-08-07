@@ -83,30 +83,34 @@ class PipelinePhasesMixin:
 
     def _pbs_del_shard(self, output_folder: str, shard_index: int,
                        shard_count: int, progress_callback) -> list[str]:
-        """Carpetas `PB*` del destino que le tocan a esta tarea."""
-        todos = sharding.pbs_del_destino(output_folder)
+        """Vuelos hoja (`PBx/PBx_Vy`) del destino que le tocan a esta tarea.
+
+        La unidad es el vuelo y no el PB porque con 7 PB para 8 tareas el reparto
+        no puede equilibrarse: el PB mayor marca el suelo del reloj de pared."""
+        todos = sharding.vuelos_del_destino(output_folder)
         mios = sharding.repartir(
             todos, shard_index, shard_count,
-            peso=lambda pb: sharding.peso_de_pb(
-                output_folder, pb, self.utils_obj.contar_imagenes_or_tmc))
+            peso=lambda ruta: sharding.peso_de_ruta(
+                output_folder, ruta, self.utils_obj.contar_imagenes_or_tmc))
         progress_callback.emit(
-            f"\nReparto del post-proceso: {len(mios)} de {len(todos)} PB para la "
+            f"\nReparto del post-proceso: {len(mios)} de {len(todos)} vuelos para la "
             f"tarea {shard_index + 1}/{shard_count} -> {', '.join(mios) or '(ninguno)'}\n")
         self.organizer_logger_obj.logger.info(
-            f"Shard {shard_index + 1}/{shard_count}: PBs {mios} de {todos}")
+            f"Shard {shard_index + 1}/{shard_count}: vuelos {mios} de {todos}")
         if not mios and todos:
             progress_callback.emit(
-                "\nAVISO: a esta tarea no le ha tocado ningún PB (hay menos PB que "
-                "tareas). No es un fallo; sobra paralelismo.\n")
+                "\nAVISO: a esta tarea no le ha tocado ningún vuelo (hay menos vuelos "
+                "que tareas). No es un fallo; sobra paralelismo.\n")
         return mios
 
     def _rutas_del_shard(self, output_folder: str, subcarpetas: list[str],
                          mis_pbs) -> list[str]:
         """Rutas concretas sobre las que iterar: las raíces (`destino/TERMICA`)
-        si no hay reparto, o `destino/TERMICA/PBx` por cada PB propio si lo hay.
+        si no hay reparto, o `destino/TERMICA/PBx/PBx_Vy` por cada vuelo propio
+        si lo hay.
 
         Las funciones del pipeline que reciben estas rutas son recursivas y no
-        miran dónde empieza el árbol, así que arrancar en el PB en vez de en la
+        miran dónde empieza el árbol, así que arrancar en el vuelo en vez de en la
         raíz hace exactamente el mismo trabajo sobre menos carpetas."""
         rutas = []
         for sub in subcarpetas:
@@ -115,10 +119,10 @@ class PipelinePhasesMixin:
                 if os.path.isdir(raiz):
                     rutas.append(raiz)
                 continue
-            for pb in mis_pbs:
-                pb_path = os.path.join(raiz, pb)
-                if os.path.isdir(pb_path):
-                    rutas.append(pb_path)
+            for relativo in mis_pbs:
+                ruta = sharding.ruta_de_relativo(raiz, relativo)
+                if os.path.isdir(ruta):
+                    rutas.append(ruta)
         return rutas
 
     def _contar_del_shard(self, output_folder: str, subcarpetas: list[str], mis_pbs,

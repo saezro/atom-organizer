@@ -12,6 +12,7 @@ from PIL.ExifTags import TAGS, GPSTAGS
 import exifread
 import pyexiv2
 import utils
+from atom_core import sharding
 from geopy import distance
 from geopy.point import Point
 
@@ -749,7 +750,8 @@ class MetaLocation:
         Arguments:
         ---------
         - input_folder - Carpeta raíz desde la que iniciar la búsqueda.
-        - only_pb - si se pasa, solo se verifican esas carpetas `PBx`. Con el trabajo
+        - only_pb - si se pasa, solo se verifican esos vuelos (rutas relativas
+          `PBx/PBx_Vy`, o `PBx` a secas). Con el trabajo
           repartido entre varias tareas, las demás están escribiendo en SUS PB en este
           mismo momento: mirarlos daría un "csv y fotos no coinciden" que no es un fallo,
           sino una foto movida. A None (por defecto) se verifica el árbol entero.
@@ -771,9 +773,9 @@ class MetaLocation:
 
         raices = [input_folder]
         if only_pb is not None:
-            raices = [os.path.join(input_folder, sub, pb)
-                      for sub in ("RGB", "TERMICA", "RGB_Extra") for pb in only_pb
-                      if os.path.isdir(os.path.join(input_folder, sub, pb))]
+            raices = [sharding.ruta_de_relativo(os.path.join(input_folder, sub), rel)
+                      for sub in ("RGB", "TERMICA", "RGB_Extra") for rel in only_pb
+                      if os.path.isdir(sharding.ruta_de_relativo(os.path.join(input_folder, sub), rel))]
 
         excluded_folders = {"CSVs", "ESTADILLOS", "MINIATURAS"}
         for dirpath, dirnames, filenames in self._walk_varias(raices, excluded_folders):
@@ -1000,7 +1002,8 @@ class MetaLocation:
         - input_folder - carpeta de entrada
         - progress_callback - Callback (los signals) que envían, mediante un emit(), información de texto desde el hilo correspondiente.
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
-        - only_pb - si se pasa, se procesan SOLO esas carpetas `PBx` de RGB/TERMICA/RGB_Extra
+        - only_pb - si se pasa, se procesan SOLO esos vuelos (rutas relativas `PBx/PBx_Vy`)
+          de RGB/TERMICA/RGB_Extra
           en vez del árbol entero. Es lo que permite repartir esta fase entre varias tareas
           paralelas sin que ninguna pise el trabajo de otra (ver atom_core/sharding).
           A None (por defecto) el comportamiento es el de siempre.
@@ -1017,9 +1020,9 @@ class MetaLocation:
                 if only_pb is None:
                     return [base]
                 # `iterate_folders` es recursiva y no mira dónde arranca el árbol,
-                # así que empezar en el PB hace el mismo trabajo sobre menos carpetas.
-                return [os.path.join(base, pb) for pb in only_pb
-                        if os.path.isdir(os.path.join(base, pb))]
+                # así que empezar en el vuelo hace el mismo trabajo sobre menos carpetas.
+                return [sharding.ruta_de_relativo(base, rel) for rel in only_pb
+                        if os.path.isdir(sharding.ruta_de_relativo(base, rel))]
 
             for raiz in _raices("RGB"):
                 self.iterate_folders(raiz, "location.csv", progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance)

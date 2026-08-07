@@ -20,7 +20,10 @@ el reparto no es un simple «trocea la lista de imágenes»:
   · `post`   — recorte RGB, meta/location, rotación y TIF. Trabajan sobre el
                destino YA estructurado, y todas deciden **por carpeta hoja**
                (`PBx_Vy`): el criterio de rotación, por ejemplo, se calcula con
-               las imágenes de esa carpeta y de ninguna otra. Unidad = **PBx**.
+               las imágenes de esa carpeta y de ninguna otra. Unidad = **vuelo
+               hoja** (`PBx/PBx_Vy`), no el PB entero: en ANTOLIN hay 7 PB para
+               8 tareas, y con esa granularidad ningún algoritmo puede
+               equilibrar — el PB más grande marca el suelo del reloj de pared.
 
 Las funciones de aquí solo reparten rutas: no tocan ficheros ni saben nada del
 pipeline. Viven en su propio módulo para poder testearlas sin arrastrar numpy,
@@ -200,14 +203,83 @@ def pbs_del_destino(destino: str, subcarpetas=("RGB", "TERMICA", "RGB_Extra")) -
     return sorted(nombres)
 
 
-def peso_de_pb(destino: str, pb: str, contar,
-               subcarpetas=("RGB", "TERMICA", "RGB_Extra")) -> int:
-    """Imágenes totales de un PB sumando RGB + TERMICA (+ RGB_Extra). Es el coste
-    que se usa para equilibrar la etapa `post`, donde las fases caras (TIF sobre
-    todo) escalan con el número de imágenes térmicas de cada PB."""
+def vuelos_del_destino(destino: str, subcarpetas=("RGB", "TERMICA", "RGB_Extra")) -> list[str]:
+    """Unidad de reparto de la etapa `post`: rutas RELATIVAS `PBx/PBx_Vy`.
+
+    Se reparte por vuelo hoja y no por PB porque el PB es demasiado grueso: en
+    ANTOLIN hay 7 PB y el Job lanza 8 tareas, así que una se queda vacía y la que
+    coge el PB mayor marca el reloj de pared por mucho que se pesen bien. El vuelo
+    hoja es además la unidad real de trabajo de todas las fases de `post`.
+
+    Se devuelve la UNIÓN de las tres subcarpetas por el mismo motivo que en
+    `pbs_del_destino`: un vuelo puede tener térmica y no RGB (o al revés), y hace
+    falta que caiga en la MISMA tarea en las tres — la rotación de la térmica lee
+    el `location.csv` que escribe el RGB hermano.
+
+    Un PB sin subcarpetas (destino a medio hacer) se devuelve tal cual, para no
+    perderlo del reparto.
+    """
+    rutas = set()
+    for pb in pbs_del_destino(destino, subcarpetas):
+        for sub in subcarpetas:
+            pb_path = os.path.join(destino, sub, pb)
+            if not os.path.isdir(pb_path):
+                continue
+            try:
+                hijos = [d for d in os.listdir(pb_path)
+                         if os.path.isdir(os.path.join(pb_path, d))]
+            except OSError:
+                continue
+            if hijos:
+                rutas.update(f"{pb}/{d}" for d in hijos)
+            else:
+                rutas.add(pb)
+    return sorted(rutas)
+
+
+def ruta_de_relativo(base: str, relativo: str) -> str:
+    """`base` + una ruta relativa `PBx/PBx_Vy` con los separadores del sistema.
+
+    Las relativas se manejan siempre con `/` (son claves, no rutas del disco);
+    esto es lo único que las convierte en una ruta de verdad."""
+    return os.path.join(base, *str(relativo).replace("\\", "/").strip("/").split("/"))
+
+
+def peso_de_ruta(destino: str, relativo: str, contar,
+                 subcarpetas=("RGB", "TERMICA", "RGB_Extra")) -> int:
+    """Imágenes totales de una unidad de reparto (`PBx` o `PBx/PBx_Vy`) sumando
+    RGB + TERMICA (+ RGB_Extra). Es el coste que se usa para equilibrar la etapa
+    `post`, donde las fases caras (TIF sobre todo) escalan con el número de
+    imágenes térmicas."""
     total = 0
     for sub in subcarpetas:
-        ruta = os.path.join(destino, sub, pb)
+        ruta = ruta_de_relativo(os.path.join(destino, sub), relativo)
         if os.path.isdir(ruta):
             total += contar(ruta)
     return total
+
+
+def indice_seleccion(seleccion) -> dict:
+    """`{PBx: {vuelos} | None}` a partir de una lista de unidades de reparto.
+
+    `None` como valor significa «el PB entero» (la unidad era el PB, sin vuelo).
+    Sirve para que las verificaciones del pipeline, que recorren PB y luego sus
+    subcarpetas, sepan si un vuelo concreto es suyo sin tener que parsear rutas
+    en cada punto."""
+    indice: dict = {}
+    for item in seleccion:
+        partes = str(item).replace("\\", "/").strip("/").split("/")
+        pb = partes[0]
+        if len(partes) == 1:
+            indice[pb] = None
+        elif indice.get(pb, "sin-valor") is not None:
+            indice.setdefault(pb, set()).add(partes[1])
+    return indice
+
+
+def seleccion_incluye(indice: dict, pb: str, subcarpeta: str | None = None) -> bool:
+    """True si a esta tarea le toca `pb` (o el vuelo `pb/subcarpeta`)."""
+    if pb not in indice:
+        return False
+    vuelos = indice[pb]
+    return vuelos is None or subcarpeta is None or subcarpeta in vuelos

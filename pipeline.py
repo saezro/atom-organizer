@@ -49,7 +49,7 @@ import exif as em
 
 import sys
 import external_tools
-from atom_core import rjpeg
+from atom_core import rjpeg, sharding
 
 
 def _is_windows() -> bool:
@@ -1265,7 +1265,8 @@ class GenStructFolder:
         - lim_min_90 - límite mínimo de margen para las imágenes que hay que rotar 90 grados.
         - progress_callback - Callback (los signals) que envían, mediante un emit(), información de texto desde el hilo correspondiente.
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
-        - only_pb - si se pasa, se rotan SOLO esas carpetas `PBx` en vez del árbol entero.
+        - only_pb - si se pasa, se rotan SOLO esos vuelos (rutas relativas `PBx/PBx_Vy`)
+          en vez del árbol entero.
           Es lo que permite repartir la rotación entre varias tareas paralelas: el criterio
           de giro se decide POR carpeta `PBx_Vy` (con el yaw de sus imágenes y de ninguna
           otra), así que procesar un subconjunto de PB da el mismo resultado que
@@ -1313,7 +1314,7 @@ class GenStructFolder:
             # Si no lo está, entonces llevamos a cabo el proceso indicado en la carpeta de entrada, sea la que sea, sin diferenciar RGB o TERMICA. Es algo que tendrán
             # que tener en cuenta ellos.
             if folder in list_dir:
-                # Con reparto, se arranca en cada PB propio en vez de en la raíz de
+                # Con reparto, se arranca en cada vuelo propio en vez de en la raíz de
                 # RGB/TERMICA. `gen_thumbnails_and_rotate` es recursiva y no mira dónde
                 # empieza el árbol, y `root_folder`/`csvs_root_folder` (de donde sale el
                 # criterio de giro) se han fijado arriba a la raíz de verdad, así que el
@@ -1321,8 +1322,9 @@ class GenStructFolder:
                 if only_pb is None:
                     raices = [os.path.join(input_folder, folder)]
                 else:
-                    raices = [os.path.join(input_folder, folder, pb) for pb in only_pb
-                              if os.path.isdir(os.path.join(input_folder, folder, pb))]
+                    base = os.path.join(input_folder, folder)
+                    raices = [sharding.ruta_de_relativo(base, rel) for rel in only_pb
+                              if os.path.isdir(sharding.ruta_de_relativo(base, rel))]
                 for raiz in raices:
                     if rotation_mode_auto:
                         self.gen_thumbnails_and_rotate(raiz, rgb_processing, max_error, lim_max_270, lim_min_270, lim_max_90, lim_min_90, progress_callback, progress_bar)
@@ -1934,11 +1936,14 @@ class SplitImages:
             self.organizer_logger.logger.error(f"Error al listar '{input_folder}': {e}")
             return results
 
-        # Con el trabajo repartido, esta tarea solo verifica SUS PB: las otras están
-        # convirtiendo los suyos ahora mismo y verlos a medias daría un
+        # Con el trabajo repartido, esta tarea solo verifica SUS vuelos: las otras
+        # están convirtiendo los suyos ahora mismo y verlos a medias daría un
         # "jpg y tiff no coinciden" que no es un fallo, sino una foto movida.
-        if only_pb is not None:
-            pb_folders = [d for d in pb_folders if d in set(only_pb)]
+        # `only_pb` trae rutas relativas `PBx/PBx_Vy` (o `PBx` a secas), por eso el
+        # filtro se hace en dos pasos: el PB aquí y el vuelo dentro del bucle.
+        seleccion = None if only_pb is None else sharding.indice_seleccion(only_pb)
+        if seleccion is not None:
+            pb_folders = [d for d in pb_folders if d in seleccion]
 
         if not pb_folders:
             self.organizer_logger.logger.info(f"No se encontraron carpetas PB en: {input_folder}")
@@ -1956,13 +1961,15 @@ class SplitImages:
                 continue
 
             for subfolder in subfolders:
+                if seleccion is not None and not sharding.seleccion_incluye(seleccion, pb_folder, subfolder):
+                    continue
                 subfolder_path = os.path.join(pb_folder_path, subfolder)
                 try:
                     all_files = os.listdir(subfolder_path)
                 except Exception as e:
                     self.organizer_logger.logger.error(f"Error al listar '{subfolder_path}': {e}")
                     continue
-                
+
                 if len(all_files) == 0:
                     continue
 
@@ -3128,9 +3135,10 @@ class RGBCropping:
             return results
 
         # Igual que en checking_convert_to_tif: con reparto, cada tarea verifica
-        # solo los PB que ha recortado ella.
-        if only_pb is not None:
-            pb_folders = [d for d in pb_folders if d in set(only_pb)]
+        # solo los vuelos que ha recortado ella.
+        seleccion = None if only_pb is None else sharding.indice_seleccion(only_pb)
+        if seleccion is not None:
+            pb_folders = [d for d in pb_folders if d in seleccion]
 
         if not pb_folders:
             self.organizer_logger.logger.info(f"No se encontraron carpetas PB en: {input_folder}")
@@ -3149,6 +3157,8 @@ class RGBCropping:
                 continue
 
             for subfolder in subfolders:
+                if seleccion is not None and not sharding.seleccion_incluye(seleccion, pb_folder, subfolder):
+                    continue
                 subfolder_path = os.path.join(pb_folder_path, subfolder)
                 try:
                     all_images = self.utils_obj.get_images_from_dir(subfolder_path)
