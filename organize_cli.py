@@ -40,6 +40,73 @@ from pathlib import Path
 # SDK térmico), que por eso se importa dentro de `main`.
 from atom_core import sharding
 
+# Segundos por imagen y etapa, medidos en v3.4.32 sobre ANTOLIN (2.516 imágenes,
+# 9,14 GB) con N=8 tareas. UN SOLO dataset: son un orden de magnitud, no una
+# promesa, y por eso la Suite los pinta siempre con un «aprox.».
+_SEG_POR_IMAGEN = {"split": 0.045, "struct": 0.026, "post": 0.102}
+_SEG_POR_IMAGEN["todo"] = sum(_SEG_POR_IMAGEN.values())  # 0.173
+
+
+def _contar_imagenes(origen: Path) -> int:
+    """Cuenta imágenes bajo `origen` recursivamente con `os.scandir`.
+
+    Nada de `glob`/`Path.rglob`: un vuelo son decenas de miles de ficheros y
+    esto tiene que tardar milisegundos, no segundos. Fail-open: si algo falla
+    (permisos, ruta rara) devuelve 0 — sin conteo no hay ETA, pero el run
+    sigue igual.
+    """
+    exts = {".jpg", ".jpeg", ".dng", ".tif", ".tiff", ".png"}
+    total = 0
+    try:
+        pendientes = [origen]
+        while pendientes:
+            actual = pendientes.pop()
+            with os.scandir(actual) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            pendientes.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            if os.path.splitext(entry.name)[1].lower() in exts:
+                                total += 1
+                    except OSError:
+                        continue
+    except Exception:  # noqa: BLE001 - fail-open: sin conteo no hay ETA
+        return 0
+    return total
+
+
+def _calcular_eta(*, etapa: str, n_imagenes: int, shard_count: int,
+                   transcurrido: float, fases_cerradas: int,
+                   fases_total: int | None) -> int | None:
+    """ETA en segundos, recalculada en CADA cambio de fase (nunca fijada al
+    inicio). Asume fases de peso similar dentro de una etapa: es la
+    aproximación que hay sin perfilado por fase, y es la razón del «aprox.»
+    con el que la Suite pinta este dato.
+
+    - Mientras no se haya cerrado ninguna fase, usa el presupuesto inicial
+      derivado de `_SEG_POR_IMAGEN` (medido con N=8, de ahí el ×8 para
+      des-escalar según el shard real).
+    - En cuanto hay >=1 fase cerrada, es más fiable calibrar con el tiempo
+      real transcurrido en ESTA máquina y ESTE vuelo que seguir fiándose de
+      los coeficientes de otro dataset.
+    """
+    try:
+        if fases_cerradas > 0 and fases_total:
+            k = fases_cerradas
+            total = fases_total
+            if k >= total:
+                return 0
+            return max(0, int(round(transcurrido * (total - k) / k)))
+
+        seg_por_imagen = _SEG_POR_IMAGEN.get(etapa)
+        if seg_por_imagen is None or n_imagenes <= 0:
+            return None
+        presupuesto = seg_por_imagen * n_imagenes * 8 / max(shard_count, 1)
+        return max(0, int(round(presupuesto - transcurrido)))
+    except Exception:  # noqa: BLE001 - fail-open: sin ETA no pasa nada
+        return None
+
 
 def _formatear(segundos: float) -> str:
     """`1h 04m 12s`. Un vuelo entero se mide en decenas de minutos, y leer
@@ -128,6 +195,28 @@ def main(argv: list[str] | None = None) -> int:
                     "shard_index": shard_index, "shard_count": shard_count}
     avanzado = {"convert_to_tif": False} if args.sin_tif else None
 
+    # Solo se reporta a la Suite si hay secreto: sin él (un dev corriendo el
+    # CLI en local) `reporter` queda `None` y todo lo de abajo es no-op.
+    reporter = None
+    n_imagenes = _contar_imagenes(origen)
+    secreto = os.environ.get("ORGANIZER_INGEST_SECRET")
+    if secreto:
+        from atom_core.run_reporter import RunReporter
+
+        # Sin `base`: RunReporter ya resuelve el destino desde ATOM_SUITE_API_BASE.
+        # Pasarlo aquí duplicaba esa lógica y con el nombre equivocado
+        # (`ATOM_SUITE_API`, que no existe): apuntar el Job a dev seteando esa
+        # variable se ignoraba en silencio y los latidos se iban a PROD.
+        reporter = RunReporter(auth=None, secreto=secreto, tipo="pipeline")
+        extra_inicio = {
+            "execution_name": os.environ.get("CLOUD_RUN_EXECUTION"),
+            "shard_count": shard_count,
+            "shard_index": shard_index,
+        }
+        extra_inicio = {k: v for k, v in extra_inicio.items() if v is not None}
+        reporter.iniciar(inspeccion=origen.name, etapa=args.etapa,
+                          items_total=n_imagenes, **extra_inicio)
+
     fases: list[dict] = []
     errores: list[str] = []
     arranque = time.monotonic()
@@ -144,6 +233,17 @@ def main(argv: list[str] | None = None) -> int:
             fases.append({"nombre": nombre, "segundos": None})
             print(f"[fase {payload.get('index')}/{payload.get('total')}] {nombre}",
                   flush=True)
+            if reporter is not None:
+                index = payload.get("index")
+                total = payload.get("total")
+                fases_cerradas = sum(1 for f in fases if f["segundos"] is not None)
+                eta = _calcular_eta(
+                    etapa=args.etapa, n_imagenes=n_imagenes,
+                    shard_count=shard_count,
+                    transcurrido=ahora - arranque,
+                    fases_cerradas=fases_cerradas, fases_total=total)
+                reporter.fase(index=index, total=total, nombre=nombre,
+                              eta_segundos=eta)
         elif kind == "error":
             errores.append(str(payload))
             print(f"[error] {payload}", file=sys.stderr, flush=True)
@@ -203,6 +303,12 @@ def main(argv: list[str] | None = None) -> int:
             "shard_count": shard_count,
             "host": platform.node(), "cpus": os.cpu_count(),
         }, ensure_ascii=False))
+
+    if reporter is not None:
+        try:
+            reporter.fin(ok=not errores, error=errores[0] if errores else None)
+        except Exception:  # noqa: BLE001 - la telemetría no puede tocar el exit code
+            pass
 
     return 1 if errores else 0
 
