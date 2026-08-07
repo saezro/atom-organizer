@@ -240,6 +240,28 @@ def safe_pct(current: int, total: int) -> int:
     return max(0, min(100, pct))
 
 
+def es_carpeta_panoramica(nombre_carpeta: str) -> bool:
+    """
+    Indica si una carpeta de vuelo corresponde a un panorama.
+
+    Los panoramas vienen marcados en el estadillo con la columna PB a "Pano"
+    (en vez de un identificador de punto base normal como A, B, 12...), de modo
+    que gen_folder_struct genera carpetas `PBPano_V1`, `PBPano_V2`, ...
+    Un panorama es un barrido en el que la cámara apunta a yaws muy distintos,
+    así que NO tiene un giro común a todas sus imágenes: se trata como carpeta
+    sin rotar (Degree 0) en vez de como error de rotación.
+
+    Arguments:
+    ---------
+    - nombre_carpeta - nombre (basename) de la carpeta de vuelo a comprobar.
+    """
+    base = os.path.basename(str(nombre_carpeta or "").rstrip("/\\"))
+    if not base.upper().startswith("PB"):
+        return False
+    identificador_pb = base[2:].split("_", 1)[0]
+    return identificador_pb.strip().upper() == "PANO"
+
+
 def unique_dest(dest_path: str) -> str:
     """
     Devuelve una ruta de destino que no colisiona con un archivo existente.

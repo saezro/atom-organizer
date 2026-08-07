@@ -787,6 +787,16 @@ class GenStructFolder:
         self.warnings_type_gen_struct_folder = []
         self.organizer_logger = organizer_logger
         self.final_results = []
+        # Nº de operaciones de E/S en paralelo (leer EXIF, mover ficheros). Sobre GCS
+        # (gcsfuse) el cuello de botella es la LATENCIA por fichero, no la CPU: cada
+        # imagen es un round-trip. Con hilos se solapan, y como PIL/os.replace sueltan
+        # el GIL en la parte de E/S, escalan bien aunque sean threads.
+        self.max_io_workers = int(os.environ.get("ATOM_IO_WORKERS", "0") or 0) or min(32, (os.cpu_count() or 4) * 4)
+        # Protege los contadores compartidos (current_image_number, errores) entre workers.
+        self._stats_lock = threading.Lock()
+        # Caché de timestamps EXIF: {ruta_absoluta: datetime|None}. Se rellena una sola
+        # vez por corrida para no releer el EXIF de la misma imagen en cada vuelo.
+        self._timestamps_cache = {}
 
     def set_stop(self, stop: bool):
         """
@@ -960,6 +970,17 @@ class GenStructFolder:
         # Guardamos en una variable el número de vuelos
         # TODO: Para mostrar la barra de progreso con este proceso vamos a tener en cuenta el número de vuelos.
         numeroVuelos = estadillo.shape[0]
+
+        # Precargamos en paralelo el EXIF de todas las imágenes ANTES de recorrer los vuelos.
+        # Sin esto, cada vuelo del estadillo vuelve a leer el EXIF de todas las imágenes que
+        # aún no se han repartido (del orden de vuelos x imágenes lecturas, cada una un
+        # round-trip a GCS). No cambia el resultado, solo el tiempo.
+        if organize_images:
+            carpetas_origen = [os.path.join(input_folder, "TERMICA"), os.path.join(input_folder, "RGB")]
+            if extra_suffix:
+                carpetas_origen.append(os.path.join(input_folder, "RGB_extra"))
+            self.precargar_timestamps(carpetas_origen, progress_callback)
+
         for vuelo in range(numeroVuelos):
             if not self.stop:
                 # ---INFORMACION DEL VUELO---
@@ -1121,9 +1142,9 @@ class GenStructFolder:
         # Bucle para toda la lista de fotos
         for imagen in listaImagenes:
             try:
-                fecha_hora_imagen = self.exif_management_obj.get_timestamp_from_image(os.path.join(input_folder, imagen))
-                
-                # Si la hora de la imagen 
+                fecha_hora_imagen = self._get_timestamp_cached(os.path.join(input_folder, imagen))
+
+                # Si la hora de la imagen
                 if fecha_hora_imagen is not None and fecha_hora_inicio < fecha_hora_imagen and fecha_hora_imagen < fecha_hora_fin:
                     listaImagenesVuelo.append(imagen)
             except Exception as e:
@@ -1136,7 +1157,60 @@ class GenStructFolder:
                 self.errors_type_gen_struct_folder.append(os.path.join(input_folder, imagen)) 
 
         return listaImagenesVuelo
-    
+
+    def _get_timestamp_cached(self, ruta_imagen: str):
+        """
+        Devuelve el timestamp EXIF de una imagen usando la caché de la corrida.
+
+        El EXIF de una imagen no cambia mientras dure el proceso, pero gen_folder_struct
+        recorre la lista completa de imágenes UNA VEZ POR VUELO del estadillo: sin caché,
+        una planta de V vuelos y N imágenes hacía del orden de V*N lecturas de EXIF, cada
+        una un round-trip a GCS. Con la caché es N.
+
+        Arguments:
+        ---------
+        - ruta_imagen - ruta completa de la imagen de la que obtener el timestamp.
+        """
+        if ruta_imagen in self._timestamps_cache:
+            return self._timestamps_cache[ruta_imagen]
+        timestamp = self.exif_management_obj.get_timestamp_from_image(ruta_imagen)
+        with self._stats_lock:
+            self._timestamps_cache[ruta_imagen] = timestamp
+        return timestamp
+
+    def precargar_timestamps(self, carpetas: list[str], progress_callback=None) -> None:
+        """
+        Rellena la caché de timestamps EXIF de todas las imágenes de `carpetas` en paralelo.
+
+        Es una optimización pura: sin ella el resultado es idéntico, solo que cada lectura
+        de EXIF se hace en serie y bajo demanda. Al hacerlas por lotes con un pool de hilos
+        se solapa la latencia de GCS, que es lo que domina el tiempo de esta etapa.
+
+        Arguments:
+        ---------
+        - carpetas - lista de carpetas cuyas imágenes se van a precargar.
+        - progress_callback - Callback opcional para informar al log.
+        """
+        rutas = []
+        for carpeta in carpetas:
+            if not carpeta or not os.path.isdir(carpeta):
+                continue
+            for archivo in os.listdir(carpeta):
+                if archivo.endswith(('jpg', 'JPG')):
+                    ruta = os.path.join(carpeta, archivo)
+                    if ruta not in self._timestamps_cache:
+                        rutas.append(ruta)
+
+        if not rutas:
+            return
+
+        self.organizer_logger.logger.info(f"Precargando el EXIF de {len(rutas)} imágenes con {self.max_io_workers} hilos.")
+        if progress_callback is not None:
+            progress_callback.emit(f"\nLeyendo la fecha de {len(rutas)} imágenes...\n")
+
+        with ThreadPoolExecutor(max_workers=self.max_io_workers) as executor:
+            list(executor.map(self._get_timestamp_cached, rutas))
+
     def moverListaImagenes(self, pathCarpetaOrigen: str, pathCarpetaDestino: str, listaImagenes: list[str], progress_callback, progress_bar) -> None:
         """
         Funcion para mover una lista de imagenes desde una carpeta origen a una carpeta destino.
@@ -1149,16 +1223,31 @@ class GenStructFolder:
         - progress_callback - Callback (los signals) que envían, mediante un emit(), información de texto desde el hilo correspondiente.
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
         """
-        # Bucle recorriendo todas las imagenes de la lista
-        for imagen in listaImagenes:
-            if not self.stop:  # Se comprueba que no se quiere parar el proceso desde la ventana del log.
+        if not listaImagenes:
+            return
+
+        # Cada move es un round-trip a disco/GCS y apenas gasta CPU, así que en serie el
+        # proceso se pasa el tiempo esperando latencia. Con un pool de hilos se solapan.
+        # Los destinos de una misma llamada son distintos entre sí (un nombre de origen
+        # por imagen), de modo que los workers no compiten por la misma ruta de destino.
+        def _mover(imagen: str) -> None:
+            if self.stop:  # Se comprueba que no se quiere parar el proceso desde la ventana del log.
+                return
+            utils.safe_move(os.path.join(pathCarpetaOrigen, imagen), os.path.join(pathCarpetaDestino, imagen))
+            with self._stats_lock:
                 self.current_image_number += 1
                 p = utils.safe_pct(self.current_image_number, self.total_images_number) # Se calcula el porcentaje que queda teniendo en cuenta la cantidad total de imágenes a procesar
                 # y la cantidad actual de imágenes procesadas.
-                progress_bar.emit(p) # Por cada imagen que se va a procesar, se emite el procentaje de imágenes procesadas para mostrar en la barra de progreso.
-                progress_callback.emit(".") # Por cada imagen que se va a procesar, se emite un "." a la ventana de log.   
-                # print('Moviendo la imagen:',imagen)
-                utils.safe_move(os.path.join(pathCarpetaOrigen,imagen), os.path.join(pathCarpetaDestino,imagen))
+            progress_bar.emit(p) # Por cada imagen que se va a procesar, se emite el procentaje de imágenes procesadas para mostrar en la barra de progreso.
+            progress_callback.emit(".") # Por cada imagen que se va a procesar, se emite un "." a la ventana de log.
+
+        if self.max_io_workers <= 1 or len(listaImagenes) == 1:
+            for imagen in listaImagenes:
+                _mover(imagen)
+            return
+
+        with ThreadPoolExecutor(max_workers=self.max_io_workers) as executor:
+            list(executor.map(_mover, listaImagenes))
 
     def check_input_folder_and_iterate(self, input_folder: str, folders_to_check: list[str], max_error: int, lim_max_270: int, lim_min_270: int, lim_max_90: int, lim_min_90: int, rotation_mode_auto: bool, rotation_value_90: bool, progress_callback, progress_bar, only_pb: list[str] | None = None) -> bool:
         """
@@ -1463,9 +1552,16 @@ class GenStructFolder:
                 # logging.info("Image quantity without rotating: " + str(images_no_rotated))
 
                 images_to_rotate = True
+                # Un panorama (PBPano_V*) es un barrido: cada foto apunta a un yaw distinto, así que por
+                # definición nunca habrá un giro dominante y el chequeo del max_error siempre fallaría.
+                # Se trata como carpeta normal sin retocar: no se rota nada (Degree 0) y no es error.
+                es_panorama = utils.es_carpeta_panoramica(input_folder)
+                if es_panorama:
+                    self.organizer_logger.logger.info("Carpeta panorámica detectada: se procesa sin rotar ninguna imagen.")
+                    progress_callback.emit("\nCarpeta panorámica: se procesa tal cual, sin rotar.\n")
                 # Comprobamos que no ha habido un porcentaje mayor del 95% entre las diferentes cantidades. Lo que hacemos es comprobar que una de las cantidades de imágenes ya sobrepasa el 95%,
                 # con lo que el resto de cantidades estaría en el 5%.
-                if (rotate_270 != 0 and (rotate_270/len(images)) > (max_error/100)):
+                if (not es_panorama and rotate_270 != 0 and (rotate_270/len(images)) > (max_error/100)):
                     self.organizer_logger.logger.info(f"OK: Más de un {max_error}% de las imágenes del vuelo tienen que rotar 270")
                     # logging.info(f"OK: More than {max_error}% of flight images need to be rotated 270")
                     progress_callback.emit(f"\nOK: Más de un {max_error}% de las imágenes del vuelo tienen que rotar 270\n")
@@ -1476,7 +1572,7 @@ class GenStructFolder:
 
                     self.organizer_logger.logger.info("Imágenes rotadas 270º")
                     # logging.info("Images rotated 270º")
-                elif (rotate_90 != 0 and (rotate_90/len(images)) > (max_error/100)):
+                elif (not es_panorama and rotate_90 != 0 and (rotate_90/len(images)) > (max_error/100)):
                     self.organizer_logger.logger.info(f"OK: Más de un {max_error}% de las imágenes del vuelo tienen que rotar 90")
                     # logging.info(f"OK: More than {max_error}% of flight images need to be rotated 90")
                     progress_callback.emit(f"\nOK: Más de un {max_error}% de las imágenes del vuelo tienen que rotar 90\n")
@@ -1486,10 +1582,11 @@ class GenStructFolder:
                         df_videofiles.loc[len(df_videofiles)] = {"New Name": os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", "Original Name": image, "Degree": 90}
                     self.organizer_logger.logger.info("Imágenes rotadas 90")
                     # logging.info("Images rotated 90")
-                elif (images_no_rotated != 0 and (images_no_rotated/len(images)) > (max_error/100)):
-                    self.organizer_logger.logger.info(f"OK: Más de un {max_error}% de las imágenes del vuelo NO se deben rotar")
-                    # logging.info(f"OK: More than {max_error}% of flight images must not be rotated")
-                    progress_callback.emit(f"\nOK: Más de un {max_error}% de las imágenes del vuelo NO se deben rotar\n")
+                elif (es_panorama or (images_no_rotated != 0 and (images_no_rotated/len(images)) > (max_error/100))):
+                    if not es_panorama:
+                        self.organizer_logger.logger.info(f"OK: Más de un {max_error}% de las imágenes del vuelo NO se deben rotar")
+                        # logging.info(f"OK: More than {max_error}% of flight images must not be rotated")
+                        progress_callback.emit(f"\nOK: Más de un {max_error}% de las imágenes del vuelo NO se deben rotar\n")
                     for index, image in enumerate(images):
                         self.send_progress_to_bar(progress_bar, progress_callback)
                         file_splitted = os.path.splitext(image)
