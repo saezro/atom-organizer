@@ -13,10 +13,20 @@ el reparto no es un simple «trocea la lista de imágenes»:
                `destino/RGB` y `destino/TERMICA`. Unidad = **carpeta del origen**
                que contiene imágenes (una carpeta de vuelo `DJI_*`, normalmente).
   · `struct` — estructura de carpetas. Lee el ESTADILLO y MUEVE lo que hay en el
-               destino a `PBx/PBx_Vy/`. No es particionable: una fila del
-               estadillo puede reclamar imágenes que dejó cualquier tarea de
-               `split`, así que necesita el destino entero y ya quieto. Es barata
-               (~16 s medidos) y va en una sola tarea.
+               destino a `PBx/PBx_Vy/`. Unidad = **imagen** (ver `toca_imagen`).
+               Durante mucho tiempo se dio por no particionable porque una fila
+               del estadillo puede reclamar imágenes que dejó cualquier tarea de
+               `split`; eso solo descarta repartir por VUELO. Repartiendo por
+               imagen el problema no existe: cada tarea lee el estadillo ENTERO
+               —las ventanas horarias son de solo lectura— y mueve únicamente las
+               fotos que le tocan, sin mirar las de nadie más.
+               No era barata: medida en el vuelo de referencia son **377 s** de
+               los 763 del pipeline, casi todo latencia de GCS moviendo ficheros
+               de uno en uno. Eso es I/O, y el I/O se paraleliza.
+               Dos cosas NO se reparten y las hace la tarea 0: copiar el estadillo
+               a `ESTADILLOS/` (ocho tareas copiándolo generan `_1`…`_7`) y el
+               barrido de sobrantes a `SIN_ORDENAR`, que se mudó al arranque de
+               `post` — ver `checking_results_gen_struct_folder`.
   · `post`   — recorte RGB, meta/location, rotación y TIF. Trabajan sobre el
                destino YA estructurado, y todas deciden **por carpeta hoja**
                (`PBx_Vy`): el criterio de rotación, por ejemplo, se calcula con
@@ -32,6 +42,7 @@ PIL ni el SDK térmico.
 from __future__ import annotations
 
 import os
+import zlib
 
 ETAPAS = ("todo", "split", "struct", "post")
 
@@ -177,6 +188,36 @@ def repartir_imagenes(carpetas: list[str], get_images, shard_index: int,
         if mias:
             reparto[carpeta] = mias
     return reparto
+
+
+def toca_imagen(nombre: str, shard_index: int, shard_count: int) -> bool:
+    """True si la imagen `nombre` le toca a esta tarea, en la etapa `struct`.
+
+    El reparto se decide con un hash del NOMBRE y no con la posición en el
+    listado de la carpeta, y esa es la diferencia entre que esto funcione o
+    corrompa el vuelo. En `split` la posición vale porque el ORIGEN no se toca:
+    las N tareas listan lo mismo de principio a fin. En `struct` la carpeta que
+    se reparte es también la que se está vaciando —cada tarea MUEVE sus imágenes
+    a `PBx/PBx_Vy` mientras las demás siguen listando—, así que el índice de una
+    misma foto es distinto según cuándo mire cada tarea. Con `i % count` eso
+    significa que una imagen puede tocarle a dos tareas (se mueve dos veces: la
+    segunda falla o duplica) o a ninguna (se queda en la raíz y acaba en
+    SIN_ORDENAR, dando un vuelo incompleto en ámbar, no en rojo).
+
+    El hash no depende del estado de la carpeta: cada tarea, vea lo que vea y
+    cuando lo vea, llega siempre a la misma respuesta para la misma foto. Se usa
+    `zlib.crc32` y no el `hash()` de Python a propósito: el de Python está
+    aleatorizado por proceso (PYTHONHASHSEED) para las cadenas, que es justo lo
+    que no se puede tener aquí — cada tarea de Cloud Run es un proceso distinto.
+
+    Reparte parejo porque los nombres de imagen de un vuelo son correlativos
+    (`DJI_0001.JPG`…) y el CRC de una serie así se distribuye uniforme entre los
+    N restos; no hace falta pesar nada, todas las fotos cuestan lo mismo (leer su
+    EXIF de la caché y un `move`).
+    """
+    if shard_count <= 1:
+        return True
+    return zlib.crc32(str(nombre).encode("utf-8")) % shard_count == shard_index
 
 
 def pbs_del_destino(destino: str, subcarpetas=("RGB", "TERMICA", "RGB_Extra")) -> list[str]:

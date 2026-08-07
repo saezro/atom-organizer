@@ -22,9 +22,10 @@ def _errores(eventos):
 
 
 def test_todo_repartido_se_rechaza():
-    """`--etapa todo` con varias tareas dejaría a las N ejecutando la estructura
-    de carpetas a la vez: mueven el destino entero y se pisan entre ellas. Cada
-    tarea vería su parte cuadrada, así que ningún check lo detectaría."""
+    """`--etapa todo` con varias tareas encadena las tres etapas sin barrera: una
+    tarea podría estar estructurando mientras otra todavía separa, y el
+    post-proceso trabajaría sobre un destino a medio hacer. Cada tarea vería su
+    parte cuadrada, así que ningún check lo detectaría."""
     eventos, emit = _emisor()
     organize.run_task("split_images",
                       {"origen": "/no/existe", "destino": "/tmp/x",
@@ -32,20 +33,6 @@ def test_todo_repartido_se_rechaza():
                       emit)
     errores = _errores(eventos)
     assert errores, "se aceptó una combinación que corrompe el destino"
-    assert "no se puede repartir" in errores[0]
-
-
-def test_struct_repartida_se_rechaza():
-    """Misma corrupción que `todo` repartido, pero pedida directamente: `struct`
-    con varias tareas son N procesos moviendo el mismo destino a la vez. Se colaba
-    hasta v3.4.29 porque la guarda solo miraba `todo`."""
-    eventos, emit = _emisor()
-    organize.run_task("split_images",
-                      {"origen": "/no/existe", "destino": "/tmp/x",
-                       "etapa": "struct", "shard_index": 0, "shard_count": 8},
-                      emit)
-    errores = _errores(eventos)
-    assert errores, "se aceptó `struct` repartida entre varias tareas"
     assert "no se puede repartir" in errores[0]
 
 
@@ -59,9 +46,12 @@ def test_etapa_desconocida_se_rechaza():
     assert errores and "Etapa desconocida" in errores[0]
 
 
-@pytest.mark.parametrize("etapa", ["split", "post"])
+@pytest.mark.parametrize("etapa", ["split", "struct", "post"])
 def test_las_etapas_repartibles_admiten_shard(etapa, tmp_path):
-    """No debe salir el error de reparto: solo `todo` está vetado."""
+    """No debe salir el error de reparto: solo `todo` está vetado.
+
+    `struct` entró en esta lista en v3.4.31, cuando pasó a repartirse por imagen
+    (hash del nombre) en vez de por vuelo del estadillo."""
     eventos, emit = _emisor()
     origen = tmp_path / "origen"
     origen.mkdir()

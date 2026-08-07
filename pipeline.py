@@ -929,7 +929,8 @@ class GenStructFolder:
         return thermal_folder_list_length, rgb_folder_list_length
 
     def gen_folder_struct(self, path_estadillo: str, input_folder: str, output_folder: str, organize_images: bool, seconds_range: float, desfase_horas: int, desfase_minutos: int,
-                          progress_callback, progress_bar, extra_suffix: bool = False, include_v: bool = True) -> None:
+                          progress_callback, progress_bar, extra_suffix: bool = False, include_v: bool = True,
+                          shard_index: int = 0, shard_count: int = 1) -> None:
         """
         Función que genera la estructura de carpetas necesaria a partir del estadillo cargado y, si organize_images está marcado, mueve las imágenes existentes en
         input_folder a su carpeta de vuelo correspondiente.
@@ -950,6 +951,11 @@ class GenStructFolder:
         - progress_callback - Callback (los signals) que envían, mediante un emit(), información de texto desde el hilo correspondiente.
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
         - extra_suffix - si es True indica que el sufijo rgb es el extra que se añade en el interfaz. En caso contrario, seguimos el flujo habitual.
+        - shard_index / shard_count - reparto entre tareas paralelas (ver
+        `atom_core.sharding.toca_imagen`). Cada tarea lee el estadillo entero y
+        crea todas las carpetas —es idempotente y sale más barato que
+        coordinarse—, pero solo mueve las imágenes que le tocan. Por defecto
+        `(0, 1)` = una sola tarea, el comportamiento de siempre.
         """
         self.organizer_logger.logger.debug("---------------------------------------------------------------------")
         self.organizer_logger.logger.debug("Estadillo: " + path_estadillo)
@@ -961,8 +967,13 @@ class GenStructFolder:
 
         # output_path_estadillo es una carpeta, mientras que path_estadillo es el archivo. En la siguiente línea juntamos output_path_estadillo con el nombre.
         dest_estadillo = os.path.join(output_path_estadillo, os.path.basename(path_estadillo))
+        # La copia del estadillo la hace SOLO la tarea 0. El bloque de abajo
+        # resuelve el choque de nombres añadiendo un contador (`_1`, `_2`…), que
+        # con N tareas a la vez no protege: las ocho ven la carpeta sin su copia,
+        # las ocho copian, y en ESTADILLOS/ acaban ocho estadillos idénticos
+        # numerados. Es el único fichero que escriben todas por igual.
         # Comparamos transformando en minúsculas e igualando los / o \
-        if os.path.normcase(os.path.abspath(path_estadillo)) != os.path.normcase(os.path.abspath(dest_estadillo)):
+        if shard_index == 0 and os.path.normcase(os.path.abspath(path_estadillo)) != os.path.normcase(os.path.abspath(dest_estadillo)):
             self.organizer_logger.logger.info(f"Los estadillos son diferentes") # Son diferentes, así que hay que copiarlos y compruebo si hay algún estadillo en la carpeta de destino con el mismo nombre y en el caso de haberlo genero un nombre distinto añadiendo un contador al nombre.
             dest = pathlib.Path(output_folder) / "ESTADILLOS" / pathlib.Path(path_estadillo).name
             counter = 1
@@ -1035,35 +1046,35 @@ class GenStructFolder:
                 else:
                     nombreCarpeta_PB_vuelo = nombreCarpeta_PB+'_'+str(vuelo_pb)
 
+                # Las carpetas las crean TODAS las tareas, no solo la 0: son
+                # `makedirs(exist_ok=True)`, cuestan un round-trip y así ninguna
+                # tarea depende de que otra haya llegado antes para tener dónde
+                # dejar sus imágenes (entre tareas del Job no hay ninguna barrera).
                 #-- Carpeta Termica--
                 # Creamos el path a la carpeta del PB dentro de la carpeta Termica
                 pathTermica_PB = os.path.join(os.path.join(output_folder,"TERMICA"),nombreCarpeta_PB)
 
                 # Si no existe todavia la carpeta del PB dentro de termica, la creamos
-                if not os.path.exists(pathTermica_PB):
-                    os.makedirs(pathTermica_PB)
+                os.makedirs(pathTermica_PB, exist_ok=True)
 
                 # Creamos el path a la carpeta del vuelo dentro de la carpeta PB
                 pathTermica_PB_vuelo = os.path.join(pathTermica_PB,nombreCarpeta_PB_vuelo)
 
                 # Si no existe todavia la carpeta del vuelo dentro del PB, la creamos
-                if not os.path.exists(pathTermica_PB_vuelo):
-                    os.makedirs(pathTermica_PB_vuelo)
+                os.makedirs(pathTermica_PB_vuelo, exist_ok=True)
 
                 #-- Carpeta RGB--
                 # Creamos el path a la carpeta del PB dentro de la carpeta RGB
                 pathRGB_PB = os.path.join(os.path.join(output_folder,"RGB"),nombreCarpeta_PB)
 
                 # Si no existe todavia la carpeta de RGB, la creamos
-                if not os.path.exists(pathRGB_PB):
-                    os.makedirs(pathRGB_PB)
+                os.makedirs(pathRGB_PB, exist_ok=True)
 
                 # Creamos el path a la carpeta del vuelo dentro de la carpeta PB
                 pathRGB_PB_vuelo = os.path.join(pathRGB_PB,nombreCarpeta_PB_vuelo)
 
                 # Si no existe todavia la carpeta del vuelo, la creamos
-                if not os.path.exists(pathRGB_PB_vuelo):
-                    os.makedirs(pathRGB_PB_vuelo)
+                os.makedirs(pathRGB_PB_vuelo, exist_ok=True)
                 #-- --
 
                 if extra_suffix:
@@ -1072,15 +1083,13 @@ class GenStructFolder:
                     pathRGB_Extra_PB = os.path.join(os.path.join(output_folder,"RGB_extra"),nombreCarpeta_PB)
 
                     # Si no existe todavia la carpeta de RGB_Extra, la creamos
-                    if not os.path.exists(pathRGB_Extra_PB):
-                        os.makedirs(pathRGB_Extra_PB)
+                    os.makedirs(pathRGB_Extra_PB, exist_ok=True)
 
                     # Creamos el path a la carpeta del vuelo dentro de la carpeta PB
                     pathRGB_Extra_PB_vuelo = os.path.join(pathRGB_Extra_PB,nombreCarpeta_PB_vuelo)
 
                     # Si no existe todavia la carpeta del vuelo, la creamos
-                    if not os.path.exists(pathRGB_Extra_PB_vuelo):
-                        os.makedirs(pathRGB_Extra_PB_vuelo)
+                    os.makedirs(pathRGB_Extra_PB_vuelo, exist_ok=True)
 
                 if organize_images:
                     # Solo se anota a quién pertenece cada franja horaria. El reparto
@@ -1096,10 +1105,12 @@ class GenStructFolder:
 
         if organize_images and not self.stop:
             self.organizar_imagenes_en_vuelos(input_folder, ventanas, extra_suffix,
-                                              progress_callback, progress_bar)
+                                              progress_callback, progress_bar,
+                                              shard_index, shard_count)
 
     def organizar_imagenes_en_vuelos(self, input_folder: str, ventanas: list[dict],
-                                     extra_suffix: bool, progress_callback, progress_bar) -> None:
+                                     extra_suffix: bool, progress_callback, progress_bar,
+                                     shard_index: int = 0, shard_count: int = 1) -> None:
         """Mueve cada imagen del destino plano a la carpeta del vuelo que la reclama.
 
         Es el bucle de `gen_folder_struct` del revés: antes era «por vuelo, mira
@@ -1120,14 +1131,24 @@ class GenStructFolder:
         - ventanas - `{inicio, fin, destinos}` por vuelo, en el orden del estadillo.
         - extra_suffix - si hay que repartir también `RGB_extra`.
         - progress_callback / progress_bar - los signals de siempre.
+        - shard_index / shard_count - reparto entre tareas. Cada una se queda con
+          las imágenes cuyo NOMBRE le asigna `sharding.toca_imagen` —no con un
+          tramo del listado, que aquí no vale: la carpeta se está vaciando
+          mientras se lista, así que el índice de una foto depende de cuándo mire
+          cada tarea. Ver el porqué completo en `toca_imagen`.
         """
         subcarpetas = ["TERMICA", "RGB"] + (["RGB_extra"] if extra_suffix else [])
         etiquetas = {"TERMICA": "Térmicas", "RGB": "RGB", "RGB_extra": "RGB Extra"}
 
-        # El EXIF de todas las imágenes, en paralelo y antes de nada: a partir de
-        # aquí la asignación a vuelos es pura aritmética sobre la caché.
+        def _es_mia(nombre: str) -> bool:
+            return sharding.toca_imagen(nombre, shard_index, shard_count)
+
+        # El EXIF, en paralelo y antes de nada: a partir de aquí la asignación a
+        # vuelos es pura aritmética sobre la caché. Solo el de las imágenes
+        # PROPIAS: leer el de las 2.516 en las ocho tareas son ocho veces el
+        # mismo trabajo de red, que es justo lo que se está intentando repartir.
         self.precargar_timestamps([os.path.join(input_folder, s) for s in subcarpetas],
-                                  progress_callback)
+                                  progress_callback, filtro=_es_mia)
 
         movimientos: list[tuple[str, str]] = []
         for sub in subcarpetas:
@@ -1137,6 +1158,8 @@ class GenStructFolder:
             por_destino: dict[str, int] = {}
             for imagen in sorted(os.listdir(carpeta)):
                 if not imagen.endswith(('jpg', 'JPG')):
+                    continue
+                if not _es_mia(imagen):
                     continue
                 origen = os.path.join(carpeta, imagen)
                 try:
@@ -1260,7 +1283,7 @@ class GenStructFolder:
             self._timestamps_cache[ruta_imagen] = timestamp
         return timestamp
 
-    def precargar_timestamps(self, carpetas: list[str], progress_callback=None) -> None:
+    def precargar_timestamps(self, carpetas: list[str], progress_callback=None, filtro=None) -> None:
         """
         Rellena la caché de timestamps EXIF de todas las imágenes de `carpetas` en paralelo.
 
@@ -1272,6 +1295,10 @@ class GenStructFolder:
         ---------
         - carpetas - lista de carpetas cuyas imágenes se van a precargar.
         - progress_callback - Callback opcional para informar al log.
+        - filtro - callable nombre_de_fichero -> bool. A None se precargan todas.
+        Lo usa la etapa `struct` repartida para leer solo el EXIF de las imágenes
+        que le tocan a esta tarea: precargar el de TODAS en las N tareas multiplica
+        por N las lecturas contra GCS, que son lo caro de esta fase.
         """
         rutas = []
         for carpeta in carpetas:
@@ -1279,6 +1306,8 @@ class GenStructFolder:
                 continue
             for archivo in os.listdir(carpeta):
                 if archivo.endswith(('jpg', 'JPG')):
+                    if filtro is not None and not filtro(archivo):
+                        continue
                     ruta = os.path.join(carpeta, archivo)
                     if ruta not in self._timestamps_cache:
                         rutas.append(ruta)
@@ -3745,8 +3774,7 @@ class RGBProcessing:
                             pathRGB_PB = os.path.join(os.path.join(output_folder,"RGB"),nombreCarpeta_PB)
 
                             # Si no existe todavia la carpeta de RGB, la creamos
-                            if not os.path.exists(pathRGB_PB):
-                                os.makedirs(pathRGB_PB)
+                            os.makedirs(pathRGB_PB, exist_ok=True)
                             
                             nombreCarpeta_PB_vuelo = nombreCarpeta_PB+'_V'+str(estadillo[nombres_columnas['Vuelo']].iloc[vuelo])
 
@@ -3754,8 +3782,7 @@ class RGBProcessing:
                             pathRGB_PB_vuelo = os.path.join(pathRGB_PB,nombreCarpeta_PB_vuelo)
 
                             # Si no existe todavia la carpeta del vuelo, la creamos
-                            if not os.path.exists(pathRGB_PB_vuelo):
-                                os.makedirs(pathRGB_PB_vuelo)
+                            os.makedirs(pathRGB_PB_vuelo, exist_ok=True)
 
                             # nombre_archivo_log_post = os.path.join(pathRGB_PB_vuelo,\
                             #     log_file.split('.')[0]+'_'+'PB'+str(estadillo[nombres_columnas['PB']].iloc[vuelo])+\

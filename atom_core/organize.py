@@ -533,21 +533,24 @@ def run_task(
             params.get("shard_index", 0), params.get("shard_count", 1))
 
         # `todo` repartido NO existe, y hay que rechazarlo en vez de dejarlo
-        # correr: la etapa `struct` lee el estadillo y MUEVE el destino entero,
-        # así que N tareas haciéndola a la vez se pisan los ficheros unas a otras
-        # y el vuelo sale corrupto — sin que ningún check lo detecte, porque cada
-        # tarea vería su parte cuadrada. El reparto exige las tres ejecuciones
-        # separadas: split (N) -> struct (1) -> post (N).
+        # correr: en una sola ejecución las tres etapas van seguidas sin ninguna
+        # barrera entre ellas, así que la tarea 2 podría estar estructurando
+        # mientras la 5 todavía separa, y el post-proceso trabajaría sobre un
+        # destino a medio hacer. El reparto exige las tres ejecuciones separadas
+        # —split (N) -> struct (N) -> post (N)—, donde el propio Job es la
+        # barrera: una ejecución no arranca hasta que la anterior ha cerrado.
         #
-        # `struct` a secas cae en el mismo agujero y hasta ahora se colaba: pedirla
-        # con --tasks=8 arrancaba ocho tareas moviendo el mismo destino, y el fallo
-        # solo se vería al abrir el vuelo entregado.
-        if etapa in ("todo", "struct") and shard_count > 1:
+        # `struct` SÍ se reparte desde v3.4.31. Estuvo prohibida mientras el
+        # reparto se hacía por vuelo del estadillo (dos tareas podían reclamar la
+        # misma imagen); ahora se reparte por imagen con un hash del nombre y cada
+        # foto tiene una sola dueña — ver `sharding.toca_imagen`.
+        if etapa == "todo" and shard_count > 1:
             emit("error",
                  f"--etapa {etapa} no se puede repartir (llegan {shard_count} tareas). "
-                 "La estructura de carpetas mueve el destino completo y no admite "
-                 "concurrencia. Lanza tres ejecuciones: --etapa split con N tareas, "
-                 "luego --etapa struct con 1, luego --etapa post con N.")
+                 "Las tres etapas irían sin barrera entre ellas y el post-proceso "
+                 "trabajaría sobre un destino a medio estructurar. Lanza tres "
+                 "ejecuciones: --etapa split, luego --etapa struct, luego --etapa "
+                 "post, todas con N tareas.")
             return
 
         # Guarda: la carpeta de SALIDA debe estar vacía (decisión de Cas

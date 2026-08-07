@@ -103,6 +103,52 @@ class PipelinePhasesMixin:
                 "que tareas). No es un fallo; sobra paralelismo.\n")
         return mios
 
+    def _barrido_sin_ordenar(self, cfg, progress_callback) -> None:
+        """Aparta a `SIN_ORDENAR` lo que quedó suelto en la raíz de RGB/TERMICA y
+        aborta si NO sobrevivió nada.
+
+        Cuándo se llama importa más que lo que hace: el criterio es «lo que sigue
+        en la raíz no lo quiere ningún vuelo», y eso solo es cierto cuando la
+        etapa `struct` ha terminado **entera**. Con `struct` repartido entre N
+        tareas, ejecutarlo al final de la propia etapa lo haría con las otras
+        tareas todavía moviendo: cada una vería como «sobrantes» las imágenes que
+        sus compañeras aún no han colocado y se las llevaría a SIN_ORDENAR. El
+        vuelo saldría incompleto y en ÁMBAR (aviso), no en rojo — el peor modo de
+        fallo posible, porque se entrega.
+
+        Por eso vive aquí y lo llaman dos sitios: el final de `struct` cuando la
+        etapa es `todo` (no hay reparto posible, nadie más está moviendo), y el
+        arranque de `post`, donde la barrera entre ejecuciones del Job garantiza
+        que `struct` acabó. En `post` repartido lo hace solo la tarea 0: las ocho
+        harían el mismo trabajo pisándose, y las otras siete trabajan sobre
+        `PBx/PBx_Vy`, que el barrido no toca.
+        """
+        apartadas_termica, apartadas_rgb = self.gen_struct_folder_obj.checking_results_gen_struct_folder(
+            cfg.output_folder, progress_callback)
+
+        # GUARD "todo fuera del estadillo": si tras generar la estructura no
+        # sobrevive NINGUNA imagen en TERMICA/RGB y sí se apartaron a
+        # SIN_ORDENAR, ninguna foto encajó en la ventana horaria de ningún
+        # vuelo. Sin este guard las fases siguientes (recorte, meta,
+        # miniaturas) procesan 0 imágenes y salen en VERDE — porque
+        # contar_imagenes_or_tmc excluye SIN_ORDENAR del total esperado, así
+        # que 0 esperadas == 0 procesadas cuadra — y el run solo revienta al
+        # final, en la conversión a TIF, con un error que culpa al dron
+        # (no encuentra térmica de muestra) en vez de al estadillo.
+        quedan_termica = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, "TERMICA"))
+        quedan_rgb = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, "RGB"))
+        apartadas = apartadas_termica + apartadas_rgb
+        if quedan_termica == 0 and quedan_rgb == 0 and apartadas > 0:
+            msg = (f"Ninguna de las {apartadas} imágenes encaja en la franja horaria de ningún "
+                   f"vuelo del estadillo: todas se han apartado a SIN_ORDENAR y no queda nada que "
+                   f"procesar. Revisa que el estadillo sea el de este vuelo (fecha correcta) y el "
+                   f"desfase horario configurado (ahora: {cfg.mismatch_hours} h, {cfg.mismatch_minutes} min; "
+                   f"margen {cfg.seconds_range} s). Las imágenes NO se han perdido: están en "
+                   f"{os.path.join(cfg.output_folder, 'SIN_ORDENAR')}.")
+            progress_callback.emit("ERROR: " + msg + "\n")
+            self.organizer_logger_obj.logger.info(msg)
+            raise ValueError(msg)
+
     def _rutas_del_shard(self, output_folder: str, subcarpetas: list[str],
                          mis_pbs) -> list[str]:
         """Rutas concretas sobre las que iterar: las raíces (`destino/TERMICA`)
@@ -347,38 +393,30 @@ class PipelinePhasesMixin:
 
                 if cfg.end_rgb_extra_files != "":  # Comprobamos que hemos puesto sufijo extra
                     self.gen_struct_folder_obj.gen_folder_struct(cfg.estad, cfg.output_folder, cfg.output_folder,
-                                                        True, cfg.seconds_range, cfg.mismatch_hours, cfg.mismatch_minutes, progress_callback, progress_bar, extra_suffix = True, include_v=cfg.include_v)
+                                                        True, cfg.seconds_range, cfg.mismatch_hours, cfg.mismatch_minutes, progress_callback, progress_bar, extra_suffix = True, include_v=cfg.include_v,
+                                                        shard_index=shard_index, shard_count=shard_count)
                 else:
                     self.gen_struct_folder_obj.gen_folder_struct(cfg.estad, cfg.output_folder, cfg.output_folder,
-                                                        True, cfg.seconds_range, cfg.mismatch_hours, cfg.mismatch_minutes, progress_callback, progress_bar, include_v=cfg.include_v)
+                                                        True, cfg.seconds_range, cfg.mismatch_hours, cfg.mismatch_minutes, progress_callback, progress_bar, include_v=cfg.include_v,
+                                                        shard_index=shard_index, shard_count=shard_count)
 
-                apartadas_termica, apartadas_rgb = self.gen_struct_folder_obj.checking_results_gen_struct_folder(cfg.output_folder, progress_callback)
-
-                # GUARD "todo fuera del estadillo": si tras generar la estructura no
-                # sobrevive NINGUNA imagen en TERMICA/RGB y sí se apartaron a
-                # SIN_ORDENAR, ninguna foto encajó en la ventana horaria de ningún
-                # vuelo. Sin este guard las fases siguientes (recorte, meta,
-                # miniaturas) procesan 0 imágenes y salen en VERDE — porque
-                # contar_imagenes_or_tmc excluye SIN_ORDENAR del total esperado, así
-                # que 0 esperadas == 0 procesadas cuadra — y el run solo revienta al
-                # final, en la conversión a TIF, con un error que culpa al dron
-                # (no encuentra térmica de muestra) en vez de al estadillo.
-                quedan_termica = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, "TERMICA"))
-                quedan_rgb = self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, "RGB"))
-                apartadas = apartadas_termica + apartadas_rgb
-                if quedan_termica == 0 and quedan_rgb == 0 and apartadas > 0:
-                    msg = (f"Ninguna de las {apartadas} imágenes encaja en la franja horaria de ningún "
-                           f"vuelo del estadillo: todas se han apartado a SIN_ORDENAR y no queda nada que "
-                           f"procesar. Revisa que el estadillo sea el de este vuelo (fecha correcta) y el "
-                           f"desfase horario configurado (ahora: {cfg.mismatch_hours} h, {cfg.mismatch_minutes} min; "
-                           f"margen {cfg.seconds_range} s). Las imágenes NO se han perdido: están en "
-                           f"{os.path.join(cfg.output_folder, 'SIN_ORDENAR')}.")
-                    progress_callback.emit("ERROR: " + msg + "\n")
-                    self.organizer_logger_obj.logger.info(msg)
-                    raise ValueError(msg)
+                # Barrido de sobrantes SOLO en `todo`: es la única forma de esta
+                # etapa en la que nadie más está moviendo imágenes ahora mismo.
+                # Con `--etapa struct` (repartida o no) lo hace el arranque de
+                # `post`, que es donde hay garantía de que struct ha acabado.
+                # Ver `_barrido_sin_ordenar`.
+                if etapa == "todo":
+                    self._barrido_sin_ordenar(cfg, progress_callback)
 
                 summarize_dict = self.gen_struct_folder_obj.get_summarize()
                 self.show_summarize(summarize_dict, progress_summarize)
+
+            # Arranque de `post`: aquí `struct` ya terminó del todo (son
+            # ejecuciones distintas del Job y la segunda no arranca hasta que la
+            # primera cierra), así que lo que siga suelto en la raíz de RGB/TERMICA
+            # es de verdad lo que no quiso ningún vuelo. Lo hace solo la tarea 0.
+            if hacer_post and etapa == "post" and shard_index == 0 and cfg.organize_images:
+                self._barrido_sin_ordenar(cfg, progress_callback)
 
             # PBs del destino que le tocan a esta tarea. Las fases que siguen
             # (recorte, meta, rotación, TIF) trabajan sobre el destino YA
