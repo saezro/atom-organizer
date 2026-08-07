@@ -1,0 +1,17 @@
+dist/
+build/
+node_modules/
+webui/dist/
+Logs/
+__pycache__/
+*.pyc
+.venv*/
+*.AppImage
+.DS_Store
+.pytest_cache/
+.superpowers/
+.impeccable/
+**/.impeccable/
+
+# Credenciales del cliente OAuth de escritorio (repo PUBLICO: nunca commitear)
+google_client.json

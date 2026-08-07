@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=ATOM Organizer
+Comment=Organizador de fotos de dron (RGB + térmico DJI) — Aerotools
+Exec=AppRun
+Icon=atom-organizer
+Categories=Graphics;Science;
+Terminal=false

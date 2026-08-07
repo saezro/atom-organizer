@@ -1,0 +1,273 @@
+"""
+Reverificación de 5 mejoras que YA deberían estar implementadas en el código real
+(no se reimplementa nada aquí; si algún assert falla, documenta un gap real).
+"""
+import os
+import struct
+import subprocess
+import types
+
+import numpy as np
+import numpy.testing  # noqa: F401  (import eager para evitar lazy-load bajo monkeypatch de subprocess.run)
+import pandas as pd
+import pytest
+from PIL import Image as PILImage
+
+import utils
+
+
+def _noop_progress():
+    return types.SimpleNamespace(emit=lambda *a, **k: None)
+
+
+# --- 1. TIFF en paralelo a JPG, sin subcarpeta "TIF" ------------------------
+# gen_struct/split_images.py:407-421 (convert_dji_images_to_tif): el mismo
+# input_folder se pasa como output_folder a convert_dji_image_to_tif.
+def test_tiff_stays_parallel_to_jpg_no_tif_subfolder(tmp_path, logger, make_dji_jpeg):
+    import pipeline as split_images
+
+    input_folder = tmp_path / "TERMICA"
+    input_folder.mkdir()
+    make_dji_jpeg(str(input_folder / "DJI_0001_T.JPG"))
+
+    obj = split_images.SplitImages(logger)
+    obj.total_images_number = 1
+    obj.current_image_number = 0
+
+    calls = []
+
+    def fake_convert(input_folder_arg, output_folder_arg, image_name, *args, **kwargs):
+        calls.append((input_folder_arg, output_folder_arg, image_name))
+
+    obj.convert_dji_image_to_tif = fake_convert
+    progress = _noop_progress()
+
+    obj.convert_dji_images_to_tif(str(input_folder), "exiftool", "dji_utility", progress, progress)
+
+    assert len(calls) == 1
+    called_input, called_output, called_image = calls[0]
+    assert called_image == "DJI_0001_T.JPG"
+    assert called_input == str(input_folder)
+    assert called_output == str(input_folder), (
+        "convert_dji_image_to_tif debe recibir el MISMO output_folder que input_folder "
+        "(TIFF en paralelo, sin subcarpeta TIF) — gen_struct/split_images.py:407-421"
+    )
+    assert "TIF" not in os.listdir(input_folder)
+
+
+# --- 2 y 5. Rotación de TIFF preserva radiometría + copia EXIF con exiftool,
+#            y RJPG->TIFF gira 90/-90 con np.rot90 sobre el array crudo -------
+# gen_struct/split_images.py:516-521 (rotación del array antes de guardar) y
+# :563-573 (guardado + tagsfromfile con exiftool).
+@pytest.mark.parametrize(
+    "rotate_kwargs,rot90_k,rot90_axes",
+    [
+        ({"rotate_90": True}, 1, (1, 0)),      # Clockwise
+        ({"rotate_minus_90": True}, 1, (0, 1)),  # Counterclockwise
+    ],
+)
+def test_tiff_rotation_preserves_radiometry_and_copies_exif(
+    tmp_path, logger, make_dji_jpeg, monkeypatch, rotate_kwargs, rot90_k, rot90_axes
+):
+    import pipeline as split_images
+
+    input_folder = tmp_path / "TERMICA"
+    input_folder.mkdir()
+    image_name = "DJI_0001_T.JPG"
+    image_path = make_dji_jpeg(str(input_folder / image_name))
+
+    img_size = PILImage.open(image_path).size  # (64, 48) ancho x alto
+    h, w = img_size[1], img_size[0]  # reshape(size[1], size[0]) = (48, 64)
+    values = [float(i) for i in range(h * w)]
+    raw_bytes = struct.pack(f"{h * w}f", *values)
+    expected_arr = np.array(values, dtype=np.float64).reshape(h, w)
+    expected_rotated = np.rot90(expected_arr, rot90_k, rot90_axes)
+
+    calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        if len(calls) == 1:
+            # Simula la utilidad DJI generando el .raw con datos radiométricos conocidos.
+            with open(os.path.join(str(input_folder), image_name + ".raw"), "wb") as f:
+                f.write(raw_bytes)
+        return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+    monkeypatch.setattr(split_images.subprocess, "run", fake_run)
+
+    obj = split_images.SplitImages(logger)
+    progress = _noop_progress()
+
+    obj.convert_dji_image_to_tif(
+        str(input_folder), str(input_folder), image_name,
+        "exiftool", "dji_utility", progress, progress,
+        **rotate_kwargs,
+    )
+
+    tiff_path = os.path.join(str(input_folder), "DJI_0001_T.tiff")
+    assert os.path.exists(tiff_path), "No se generó el TIFF esperado."
+
+    saved_arr = np.array(PILImage.open(tiff_path))
+    np.testing.assert_array_equal(
+        saved_arr, expected_rotated,
+        err_msg=(
+            "El TIFF guardado no coincide con el array crudo rotado ANTES de guardar "
+            "(radiometría no preservada) — gen_struct/split_images.py:516-521,563-565"
+        ),
+    )
+
+    assert len(calls) == 2, "Se esperaban 2 llamadas a subprocess.run: utilidad DJI + exiftool."
+    # El comando es una LISTA de argv, no una cadena: el flag es "-tagsfromfile" (con
+    # guión) y los ficheros van como RUTA ABSOLUTA, no como nombre suelto. Buscar
+    # "tagsfromfile" o image_name como elementos exactos no encontraba nada y el test
+    # fallaba aunque el código hiciera exactamente lo que se le pide.
+    exiftool_cmd = calls[1]
+    assert "-tagsfromfile" in exiftool_cmd, "No se copiaron metadatos EXIF con exiftool -tagsfromfile."
+    assert "-overwrite_original_in_place" in exiftool_cmd
+    assert any(a.endswith(image_name) for a in exiftool_cmd), f"El JPG origen {image_name} no está en el comando."
+    assert any(a.endswith("DJI_0001_T.tiff") for a in exiftool_cmd), "El TIFF destino no está en el comando."
+
+
+# --- 3. CSV _Videofiles con columnas ['New Name','Original Name','Degree'] --
+# gen_struct/gen_struct_folder.py:503-658 (gen_thumbnails_and_rotate).
+def test_videofiles_csv_columns_and_degree(tmp_path, logger, make_dji_jpeg):
+    import pipeline as gen_struct_folder
+
+    planta_folder = tmp_path / "PLANTA"
+    flight_folder = planta_folder / "PB1_V01"
+    flight_folder.mkdir(parents=True)
+    # gimbal_yaw = 0.0 en ambas imágenes: con los límites de abajo caen en el
+    # bucket "no rotar" (Degree = 0), evitando la rama de rotate_and_save.
+    make_dji_jpeg(str(flight_folder / "DJI_0001_T.JPG"), gimbal_yaw=0.0)
+    make_dji_jpeg(str(flight_folder / "DJI_0002_T.JPG"), gimbal_yaw=0.0)
+
+    obj = gen_struct_folder.GenStructFolder(logger)
+    obj.root_folder = str(planta_folder)
+    obj.csvs_root_folder = str(planta_folder / "CSVs")
+    obj.total_images_number = 2
+    obj.current_image_number = 0
+
+    progress = _noop_progress()
+
+    obj.gen_thumbnails_and_rotate(
+        str(flight_folder), rgb_processing=False,
+        max_error=50, lim_max_270=-10, lim_min_270=-170,
+        lim_max_90=170, lim_min_90=10,
+        progress_callback=progress, progress_bar=progress,
+    )
+
+    csv_path = os.path.join(obj.csvs_root_folder, utils.CRITERIO_DIRNAME, "PB1_V01_Videofiles.csv")
+    assert os.path.exists(csv_path), (
+        "No se generó el CSV _Videofiles — gen_struct/gen_struct_folder.py:649-652"
+    )
+    df = pd.read_csv(csv_path)
+    assert list(df.columns) == ["New Name", "Original Name", "Degree"], (
+        "Columnas del CSV _Videofiles distintas de las esperadas."
+    )
+    assert len(df) == 2
+    assert set(df["Degree"].unique()) == {0}
+
+
+# --- 4. La rotación RGB es un transpose real, in-place ----------------------
+# pipeline.py CompressImage.rotate_and_save. Solo queda la rama RGB: desde que se
+# quitaron las miniaturas la térmica no pasa por aquí: su *_T.JPG se gira al final,
+# tras la conversión a TIFF, porque girarlo destruye su payload radiométrico.
+def test_rgb_rotates_in_place_with_a_real_transpose(tmp_path, logger, make_dji_jpeg):
+    import pipeline as compress_image
+
+    obj = compress_image.CompressImage(logger)
+    progress = _noop_progress()
+    degrees = PILImage.ROTATE_90
+
+    rgb_dir = tmp_path / "rgb_in"
+    rgb_dir.mkdir()
+    rgb_img_path = make_dji_jpeg(str(rgb_dir / "R.JPG"))
+    original_rgb_size = PILImage.open(rgb_img_path).size
+
+    obj.rotate_and_save("R.JPG", str(rgb_dir), degrees, 90, progress)
+    rgb_result_size = PILImage.open(rgb_img_path).size
+
+    assert rgb_result_size == (original_rgb_size[1], original_rgb_size[0]), (
+        "ROTATE_90 debe intercambiar ancho/alto (transpose real, no crop) y sobrescribir "
+        "el propio original: la rotación RGB es in-place."
+    )
+
+
+def test_batch_exiftool_stay_open_una_sola_invocacion(tmp_path, logger, make_dji_jpeg, monkeypatch):
+    """convert_dji_images_to_tif debe copiar los tags de TODAS las imágenes con UN solo
+    pase exiftool -stay_open (no un proceso por imagen), preservando la salida."""
+    import pipeline as split_images
+
+    input_folder = tmp_path / "TERMICA"
+    input_folder.mkdir()
+    for i in range(3):
+        make_dji_jpeg(str(input_folder / f"DJI_000{i}_T.JPG"))
+
+    exif_calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+        exif_calls.append(cmd)
+        return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+    # convert_dji_image_to_tif genera el tiff pero difiere exiftool; mockeamos su cuerpo
+    # para aislar el batch: devuelve el par (src, dst) como hará la versión defer_exif.
+    obj = split_images.SplitImages(logger)
+    obj.total_images_number = 3
+    obj.current_image_number = 0
+
+    pairs = []
+    def fake_convert(inp, outp, image_name, *a, defer_exif=False, **k):
+        src = os.path.join(inp, image_name)
+        dst = os.path.join(outp, image_name.removesuffix(".JPG") + ".tiff")
+        # simula tiff en disco
+        from PIL import Image as _I
+        _I.new("I;16", (4, 4)).save(dst, format="TIFF")
+        assert defer_exif is True, "el bucle debe pasar defer_exif=True"
+        return (src, dst)
+    obj.convert_dji_image_to_tif = fake_convert
+
+    monkeypatch.setattr(split_images.subprocess, "run", fake_run)
+    progress = _noop_progress()
+    obj.convert_dji_images_to_tif(str(input_folder), "exiftool", "dji_utility", progress, progress)
+
+    assert len(exif_calls) == 1, "Se esperaba UNA sola invocación batch de exiftool para las 3 imágenes."
+    batch_cmd = exif_calls[0]
+    joined = " ".join(batch_cmd) if isinstance(batch_cmd, (list, tuple)) else str(batch_cmd)
+    assert "-stay_open" in joined
+
+
+def test_batch_exif_se_drena_aunque_una_imagen_falle(tmp_path, logger, make_dji_jpeg, monkeypatch):
+    """Una imagen que lanza NO debe abortar el vuelo (contrato resiliente): el resto
+    de imágenes se procesan y _run_exif_batch se drena en el finally con los pares de
+    TODAS las imágenes sanas (no solo las previas al fallo)."""
+    import pipeline as split_images
+
+    input_folder = tmp_path / "TERMICA"
+    input_folder.mkdir()
+    for i in range(3):
+        make_dji_jpeg(str(input_folder / f"DJI_000{i}_T.JPG"))
+
+    obj = split_images.SplitImages(logger)
+    obj.total_images_number = 3
+    obj.current_image_number = 0
+
+    drained = {}
+    def fake_batch(pairs, exiftool_exe, progress_callback=None):
+        drained["pairs"] = list(pairs)
+    obj._run_exif_batch = fake_batch
+
+    def fake_convert(inp, outp, image_name, *a, defer_exif=False, **k):
+        if image_name == "DJI_0001_T.JPG":
+            raise RuntimeError("imagen corrupta")
+        return (os.path.join(inp, image_name), os.path.join(outp, image_name.removesuffix(".JPG") + ".tiff"))
+    obj.convert_dji_image_to_tif = fake_convert
+
+    progress = _noop_progress()
+    # Contrato resiliente: NO propaga la excepción.
+    obj.convert_dji_images_to_tif(str(input_folder), "exiftool", "dji_utility", progress, progress)
+
+    # El batch se drena con los pares de las 2 imágenes sanas; la fallida queda registrada.
+    assert "pairs" in drained, "_run_exif_batch debe ejecutarse en finally"
+    assert len(drained["pairs"]) == 2
+    assert obj.error_splitting_images >= 1
+    assert any("DJI_0001_T.JPG" in p for p in obj.images_error_splitting_images)

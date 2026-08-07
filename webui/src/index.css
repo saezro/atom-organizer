@@ -1,0 +1,45 @@
+/* Space Grotesk (OFL) empaquetada — variable font, eje wght 300..700.
+   url() relativa a src/ → Vite la mete en el bundle con hash y respeta base:'./' (build onefile file://). */
+@font-face {
+  font-family: 'Space Grotesk';
+  src: url('./assets/fonts/SpaceGrotesk-VariableFont.ttf') format('truetype');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Paleta ATOM Suite (login) */
+:root {
+  --bg: #0a0a0a;
+  --text: #f1f5f9;
+  --muted: #6b7280;
+  --orange: #ee753a;
+  --dot: rgba(255, 255, 255, 0.06);
+
+  color-scheme: dark;
+  color: var(--text);
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background-color: var(--bg);
+  /* retícula de puntos, fija bajo el contenido */
+  background-image: radial-gradient(var(--dot) 1.5px, transparent 1.5px);
+  background-size: 22px 22px;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 2rem;
+}

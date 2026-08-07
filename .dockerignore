@@ -1,0 +1,11 @@
+.git/
+__pycache__/
+*.pyc
+webui/node_modules/
+tests/
+docs/
+packaging/
+programas_externos/*.exe
+programas_externos/DJI/*.exe
+programas_externos/DJI/*.dll
+programas_externos/DJI/*.lib

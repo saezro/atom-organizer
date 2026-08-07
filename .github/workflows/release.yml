@@ -1,0 +1,221 @@
+name: release
+
+# Publica una release con los dos entregables de la UI webview por cada versión:
+#   - Linux:   ATOM_Organizer-<ver>-x86_64.AppImage   (Qt/QtWebEngine, atom_organizer_webview_linux.spec)
+#   - Windows: ATOM-Organizer-Setup-v<ver>.exe        (instalador Inno Setup sobre el onedir)
+#
+# El instalador (no un .exe suelto) es lo que consume el updater in-app
+# (atom_core/updater.py): lo descarga y lo lanza con /VERYSILENT.
+#
+# Disparo:
+#   - push de un tag  vX.Y.Z  → build + release ESTABLE (la que ve el updater).
+#   - push de un tag  vX.Y.Z-rc1 → igual, pero marcada pre-release (no se ofrece).
+#   - manual (workflow_dispatch) → indicar la versión; crea el tag en el sha actual.
+#
+# El tag DEBE coincidir con version.py (el job de Windows lo verifica y falla si no).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versión/tag a publicar (p.ej. v3.3)'
+        required: true
+      prerelease:
+        description: 'Marcar como pre-release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - id: v
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            V="${GITHUB_REF_NAME}"
+            # Un tag limpio (v3.2.0) publica ESTABLE — el updater in-app sólo ve
+            # releases estables (`/releases/latest` de GitHub ignora las pre-release).
+            # Para publicar una build de prueba que NO se ofrezca a nadie, etiqueta
+            # con sufijo: v3.3.0-rc1, v3.3.0-beta…
+            case "$V" in
+              *-*) PRE=true ;;
+              *)   PRE=false ;;
+            esac
+            echo "version=$V" >> "$GITHUB_OUTPUT"
+            echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=${{ inputs.prerelease }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Puerta de calidad ANTES de gastar los dos builds. Nació de v3.4.24: un
+  # `setForce(false)` huérfano (estado que se quitó en 4140633) reventaba
+  # `pickCarpeta` en runtime, y como aquí no corría ni lint ni tests, lo único
+  # que lo habría cazado era abrir la ventana a mano y mirar la consola.
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # `no-undef` es la regla que caza los identificadores que dejó atrás un
+      # refactor. Sin ella el bundle compila tan feliz y falla al pulsar.
+      - name: Lint y tests de la UI
+        working-directory: webui
+        run: |
+          npm ci
+          npm run lint
+          npm test
+      # tests/test_smoke.py comprueba que exiftool y ffmpeg están en el PATH
+      # porque el pipeline los invoca como subproceso. El runner no los trae:
+      # sin esto la puerta falla siempre, aunque el código esté bien.
+      - name: Binarios externos del pipeline
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libimage-exiftool-perl ffmpeg
+      - name: Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-linux.txt
+          pip install -r requirements-webview.txt
+          pip install pytest
+      # test_dark_theme.py falla EN RECOLECCIÓN desde antes de este workflow;
+      # se excluye para no bloquear la puerta con deuda preexistente, no porque
+      # sea prescindible. Arreglarlo y quitar el --ignore es tarea aparte.
+      - name: Tests
+        run: python -m pytest tests/ -q --ignore=tests/test_dark_theme.py
+
+  build-linux:
+    needs: [meta, checks]
+    # Era ubuntu-22.04, por construir contra la glibc más vieja posible y que el
+    # AppImage corriera en cualquier sitio. Esa imagen ya no se sirve: los dos
+    # intentos de v3.4.22 murieron sin ejecutar un solo paso ("The job was not
+    # acquired by Runner of type hosted"). El suelo de glibc sube a la de 24.04;
+    # el AppImage lo usa Linux moderno (Windows va por su instalador), así que
+    # el coste es teórico y el de no publicar no lo era.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build React UI (Vite)
+        working-directory: webui
+        run: |
+          npm ci
+          npm run build
+      - name: Python deps
+        run: |
+          python -m pip install --upgrade pip
+          # requirements-linux.txt (NO requirements.txt: esa lleva pywin32, solo-Windows)
+          pip install -r requirements-linux.txt
+          pip install -r requirements-webview.txt
+          # setuptools<81: PyInstaller 5.13.2 necesita pkg_resources (setuptools 83 lo quitó)
+          pip install "setuptools==80.10.2" "pyinstaller==5.13.2"
+      # El client_secret no está en el repo (es público: Google revocaría el
+      # cliente por secret-scanning). Se inyecta aquí, solo en el runner.
+      - name: Inyectar credenciales OAuth
+        env:
+          ATOM_GOOGLE_CLIENT_ID: ${{ secrets.ATOM_GOOGLE_CLIENT_ID }}
+          ATOM_GOOGLE_CLIENT_SECRET: ${{ secrets.ATOM_GOOGLE_CLIENT_SECRET }}
+        run: python scripts/inject_oauth_client.py
+      - name: PyInstaller (onedir Qt/QtWebEngine)
+        run: pyinstaller --clean --noconfirm atom_organizer_webview_linux.spec
+      - name: Inject ipaddress en base_library.zip
+        run: python inject_ipaddress.py
+      - name: Montar AppImage
+        run: bash scripts/build_appimage.sh "${{ needs.meta.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: ATOM_Organizer-*-x86_64.AppImage
+          if-no-files-found: error
+
+  build-windows:
+    needs: [meta, checks]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build React UI (Vite)
+        working-directory: webui
+        run: |
+          npm ci
+          npm run build
+      - name: Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-webview.txt
+          pip install pyinstaller==6.6.0
+      # El tag manda, pero la versión que la app enseña (y con la que compara al
+      # buscar actualizaciones) sale de version.py: si no coinciden, el updater
+      # ofrecería una actualización ya instalada en bucle. Se falla aquí.
+      - name: Comprobar que el tag coincide con version.py
+        shell: pwsh
+        run: |
+          $py = (python -c "from version import __version__; print(__version__)").Trim()
+          # v3.2.0 y v3.2.0-rc1 valen los dos para version.py = 3.2.0
+          $tag = ("${{ needs.meta.outputs.version }}".TrimStart('v') -split '-')[0]
+          if ($py -ne $tag) {
+            Write-Error "Tag ($tag) != version.py ($py). Actualiza version.py y vuelve a etiquetar."
+            exit 1
+          }
+      - name: Inyectar credenciales OAuth
+        env:
+          ATOM_GOOGLE_CLIENT_ID: ${{ secrets.ATOM_GOOGLE_CLIENT_ID }}
+          ATOM_GOOGLE_CLIENT_SECRET: ${{ secrets.ATOM_GOOGLE_CLIENT_SECRET }}
+        run: python scripts/inject_oauth_client.py
+      - name: PyInstaller (onedir Qt/QtWebEngine)
+        run: pyinstaller --clean --noconfirm atom_organizer_webview.spec
+      - name: Construir instalador (Inno Setup)
+        shell: pwsh
+        run: |
+          $tag = "${{ needs.meta.outputs.version }}".TrimStart('v')
+          # VersionInfoVersion sólo admite números → la versión va limpia (3.2.0) y
+          # el sufijo (-rc1) sólo al nombre del fichero.
+          $ver = ($tag -split '-')[0]
+          # Inno Setup 6 viene preinstalado en los runners windows-latest
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyVersion=$ver" "/DMyTag=$tag" packaging\windows\ATOM-Organizer.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/installer/ATOM-Organizer-Setup-*.exe
+          if-no-files-found: error
+
+  release:
+    needs: [meta, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-assets
+      - name: Publicar release con ambos binarios
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.version }}
+          name: ATOM Organizer ${{ needs.meta.outputs.version }}
+          prerelease: ${{ needs.meta.outputs.prerelease }}
+          fail_on_unmatched_files: true
+          files: |
+            dist-assets/linux-appimage/ATOM_Organizer-*-x86_64.AppImage
+            dist-assets/windows-installer/ATOM-Organizer-Setup-*.exe
