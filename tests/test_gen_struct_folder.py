@@ -84,3 +84,77 @@ def test_gen_thumbnails_and_rotate_manual_no_reprocesa_miniaturas(tmp_path, make
     assert llamadas, "No se rotó nada: el test no está probando la exclusión de MINIATURAS."
     reprocesadas = [c for c in llamadas if "MINIATURAS" in c]
     assert reprocesadas == [], f"Se ha reprocesado contenido dentro de MINIATURAS: {reprocesadas}"
+
+
+def _estadillo(path, filas):
+    """Estadillo mínimo con las columnas que mira `get_nombres_columnas` (ES)."""
+    lineas = ["PB;Vuelo;Fecha;Hora_de_inicio;Hora_final"]
+    lineas += [";".join(str(c) for c in fila) for fila in filas]
+    path.write_text("\n".join(lineas) + "\n", encoding="utf-8")
+    return str(path)
+
+
+def _destino_plano(root, imagenes):
+    """Destino tal y como lo deja `split`: RGB/ y TERMICA/ planas."""
+    for sub in ("RGB", "TERMICA"):
+        (root / sub).mkdir(parents=True)
+        for nombre in imagenes:
+            (root / sub / nombre).write_bytes(b"X")
+
+
+def _con_timestamps(gsf, horas):
+    """Fija el EXIF de cada imagen por nombre: {'DJI_0001.jpg': '10:00:30'}."""
+    import datetime as _dt
+
+    def _fake(ruta):
+        hora = horas[os.path.basename(ruta)]
+        return _dt.datetime.strptime("2026:03:17_" + hora, "%Y:%m:%d_%H:%M:%S")
+
+    gsf.exif_management_obj.get_timestamp_from_image = _fake
+
+
+def test_gen_folder_struct_reparte_por_ventana_horaria(tmp_path):
+    """Cada imagen acaba en el vuelo cuya franja la contiene, y la que no cae en
+    ninguna se queda en la raíz (de ahí se la lleva luego `checking_results_*` a
+    SIN_ORDENAR). Es el contrato que tenía el bucle «por vuelo» y que debe seguir
+    cumpliendo el bucle «por imagen»."""
+    root = tmp_path / "destino"
+    _destino_plano(root, ["a.jpg", "b.jpg", "fuera.jpg"])
+    estadillo = _estadillo(tmp_path / "est.csv",
+                           [("1", "1", "2026:03:17", "10:00:00", "10:05:00"),
+                            ("2", "1", "2026:03:17", "11:00:00", "11:05:00")])
+
+    gsf = _make_gsf(tmp_path)
+    gsf.total_images_number = 6
+    _con_timestamps(gsf, {"a.jpg": "10:02:00", "b.jpg": "11:03:00", "fuera.jpg": "23:00:00"})
+    cb = FakeSignal()
+
+    gsf.gen_folder_struct(estadillo, str(root), str(root), True, 0, 0, 0, cb, cb)
+
+    for sub in ("RGB", "TERMICA"):
+        assert os.listdir(root / sub / "PB1" / "PB1_V1") == ["a.jpg"]
+        assert os.listdir(root / sub / "PB2" / "PB2_V1") == ["b.jpg"]
+        sueltas = [f for f in os.listdir(root / sub) if f.endswith(".jpg")]
+        assert sueltas == ["fuera.jpg"], f"{sub}: quedaron sueltas {sueltas}"
+
+
+def test_gen_folder_struct_solape_lo_gana_el_primer_vuelo_del_estadillo(tmp_path):
+    """Con dos vuelos que solapan, la imagen es del que aparece antes en el CSV.
+    Antes lo garantizaba el orden secuencial del bucle (el primero se llevaba la
+    imagen y el segundo ya no la veía); ahora lo garantiza el orden en que se
+    recorren las ventanas. Si eso se rompe, la foto cambia de carpeta sin avisar."""
+    root = tmp_path / "destino"
+    _destino_plano(root, ["solapada.jpg"])
+    estadillo = _estadillo(tmp_path / "est.csv",
+                           [("9", "2", "2026:03:17", "10:00:00", "10:30:00"),
+                            ("3", "1", "2026:03:17", "10:10:00", "10:40:00")])
+
+    gsf = _make_gsf(tmp_path)
+    gsf.total_images_number = 2
+    _con_timestamps(gsf, {"solapada.jpg": "10:20:00"})
+    cb = FakeSignal()
+
+    gsf.gen_folder_struct(estadillo, str(root), str(root), True, 0, 0, 0, cb, cb)
+
+    assert os.listdir(root / "RGB" / "PB9" / "PB9_V2") == ["solapada.jpg"]
+    assert os.listdir(root / "RGB" / "PB3" / "PB3_V1") == []

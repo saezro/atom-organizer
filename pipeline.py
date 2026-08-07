@@ -982,15 +982,11 @@ class GenStructFolder:
         # TODO: Para mostrar la barra de progreso con este proceso vamos a tener en cuenta el número de vuelos.
         numeroVuelos = estadillo.shape[0]
 
-        # Precargamos en paralelo el EXIF de todas las imágenes ANTES de recorrer los vuelos.
-        # Sin esto, cada vuelo del estadillo vuelve a leer el EXIF de todas las imágenes que
-        # aún no se han repartido (del orden de vuelos x imágenes lecturas, cada una un
-        # round-trip a GCS). No cambia el resultado, solo el tiempo.
-        if organize_images:
-            carpetas_origen = [os.path.join(input_folder, "TERMICA"), os.path.join(input_folder, "RGB")]
-            if extra_suffix:
-                carpetas_origen.append(os.path.join(input_folder, "RGB_extra"))
-            self.precargar_timestamps(carpetas_origen, progress_callback)
+        # Franja horaria y carpetas de destino de cada vuelo, EN EL ORDEN DEL
+        # ESTADILLO. Ese orden es el desempate cuando dos vuelos solapan: la imagen
+        # se la queda el primero que la reclama, igual que antes —cuando el bucle
+        # relistaba la carpeta en cada vuelo y el primero se llevaba lo suyo.
+        ventanas: list[dict] = []
 
         for vuelo in range(numeroVuelos):
             if not self.stop:
@@ -1087,38 +1083,93 @@ class GenStructFolder:
                         os.makedirs(pathRGB_Extra_PB_vuelo)
 
                 if organize_images:
-                    # Creamos una lista con las imagenes termicas no organizadas aun, guardamos solo los archivos.jpg
-                    listaTermica = [archivo for archivo in os.listdir(os.path.join(input_folder, "TERMICA")) if archivo.endswith(('jpg', 'JPG')) ] # List Comprehension
-                    # Creamos una lista con las imagenes RGB no organizadas aun, guardamos solo los archivos.jpg
-                    listaRGB = [archivo for archivo in os.listdir(os.path.join(input_folder, "RGB")) if archivo.endswith(('jpg', 'JPG')) ] # List Comprehension
-
-                    #Obtenemos la lista de imagenes correspondientes al vuelo analizado, tanto termicas como RGB.
-                    listaTermica_vuelo = self.obtenerListaImagenesVuelo(os.path.join(input_folder, "TERMICA"), fecha_estadillo, horaInicio, horaFinal, listaTermica, seconds_range, desfase_horas, desfase_minutos) #Imagenes termicas
-                    listaRGB_vuelo = self.obtenerListaImagenesVuelo(os.path.join(input_folder, "RGB"), fecha_estadillo, horaInicio, horaFinal, listaRGB, seconds_range, desfase_horas, desfase_minutos) # Imagenes RGB
-
-                    # Movemos las imagenes termicas y RGB guardadas en la lista del vuelo
-
-                    if len(listaTermica_vuelo) > 0:
-                        self.organizer_logger.logger.info("\nMoviendo {0} imágenes Térmicas al directorio {1}\n".format(len(listaTermica_vuelo), pathTermica_PB_vuelo)) # Si hay imágenes, enviamos mensaje al log.                
-                        progress_callback.emit("\nMoviendo {0} imágenes Térmicas al directorio {1}\n".format(len(listaTermica_vuelo), pathTermica_PB_vuelo)) # Si hay imágenes, enviamos mensaje al log.                
-                    
-                    self.moverListaImagenes(os.path.join(input_folder, "TERMICA"), pathTermica_PB_vuelo, listaTermica_vuelo, progress_callback, progress_bar)
-                    
-                    if len(listaRGB_vuelo) > 0:
-                        self.organizer_logger.logger.info("\nMoviendo {0} imágenes RGB al directorio {1}\n".format(len(listaRGB_vuelo), pathRGB_PB_vuelo)) # Si hay imágenes, enviamos mensaje al log.
-                        progress_callback.emit("\nMoviendo {0} imágenes RGB al directorio {1}\n".format(len(listaRGB_vuelo), pathRGB_PB_vuelo)) # Si hay imágenes, enviamos mensaje al log.
-                    
-                    self.moverListaImagenes(os.path.join(input_folder, "RGB"), pathRGB_PB_vuelo, listaRGB_vuelo, progress_callback, progress_bar)
-
+                    # Solo se anota a quién pertenece cada franja horaria. El reparto
+                    # de las imágenes se hace después, de una vez, en
+                    # `organizar_imagenes_en_vuelos` (ver ahí el porqué).
+                    destinos = {"TERMICA": pathTermica_PB_vuelo, "RGB": pathRGB_PB_vuelo}
                     if extra_suffix:
-                        # Creamos una lista con las imagenes RGB no organizadas aún de la carpeta RGB_Extra, guardamos solo los archivos.jpg
-                        listaRGB_Extra = [archivo for archivo in os.listdir(os.path.join(input_folder, "RGB_extra")) if archivo.endswith(('jpg', 'JPG')) ] # List Comprehension
-                        listaRGB_extra_vuelo = self.obtenerListaImagenesVuelo(os.path.join(input_folder, "RGB_extra"), fecha_estadillo, horaInicio, horaFinal, listaRGB_Extra, seconds_range, desfase_horas, desfase_minutos) # Imagenes RGB
-                        if len(listaRGB_extra_vuelo) > 0:
-                            self.organizer_logger.logger.info("\nMoviendo {0} imágenes RGB Extra al directorio {1}\n".format(len(listaRGB_extra_vuelo), pathRGB_Extra_PB_vuelo)) # Si hay imágenes, enviamos mensaje al log.
-                            progress_callback.emit("\nMoviendo {0} imágenes RGB Extra al directorio {1}\n".format(len(listaRGB_extra_vuelo), pathRGB_Extra_PB_vuelo)) # Si hay imágenes, enviamos mensaje al log.
-                        
-                        self.moverListaImagenes(os.path.join(input_folder, "RGB_Extra"), pathRGB_Extra_PB_vuelo, listaRGB_extra_vuelo, progress_callback, progress_bar)
+                        destinos["RGB_extra"] = pathRGB_Extra_PB_vuelo
+                    inicio, fin = self.ventana_horaria_vuelo(
+                        fecha_estadillo, horaInicio, horaFinal, seconds_range,
+                        desfase_horas, desfase_minutos)
+                    ventanas.append({"inicio": inicio, "fin": fin, "destinos": destinos})
+
+        if organize_images and not self.stop:
+            self.organizar_imagenes_en_vuelos(input_folder, ventanas, extra_suffix,
+                                              progress_callback, progress_bar)
+
+    def organizar_imagenes_en_vuelos(self, input_folder: str, ventanas: list[dict],
+                                     extra_suffix: bool, progress_callback, progress_bar) -> None:
+        """Mueve cada imagen del destino plano a la carpeta del vuelo que la reclama.
+
+        Es el bucle de `gen_folder_struct` del revés: antes era «por vuelo, mira
+        todas las imágenes» y ahora es «por imagen, busca su vuelo». El resultado
+        es el mismo —las ventanas se recorren en el orden del estadillo, así que un
+        solape lo sigue ganando el primer vuelo del CSV—, pero el trabajo cambia de
+        forma en dos sitios que sobre gcsfuse se pagan caros:
+
+        - Un solo `listdir` por carpeta. El bucle viejo relistaba `TERMICA/` y
+          `RGB/` enteras **en cada vuelo** para ver qué quedaba sin repartir.
+        - Un solo pool de hilos para TODOS los movimientos. Antes había uno por
+          vuelo y carpeta: pools cortos, con listas pequeñas, montándose y
+          desmontándose sin llegar a saturar la latencia de red que domina aquí.
+
+        Arguments:
+        ---------
+        - input_folder - destino ya separado en RGB/TERMICA (aún plano).
+        - ventanas - `{inicio, fin, destinos}` por vuelo, en el orden del estadillo.
+        - extra_suffix - si hay que repartir también `RGB_extra`.
+        - progress_callback / progress_bar - los signals de siempre.
+        """
+        subcarpetas = ["TERMICA", "RGB"] + (["RGB_extra"] if extra_suffix else [])
+        etiquetas = {"TERMICA": "Térmicas", "RGB": "RGB", "RGB_extra": "RGB Extra"}
+
+        # El EXIF de todas las imágenes, en paralelo y antes de nada: a partir de
+        # aquí la asignación a vuelos es pura aritmética sobre la caché.
+        self.precargar_timestamps([os.path.join(input_folder, s) for s in subcarpetas],
+                                  progress_callback)
+
+        movimientos: list[tuple[str, str]] = []
+        for sub in subcarpetas:
+            carpeta = os.path.join(input_folder, sub)
+            if not os.path.isdir(carpeta):
+                continue
+            por_destino: dict[str, int] = {}
+            for imagen in sorted(os.listdir(carpeta)):
+                if not imagen.endswith(('jpg', 'JPG')):
+                    continue
+                origen = os.path.join(carpeta, imagen)
+                try:
+                    fecha_hora_imagen = self._get_timestamp_cached(origen)
+                except Exception as e:
+                    self.organizer_logger.logger.info('------------------------------------------------------------------------------------------------------')
+                    self.organizer_logger.logger.warning("ERROR: Error al obtener datos de fecha y hora de la imagen {0}".format(origen))
+                    self.organizer_logger.logger.error(e.__str__)
+                    self.organizer_logger.logger.exception(e)
+                    self.organizer_logger.logger.info('------------------------------------------------------------------------------------------------------')
+                    self.error_gen_struct_folder += 1
+                    self.errors_type_gen_struct_folder.append(origen)
+                    continue
+                if fecha_hora_imagen is None:
+                    continue
+                # El primer vuelo del estadillo que la reclama se la queda. Las que
+                # no caen en ninguna ventana se quedan donde están: se las lleva
+                # después `checking_results_gen_struct_folder` a SIN_ORDENAR.
+                destino = next((v["destinos"][sub] for v in ventanas
+                                if sub in v["destinos"]
+                                and v["inicio"] < fecha_hora_imagen < v["fin"]), None)
+                if destino is None:
+                    continue
+                movimientos.append((origen, os.path.join(destino, imagen)))
+                por_destino[destino] = por_destino.get(destino, 0) + 1
+
+            for destino, cuantas in por_destino.items():
+                mensaje = "\nMoviendo {0} imágenes {1} al directorio {2}\n".format(
+                    cuantas, etiquetas[sub], destino)
+                self.organizer_logger.logger.info(mensaje)
+                progress_callback.emit(mensaje)
+
+        self._mover_pares(movimientos, progress_callback, progress_bar)
 
 
     def obtenerListaImagenesVuelo(self, input_folder:str, fecha: str, horaInicio: str, horaFinal: str, listaImagenes: list[str], margen_segundos: float, desfase_horas: int, desfase_minutos: int) -> list[str]:
@@ -1142,13 +1193,8 @@ class GenStructFolder:
         # Creamos una lista vacia donde guardar las imagenes del vuelo
         listaImagenesVuelo = []
 
-        # Obtenemos la hora de inicio y fin. Obtenemos un objeto datetime a partir del string.
-        fecha_hora_inicio_estadillo = datetime.datetime.strptime(fecha+'_'+horaInicio,'%Y:%m:%d_%H:%M:%S')
-        fecha_hora_fin_estadillo = datetime.datetime.strptime(fecha+'_'+horaFinal,'%Y:%m:%d_%H:%M:%S')
-
-        # Añadimos el margen de segundos para la hora de inicio-fin asi como el desfase en horas entre el estadillo y la camara
-        fecha_hora_inicio = fecha_hora_inicio_estadillo - datetime.timedelta(seconds=margen_segundos) + datetime.timedelta(hours=desfase_horas, minutes=desfase_minutos)
-        fecha_hora_fin = fecha_hora_fin_estadillo + datetime.timedelta(seconds=margen_segundos) + datetime.timedelta(hours=desfase_horas, minutes=desfase_minutos)
+        fecha_hora_inicio, fecha_hora_fin = self.ventana_horaria_vuelo(
+            fecha, horaInicio, horaFinal, margen_segundos, desfase_horas, desfase_minutos)
 
         # Bucle para toda la lista de fotos
         for imagen in listaImagenes:
@@ -1168,6 +1214,31 @@ class GenStructFolder:
                 self.errors_type_gen_struct_folder.append(os.path.join(input_folder, imagen)) 
 
         return listaImagenesVuelo
+
+    def ventana_horaria_vuelo(self, fecha: str, horaInicio: str, horaFinal: str,
+                              margen_segundos: float, desfase_horas: int,
+                              desfase_minutos: int) -> tuple:
+        """Franja `(inicio, fin)` en la que una imagen pertenece a este vuelo.
+
+        Estaba dentro de `obtenerListaImagenesVuelo`, que la recalculaba en cada
+        llamada. Sale aparte porque `gen_folder_struct` necesita las ventanas de
+        TODOS los vuelos por adelantado para poder preguntar, imagen a imagen, de
+        quién es (ver ahí el porqué del cambio de orden).
+
+        Arguments:
+        ---------
+        - fecha / horaInicio / horaFinal - lo que dice el estadillo de ese vuelo.
+        - margen_segundos - holgura que se resta al inicio y se suma al final.
+        - desfase_horas / desfase_minutos - diferencia entre el reloj del estadillo
+          y el de la cámara; se suma a las dos puntas.
+        """
+        fecha_hora_inicio_estadillo = datetime.datetime.strptime(fecha+'_'+horaInicio,'%Y:%m:%d_%H:%M:%S')
+        fecha_hora_fin_estadillo = datetime.datetime.strptime(fecha+'_'+horaFinal,'%Y:%m:%d_%H:%M:%S')
+
+        desfase = datetime.timedelta(hours=desfase_horas, minutes=desfase_minutos)
+        inicio = fecha_hora_inicio_estadillo - datetime.timedelta(seconds=margen_segundos) + desfase
+        fin = fecha_hora_fin_estadillo + datetime.timedelta(seconds=margen_segundos) + desfase
+        return inicio, fin
 
     def _get_timestamp_cached(self, ruta_imagen: str):
         """
@@ -1234,17 +1305,30 @@ class GenStructFolder:
         - progress_callback - Callback (los signals) que envían, mediante un emit(), información de texto desde el hilo correspondiente.
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
         """
-        if not listaImagenes:
+        self._mover_pares([(os.path.join(pathCarpetaOrigen, imagen),
+                            os.path.join(pathCarpetaDestino, imagen))
+                           for imagen in listaImagenes], progress_callback, progress_bar)
+
+    def _mover_pares(self, movimientos: list[tuple[str, str]], progress_callback, progress_bar) -> None:
+        """Mueve una lista de `(origen, destino)` con un único pool de hilos.
+
+        Cada move es un round-trip a disco/GCS y apenas gasta CPU, así que en serie el
+        proceso se pasa el tiempo esperando latencia. Con un pool de hilos se solapan.
+        Los destinos son distintos entre sí (uno por imagen), de modo que los workers
+        no compiten por la misma ruta.
+
+        Recibe pares y no `(carpeta, lista)` para que quien reparte por vuelo pueda
+        pasar TODOS los movimientos de la corrida en una sola llamada, en vez de
+        arrancar un pool corto por cada carpeta de destino.
+        """
+        if not movimientos:
             return
 
-        # Cada move es un round-trip a disco/GCS y apenas gasta CPU, así que en serie el
-        # proceso se pasa el tiempo esperando latencia. Con un pool de hilos se solapan.
-        # Los destinos de una misma llamada son distintos entre sí (un nombre de origen
-        # por imagen), de modo que los workers no compiten por la misma ruta de destino.
-        def _mover(imagen: str) -> None:
+        def _mover(par: tuple[str, str]) -> None:
             if self.stop:  # Se comprueba que no se quiere parar el proceso desde la ventana del log.
                 return
-            utils.safe_move(os.path.join(pathCarpetaOrigen, imagen), os.path.join(pathCarpetaDestino, imagen))
+            origen, destino = par
+            utils.safe_move(origen, destino)
             with self._stats_lock:
                 self.current_image_number += 1
                 p = utils.safe_pct(self.current_image_number, self.total_images_number) # Se calcula el porcentaje que queda teniendo en cuenta la cantidad total de imágenes a procesar
@@ -1252,13 +1336,13 @@ class GenStructFolder:
             progress_bar.emit(p) # Por cada imagen que se va a procesar, se emite el procentaje de imágenes procesadas para mostrar en la barra de progreso.
             progress_callback.emit(".") # Por cada imagen que se va a procesar, se emite un "." a la ventana de log.
 
-        if self.max_io_workers <= 1 or len(listaImagenes) == 1:
-            for imagen in listaImagenes:
-                _mover(imagen)
+        if self.max_io_workers <= 1 or len(movimientos) == 1:
+            for par in movimientos:
+                _mover(par)
             return
 
         with ThreadPoolExecutor(max_workers=self.max_io_workers) as executor:
-            list(executor.map(_mover, listaImagenes))
+            list(executor.map(_mover, movimientos))
 
     def check_input_folder_and_iterate(self, input_folder: str, folders_to_check: list[str], max_error: int, lim_max_270: int, lim_min_270: int, lim_max_90: int, lim_min_90: int, rotation_mode_auto: bool, rotation_value_90: bool, progress_callback, progress_bar, only_pb: list[str] | None = None) -> bool:
         """

@@ -538,9 +538,13 @@ def run_task(
         # y el vuelo sale corrupto — sin que ningún check lo detecte, porque cada
         # tarea vería su parte cuadrada. El reparto exige las tres ejecuciones
         # separadas: split (N) -> struct (1) -> post (N).
-        if etapa == "todo" and shard_count > 1:
+        #
+        # `struct` a secas cae en el mismo agujero y hasta ahora se colaba: pedirla
+        # con --tasks=8 arrancaba ocho tareas moviendo el mismo destino, y el fallo
+        # solo se vería al abrir el vuelo entregado.
+        if etapa in ("todo", "struct") and shard_count > 1:
             emit("error",
-                 f"--etapa todo no se puede repartir (llegan {shard_count} tareas). "
+                 f"--etapa {etapa} no se puede repartir (llegan {shard_count} tareas). "
                  "La estructura de carpetas mueve el destino completo y no admite "
                  "concurrencia. Lanza tres ejecuciones: --etapa split con N tareas, "
                  "luego --etapa struct con 1, luego --etapa post con N.")

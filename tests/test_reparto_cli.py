@@ -35,6 +35,20 @@ def test_todo_repartido_se_rechaza():
     assert "no se puede repartir" in errores[0]
 
 
+def test_struct_repartida_se_rechaza():
+    """Misma corrupción que `todo` repartido, pero pedida directamente: `struct`
+    con varias tareas son N procesos moviendo el mismo destino a la vez. Se colaba
+    hasta v3.4.29 porque la guarda solo miraba `todo`."""
+    eventos, emit = _emisor()
+    organize.run_task("split_images",
+                      {"origen": "/no/existe", "destino": "/tmp/x",
+                       "etapa": "struct", "shard_index": 0, "shard_count": 8},
+                      emit)
+    errores = _errores(eventos)
+    assert errores, "se aceptó `struct` repartida entre varias tareas"
+    assert "no se puede repartir" in errores[0]
+
+
 def test_etapa_desconocida_se_rechaza():
     eventos, emit = _emisor()
     organize.run_task("split_images",
