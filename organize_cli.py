@@ -197,25 +197,57 @@ def main(argv: list[str] | None = None) -> int:
 
     # Solo se reporta a la Suite si hay secreto: sin él (un dev corriendo el
     # CLI en local) `reporter` queda `None` y todo lo de abajo es no-op.
+    #
+    # Fail-open SÍ, mudo NO. La telemetría no puede tumbar un pipeline de
+    # minutos u horas, así que cualquier fallo suyo se traga; pero se traga
+    # DICIÉNDOLO. El modo de fallo que motivó esto fue una imagen publicada sin
+    # `run_reporter.py`: el Job corría verde y la Suite no veía el run, sin un
+    # solo indicio de que faltaba nada. `_telemetria_motivo` es None mientras
+    # todo va bien y guarda la razón en cuanto deja de ir.
     reporter = None
+    telemetria_motivo: str | None = None
     n_imagenes = _contar_imagenes(origen)
     secreto = os.environ.get("ORGANIZER_INGEST_SECRET")
+    en_cloud_run = bool(os.environ.get("CLOUD_RUN_EXECUTION"))
     if secreto:
-        from atom_core.run_reporter import RunReporter
+        try:
+            from atom_core.run_reporter import RunReporter
+        except Exception as exc:  # noqa: BLE001 - imagen sin el modulo: avisar, no morir
+            RunReporter = None
+            telemetria_motivo = (
+                f"no se pudo importar atom_core.run_reporter "
+                f"({type(exc).__name__}: {exc}); imagen sin telemetria?")
 
-        # Sin `base`: RunReporter ya resuelve el destino desde ATOM_SUITE_API_BASE.
-        # Pasarlo aquí duplicaba esa lógica y con el nombre equivocado
-        # (`ATOM_SUITE_API`, que no existe): apuntar el Job a dev seteando esa
-        # variable se ignoraba en silencio y los latidos se iban a PROD.
-        reporter = RunReporter(auth=None, secreto=secreto, tipo="pipeline")
-        extra_inicio = {
-            "execution_name": os.environ.get("CLOUD_RUN_EXECUTION"),
-            "shard_count": shard_count,
-            "shard_index": shard_index,
-        }
-        extra_inicio = {k: v for k, v in extra_inicio.items() if v is not None}
-        reporter.iniciar(inspeccion=origen.name, etapa=args.etapa,
-                          items_total=n_imagenes, **extra_inicio)
+        if RunReporter is not None:
+            # Sin `base`: RunReporter ya resuelve el destino desde ATOM_SUITE_API_BASE.
+            # Pasarlo aquí duplicaba esa lógica y con el nombre equivocado
+            # (`ATOM_SUITE_API`, que no existe): apuntar el Job a dev seteando esa
+            # variable se ignoraba en silencio y los latidos se iban a PROD.
+            reporter = RunReporter(auth=None, secreto=secreto, tipo="pipeline")
+            extra_inicio = {
+                "execution_name": os.environ.get("CLOUD_RUN_EXECUTION"),
+                "shard_count": shard_count,
+                "shard_index": shard_index,
+            }
+            extra_inicio = {k: v for k, v in extra_inicio.items() if v is not None}
+            reporter.iniciar(inspeccion=origen.name, etapa=args.etapa,
+                              items_total=n_imagenes, **extra_inicio)
+            # `iniciar` es fail-open por dentro: si la Suite no contestó, el run
+            # no existe y todo lo demás sería no-op. Preguntarlo aquí es la
+            # diferencia entre "no hay run" y "no sabemos que no hay run".
+            if not reporter.activo():
+                reporter = None
+                telemetria_motivo = ("la Suite no acepto el alta del run "
+                                     "(red, 401 o 5xx); no habra progreso en /organizer")
+    elif en_cloud_run:
+        # En local no tener secreto es lo normal y no merece ruido. Dentro de
+        # Cloud Run sí: significa que la Suite lanzó el Job sin inyectar
+        # ORGANIZER_INGEST_SECRET por containerOverrides.
+        telemetria_motivo = "sin ORGANIZER_INGEST_SECRET en el entorno del Job"
+
+    if telemetria_motivo:
+        print(f"[telemetria] DESACTIVADA: {telemetria_motivo}",
+              file=sys.stderr, flush=True)
 
     fases: list[dict] = []
     errores: list[str] = []
@@ -302,6 +334,11 @@ def main(argv: list[str] | None = None) -> int:
             "etapa": args.etapa, "shard_index": shard_index,
             "shard_count": shard_count,
             "host": platform.node(), "cpus": os.cpu_count(),
+            # Lo consume quien recoja la salida del Job: `false` aquí es la
+            # prueba en frío de que este run no llegó a /organizer, y el motivo
+            # evita tener que ir a bucear en los logs para saber por qué.
+            "telemetria": reporter is not None,
+            "telemetria_motivo": telemetria_motivo,
         }, ensure_ascii=False))
 
     if reporter is not None:
