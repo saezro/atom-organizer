@@ -1011,6 +1011,27 @@ MB_POR_WORKER = 600
 NUCLEOS_RESERVADOS = 1
 
 
+def _en_cloud_run() -> bool:
+    """¿Estamos dentro de un Cloud Run Job en vez del ordenador del usuario?
+
+    La reserva de núcleos existe para que la interfaz no se congele mientras el pool
+    trabaja. En un contenedor headless no hay interfaz que proteger y el vCPU reservado
+    es capacidad alquilada que se queda parada, así que ahí no se reserva nada.
+    """
+    return bool(os.environ.get("CLOUD_RUN_TASK_INDEX") or os.environ.get("K_SERVICE"))
+
+
+def max_io_workers() -> int:
+    """
+    Cuántos hilos usar para trabajo I/O-bound (leer EXIF, mover ficheros).
+
+    Son hilos, no procesos: el tiempo se va esperando al disco o —en Cloud Run— a la
+    red de gcsfuse, así que conviene tener bastantes más que núcleos para solapar
+    latencias. `ATOM_IO_WORKERS` permite forzar el valor desde el entorno.
+    """
+    return int(os.environ.get("ATOM_IO_WORKERS", "0") or 0) or min(32, (os.cpu_count() or 4) * 4)
+
+
 def _memoria_disponible_mb():
     """
     RAM disponible en MB, o None si no se puede averiguar.
@@ -1048,7 +1069,8 @@ def workers_para_lote(mb_por_worker: int = MB_POR_WORKER) -> int:
       imágenes más grandes, bájalo en las que solo muevan ficheros.
     """
     nucleos = os.process_cpu_count() if hasattr(os, "process_cpu_count") else os.cpu_count()
-    limite = max(1, (nucleos or 1) - NUCLEOS_RESERVADOS)
+    reservados = 0 if _en_cloud_run() else NUCLEOS_RESERVADOS
+    limite = max(1, (nucleos or 1) - reservados)
 
     disponible = _memoria_disponible_mb()
     if disponible is not None and mb_por_worker > 0:

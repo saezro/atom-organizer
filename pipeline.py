@@ -74,21 +74,32 @@ except ImportError:  # Windows u otros sin fcntl
     _fcntl = None
     _FICLONE = None
 
+#: ¿Soporta reflink el destino? None = aún no se sabe; False = ya falló una vez.
+#: En gcsfuse (Cloud Run) el ioctl NUNCA funciona, y reintentarlo por imagen sale
+#: carísimo: el open(dst,"wb") sube un objeto vacío a GCS, el ioctl falla y hay que
+#: borrarlo — tres RPCs tiradas antes de cada copia real. Con miles de imágenes eso
+#: son miles de round-trips inútiles, así que se prueba UNA vez y se recuerda.
+_REFLINK_SOPORTADO: bool | None = None
+
 
 def _reflink_or_copy(src: str, dst: str) -> None:
     """Copia src→dst conservando el original. Intenta reflink (CoW) y cae a
     shutil.copy2. dst puede ser un directorio (igual que acepta shutil.copy2)."""
+    global _REFLINK_SOPORTADO
     if os.path.isdir(dst):
         dst = os.path.join(dst, os.path.basename(src))
-    if _fcntl is not None:
+    if _fcntl is not None and _REFLINK_SOPORTADO is not False:
         try:
             with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
                 _fcntl.ioctl(fdst.fileno(), _FICLONE, fsrc.fileno())
             shutil.copystat(src, dst)
+            _REFLINK_SOPORTADO = True
             return
         except OSError:
-            # reflink no soportado (cross-device, FS sin CoW…): limpiamos el dst
-            # a medias y usamos la copia byte a byte normal.
+            # reflink no soportado (cross-device, FS sin CoW, gcsfuse…): limpiamos
+            # el dst a medias, lo anotamos para no volver a intentarlo y usamos la
+            # copia byte a byte normal.
+            _REFLINK_SOPORTADO = False
             try:
                 if os.path.exists(dst):
                     os.remove(dst)
@@ -791,7 +802,7 @@ class GenStructFolder:
         # (gcsfuse) el cuello de botella es la LATENCIA por fichero, no la CPU: cada
         # imagen es un round-trip. Con hilos se solapan, y como PIL/os.replace sueltan
         # el GIL en la parte de E/S, escalan bien aunque sean threads.
-        self.max_io_workers = int(os.environ.get("ATOM_IO_WORKERS", "0") or 0) or min(32, (os.cpu_count() or 4) * 4)
+        self.max_io_workers = utils.max_io_workers()
         # Protege los contadores compartidos (current_image_number, errores) entre workers.
         self._stats_lock = threading.Lock()
         # Caché de timestamps EXIF: {ruta_absoluta: datetime|None}. Se rellena una sola

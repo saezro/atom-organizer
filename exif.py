@@ -3,6 +3,7 @@ import re
 import math
 import shutil
 import datetime
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 import PIL
@@ -267,17 +268,21 @@ class GeneralInformationFromImage:
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
             return None
 
-    def get_gimbal_yaw_pitch(self, filename: str) -> list[str]:
+    def get_gimbal_yaw_pitch(self, filename: str, bloque_xmp: str | None = None) -> list[str]:
         """
         Función que obtiene el GimbalYawDegree (Primer elemento de la lista) y el GimbalPitchDegree (Segundo elemento de la lista) de la imagen de entrada
 
         Arguments:
         ---------
         - filename - nombre de la imagen de la que extraer los datos
+        - bloque_xmp - cabecera ya leída con `leer_bloque_xmp`. Quien necesite el gimbal
+          Y el resto del XMP de la misma imagen puede leerla una sola vez y pasarla a
+          las dos funciones, en vez de abrir el fichero dos veces (ver `gen_meta_location`).
         """
         gimbal_yaw_degree = "0"
         gimbal_pitch_degree = "0"
-        d = leer_bloque_xmp(filename)  # Solo la cabecera, que es donde vive el XMP (ver leer_bloque_xmp).
+        # Solo la cabecera, que es donde vive el XMP (ver leer_bloque_xmp).
+        d = leer_bloque_xmp(filename) if bloque_xmp is None else bloque_xmp
         xmp_start = d.find('<x:xmpmeta')
         xmp_end = d.find('</x:xmpmeta')
         xmp_str = d[xmp_start:xmp_end+12]  # Nos quedamos con la información xmp
@@ -331,7 +336,7 @@ class GeneralInformationFromImage:
             self.organizer_logger.logger.exception(e)
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
 
-    def get_xmp_data(self, filename: str) -> list[str]:
+    def get_xmp_data(self, filename: str, bloque_xmp: str | None = None) -> list[str]:
         """
         Función que obtiene todos los datos que hay en las imágenes RGB, quitando el gimbal yaw y el gimbal pitch, que lo obtenemos en la función get_gimbal_yaw_pitch.
         Devuelve una lista de strings con los datos en el siguiente orden: AbsoluteAltitude, RelativeAltitude, GimbalRollDegree, FlightRollDegree,
@@ -340,6 +345,8 @@ class GeneralInformationFromImage:
         Arguments:
         ---------
         - filename - nombre de la imagen de la que extraer los datos
+        - bloque_xmp - cabecera ya leída con `leer_bloque_xmp`, para no releer el fichero
+          cuando el llamante ya la tiene (ver `get_gimbal_yaw_pitch`).
         """
         absolute_altitude = "0"
         relative_altitude = "0"
@@ -351,7 +358,8 @@ class GeneralInformationFromImage:
         gimbal_reverse = "0"
         rtk_flag = "0"
 
-        d = leer_bloque_xmp(filename)  # Solo la cabecera, que es donde vive el XMP (ver leer_bloque_xmp).
+        # Solo la cabecera, que es donde vive el XMP (ver leer_bloque_xmp).
+        d = leer_bloque_xmp(filename) if bloque_xmp is None else bloque_xmp
         xmp_start = d.find('<x:xmpmeta')
         xmp_end = d.find('</x:xmpmeta')
         xmp_str = d[xmp_start:xmp_end+12]  # Nos quedamos con la información xmp
@@ -917,6 +925,30 @@ class MetaLocation:
             progress_callback.emit("\nProcesando {0} imágenes en directorio {1}".format(len(images), input_folder) + "\n") # Se envía información al iniciar el procesado de un directorio que tenga imágenes.
             self.organizer_logger.logger.info(f"Procesando {len(images)} imágenes en directorio {input_folder}") # Se envía información al iniciar el procesado de un directorio que tenga imágenes.
 
+        # El EXIF/XMP de cada imagen es independiente del de las demás y es puro I/O
+        # (abrir el fichero y leer la cabecera). En local se notaba poco, pero sobre
+        # gcsfuse cada apertura es un round-trip de red: leerlas de una en una dejaba
+        # esta función como la ÚNICA parte secuencial de todo el pipeline. Se leen en
+        # paralelo con hilos —el GIL no estorba porque el tiempo se va en syscalls— y
+        # el bucle de abajo, que sí depende del orden (`check_gimbal_yaw_pitch_values`
+        # corrige cada fila mirando su vecina), consume los resultados ya cacheados.
+        def _leer_exif(image: str):
+            ruta = os.path.join(input_folder, image)
+            coords = self.leerLatitudLongitudAltitud_exif_DJI(ruta, progress_callback)
+            if coords is None:
+                return None, None, None
+            # Una sola lectura del bloque XMP para los dos parsers, en vez de dos.
+            bloque = leer_bloque_xmp(ruta)
+            gimbal = self.exif_management_obj.get_gimbal_yaw_pitch(ruta, bloque_xmp=bloque)
+            xmp_data = self.exif_management_obj.get_xmp_data(ruta, bloque_xmp=bloque)
+            return coords, gimbal, xmp_data
+
+        if images and not self.stop:
+            with ThreadPoolExecutor(max_workers=utils.max_io_workers()) as executor:
+                exif_por_imagen = list(executor.map(_leer_exif, images))
+        else:
+            exif_por_imagen = [(None, None, None)] * len(images)
+
         for indice, image in enumerate(images):  # Recorremos todas las imágenes del directorio de entrada.
             if not self.stop: # Se comprueba que no se quiere parar el proceso desde la ventana del log.
                 self.current_image_number += 1
@@ -925,10 +957,8 @@ class MetaLocation:
                 progress_callback.emit(".") # Por cada imagen que se va a procesar, se emite un "." a la ventana de log.
                 progress_bar.emit(p) # Por cada imagen que se va a procesar, se emite el procentaje de imágenes procesadas para mostrar en la barra de progreso.
 
-                coords = self.leerLatitudLongitudAltitud_exif_DJI(os.path.join(input_folder,image), progress_callback)  # Obtenemos las coordenadas de la imagen.
+                coords, gimbal, xmp_data = exif_por_imagen[indice]  # Ya leído arriba en paralelo.
                 if coords is not None:  # Si no hay datos exif en la imagen, devuelve un None. De este modo no nos da error aunque la imagen no tenga datos.
-                    gimbal = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder,image))
-                    xmp_data = self.exif_management_obj.get_xmp_data(os.path.join(input_folder,image))
                     altura_relativa = self.safe_float_altitude(xmp_data, progress_callback)
                     if calculate_proyected_distance:
                         # self.organizer_logger.logger.debug("--------------------------------------------------------")
@@ -957,10 +987,13 @@ class MetaLocation:
             # df = self.shuffle_csv(df)
             df = self.reorder_csv_from_date(df)
             # self.organizer_logger.logger.info(df)
-            df.to_csv(os.path.join(input_folder, os.path.basename(input_folder) + "_" + filename), sep = ",", header=False, index=False)
-            for file in os.listdir(input_folder):
-                if ".csv" in file:
-                    shutil.copy2(os.path.join(input_folder, os.path.basename(input_folder) + "_" + filename), csv_folder)
+            csv_generado = os.path.join(input_folder, os.path.basename(input_folder) + "_" + filename)
+            df.to_csv(csv_generado, sep = ",", header=False, index=False)
+            # Copia única. Antes esto era un `for file in os.listdir(...)` que, por cada
+            # .csv encontrado en la carpeta, copiaba SIEMPRE el mismo fichero al mismo
+            # destino: el resultado era idéntico, pero se repetía la copia N veces (y
+            # sobre gcsfuse cada una es una subida completa a GCS).
+            shutil.copy2(csv_generado, csv_folder)
 
         # El location.csv NO se copia a la carpeta del vuelo térmico: describe las imágenes
         # RGB (`_W`) y en `TERMICA/<PBX>/<PBX_VXX>/` es un duplicado byte a byte del que ya
