@@ -1,0 +1,25 @@
+# Contexto que se sube a Cloud Build.
+#
+# OJO: este fichero NO hace que `gcloud builds submit` suba el COMMIT — sube el
+# árbol de trabajo. Por eso v3.4.32 salió sin el reporter pese a su tag: el
+# cableado estaba en disco sin commitear y el build se llevó otra cosa.
+# La garantía de que "tag" y "contenido" signifiquen lo mismo es construir con
+# `git status --short` LIMPIO (o desde `git archive <commit>`). Esto solo recorta
+# el peso de la subida.
+#
+# Mantener alineado con .dockerignore: no excluir nada que Dockerfile.job copie
+# (atom_core/, config/, requirements-server.txt, los .py de raíz,
+# programas_externos/DJI/*.so* y libv_list.ini).
+
+.git/
+.gitignore
+__pycache__/
+*.pyc
+webui/node_modules/
+tests/
+docs/
+packaging/
+programas_externos/*.exe
+programas_externos/DJI/*.exe
+programas_externos/DJI/*.dll
+programas_externos/DJI/*.lib
