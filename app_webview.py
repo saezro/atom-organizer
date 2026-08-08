@@ -581,7 +581,7 @@ class Api:
         if self._uploading:
             return {"started": False, "reason": "Ya hay una subida en curso."}
 
-        from atom_core import cloud_config, cloud_upload, upload_log
+        from atom_core import cloud_config, cloud_upload, run_reporter, upload_log
 
         auth = self._get_auth()
         if auth is None:
@@ -609,6 +609,15 @@ class Api:
                 self._push_cloud({"kind": "start", "files": len(plan.items),
                                   "bytes": plan.total_bytes, "prefix": prefix})
 
+                # Telemetría hacia la Suite (página /organizer). Es un extra
+                # observacional: `RunReporter` es fail-open de arriba abajo, así
+                # que si la Suite no contesta la subida sigue igual y aquí no
+                # hay que envolver nada en try/except.
+                reporter = run_reporter.RunReporter(auth)
+                reporter.iniciar(inspeccion=prefix,
+                                 items_total=len(plan.items),
+                                 bytes_total=plan.total_bytes)
+
                 # Ya no hay guarda anti-pisado ni «continuar subida»: lo que
                 # ya está en el destino se identifica objeto a objeto y se
                 # descarta (`reconciliar`), en vez de bloquear la subida entera
@@ -617,7 +626,8 @@ class Api:
                 res = cloud_upload.upload_plan(
                     plan, provider,
                     on_progress=lambda t: self._push_cloud({"kind": "log", "text": t}),
-                    on_stats=lambda s: self._push_cloud({"kind": "stats", **s}),
+                    on_stats=lambda s: (self._push_cloud({"kind": "stats", **s}),
+                                        reporter.progreso(s)),
                     should_stop=lambda: self._cancel_upload,
                 )
                 self._push_cloud({
@@ -632,8 +642,21 @@ class Api:
                     "cancelled": self._cancel_upload,
                     "log": str(upload_log.ruta()),
                 })
+                # Una subida cancelada NO es un éxito: la tabla solo tiene
+                # ok|error, así que se cierra como error diciendo por qué, en vez
+                # de dejarla indistinguible de una subida completa.
+                if self._cancel_upload:
+                    reporter.fin(ok=False, error="cancelada por el operador")
+                else:
+                    reporter.fin(ok=res.ok,
+                                 error=None if res.ok else f"{len(res.failed)} objetos fallaron")
             except Exception as exc:  # noqa: BLE001 - llega a la UI como error
                 self._push_cloud({"kind": "error", "text": str(exc)})
+                # `reporter` puede no existir aún si el fallo fue antes de
+                # crearlo (build_plan vacío, provider): de ahí el locals().
+                _rep = locals().get("reporter")
+                if _rep is not None:
+                    _rep.fin(ok=False, error=str(exc))
             finally:
                 self._uploading = False
 
