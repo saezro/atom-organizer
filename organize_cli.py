@@ -235,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
             # `iniciar` es fail-open por dentro: si la Suite no contestó, el run
             # no existe y todo lo demás sería no-op. Preguntarlo aquí es la
             # diferencia entre "no hay run" y "no sabemos que no hay run".
-            if not reporter.activo():
+            if not reporter.activo:
                 reporter = None
                 telemetria_motivo = ("la Suite no acepto el alta del run "
                                      "(red, 401 o 5xx); no habra progreso en /organizer")
