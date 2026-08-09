@@ -405,3 +405,38 @@ def test_en_todo_los_sobrantes_los_cuenta_el_barrido_y_no_se_suman_dos_veces(mon
 
     assert host.gen_struct_folder_obj.current_image_number == 0
     assert "gen_struct_folder_obj.checking_results_gen_struct_folder" in host.llamadas
+
+
+# --- `post` sobre un destino sin estructura -----------------------------------
+
+def _correr_sin_destino(etapa, monkeypatch, **kwargs):
+    """Como `_correr`, pero afirmando que NINGUNA carpeta del destino existe."""
+    host = _HostDePrueba(etapa=etapa, **kwargs)
+    monkeypatch.setattr("atom_core.phases.os.path.isdir", lambda _p: False)
+    host.split_images(_cfg(), _SignalFalsa(), _SignalFalsa(), _SignalFalsa())
+    return host.llamadas
+
+
+@pytest.mark.parametrize("shard_index", [0, 3])
+def test_post_aborta_si_el_destino_no_esta_estructurado(monkeypatch, shard_index):
+    """Ocurrio de verdad (2026-08-09, ejecucion `atom-organizer-pipeline-zgmxb`):
+    se lanzo `post` contra un destino recien estrenado y el modo de fallo fue el
+    peor de todos — la tarea 0 murio con un `FileNotFoundError: .../TERMICA`
+    crudo desde las tripas del barrido, y las otras SIETE dieron VERDE sin haber
+    procesado una sola imagen, porque no habia vuelos que repartirles.
+
+    Se parametriza el shard para sujetar justo eso: el guard salta en TODAS las
+    tareas, no solo en la 0, para que el run entero salga rojo.
+    """
+    with pytest.raises(FileNotFoundError) as exc:
+        _correr_sin_destino("post", monkeypatch,
+                            shard_index=shard_index, shard_count=8)
+    mensaje = str(exc.value)
+    assert "post" in mensaje and "/destino" in mensaje
+    # El mensaje tiene que decir QUE hacer, no solo que falta un directorio.
+    assert "struct" in mensaje
+
+
+def test_el_guard_de_destino_no_afecta_a_las_demas_etapas(monkeypatch):
+    """`split` crea el destino: exigirselo hecho seria un bloqueo circular."""
+    assert "split_images_obj.iterate_folders" in _correr_sin_destino("split", monkeypatch)
