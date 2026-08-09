@@ -103,6 +103,34 @@ class PipelinePhasesMixin:
                 "que tareas). No es un fallo; sobra paralelismo.\n")
         return mios
 
+    def _exigir_destino_estructurado(self, output_folder: str) -> None:
+        """Aborta si el destino no trae la estructura que deja `struct`.
+
+        `post` no crea `RGB/` ni `TERMICA/`: las consume. Si no existe ninguna,
+        las etapas previas no han pasado por ESTE destino (destino recien
+        estrenado, o se lanzo `--etapa post` a secas) y todo lo que sigue
+        (barrido, recorte, meta, rotacion, TIF) trabajaria sobre el vacio.
+
+        Sin este guard el sintoma era el peor posible, y asi salio en la primera
+        ejecucion real del Job (2026-08-09, `atom-organizer-pipeline-zgmxb`): la
+        tarea 0 reventaba con un `FileNotFoundError: .../TERMICA` crudo desde las
+        tripas de `checking_results_gen_struct_folder`, y las otras SIETE
+        terminaban en VERDE sin haber hecho nada, porque `vuelos_del_destino` no
+        encontraba vuelos que repartir. Un 7/8 "ok" que no proceso una imagen.
+
+        Se comprueba en TODAS las tareas, no solo en la 0, justamente para que el
+        run entero salga rojo y no 7 verdes con un rojo al lado.
+        """
+        presentes = [sub for sub in ("TERMICA", "RGB")
+                     if os.path.isdir(os.path.join(output_folder, sub))]
+        if presentes:
+            return
+        raise FileNotFoundError(
+            f"La etapa 'post' necesita un destino ya estructurado y en "
+            f"'{output_folder}' no existe ni TERMICA/ ni RGB/. Ejecuta antes las "
+            f"etapas 'split' y 'struct' sobre este mismo destino, o usa "
+            f"'--etapa todo'.")
+
     def _barrido_sin_ordenar(self, cfg, progress_callback) -> None:
         """Aparta a `SIN_ORDENAR` lo que quedó suelto en la raíz de RGB/TERMICA y
         aborta si NO sobrevivió nada.
@@ -449,6 +477,11 @@ class PipelinePhasesMixin:
 
                 summarize_dict = self.gen_struct_folder_obj.get_summarize()
                 self.show_summarize(summarize_dict, progress_summarize)
+
+            # Precondicion de `post`: trabaja sobre lo que dejaron `split` y
+            # `struct`. Si no esta, se falla aqui y no 200 lineas mas abajo.
+            if hacer_post and etapa == "post":
+                self._exigir_destino_estructurado(cfg.output_folder)
 
             # Arranque de `post`: aquí `struct` ya terminó del todo (son
             # ejecuciones distintas del Job y la segunda no arranca hasta que la
