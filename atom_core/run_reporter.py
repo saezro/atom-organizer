@@ -31,6 +31,7 @@ _log = logging.getLogger(upload_log.LOGGER_NAME)
 
 USER_AGENT = "ATOM-Organizer-Uploader"
 RUTA_RUNS = "/api/organizer/runs"
+TAM_LOTE_LOGS = 200
 
 
 class RunReporter:
@@ -66,6 +67,8 @@ class RunReporter:
         self._lock = threading.Lock()
         self._id: int | None = None
         self._ultimo_latido = 0.0
+        self._buffer_logs: list[dict] = []
+        self._seq_log = 0
 
     # -- utilidad interna ---------------------------------------------------
     def _peticion(self, metodo: str, ruta: str, cuerpo: dict) -> dict | None:
@@ -118,6 +121,8 @@ class RunReporter:
             with self._lock:
                 self._id = run_id if isinstance(run_id, int) else None
                 self._ultimo_latido = 0.0
+                self._seq_log = 0
+                self._buffer_logs = []
             if self._id is None:
                 _log.warning("run_reporter: no se pudo crear el run en la Suite; "
                              "se sigue subiendo sin telemetría")
@@ -210,18 +215,66 @@ class RunReporter:
         except Exception as exc:  # noqa: BLE001 - fail-open
             _log.debug("run_reporter.fase: excepción inesperada (%s)", exc)
 
-    def fin(self, *, ok: bool, error: str | None = None) -> None:
-        """Cierra el run. A partir de aquí, `activo` vuelve a ser `False`."""
+    def log(self, mensaje: str, nivel: str = "info") -> None:
+        """Encola una linea de log. Se envia en lotes de TAM_LOTE_LOGS.
+
+        Fail-open como el resto del reporter: la telemetria nunca tumba el Job.
+        """
         try:
+            with self._lock:
+                if self._id is None:
+                    return
+                self._seq_log += 1
+                self._buffer_logs.append({
+                    "seq": self._seq_log,
+                    "nivel": nivel if nivel in ("info", "warn", "error") else "info",
+                    "mensaje": str(mensaje)[:4000],
+                })
+                lleno = len(self._buffer_logs) >= TAM_LOTE_LOGS
+            if lleno:
+                self.vaciar_logs()
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            _log.debug("run_reporter.log: excepcion inesperada (%s)", exc)
+
+    def vaciar_logs(self) -> None:
+        """Envia lo que haya en el buffer. Idempotente si esta vacio."""
+        try:
+            with self._lock:
+                run_id = self._id
+                lote = self._buffer_logs
+                self._buffer_logs = []
+            if run_id is None or not lote:
+                return
+            self._peticion("POST", f"{RUTA_RUNS}/{run_id}/logs", {"lineas": lote})
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            _log.debug("run_reporter.vaciar_logs: excepcion inesperada (%s)", exc)
+
+    def fin(self, *, ok: bool, error: str | None = None, stats: dict | None = None) -> None:
+        """Cierra el run. A partir de aqui, `activo` vuelve a ser `False`.
+
+        `stats` es el snapshot de atom_core.progress_stats.StatsTracker: se manda
+        en el mismo POST de cierre para no abrir otra ruta. Las claves que la
+        Suite no tenga whitelisted se ignoran alli en silencio.
+        """
+        try:
+            self.vaciar_logs()   # ANTES de soltar el id: despues ya no hay run al que colgarlos
             with self._lock:
                 run_id = self._id
                 self._id = None
             if run_id is None:
                 return
             cuerpo: dict = {"estado": "ok"} if ok else {"estado": "error", "error": error or ""}
+            if stats:
+                cuerpo.update({
+                    "img_rgb": stats.get("rgb"),
+                    "img_termica": stats.get("termica"),
+                    "img_rot90": stats.get("rot90"),
+                    "img_rot270": stats.get("rot270"),
+                    "img_sin_rotar": stats.get("rot_none"),
+                })
             self._peticion("POST", f"{RUTA_RUNS}/{run_id}/fin", cuerpo)
         except Exception as exc:  # noqa: BLE001 - fail-open
-            _log.debug("run_reporter.fin: excepción inesperada (%s)", exc)
+            _log.debug("run_reporter.fin: excepcion inesperada (%s)", exc)
 
     @property
     def activo(self) -> bool:
