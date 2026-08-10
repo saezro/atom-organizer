@@ -627,8 +627,18 @@ def run_task(
         # Se derivan del texto que el pipeline ya emite; ver progress_stats.
         stats = StatsTracker()
 
-        def _emit_stats() -> None:
-            emit("stats", stats.snapshot())
+        def _emit_stats(final: bool = False) -> None:
+            snapshot = stats.snapshot()
+            if final:
+                # `RunReporter.progreso` descarta los latidos que caen dentro de
+                # `intervalo_latido`, y el último snapshot de un run cae casi
+                # siempre ahí: el run terminaba `ok` con `items_hechos` clavado
+                # en el penúltimo múltiplo de IMAGE_EMIT_EVERY (2194 de 2516
+                # reales en el e2e de ANTOLIN). Esta marca es la única forma de
+                # saltarse el throttle, y sin ella un shard de menos de
+                # IMAGE_EMIT_EVERY imágenes acaba persistiendo 0.
+                snapshot = {**snapshot, "final": True}
+            emit("stats", snapshot)
 
         def _on_summary(s) -> None:
             text = str(s)
@@ -688,7 +698,7 @@ def run_task(
         # Snapshot final: el throttling de imágenes puede haber dejado sin emitir
         # las últimas < IMAGE_EMIT_EVERY, y el resumen de rotación del modal se
         # lee de aquí.
-        _emit_stats()
+        _emit_stats(final=True)
         # Cerrar la última fase y emitir el resumen final con estado agregado.
         last = _close_phase(phase_counter["i"]) if _t["phase_start"] else None
         elapsed = round((datetime.now() - _t["start"]).total_seconds(), 1)

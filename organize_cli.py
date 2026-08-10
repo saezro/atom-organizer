@@ -77,7 +77,14 @@ def progreso_desde_stats(snapshot, *, final: bool = False):
     # redacciones que no se reconocen; "120/0" en la barra es peor que "120/120".
     total = max(int(snapshot.get("total") or 0), hechos)
     cuerpo = {"files_done": hechos, "files_total": total}
-    if final:
+    # `final` puede venir por kwarg o marcado en el propio snapshot (lo pone
+    # `organize._emit_stats` en el cierre). Es lo único que hace a
+    # `RunReporter.progreso` saltarse su `intervalo_latido`: sin la marca, el
+    # último latido de un run cae dentro del throttle y se descarta, dejando
+    # persistido el penúltimo múltiplo de IMAGE_EMIT_EVERY en vez del total
+    # real (2194 de 2516 en el e2e de ANTOLIN v3.4.36), y un shard de menos de
+    # IMAGE_EMIT_EVERY imágenes terminaría `ok` con 0.
+    if final or snapshot.get("final"):
         cuerpo["final"] = True
     return cuerpo
 
@@ -337,6 +344,10 @@ def main(argv: list[str] | None = None) -> int:
                 # `progreso` ya trae throttle propio (1 latido cada
                 # `intervalo_latido`) y manda el PATCH en un hilo aparte, así
                 # que llamarlo en cada snapshot no frena al pipeline.
+                # El snapshot de cierre viene marcado con `final` (ver
+                # `organize._emit_stats`) y `progreso_desde_stats` lo propaga
+                # solo: sin esa marca el throttle se come el último latido y el
+                # run queda persistido a medias.
                 cuerpo = progreso_desde_stats(payload)
                 if cuerpo is not None:
                     reporter.progreso(cuerpo)
