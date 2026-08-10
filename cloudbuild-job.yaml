@@ -4,13 +4,30 @@
 # machineType y el modo de logging —los dos ajustes que hacen que el build no
 # tarde 20 minutos o no falle— dependían de acordarse. Aquí no.
 #
+# Construye con la SA `atom-compute-ops`, NO con una cuenta de usuario: el token
+# de usuario caduca y deja el deploy bloqueado a que alguien esté delante para
+# hacer `gcloud auth login` (que por SSH, sin navegador, es un via crucis).
+# La SA se autentica sola y no caduca.
+#
+# Para que eso funcione (concedido 2026-08-10, mínimo privilegio a propósito):
+#   - rol `serviceusage.serviceUsageConsumer` a nivel proyecto — solo habilita
+#     *usar* APIs, no da acceso a ningún dato.
+#   - `storage.objectAdmin` SOLO sobre gs://aerotools-484814-cloudbuild-staging.
+#     A nivel proyecto NO: le daría escritura sobre gs://plantas_pv_nl.
+# Por eso el `--gcs-source-staging-dir` es obligatorio: el bucket de staging por
+# defecto (aerotools-484814_cloudbuild) no le está concedido, y sin el flag el
+# submit muere al subir el contexto, antes siquiera de empezar a construir.
+#
 # Uso (el tag sale de version.py, no se escribe a mano):
 #   VER=v$(python -c "import version; print(version.__version__)")
 #   gcloud builds submit --config=cloudbuild-job.yaml \
 #     --substitutions=_VERSION=$VER \
-#     --project=aerotools-484814 --account=rodrigo.saez@aerotools.es .
+#     --project=aerotools-484814 \
+#     --account=atom-compute-ops@aerotools-484814.iam.gserviceaccount.com \
+#     --gcs-source-staging-dir=gs://aerotools-484814-cloudbuild-staging/staging .
 #   gcloud run jobs update atom-organizer-pipeline --region=europe-west4 \
-#     --project=aerotools-484814 --account=rodrigo.saez@aerotools.es \
+#     --project=aerotools-484814 \
+#     --account=atom-compute-ops@aerotools-484814.iam.gserviceaccount.com \
 #     --image=europe-west4-docker.pkg.dev/aerotools-484814/atom-organizer/pipeline:$VER
 substitutions:
   _VERSION: latest
