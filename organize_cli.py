@@ -47,6 +47,41 @@ _SEG_POR_IMAGEN = {"split": 0.045, "struct": 0.026, "post": 0.102}
 _SEG_POR_IMAGEN["todo"] = sum(_SEG_POR_IMAGEN.values())  # 0.173
 
 
+def progreso_desde_stats(snapshot, *, final: bool = False):
+    """Snapshot de `StatsTracker` -> cuerpo para `RunReporter.progreso()`.
+
+    Existe porque los dos extremos hablan idiomas distintos y nadie los unía:
+    el canal `stats` del pipeline emite `{"done", "total", "rgb", ...}` y
+    `progreso()` espera las claves de `cloud_upload._stats`
+    (`{"files_done", "files_total", ...}`). Sin esta traducción el PATCH salía
+    vacío y `organizer_runs.items_hechos` se quedaba NULL en TODOS los runs.
+
+    OJO con la semántica: `done`/`total` de `StatsTracker` son **de la fase
+    actual** (se reinician en `start_phase`), no del run. Por eso lo que la
+    Suite pinta durante el run es «progreso de la fase que está corriendo»,
+    coherente con el `fase_actual/fases_total` que se muestra al lado; la foto
+    del run entero la deja `main` al cerrar. Se mapea solo lo que tiene
+    equivalente: `rgb`/`termica`/`rot*` no tienen columna y `eta` la calcula el
+    propio CLI en el canal `phase` — colarla aquí la pisaría con un valor peor.
+
+    Devuelve `None` cuando no hay nada que mandar (así el caller no gasta un
+    latido en un PATCH vacío).
+    """
+    if not isinstance(snapshot, dict):
+        return None
+    if "done" not in snapshot:
+        return None
+    hechos = int(snapshot.get("done") or 0)
+    # Igual que en `StatsTracker.snapshot`: nunca anunciar un total por debajo
+    # de lo ya hecho. El total se deriva del texto del pipeline y hay
+    # redacciones que no se reconocen; "120/0" en la barra es peor que "120/120".
+    total = max(int(snapshot.get("total") or 0), hechos)
+    cuerpo = {"files_done": hechos, "files_total": total}
+    if final:
+        cuerpo["final"] = True
+    return cuerpo
+
+
 def _contar_imagenes(origen: Path) -> int:
     """Cuenta imágenes bajo `origen` recursivamente con `os.scandir`.
 
@@ -294,6 +329,17 @@ def main(argv: list[str] | None = None) -> int:
                     f"en el resumen de arriba")
             print(f"[done] {payload}", flush=True)
         elif kind in ("stats", "summary", "plan"):
+            if kind == "stats" and reporter is not None:
+                # El único punto del CLI con avance por-imagen. Sin esto
+                # `RunReporter.progreso` no lo llamaba NADIE y `items_hechos`
+                # salía NULL en el 100% de los runs: /organizer mostraba la fase
+                # pero jamás cuántas imágenes llevaba dentro de ella.
+                # `progreso` ya trae throttle propio (1 latido cada
+                # `intervalo_latido`) y manda el PATCH en un hilo aparte, así
+                # que llamarlo en cada snapshot no frena al pipeline.
+                cuerpo = progreso_desde_stats(payload)
+                if cuerpo is not None:
+                    reporter.progreso(cuerpo)
             if not args.quiet:
                 print(f"[{kind}] {payload}", flush=True)
         elif kind == "log" and not args.quiet:
