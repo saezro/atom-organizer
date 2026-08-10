@@ -293,11 +293,15 @@ def main(argv: list[str] | None = None) -> int:
 
     fases: list[dict] = []
     errores: list[str] = []
+    # Ultimo snapshot de `StatsTracker`. Los contadores rgb/termica/rot* son
+    # acumulados de run (nunca se resetean entre fases), asi que el ultimo que
+    # llega es el total del run y es el que se adjunta al cierre.
+    ultimo_stats: dict | None = None
     arranque = time.monotonic()
     fase_desde = arranque
 
     def emit(kind: str, payload=None) -> None:
-        nonlocal fase_desde
+        nonlocal fase_desde, ultimo_stats
         if kind == "phase" and isinstance(payload, dict):
             ahora = time.monotonic()
             if fases:
@@ -336,6 +340,8 @@ def main(argv: list[str] | None = None) -> int:
                     f"en el resumen de arriba")
             print(f"[done] {payload}", flush=True)
         elif kind in ("stats", "summary", "plan"):
+            if kind == "stats" and isinstance(payload, dict):
+                ultimo_stats = payload
             if kind == "stats" and reporter is not None:
                 # El único punto del CLI con avance por-imagen. Sin esto
                 # `RunReporter.progreso` no lo llamaba NADIE y `items_hechos`
@@ -355,6 +361,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[{kind}] {payload}", flush=True)
         elif kind == "log" and not args.quiet:
             print(payload, flush=True)
+
+        # Espejo a la Suite: los logs del Job solo vivian en Cloud Run, ilegibles
+        # desde atom-dev-nl. Va DESPUES del print y en su propio try: si el envio
+        # falla, la salida estandar (que es lo que Cloud Run captura) no se toca.
+        try:
+            if reporter is not None and reporter.activo:
+                nivel = "error" if kind == "error" else "info"
+                reporter.log(f"[{kind}] {payload}", nivel=nivel)
+        except Exception:  # noqa: BLE001 - fail-open
+            pass
 
     print(f"origen   : {origen}")
     print(f"destino  : {destino}")
@@ -400,7 +416,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if reporter is not None:
         try:
-            reporter.fin(ok=not errores, error=errores[0] if errores else None)
+            reporter.fin(ok=not errores, error=errores[0] if errores else None,
+                         stats=ultimo_stats)
         except Exception:  # noqa: BLE001 - la telemetría no puede tocar el exit code
             pass
 
