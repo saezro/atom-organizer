@@ -45,3 +45,26 @@ def test_no_arrastra_claves_ajenas():
 def test_foto_final_marca_final():
     cuerpo = progreso_desde_stats({"done": 10, "total": 10}, final=True)
     assert cuerpo == {"files_done": 10, "files_total": 10, "final": True}
+
+
+def test_snapshot_marcado_final_propaga_la_marca():
+    # `organize._emit_stats(final=True)` marca el snapshot de cierre. Si la
+    # marca no llega al cuerpo, `RunReporter.progreso` la descarta por throttle
+    # y el run queda con el penúltimo latido: en el e2e de ANTOLIN v3.4.36 los
+    # 8 shards cerraron `ok` sumando 2194 de 2516 imágenes reales.
+    cuerpo = progreso_desde_stats({"done": 314, "total": 314, "final": True})
+    assert cuerpo == {"files_done": 314, "files_total": 314, "final": True}
+
+
+def test_shard_mas_corto_que_el_intervalo_cierra_con_su_total():
+    # El caso que hacía falso positivo el aviso "ok con 0 items": un shard con
+    # menos de IMAGE_EMIT_EVERY (10) imágenes no llega a emitir ningún latido
+    # intermedio, así que el de cierre es el único que puede persistir el dato.
+    cuerpo = progreso_desde_stats({"done": 3, "total": 3, "final": True})
+    assert cuerpo == {"files_done": 3, "files_total": 3, "final": True}
+
+
+def test_snapshot_normal_no_lleva_marca_final():
+    # Los latidos intermedios SÍ deben respetar el throttle; marcarlos todos
+    # convertiría cada punto del pipeline en un PATCH síncrono.
+    assert "final" not in progreso_desde_stats({"done": 10, "total": 314})
