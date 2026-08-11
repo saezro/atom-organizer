@@ -120,6 +120,36 @@ def test_safe_move_modo_obviar_mueve_si_el_destino_no_existe(tmp_path):
     assert not origen.exists()
 
 
+def test_safe_move_modo_sobrescribir_falla_si_el_destino_es_un_directorio(tmp_path):
+    caso = tmp_path / "caso"
+    caso.mkdir()
+    origen = caso / "origen.jpg"
+    origen.write_bytes(b"nuevo")
+    destino = caso / "destino.jpg"
+    destino.mkdir()
+
+    with pytest.raises(OSError, match="directorio"):
+        utils.safe_move(str(origen), str(destino), modo=utils.MODO_SOBRESCRIBIR)
+
+    assert origen.exists(), "el origen no se consume si el destino es inservible"
+    assert destino.is_dir()
+    assert list(destino.iterdir()) == [], "el fichero NO puede acabar dentro del directorio"
+
+
+def test_safe_move_modo_sobrescribir_no_deja_temporales(tmp_path):
+    caso = tmp_path / "caso"
+    caso.mkdir()
+    origen = caso / "origen.jpg"
+    origen.write_bytes(b"nuevo")
+    destino = caso / "destino.jpg"
+    destino.write_bytes(b"viejo")
+
+    utils.safe_move(str(origen), str(destino), modo=utils.MODO_SOBRESCRIBIR)
+
+    assert sorted(p.name for p in caso.iterdir()) == ["destino.jpg"]
+    assert destino.read_bytes() == b"nuevo"
+
+
 def test_safe_move_modo_desconocido_falla_pronto(tmp_path):
     caso = tmp_path / "caso"
     caso.mkdir()
