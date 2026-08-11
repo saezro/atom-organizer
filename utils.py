@@ -898,6 +898,11 @@ class SplitImagesConfig:
     convert_to_tiff_rotate_auto: bool
     convert_to_tif_solo_seleccion_atom: bool
     convert_to_tif_create_gray_scale_images: bool
+    # Que hacer cuando el destino ya tiene un fichero en la ruta exacta que toca.
+    # Default `sobrescribir`: la segunda pasada manda. El historico `unico`
+    # (sufijos `_1`) NO es una opcion aqui — era la causa de que reorganizar
+    # PRUEBA dejara 5.049 objetos a partir de 2.516.
+    modo_destino: str = MODO_SOBRESCRIBIR
 
 
 @dataclass(frozen=True)
@@ -945,6 +950,7 @@ class GenStructFolderConfig:
     seconds_range: float
     mismatch_hours: int
     mismatch_minutes: int
+    modo_destino: str = MODO_SOBRESCRIBIR
 
 
 @dataclass(frozen=True)

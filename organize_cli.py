@@ -205,6 +205,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="Número total de tareas entre las que se reparte la "
                              "etapa. Por defecto, $CLOUD_RUN_TASK_COUNT (1 fuera "
                              "de Cloud Run).")
+    parser.add_argument("--modo-destino", dest="modo_destino",
+                        choices=["sobrescribir", "obviar"], default="sobrescribir",
+                        help="Que hacer con lo que ya haya en el destino. "
+                             "`sobrescribir` (por defecto) = la pasada actual "
+                             "manda y pisa lo que encuentre en la misma ruta. "
+                             "`obviar` = deja intacto lo que ya exista en esa "
+                             "ruta y no mueve esa imagen. En ningun caso se "
+                             "generan copias con sufijo.")
     args = parser.parse_args(argv)
 
     # El shard explícito manda sobre el entorno: así se puede reproducir en local
@@ -234,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     params: dict = {"origen": str(origen), "destino": str(destino),
                     "estadillo": args.estadillo,
                     "etapa": args.etapa,
+                    "modo_destino": args.modo_destino,
                     "shard_index": shard_index, "shard_count": shard_count}
     avanzado = {"convert_to_tif": False} if args.sin_tif else None
 
@@ -381,6 +390,7 @@ def main(argv: list[str] | None = None) -> int:
     # QUÉ carpetas les tocaron, y al diagnosticar un vuelo incompleto lo primero
     # que hace falta saber es si una tarea se quedó sin trabajo.
     print(f"etapa    : {args.etapa}")
+    print(f"destino  : modo {args.modo_destino}", flush=True)
     print(f"shard    : {shard_index + 1}/{shard_count}\n", flush=True)
 
     try:

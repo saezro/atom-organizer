@@ -196,6 +196,12 @@ def _build_generic(config_cls, params: dict):
         ann = hints.get(f.name, str)
         if f.name in params:
             kwargs[f.name] = _coerce(params[f.name], ann)
+        elif f.default is not dataclasses.MISSING:
+            # Campos con default propio (p.ej. `modo_destino`) NO deben caer al
+            # default por tipo (str -> ""): un GenStructFolderConfig sin
+            # `modo_destino` en params tiene que seguir siendo `sobrescribir`,
+            # no una cadena vacia que luego revienta la validacion.
+            kwargs[f.name] = f.default
         else:
             kwargs[f.name] = _type_default(ann)
     return config_cls(**kwargs)
@@ -232,6 +238,13 @@ def _default_split_config(params: dict) -> SplitImagesConfig:
     tif_humidity = _pos_float(params.get("convert_to_tif_humidity", params.get("humidity")), 70.0)
     tif_temp_auto = 1 if bool(params.get("convert_to_tif_temp_auto", params.get("temp_auto", True))) else 0
 
+    modo_destino = str(params.get("modo_destino") or utils.MODO_SOBRESCRIBIR).strip()
+    if modo_destino not in utils.MODOS_DESTINO:
+        # Fallar aqui y no mas abajo: un modo mal escrito que se degradase en
+        # silencio a `unico` volveria a duplicar el destino entero, y eso solo
+        # se ve horas despues contando objetos en el bucket.
+        raise ValueError(f"modo_destino desconocido: {modo_destino!r}")
+
     return SplitImagesConfig(
         input_folder=origen, output_folder=destino,
         end_rgb_extra_files="", end_thermo_files=thermo, end_rgb_files="",
@@ -261,6 +274,7 @@ def _default_split_config(params: dict) -> SplitImagesConfig:
         # carpeta `Escala_de_grises/` sólo añadía un JPG por imagen a la salida. Se deja
         # como opción a un clic; el giro sigue siendo común al TIFF (`rotar_arrays_termicos`).
         convert_to_tif_create_gray_scale_images=False,
+        modo_destino=modo_destino,
     )
 
 
@@ -424,6 +438,19 @@ def run_task(
             cfg = _default_split_config(params)
         else:
             cfg = _build_generic(config_cls, params)
+
+        # `GenStructFolderConfig` (y cualquier otra config que traiga el campo)
+        # no pasa por `_default_split_config`, asi que se valida aqui: mismo
+        # motivo que en `_default_split_config` -- fallar ya y no mas abajo, o
+        # un modo mal escrito se degrada en silencio y vuelve a duplicar el
+        # destino entero.
+        if hasattr(cfg, "modo_destino"):
+            _modo_destino = str(getattr(cfg, "modo_destino") or utils.MODO_SOBRESCRIBIR).strip()
+            if _modo_destino not in utils.MODOS_DESTINO:
+                raise ValueError(f"modo_destino desconocido: {_modo_destino!r}")
+            if _modo_destino != getattr(cfg, "modo_destino"):
+                cfg = replace(cfg, modo_destino=_modo_destino)
+
         if advanced:
             # GIRO DEL TIFF. `advanced` puede traer los tres bools de giro a false
             # por DOS motivos que el log de v3.4.4 no permitía distinguir (el dict

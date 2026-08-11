@@ -13,7 +13,16 @@ def _make_gsf(tmp_path):
     return GenStructFolder(logger)
 
 
-def test_moverListaImagenes_no_sobreescribe_en_colision(tmp_path):
+def test_moverListaImagenes_por_defecto_sobrescribe_en_colision(tmp_path):
+    # Task 2 (modo_destino): `moverListaImagenes` -> `_mover_pares` ahora pasa
+    # `modo=self.modo_destino`, y el default de `GenStructFolder` es
+    # `MODO_SOBRESCRIBIR` (utils.MODO_SOBRESCRIBIR), no el `unico` implícito
+    # de antes. Ese `unico` era precisamente el que causaba que reorganizar
+    # PRUEBA dejara 5.049 objetos a partir de 2.516 (ver utils.SplitImagesConfig
+    # / utils.GenStructFolderConfig). La segunda pasada ahora manda y pisa lo
+    # que hubiera en la misma ruta; para conservar ambas hace falta pedir
+    # `modo_destino=utils.MODO_UNICO` explícitamente (ver test_utils.py de la
+    # Task 1 para la cobertura de esa rama).
     origen1 = tmp_path / "origen1"
     origen2 = tmp_path / "origen2"
     destino = tmp_path / "destino"
@@ -31,9 +40,9 @@ def test_moverListaImagenes_no_sobreescribe_en_colision(tmp_path):
     gsf.moverListaImagenes(str(origen2), str(destino), ["img.jpg"], cb, cb)
 
     destinos = sorted(os.listdir(destino))
-    assert len(destinos) == 2, f"Se esperaban 2 archivos en destino, hay {destinos} (colisión perdió uno)"
-    contenidos = {open(destino / f, "rb").read() for f in destinos}
-    assert contenidos == {b"CONTENIDO_A", b"CONTENIDO_B"}, "Se ha perdido/corrompido el contenido de una de las fotos"
+    assert destinos == ["img.jpg"], f"Con modo_destino sobrescribir se esperaba 1 solo archivo, hay {destinos}"
+    assert (destino / "img.jpg").read_bytes() == b"CONTENIDO_B", \
+        "La segunda pasada debe mandar (sobrescribir), y ha ganado la primera"
 
 
 def test_rename_images_no_sobreescribe_en_colision(tmp_path):
