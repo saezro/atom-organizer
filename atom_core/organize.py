@@ -423,6 +423,8 @@ def run_task(
                         "rot 270:{rot270} 90:{rot90} sin:{rot_none}\n".format(**payload))
                 elif kind in ("done", "progress", "plan"):
                     _run_log.write(f"[{kind}] {payload}\n")
+                elif kind == "giros" and isinstance(payload, dict):
+                    _run_log.write(f"[giros] {payload.get('giros')}\n")
                 _run_log.flush()
             except Exception:
                 pass
@@ -721,7 +723,32 @@ def run_task(
         pbar = _Signal(lambda i: emit("progress", int(i)))
         psum = _Signal(_on_summary)
 
+        # Qué vuelos se giraron y en qué sentido, para que la Suite lo pinte en
+        # el histórico. Defensivo por partida doble: `get_giros_por_vuelo` puede
+        # no existir todavía (pipeline.GenStructFolder sin desplegar) o petar por
+        # lo que sea, y eso no puede tumbar un run. Se emite UNA sola vez (flag
+        # `_giros_emitidos`) y solo si hay algo que contar.
+        #
+        # Se llama tanto en la salida feliz como en el `except` de abajo: la
+        # rotación vive en la etapa `post`, y si esa etapa revienta a mitad ya
+        # hay vuelos girados y registrados que el usuario querrá ver igualmente.
+        _giros_emitidos = {"ya": False}
+
+        def _emit_giros():
+            if _giros_emitidos["ya"]:
+                return
+            try:
+                _obj = getattr(host, "gen_struct_folder_obj", None)
+                _get_giros = getattr(_obj, "get_giros_por_vuelo", None)
+                _giros = _get_giros() if callable(_get_giros) else None
+            except Exception:
+                _giros = None
+            _giros_emitidos["ya"] = True
+            if _giros:
+                emit("giros", {"giros": _giros})
+
         getattr(host, method_name)(cfg, pcb, pbar, psum)
+        _emit_giros()
         # Snapshot final: el throttling de imágenes puede haber dejado sin emitir
         # las últimas < IMAGE_EMIT_EVERY, y el resumen de rotación del modal se
         # lee de aquí.
@@ -743,6 +770,13 @@ def run_task(
             "last": last,
         })
     except Exception as exc:  # noqa: BLE001 — se reenvía al front
+        # Best-effort: los vuelos ya girados antes del fallo siguen siendo dato
+        # útil. `_emit_giros` puede no estar definida aún si petó muy arriba, de
+        # ahí el except ciego (NameError incluido).
+        try:
+            _emit_giros()
+        except Exception:
+            pass
         emit("error", f"{type(exc).__name__}: {exc}")
         emit("log", traceback.format_exc())
     finally:

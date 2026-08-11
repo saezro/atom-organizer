@@ -370,6 +370,21 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[{kind}] {payload}", flush=True)
         elif kind == "log" and not args.quiet:
             print(payload, flush=True)
+        elif kind == "giros" and isinstance(payload, dict):
+            lista = payload.get("giros") or []
+            for g in lista:
+                vuelo = g.get("vuelo", "?")
+                grados = g.get("grados")
+                imagenes = g.get("imagenes")
+                modo = g.get("modo")
+                if grados:
+                    print(f"[giros] {vuelo}: {grados}º ({imagenes} imagenes, {modo})",
+                          flush=True)
+                else:
+                    print(f"[giros] {vuelo}: sin giro ({imagenes} imagenes, {modo})",
+                          flush=True)
+            if reporter is not None:
+                reporter.giros(lista)
 
         # Espejo a la Suite: los logs del Job solo vivian en Cloud Run, ilegibles
         # desde atom-dev-nl. Va DESPUES del print y en su propio try: si el envio
