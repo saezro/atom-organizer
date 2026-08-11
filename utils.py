@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
@@ -343,7 +344,10 @@ def safe_move(src: str, dest: str, modo: str = MODO_UNICO) -> str | None:
             # Origen y destino en sistemas de ficheros distintos: `os.replace` no
             # puede. Se copia a un temporal AL LADO del destino (mismo fs, para
             # que el replace final si sea atomico) y solo entonces se publica.
-            temporal = f"{destino_final}.atom-parcial"
+            # El sufijo lleva pid + aleatorio porque el pipeline corre 8 shards en
+            # paralelo: un nombre fijo haria que dos procesos que caen aqui a la vez
+            # se pisaran el temporal y uno publicara el fichero del otro.
+            temporal = f"{destino_final}.atom-parcial-{os.getpid()}-{uuid.uuid4().hex[:8]}"
             try:
                 shutil.copy2(src, temporal)
                 os.replace(temporal, destino_final)
