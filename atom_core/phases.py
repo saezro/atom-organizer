@@ -333,6 +333,17 @@ class PipelinePhasesMixin:
         hacer_struct = etapa in ("todo", "struct")
         hacer_post = etapa in ("todo", "post")
         repartido = shard_count > 1
+        # El modo de destino se fija AQUI, fuera de cualquier `if hacer_*`, y no
+        # dentro del bloque de struct. Con `--etapa post` (cada etapa es un
+        # proceso nuevo de Cloud Run, con su propio GenStructFolder recien
+        # construido) `hacer_struct` es False, pero el barrido de sobrantes SI
+        # corre y mueve imagenes con `self.modo_destino`. Si la asignacion vive
+        # dentro del bloque de struct, un `--etapa post --modo-destino obviar`
+        # -relanzar tras un fallo parcial, que es justo el caso de uso de
+        # `obviar`- se queda con el default y sobrescribe EN SILENCIO.
+        # `reset_variables` no toca este campo, asi que fijarlo antes es seguro.
+        self.gen_struct_folder_obj.modo_destino = getattr(
+            cfg, "modo_destino", utils.MODO_SOBRESCRIBIR)
         if etapa != "todo" or repartido:
             progress_callback.emit(
                 f"\nEtapa: {etapa} · tarea {shard_index + 1} de {shard_count}\n")
@@ -438,7 +449,6 @@ class PipelinePhasesMixin:
                 self.organizer_logger_obj.logger.info("---------------------------------------------------------------------")
 
                 self.gen_struct_folder_obj.reset_variables(main_process=False, progress_callback=progress_callback)
-                self.gen_struct_folder_obj.modo_destino = getattr(cfg, "modo_destino", utils.MODO_SOBRESCRIBIR)
                 # El total esperado es el de ESTA tarea: con el reparto, cada una
                 # mueve solo las imágenes que le asigna `toca_imagen`, así que
                 # contar el destino entero dejaría a las ocho comparando ~300

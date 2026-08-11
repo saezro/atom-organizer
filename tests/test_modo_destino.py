@@ -93,3 +93,36 @@ def test_gen_struct_folder_nace_sobrescribiendo():
     obj = pipeline.GenStructFolder(_LogFalso())
     assert obj.modo_destino == utils.MODO_SOBRESCRIBIR
     assert obj.skipped_image_number == 0
+
+
+# --- el modo llega a TODAS las etapas, no solo a struct ----------------------
+#
+# Cada `--etapa` es un proceso nuevo de Cloud Run con su propio GenStructFolder
+# recien construido (default `sobrescribir`). La etapa `post` no ejecuta el
+# bloque de struct, pero SI corre el barrido de sobrantes, que mueve imagenes
+# usando `self.modo_destino`. Si la asignacion viviera dentro del bloque de
+# struct, un `--etapa post --modo-destino obviar` (relanzar tras un fallo
+# parcial: justo el caso de uso de `obviar`) sobrescribiria en silencio.
+
+@pytest.mark.parametrize("etapa", ["todo", "split", "struct", "post"])
+def test_el_modo_destino_llega_al_gen_struct_en_cualquier_etapa(etapa, monkeypatch):
+    from tests.test_etapas_pipeline import _HostDePrueba, _SignalFalsa, _cfg
+
+    host = _HostDePrueba(etapa=etapa)
+    monkeypatch.setattr("atom_core.phases.os.path.isdir", lambda _p: True)
+    host.split_images(_cfg(modo_destino=utils.MODO_OBVIAR),
+                      _SignalFalsa(), _SignalFalsa(), _SignalFalsa())
+
+    assert host.gen_struct_folder_obj.modo_destino == utils.MODO_OBVIAR, (
+        f"etapa={etapa}: el flag --modo-destino se ha ignorado en silencio")
+
+
+def test_sin_modo_en_la_config_la_etapa_post_sobrescribe(monkeypatch):
+    """El default explicito: sin flag, `post` se comporta como siempre."""
+    from tests.test_etapas_pipeline import _HostDePrueba, _SignalFalsa, _cfg
+
+    host = _HostDePrueba(etapa="post")
+    monkeypatch.setattr("atom_core.phases.os.path.isdir", lambda _p: True)
+    host.split_images(_cfg(), _SignalFalsa(), _SignalFalsa(), _SignalFalsa())
+
+    assert host.gen_struct_folder_obj.modo_destino == utils.MODO_SOBRESCRIBIR
