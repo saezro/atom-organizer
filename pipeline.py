@@ -789,6 +789,11 @@ class GenStructFolder:
         self.exif_management_obj = exif_management.GeneralInformationFromImage(organizer_logger)
         self.stop = False
         self.current_image_number = 0
+        self.modo_destino = utils.MODO_SOBRESCRIBIR
+        # Imagenes que NO se movieron porque ya habia algo en su ruta exacta
+        # (solo en modo `obviar`). Cuentan como procesadas para el cuadre, pero
+        # se reportan aparte: "no he hecho nada" y "he movido" no son lo mismo.
+        self.skipped_image_number = 0
         self.total_images_number = 0
         self.error_gen_struct_folder = 0
         self.errors_type_gen_struct_folder = []
@@ -830,6 +835,7 @@ class GenStructFolder:
         """
 
         self.current_image_number = 0
+        self.skipped_image_number = 0
         self.total_images_number = 0
         self.exif_management_obj.error_exif_data = 0
         self.exif_management_obj.images_error_exif_data.clear()
@@ -907,7 +913,8 @@ class GenStructFolder:
             self.utils_obj.prepare_output_folder(os.path.join(output_folder, "SIN_ORDENAR"), ["TERMICA"])
             for imagen in thermal_folder:
                 utils.safe_move(os.path.join(output_folder, "TERMICA", imagen),
-                                os.path.join(output_folder, "SIN_ORDENAR", "TERMICA", imagen))
+                                os.path.join(output_folder, "SIN_ORDENAR", "TERMICA", imagen),
+                                modo=self.modo_destino)
             # Cuentan como procesadas (apartadas a SIN_ORDENAR): así current == total
             # y no se dispara el falso "No hay correspondencia" que teñiría de rojo.
             self.current_image_number += thermal_folder_list_length
@@ -918,7 +925,8 @@ class GenStructFolder:
             self.utils_obj.prepare_output_folder(os.path.join(output_folder, "SIN_ORDENAR"), ["RGB"])
             for imagen in rgb_folder:
                 utils.safe_move(os.path.join(output_folder, "RGB", imagen),
-                                os.path.join(output_folder, "SIN_ORDENAR", "RGB", imagen))
+                                os.path.join(output_folder, "SIN_ORDENAR", "RGB", imagen),
+                                modo=self.modo_destino)
             self.current_image_number += rgb_folder_list_length
             self.warning_gen_struct_folder += 1
             self.warnings_type_gen_struct_folder.append(f"{rgb_folder_list_length} imágenes rgb fuera del estadillo movidas a SIN_ORDENAR")
@@ -1357,9 +1365,15 @@ class GenStructFolder:
             if self.stop:  # Se comprueba que no se quiere parar el proceso desde la ventana del log.
                 return
             origen, destino = par
-            utils.safe_move(origen, destino)
+            movida = utils.safe_move(origen, destino, modo=self.modo_destino)
             with self._stats_lock:
+                # La omitida cuenta como procesada: el cuadre de la fase compara
+                # "imagenes de entrada" contra "imagenes resueltas", y una que ya
+                # estaba en su sitio esta resuelta. Se lleva aparte para poder
+                # decirlo en el resumen.
                 self.current_image_number += 1
+                if movida is None:
+                    self.skipped_image_number += 1
                 p = utils.safe_pct(self.current_image_number, self.total_images_number) # Se calcula el porcentaje que queda teniendo en cuenta la cantidad total de imágenes a procesar
                 # y la cantidad actual de imágenes procesadas.
             progress_bar.emit(p) # Por cada imagen que se va a procesar, se emite el procentaje de imágenes procesadas para mostrar en la barra de progreso.

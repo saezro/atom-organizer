@@ -438,6 +438,7 @@ class PipelinePhasesMixin:
                 self.organizer_logger_obj.logger.info("---------------------------------------------------------------------")
 
                 self.gen_struct_folder_obj.reset_variables(main_process=False, progress_callback=progress_callback)
+                self.gen_struct_folder_obj.modo_destino = getattr(cfg, "modo_destino", utils.MODO_SOBRESCRIBIR)
                 # El total esperado es el de ESTA tarea: con el reparto, cada una
                 # mueve solo las imágenes que le asigna `toca_imagen`, así que
                 # contar el destino entero dejaría a las ocho comparando ~300
