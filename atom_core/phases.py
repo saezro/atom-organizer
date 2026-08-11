@@ -449,14 +449,24 @@ class PipelinePhasesMixin:
                 self.organizer_logger_obj.logger.info("---------------------------------------------------------------------")
 
                 self.gen_struct_folder_obj.reset_variables(main_process=False, progress_callback=progress_callback)
-                # El total esperado es el de ESTA tarea: con el reparto, cada una
-                # mueve solo las imágenes que le asigna `toca_imagen`, así que
-                # contar el destino entero dejaría a las ocho comparando ~300
-                # procesadas contra 2.516 y saliendo en rojo.
-                self.gen_struct_folder_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(
-                    cfg.output_folder,
-                    filtro_nombre=(None if shard_count <= 1
-                                   else lambda n: sharding.toca_imagen(n, shard_index, shard_count)))
+                # El total esperado es el de ESTA tarea y SOLO la entrada de esta
+                # fase. Dos matices, los dos aprendidos a base de runs en rojo:
+                #  1. Con el reparto, cada tarea mueve solo las imagenes que le
+                #     asigna `toca_imagen`; contar sin filtro dejaba a las ocho
+                #     comparando ~300 procesadas contra 2.516.
+                #  2. `output_folder` es entrada Y salida de esta fase: struct lee
+                #     de TERMICA/ y RGB/ y escribe en PBx/PBx_Vy/. Contar el arbol
+                #     entero mete en el total lo que ya estaba organizado de una
+                #     pasada anterior — imagenes que nadie va a mover — y el run
+                #     acaba en "No hay correspondencia" sin que haya fallado nada.
+                #     Con `--modo-destino obviar` ese caso es la norma, no la
+                #     excepcion.
+                filtro = (None if shard_count <= 1
+                          else lambda n: sharding.toca_imagen(n, shard_index, shard_count))
+                self.gen_struct_folder_obj.total_images_number = sum(
+                    self.utils_obj.contar_imagenes_or_tmc(
+                        os.path.join(cfg.output_folder, sub), filtro_nombre=filtro)
+                    for sub in ("TERMICA", "RGB"))
                 self.new_log_gui.enable_process()
 
                 progress_summarize.emit("__________________")

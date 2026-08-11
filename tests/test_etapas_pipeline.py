@@ -327,9 +327,15 @@ def test_el_post_repartido_solo_convierte_sus_vuelos(monkeypatch):
 # --- el total esperado de la estructura, con reparto --------------------------
 
 def _filtro_del_destino(host, cfg):
-    """El `filtro_nombre` con el que la fase Estructura contó el total esperado."""
-    return next(f for carpeta, f in host.utils_obj.filtros_recibidos
-                if carpeta == cfg.output_folder)
+    """El `filtro_nombre` con el que la fase Estructura contó el total esperado.
+
+    Desde la corrección del conteo (solo TERMICA+RGB, no el destino entero),
+    el total se calcula sumando dos llamadas -una por TERMICA y otra por RGB-,
+    ambas con el mismo filtro. Basta con mirar cualquiera de las dos."""
+    esperadas = {os.path.join(cfg.output_folder, "TERMICA"),
+                 os.path.join(cfg.output_folder, "RGB")}
+    return next((f for carpeta, f in host.utils_obj.filtros_recibidos
+                 if carpeta in esperadas), None)
 
 
 def test_struct_repartido_cuenta_solo_las_imagenes_de_su_tarea(monkeypatch):
