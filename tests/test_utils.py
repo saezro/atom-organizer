@@ -246,3 +246,106 @@ def test_safe_move_modo_desconocido_falla_pronto(tmp_path):
     with pytest.raises(ValueError):
         utils.safe_move(str(origen), str(caso / "destino.jpg"), modo="loquesea")
     assert origen.exists(), "un modo invalido no debe consumir el origen"
+
+
+def test_safe_move_obviar_descarta_el_origen_si_el_destino_ya_existe(tmp_path):
+    """El fallo de la op 9 (inspeccion 330): con `obviar` y una pasada previa, el
+    destino ya existe, `safe_move` devolvia None y el origen se quedaba varado —
+    la imagen acababa en DOS sitios y el contador la daba por resuelta igual."""
+    caso = tmp_path / "caso"
+    caso.mkdir()
+    origen = caso / "origen.jpg"
+    origen.write_bytes(b"copia de la raiz")
+    destino = caso / "destino.jpg"
+    destino.write_bytes(b"la que ya estaba colocada")
+
+    final = utils.safe_move(str(origen), str(destino), modo=utils.MODO_OBVIAR,
+                            descartar_origen_si_existe=True)
+
+    assert final is None, "sigue siendo una omision, no un movimiento"
+    assert destino.read_bytes() == b"la que ya estaba colocada", "el destino NO se pisa"
+    assert not origen.exists(), "el origen sobra: es un move, y el fichero ya esta en destino"
+    assert sorted(p.name for p in caso.iterdir()) == ["destino.jpg"]
+
+
+def test_safe_move_obviar_no_descarta_el_origen_si_no_se_pide(tmp_path):
+    """El descarte es opt-in: el `None` de `obviar` tambien lo consumen los
+    renombrados dentro de la propia carpeta de origen, donde borrar seria perder
+    el fichero."""
+    caso = tmp_path / "caso"
+    caso.mkdir()
+    origen = caso / "origen.jpg"
+    origen.write_bytes(b"nuevo")
+    destino = caso / "destino.jpg"
+    destino.write_bytes(b"viejo")
+
+    assert utils.safe_move(str(origen), str(destino), modo=utils.MODO_OBVIAR) is None
+    assert origen.exists()
+
+
+def test_safe_move_obviar_no_se_borra_a_si_mismo(tmp_path):
+    """Si origen y destino son la MISMA ruta, descartar el origen borraria el
+    fichero que se queria conservar."""
+    caso = tmp_path / "caso"
+    caso.mkdir()
+    fichero = caso / "unica.jpg"
+    fichero.write_bytes(b"contenido")
+
+    final = utils.safe_move(str(fichero), str(fichero), modo=utils.MODO_OBVIAR,
+                            descartar_origen_si_existe=True)
+
+    assert final is None
+    assert fichero.read_bytes() == b"contenido"
+
+
+def test_safe_move_obviar_descarte_tolera_origen_ya_desaparecido(tmp_path):
+    """Otro hilo del mismo reparto puede haberlo quitado ya: ese es justo el
+    estado que se buscaba, no un error."""
+    caso = tmp_path / "caso"
+    caso.mkdir()
+    destino = caso / "destino.jpg"
+    destino.write_bytes(b"viejo")
+
+    final = utils.safe_move(str(caso / "no_existe.jpg"), str(destino),
+                            modo=utils.MODO_OBVIAR, descartar_origen_si_existe=True)
+
+    assert final is None
+    assert destino.read_bytes() == b"viejo"
+
+
+def test_contar_imagenes_no_recursivo_ignora_las_ya_organizadas(tmp_path):
+    """`recursivo=False` = el universo de la fase struct: el nivel superior de
+    TERMICA/, no el arbol. Con `obviar` el destino conserva los PBx/PBx_Vy/ de la
+    pasada anterior y contarlos daba el falso "No hay correspondencia"."""
+    from utils import Utils
+
+    class _LogFalso:
+        class logger:
+            @staticmethod
+            def info(*a, **k):
+                pass
+
+    termica = tmp_path / "TERMICA"
+    (termica / "PB1" / "PB1_V1").mkdir(parents=True)
+    for i in range(3):
+        (termica / f"suelta{i}.JPG").write_bytes(b"x")
+    for i in range(50):
+        (termica / "PB1" / "PB1_V1" / f"ya_organizada{i}.JPG").write_bytes(b"x")
+
+    utils_obj = Utils(_LogFalso())
+
+    assert utils_obj.contar_imagenes_or_tmc(str(termica)) == 53, "recursivo por defecto"
+    assert utils_obj.contar_imagenes_or_tmc(str(termica), recursivo=False) == 3
+
+
+def test_contar_imagenes_no_recursivo_en_carpeta_inexistente_devuelve_cero(tmp_path):
+    from utils import Utils
+
+    class _LogFalso:
+        class logger:
+            @staticmethod
+            def info(*a, **k):
+                pass
+
+    assert Utils(_LogFalso()).contar_imagenes_or_tmc(
+        str(tmp_path / "no_existe"), recursivo=False) == 0
