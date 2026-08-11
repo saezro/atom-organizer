@@ -1,3 +1,4 @@
+import errno
 import logging
 import os
 import queue
@@ -325,11 +326,36 @@ def safe_move(src: str, dest: str, modo: str = MODO_UNICO) -> str | None:
         destino_final = dest
     elif modo == MODO_SOBRESCRIBIR:
         destino_final = dest
-        # `shutil.move` sobre un destino existente NO es fiable de forma
-        # uniforme (depende de si origen y destino comparten sistema de
-        # ficheros, y aqui el destino es gcsfuse). Se borra antes, explicito.
-        if os.path.isfile(destino_final):
-            os.remove(destino_final)
+        if os.path.isdir(destino_final):
+            # `shutil.move` sobre un directorio existente NO lo sobrescribe: mete
+            # el fichero dentro. La funcion devolveria la ruta del directorio y
+            # el llamante creeria que el fichero esta ahi. Mejor romper alto.
+            raise OSError(f"Error moviendo '{src}' a '{destino_final}': el destino es un directorio")
+        try:
+            # `os.replace` es atomico: o el destino queda con el contenido nuevo o
+            # se queda con el viejo, nunca vacio. Es la diferencia con borrar y
+            # luego mover, que ante un fallo a medias deja al usuario sin ninguno
+            # de los dos ficheros.
+            os.replace(src, destino_final)
+        except OSError as e:
+            if getattr(e, "errno", None) != errno.EXDEV:
+                raise OSError(f"Error moviendo '{src}' a '{destino_final}': {e}") from e
+            # Origen y destino en sistemas de ficheros distintos: `os.replace` no
+            # puede. Se copia a un temporal AL LADO del destino (mismo fs, para
+            # que el replace final si sea atomico) y solo entonces se publica.
+            temporal = f"{destino_final}.atom-parcial"
+            try:
+                shutil.copy2(src, temporal)
+                os.replace(temporal, destino_final)
+                os.remove(src)
+            except OSError as e2:
+                if os.path.exists(temporal):
+                    try:
+                        os.remove(temporal)
+                    except OSError:
+                        pass
+                raise OSError(f"Error moviendo '{src}' a '{destino_final}': {e2}") from e2
+        return destino_final
     else:
         destino_final = unique_dest(dest)
 
