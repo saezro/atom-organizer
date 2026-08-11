@@ -226,3 +226,61 @@ def test_sin_sufijo_extra_el_total_no_cuenta_rgb_extra(monkeypatch):
 
     contadas = {os.path.basename(c) for c, _f in _UtilsFalso.filtros_recibidos}
     assert "RGB_extra" not in contadas, contadas
+
+
+def test_el_total_de_struct_no_baja_al_arbol_del_destino(monkeypatch):
+    """La entrada de struct es el NIVEL SUPERIOR de TERMICA/RGB. Con `obviar` el
+    destino conserva los `TERMICA/PBx/PBx_Vy/` de la pasada anterior; contarlos
+    mataba las ocho tareas con "No hay correspondencia entre numero inicial 715 y
+    final de imagenes 283" (op 9 de la inspeccion 330)."""
+    from tests.test_etapas_pipeline import _HostDePrueba, _SignalFalsa, _UtilsFalso, _cfg
+
+    _UtilsFalso.recursivos_recibidos = []
+    host = _HostDePrueba(etapa="struct")
+    monkeypatch.setattr("atom_core.phases.os.path.isdir", lambda _p: True)
+    host.split_images(_cfg(), _SignalFalsa(), _SignalFalsa(), _SignalFalsa())
+
+    recursivos = {os.path.basename(c): r for c, r in _UtilsFalso.recursivos_recibidos}
+    assert recursivos.get("TERMICA") is False, recursivos
+    assert recursivos.get("RGB") is False, recursivos
+
+
+def test_el_barrido_a_sin_ordenar_no_deja_la_imagen_en_dos_sitios(tmp_path):
+    """Fallo 2 de la op 9: con `obviar` y la copia ya en SIN_ORDENAR, `safe_move`
+    devolvia None y el origen se quedaba varado en la raiz. 62 imagenes acabaron
+    en las dos ubicaciones, y en silencio: el contador las suma igual."""
+    import pipeline
+
+    class _LogFalso:
+        class logger:
+            @staticmethod
+            def info(*a, **k):
+                pass
+
+            @staticmethod
+            def warning(*a, **k):
+                pass
+
+    for sub in ("TERMICA", "RGB"):
+        (tmp_path / sub).mkdir()
+        (tmp_path / "SIN_ORDENAR" / sub).mkdir(parents=True)
+        # La huerfana ya se aparto en la pasada anterior y vuelve a estar en la raiz.
+        (tmp_path / sub / "huerfana.JPG").write_bytes(b"copia de la raiz")
+        (tmp_path / "SIN_ORDENAR" / sub / "huerfana.JPG").write_bytes(b"ya aparcada")
+
+    obj = pipeline.GenStructFolder(_LogFalso())
+    obj.modo_destino = utils.MODO_OBVIAR
+
+    class _Emisor:
+        @staticmethod
+        def emit(*a, **k):
+            pass
+
+    termicas, rgbs = obj.checking_results_gen_struct_folder(str(tmp_path), _Emisor())
+
+    assert (termicas, rgbs) == (1, 1)
+    for sub in ("TERMICA", "RGB"):
+        assert not (tmp_path / sub / "huerfana.JPG").exists(), \
+            f"{sub}: el origen se quedo varado en la raiz -> imagen duplicada"
+        assert (tmp_path / "SIN_ORDENAR" / sub / "huerfana.JPG").read_bytes() == b"ya aparcada", \
+            f"{sub}: la copia ya aparcada NO se pisa"

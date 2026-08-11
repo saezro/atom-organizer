@@ -303,7 +303,8 @@ def unique_dest(dest_path: str) -> str:
     return nuevo_dest
 
 
-def safe_move(src: str, dest: str, modo: str = MODO_UNICO) -> str | None:
+def safe_move(src: str, dest: str, modo: str = MODO_UNICO,
+              descartar_origen_si_existe: bool = False) -> str | None:
     """
     Mueve `src` a `dest` resolviendo la colision segun `modo`. Relanza `OSError`
     añadiendo contexto de las rutas implicadas.
@@ -317,12 +318,29 @@ def safe_move(src: str, dest: str, modo: str = MODO_UNICO) -> str | None:
     - src - ruta de origen del archivo a mover.
     - dest - ruta de destino deseada.
     - modo - uno de `MODOS_DESTINO`. Ver el comentario de las constantes.
+    - descartar_origen_si_existe - solo aplica al modo `obviar`. Si el destino ya
+      existe, BORRA `src` en vez de dejarlo donde esta. Esto es un *move*: si el
+      fichero ya esta en su ruta de destino, la copia del origen sobra, y dejarla
+      varada hace que la imagen acabe en DOS sitios a la vez sin que nadie avise
+      —el contador la da por resuelta igual—. Es opt-in porque el `None` de
+      `obviar` tambien lo consumen renombrados dentro de la propia carpeta de
+      origen, donde borrar seria perder el fichero. Se sigue devolviendo `None`:
+      la imagen esta omitida, no movida.
     """
     if modo not in MODOS_DESTINO:
         raise ValueError(f"modo de destino desconocido: {modo!r}; esperaba uno de {MODOS_DESTINO}")
 
     if modo == MODO_OBVIAR:
         if os.path.exists(dest):
+            if descartar_origen_si_existe and os.path.abspath(src) != os.path.abspath(dest):
+                try:
+                    os.remove(src)
+                except FileNotFoundError:
+                    # Otro hilo del mismo reparto puede haberlo quitado ya. Que no
+                    # exista es justo el estado que se buscaba.
+                    pass
+                except OSError as e:
+                    raise OSError(f"Error descartando el origen '{src}' (ya existe '{dest}'): {e}") from e
             return None
         destino_final = dest
     elif modo == MODO_SOBRESCRIBIR:
@@ -675,7 +693,7 @@ class Utils:
         else:
             return False
 
-    def contar_imagenes_or_tmc(self, folder: str, tmc: bool = False, exclude_patterns: list[str] = None, exclude_folders: list[str] = None, filtro_nombre = None) -> int:
+    def contar_imagenes_or_tmc(self, folder: str, tmc: bool = False, exclude_patterns: list[str] = None, exclude_folders: list[str] = None, filtro_nombre = None, recursivo: bool = True) -> int:
         """
         Cuenta las imágenes que hay dentro de todos los directorios que existen en la carpeta de entrada.
         Devuelve el número de imágenes existentes dentro de la carpeta de entrada y de todos sus subdirectorios.
@@ -690,6 +708,15 @@ class Utils:
           lo pasan. Lo usa el reparto entre tareas (`sharding.toca_imagen`) para
           contar SOLO las imágenes de una tarea: el total esperado de un shard es
           el suyo, no el del destino entero.
+        - recursivo - si False, cuenta SOLO el nivel superior de `folder`, sin
+          bajar a los subdirectorios. Lo necesita quien cuenta la ENTRADA de una
+          fase que escribe dentro de su propia carpeta de entrada (`struct`:
+          lee de `TERMICA/` y `RGB/` y escribe en `TERMICA/PBx/PBx_Vy/`). Ahí el
+          árbol entero mete en el total lo ya organizado de una pasada anterior
+          —que nadie va a mover— y el run acaba en falso "No hay
+          correspondencia". El mismo universo que recorren `os.listdir` en
+          `organizar_imagenes_en_vuelos` y `get_images_from_dir` en
+          `_contar_sobrantes_propios`.
         """
         excluded_folders_set = set(exclude_folders) if exclude_folders else set()
         # SIN_ORDENAR es una carpeta de aparcado de imágenes huérfanas (fuera del
@@ -710,6 +737,12 @@ class Utils:
                     contador += 1
                 elif tmc and archivo.endswith(('tmc', 'TMC')):
                     contador += 1
+            if not recursivo:
+                # `os.walk` produce primero la propia carpeta, así que cortar
+                # tras la primera vuelta deja exactamente su nivel superior. Una
+                # carpeta inexistente no produce nada y devuelve 0, igual que en
+                # el modo recursivo.
+                break
         return contador
 
     def change_to_rational(self, number):

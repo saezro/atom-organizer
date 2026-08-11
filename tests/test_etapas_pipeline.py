@@ -69,11 +69,14 @@ class _UtilsFalso(_ObjetoQueApunta):
     alimentan sumas y el apuntador genérico las reventaría con un TypeError."""
 
     filtros_recibidos: list = []
+    recursivos_recibidos: list = []
 
     def contar_imagenes_or_tmc(self, folder, tmc=False, exclude_patterns=None,
-                               exclude_folders=None, filtro_nombre=None):
+                               exclude_folders=None, filtro_nombre=None,
+                               recursivo=True):
         self._registro.append("utils_obj.contar_imagenes_or_tmc")
         self.filtros_recibidos.append((folder, filtro_nombre))
+        self.recursivos_recibidos.append((folder, recursivo))
         return 0
 
     imagenes_por_carpeta: dict = {}

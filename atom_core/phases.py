@@ -450,7 +450,7 @@ class PipelinePhasesMixin:
 
                 self.gen_struct_folder_obj.reset_variables(main_process=False, progress_callback=progress_callback)
                 # El total esperado es el de ESTA tarea y SOLO la entrada de esta
-                # fase. Dos matices, los dos aprendidos a base de runs en rojo:
+                # fase. Tres matices, los tres aprendidos a base de runs en rojo:
                 #  1. Con el reparto, cada tarea mueve solo las imagenes que le
                 #     asigna `toca_imagen`; contar sin filtro dejaba a las ocho
                 #     comparando ~300 procesadas contra 2.516.
@@ -460,7 +460,14 @@ class PipelinePhasesMixin:
                 #     pasada anterior — imagenes que nadie va a mover — y el run
                 #     acaba en "No hay correspondencia" sin que haya fallado nada.
                 #     Con `--modo-destino obviar` ese caso es la norma, no la
-                #     excepcion.
+                #     excepcion: la op 9 de la inspeccion 330 murio con "715
+                #     inicial contra 283 final" en las ocho tareas. Por eso
+                #     `recursivo=False`: el universo de esta fase es el NIVEL
+                #     SUPERIOR de TERMICA/ y RGB/, el mismo que recorren
+                #     `os.listdir` en `organizar_imagenes_en_vuelos` y
+                #     `get_images_from_dir` en `_contar_sobrantes_propios`.
+                #     Excluir `SIN_ORDENAR` (que ya hace `contar_imagenes_or_tmc`)
+                #     no bastaba: las subcarpetas `PBx/PBx_Vy/` seguian entrando.
                 #  3. Con sufijo RGB extra, `organizar_imagenes_en_vuelos` recorre
                 #     TAMBIEN RGB_extra (pipeline.py:1158) y cada movimiento suma a
                 #     `current_image_number`. Dejarla fuera del total descuadra por
@@ -473,7 +480,8 @@ class PipelinePhasesMixin:
                           else lambda n: sharding.toca_imagen(n, shard_index, shard_count))
                 self.gen_struct_folder_obj.total_images_number = sum(
                     self.utils_obj.contar_imagenes_or_tmc(
-                        os.path.join(cfg.output_folder, sub), filtro_nombre=filtro)
+                        os.path.join(cfg.output_folder, sub), filtro_nombre=filtro,
+                        recursivo=False)
                     for sub in subcarpetas)
                 self.new_log_gui.enable_process()
 

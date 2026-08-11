@@ -922,9 +922,14 @@ class GenStructFolder:
         if thermal_folder_list_length > 0:
             self.utils_obj.prepare_output_folder(os.path.join(output_folder, "SIN_ORDENAR"), ["TERMICA"])
             for imagen in thermal_folder:
+                # `descartar_origen_si_existe`: con `obviar` y una pasada previa,
+                # la copia ya esta en SIN_ORDENAR. Sin esto el origen se quedaria
+                # varado en la raiz y la imagen acabaria en los dos sitios — el
+                # contador de abajo la suma igual, asi que el duplicado se colaba
+                # en silencio (62 imagenes en la op 9 de la inspeccion 330).
                 utils.safe_move(os.path.join(output_folder, "TERMICA", imagen),
                                 os.path.join(output_folder, "SIN_ORDENAR", "TERMICA", imagen),
-                                modo=self.modo_destino)
+                                modo=self.modo_destino, descartar_origen_si_existe=True)
             # Cuentan como procesadas (apartadas a SIN_ORDENAR): así current == total
             # y no se dispara el falso "No hay correspondencia" que teñiría de rojo.
             self.current_image_number += thermal_folder_list_length
@@ -936,7 +941,7 @@ class GenStructFolder:
             for imagen in rgb_folder:
                 utils.safe_move(os.path.join(output_folder, "RGB", imagen),
                                 os.path.join(output_folder, "SIN_ORDENAR", "RGB", imagen),
-                                modo=self.modo_destino)
+                                modo=self.modo_destino, descartar_origen_si_existe=True)
             self.current_image_number += rgb_folder_list_length
             self.warning_gen_struct_folder += 1
             self.warnings_type_gen_struct_folder.append(f"{rgb_folder_list_length} imágenes rgb fuera del estadillo movidas a SIN_ORDENAR")
@@ -1375,7 +1380,15 @@ class GenStructFolder:
             if self.stop:  # Se comprueba que no se quiere parar el proceso desde la ventana del log.
                 return
             origen, destino = par
-            movida = utils.safe_move(origen, destino, modo=self.modo_destino)
+            # `descartar_origen_si_existe`: aqui el destino es `PBx/PBx_Vy/` y el
+            # origen la raiz plana de TERMICA/RGB del MISMO destino. Con `obviar`
+            # y una pasada previa la imagen ya esta colocada, asi que la copia de
+            # la raiz sobra. Dejarla ademas la haria pasar por "fuera del
+            # estadillo" en `checking_results_gen_struct_folder` y acabaria
+            # aparcada en SIN_ORDENAR, que es exactamente lo contrario de lo que
+            # ocurrio: la imagen SI encajo en un vuelo.
+            movida = utils.safe_move(origen, destino, modo=self.modo_destino,
+                                     descartar_origen_si_existe=True)
             with self._stats_lock:
                 # La omitida cuenta como procesada: el cuadre de la fase compara
                 # "imagenes de entrada" contra "imagenes resueltas", y una que ya
