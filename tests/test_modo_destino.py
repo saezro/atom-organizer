@@ -4,6 +4,8 @@ dataclass -> host/fase -> objeto de pipeline) y cualquiera de ellos que se
 olvide deja el flag silenciosamente sin efecto: el usuario pide `obviar`, la
 UI lo muestra, y el pipeline sigue duplicando. Por eso se testea la cadena, no
 solo los extremos."""
+import os
+
 import pytest
 
 import utils
@@ -195,3 +197,32 @@ def test_el_total_de_struct_solo_cuenta_la_entrada_de_la_fase(tmp_path):
         + utils_obj.contar_imagenes_or_tmc(str(tmp_path / "RGB"))
 
     assert total == 5, "solo TERMICA + RGB; las 50 ya organizadas no cuentan"
+
+
+def test_el_total_de_struct_incluye_rgb_extra_si_hay_sufijo_extra(monkeypatch):
+    """Con sufijo RGB extra, struct MUEVE tambien RGB_extra (pipeline.py:1158) y
+    cada movimiento suma a current_image_number. Si el total no la cuenta, el run
+    sale en rojo por descuadre — el mismo falso error, por la puerta de atras."""
+    from tests.test_etapas_pipeline import _HostDePrueba, _SignalFalsa, _UtilsFalso, _cfg
+
+    _UtilsFalso.filtros_recibidos = []
+    host = _HostDePrueba(etapa="struct")
+    monkeypatch.setattr("atom_core.phases.os.path.isdir", lambda _p: True)
+    host.split_images(_cfg(end_rgb_extra_files="_E", end_rgb_files="_V"),
+                      _SignalFalsa(), _SignalFalsa(), _SignalFalsa())
+
+    contadas = {os.path.basename(c) for c, _f in _UtilsFalso.filtros_recibidos}
+    assert {"TERMICA", "RGB", "RGB_extra"} <= contadas, contadas
+
+
+def test_sin_sufijo_extra_el_total_no_cuenta_rgb_extra(monkeypatch):
+    """Sin sufijo extra nadie mueve RGB_extra: contarla inflaria el total."""
+    from tests.test_etapas_pipeline import _HostDePrueba, _SignalFalsa, _UtilsFalso, _cfg
+
+    _UtilsFalso.filtros_recibidos = []
+    host = _HostDePrueba(etapa="struct")
+    monkeypatch.setattr("atom_core.phases.os.path.isdir", lambda _p: True)
+    host.split_images(_cfg(), _SignalFalsa(), _SignalFalsa(), _SignalFalsa())
+
+    contadas = {os.path.basename(c) for c, _f in _UtilsFalso.filtros_recibidos}
+    assert "RGB_extra" not in contadas, contadas

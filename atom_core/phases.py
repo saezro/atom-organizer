@@ -461,12 +461,20 @@ class PipelinePhasesMixin:
                 #     acaba en "No hay correspondencia" sin que haya fallado nada.
                 #     Con `--modo-destino obviar` ese caso es la norma, no la
                 #     excepcion.
+                #  3. Con sufijo RGB extra, `organizar_imagenes_en_vuelos` recorre
+                #     TAMBIEN RGB_extra (pipeline.py:1158) y cada movimiento suma a
+                #     `current_image_number`. Dejarla fuera del total descuadra por
+                #     lo bajo — el mismo run en rojo, por la puerta de atras. Mismo
+                #     universo de carpetas que usa `_contar_sobrantes_propios`.
+                subcarpetas = ["TERMICA", "RGB"]
+                if cfg.end_rgb_extra_files != "":
+                    subcarpetas.append("RGB_extra")
                 filtro = (None if shard_count <= 1
                           else lambda n: sharding.toca_imagen(n, shard_index, shard_count))
                 self.gen_struct_folder_obj.total_images_number = sum(
                     self.utils_obj.contar_imagenes_or_tmc(
                         os.path.join(cfg.output_folder, sub), filtro_nombre=filtro)
-                    for sub in ("TERMICA", "RGB"))
+                    for sub in subcarpetas)
                 self.new_log_gui.enable_process()
 
                 progress_summarize.emit("__________________")
