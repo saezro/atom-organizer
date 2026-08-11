@@ -813,6 +813,9 @@ class GenStructFolder:
         # Caché de timestamps EXIF: {ruta_absoluta: datetime|None}. Se rellena una sola
         # vez por corrida para no releer el EXIF de la misma imagen en cada vuelo.
         self._timestamps_cache = {}
+        # Registro por carpeta de vuelo (PBx_Vy) del giro aplicado, para poder
+        # reportarlo después. {nombre_vuelo: {"vuelo", "grados", "imagenes", "modo", "detalle"}}
+        self.giros_por_vuelo = {}
 
     def set_stop(self, stop: bool):
         """
@@ -823,7 +826,14 @@ class GenStructFolder:
         - stop - variable que indica si se puede llevar a cabo o no el procesado. A True se para o no arranca, y a False se lleva a cabo.
         """
         self.stop = stop
-        
+
+    def get_giros_por_vuelo(self) -> list:
+        """
+        Devuelve el registro de giros aplicados por carpeta de vuelo (PBx_Vy),
+        ordenado por nombre de vuelo. `[]` si no se registró ninguno.
+        """
+        return [self.giros_por_vuelo[vuelo] for vuelo in sorted(self.giros_por_vuelo.keys())]
+
     def reset_variables(self, main_process = True, gen_thumbnails = False, convert_to_tiff = False, progress_callback = None):
         """
         Resetea las variables necesarias para mostrar la información correctamente en la ventana de log.
@@ -1735,6 +1745,10 @@ class GenStructFolder:
 
                     self.organizer_logger.logger.info("Imágenes rotadas 270º")
                     # logging.info("Images rotated 270º")
+                    self.giros_por_vuelo[os.path.basename(input_folder)] = {
+                        "vuelo": os.path.basename(input_folder), "grados": 270,
+                        "imagenes": len(images), "modo": "auto", "detalle": None,
+                    }
                 elif (not es_panorama and rotate_90 != 0 and (rotate_90/len(images)) > (max_error/100)):
                     self.organizer_logger.logger.info(f"OK: Más de un {max_error}% de las imágenes del vuelo tienen que rotar 90")
                     # logging.info(f"OK: More than {max_error}% of flight images need to be rotated 90")
@@ -1745,11 +1759,20 @@ class GenStructFolder:
                         df_videofiles.loc[len(df_videofiles)] = {"New Name": os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", "Original Name": image, "Degree": 90}
                     self.organizer_logger.logger.info("Imágenes rotadas 90")
                     # logging.info("Images rotated 90")
+                    self.giros_por_vuelo[os.path.basename(input_folder)] = {
+                        "vuelo": os.path.basename(input_folder), "grados": 90,
+                        "imagenes": len(images), "modo": "auto", "detalle": None,
+                    }
                 elif (es_panorama or (images_no_rotated != 0 and (images_no_rotated/len(images)) > (max_error/100))):
                     if not es_panorama:
                         self.organizer_logger.logger.info(f"OK: Más de un {max_error}% de las imágenes del vuelo NO se deben rotar")
                         # logging.info(f"OK: More than {max_error}% of flight images must not be rotated")
                         progress_callback.emit(f"\nOK: Más de un {max_error}% de las imágenes del vuelo NO se deben rotar\n")
+                    self.giros_por_vuelo[os.path.basename(input_folder)] = {
+                        "vuelo": os.path.basename(input_folder), "grados": 0,
+                        "imagenes": len(images), "modo": "panoramica" if es_panorama else "auto",
+                        "detalle": "carpeta panorámica, no se rota" if es_panorama else "ninguna orientación supera el umbral",
+                    }
                     for index, image in enumerate(images):
                         self.send_progress_to_bar(progress_bar, progress_callback)
                         file_splitted = os.path.splitext(image)
@@ -1766,6 +1789,11 @@ class GenStructFolder:
                     self.organizer_logger.logger.info("ERROR: Hay demasiadas imágenes que no rotan igual")
                     self.organizer_logger.logger.info("ERROR: No se han rotado imágenes")
                     progress_callback.emit("\nERROR: Hay demasiadas imágenes que no rotan igual - No se han rotado imágenes\n")
+                    self.giros_por_vuelo[os.path.basename(input_folder)] = {
+                        "vuelo": os.path.basename(input_folder), "grados": 0,
+                        "imagenes": len(images), "modo": "error",
+                        "detalle": "demasiadas imágenes que no rotan igual",
+                    }
                    
 
                 if images_to_rotate and not rgb_processing:  # Comprobamos que procesamos térmicas y que además hemos rotado imágenes.
@@ -1821,6 +1849,11 @@ class GenStructFolder:
                     # después el criterio de giro del TIFF. Escribir 270 fijo hacía que un
                     # vuelo rotado a mano 90 girase el TIFF al revés.
                     df_videofiles.loc[len(df_videofiles)] = {"New Name": os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", "Original Name": image, "Degree": 90 if rotation_value_90 else 270}
+
+                self.giros_por_vuelo[os.path.basename(input_folder)] = {
+                    "vuelo": os.path.basename(input_folder), "grados": 90 if rotation_value_90 else 270,
+                    "imagenes": len(images), "modo": "manual", "detalle": None,
+                }
 
                 if not rgb_processing:  # Comprobamos que procesamos térmicas
                     self.copy_flight_csvs(input_folder, progress_callback)

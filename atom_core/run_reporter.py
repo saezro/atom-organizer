@@ -32,6 +32,7 @@ _log = logging.getLogger(upload_log.LOGGER_NAME)
 USER_AGENT = "ATOM-Organizer-Uploader"
 RUTA_RUNS = "/api/organizer/runs"
 TAM_LOTE_LOGS = 200
+TAM_LOTE_GIROS = 200
 
 
 class RunReporter:
@@ -248,6 +249,24 @@ class RunReporter:
             self._peticion("POST", f"{RUTA_RUNS}/{run_id}/logs", {"lineas": lote})
         except Exception as exc:  # noqa: BLE001 - fail-open
             _log.debug("run_reporter.vaciar_logs: excepcion inesperada (%s)", exc)
+
+    def giros(self, lista: list) -> None:
+        """Manda qué vuelos se giraron y en qué sentido. No-op si esta vacia.
+
+        Sigue el mismo patron que `vaciar_logs()`: fail-open, en lotes de
+        `TAM_LOTE_GIROS` para no mandar un POST gigante si el run tiene
+        muchos vuelos, y un fallo de red solo se loguea, nunca aborta el run.
+        """
+        try:
+            with self._lock:
+                run_id = self._id
+            if run_id is None or not lista:
+                return
+            for inicio in range(0, len(lista), TAM_LOTE_GIROS):
+                lote = lista[inicio:inicio + TAM_LOTE_GIROS]
+                self._peticion("POST", f"{RUTA_RUNS}/{run_id}/giros", {"giros": lote})
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            _log.debug("run_reporter.giros: excepcion inesperada (%s)", exc)
 
     def fin(self, *, ok: bool, error: str | None = None, stats: dict | None = None) -> None:
         """Cierra el run. A partir de aqui, `activo` vuelve a ser `False`.
