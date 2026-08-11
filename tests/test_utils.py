@@ -1,4 +1,6 @@
+import errno
 import os
+import shutil
 import sys
 import subprocess
 import pytest
@@ -136,7 +138,8 @@ def test_safe_move_modo_sobrescribir_falla_si_el_destino_es_un_directorio(tmp_pa
     assert list(destino.iterdir()) == [], "el fichero NO puede acabar dentro del directorio"
 
 
-def test_safe_move_modo_sobrescribir_no_deja_temporales(tmp_path):
+def test_safe_move_modo_sobrescribir_mismo_fs(tmp_path):
+    # Camino corto: origen y destino en el mismo filesystem, `os.replace` de una.
     caso = tmp_path / "caso"
     caso.mkdir()
     origen = caso / "origen.jpg"
@@ -148,6 +151,91 @@ def test_safe_move_modo_sobrescribir_no_deja_temporales(tmp_path):
 
     assert sorted(p.name for p in caso.iterdir()) == ["destino.jpg"]
     assert destino.read_bytes() == b"nuevo"
+
+
+def _replace_que_falla_cross_device(veces, real=None):
+    """`os.replace` falso que simula EXDEV las primeras `veces` llamadas.
+
+    En el entorno de test origen y destino caen siempre en el mismo filesystem,
+    asi que la rama cross-device (la unica que crea el temporal) no se ejerce
+    nunca sola. Forzarla es la unica forma de testear de verdad la limpieza.
+    """
+    estado = {"n": 0}
+
+    def fake(src, dst, *a, **kw):
+        estado["n"] += 1
+        if estado["n"] <= veces:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real(src, dst, *a, **kw)
+
+    return fake
+
+
+def test_safe_move_sobrescribir_cross_device_publica_y_limpia(tmp_path, monkeypatch):
+    caso = tmp_path / "caso"
+    caso.mkdir()
+    origen = caso / "origen.jpg"
+    origen.write_bytes(b"nuevo")
+    destino = caso / "destino.jpg"
+    destino.write_bytes(b"viejo")
+
+    # Solo la primera llamada (src -> destino) finge ser cross-device; la
+    # segunda (temporal -> destino) es la real, que es lo que publica.
+    monkeypatch.setattr(os, "replace", _replace_que_falla_cross_device(1, real=os.replace))
+
+    resultado = utils.safe_move(str(origen), str(destino), modo=utils.MODO_SOBRESCRIBIR)
+
+    assert resultado == str(destino)
+    assert destino.read_bytes() == b"nuevo"
+    assert not origen.exists()
+    assert sorted(p.name for p in caso.iterdir()) == ["destino.jpg"]
+
+
+def test_safe_move_sobrescribir_cross_device_fallo_no_deja_temporales(tmp_path, monkeypatch):
+    caso = tmp_path / "caso"
+    caso.mkdir()
+    origen = caso / "origen.jpg"
+    origen.write_bytes(b"nuevo")
+    destino = caso / "destino.jpg"
+    destino.write_bytes(b"viejo")
+
+    # Ninguna llamada funciona: el copy2 al temporal si ocurre, pero la
+    # publicacion falla. El temporal NO puede quedarse ahi tirado.
+    monkeypatch.setattr(os, "replace", _replace_que_falla_cross_device(99))
+
+    with pytest.raises(OSError):
+        utils.safe_move(str(origen), str(destino), modo=utils.MODO_SOBRESCRIBIR)
+
+    assert [p.name for p in caso.iterdir() if ".atom-parcial" in p.name] == []
+    assert origen.exists(), "el origen no se toca si la publicacion fallo"
+    assert destino.read_bytes() == b"viejo", "el destino conserva lo viejo"
+
+
+def test_safe_move_temporal_lleva_sufijo_unico(tmp_path, monkeypatch):
+    # Dos shards que caen a la vez en la rama cross-device con el mismo destino
+    # no pueden compartir el nombre del temporal.
+    caso = tmp_path / "caso"
+    caso.mkdir()
+    vistos = []
+
+    copy2_real = shutil.copy2  # antes del parche: `utils.shutil` ES el modulo global
+
+    def copy2_espia(src, dst, *a, **kw):
+        vistos.append(os.path.basename(dst))
+        return copy2_real(src, dst, *a, **kw)
+
+    monkeypatch.setattr(os, "replace", _replace_que_falla_cross_device(1, real=os.replace))
+    monkeypatch.setattr(utils.shutil, "copy2", copy2_espia)
+
+    for i in range(2):
+        origen = caso / f"origen{i}.jpg"
+        origen.write_bytes(b"nuevo")
+        destino = caso / "destino.jpg"
+        utils.safe_move(str(origen), str(destino), modo=utils.MODO_SOBRESCRIBIR)
+        monkeypatch.setattr(os, "replace", _replace_que_falla_cross_device(1, real=os.replace))
+
+    assert len(vistos) == 2
+    assert vistos[0] != vistos[1], f"nombre de temporal repetido: {vistos}"
 
 
 def test_safe_move_modo_desconocido_falla_pronto(tmp_path):
