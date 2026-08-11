@@ -262,6 +262,22 @@ def es_carpeta_panoramica(nombre_carpeta: str) -> bool:
     return identificador_pb.strip().upper() == "PANO"
 
 
+# Modos de resolucion de colision de `safe_move`. Son el contrato del flag
+# `--modo-destino` del CLI: lo que decide si una segunda pasada sobre el mismo
+# destino duplica, pisa u omite.
+#
+#   unico        - comportamiento historico: nunca pisa, sufija `_1`, `_2`...
+#                  Sigue siendo el default y el unico correcto para los renombrados
+#                  DENTRO de la carpeta de origen, donde la colision es entre dos
+#                  imagenes distintas que aspiran al mismo nombre.
+#   sobrescribir - la segunda pasada manda. Es lo que se quiere al reorganizar.
+#   obviar       - si ya hay algo EN LA MISMA RUTA EXACTA, no se toca y no se mueve.
+MODO_UNICO = "unico"
+MODO_SOBRESCRIBIR = "sobrescribir"
+MODO_OBVIAR = "obviar"
+MODOS_DESTINO = (MODO_UNICO, MODO_SOBRESCRIBIR, MODO_OBVIAR)
+
+
 def unique_dest(dest_path: str) -> str:
     """
     Devuelve una ruta de destino que no colisiona con un archivo existente.
@@ -285,17 +301,38 @@ def unique_dest(dest_path: str) -> str:
     return nuevo_dest
 
 
-def safe_move(src: str, dest: str) -> str:
+def safe_move(src: str, dest: str, modo: str = MODO_UNICO) -> str | None:
     """
-    Mueve `src` a un destino único derivado de `dest` (sin sobreescribir archivos
-    existentes). Relanza `OSError` añadiendo contexto de las rutas implicadas.
+    Mueve `src` a `dest` resolviendo la colision segun `modo`. Relanza `OSError`
+    añadiendo contexto de las rutas implicadas.
+
+    Devuelve la ruta final del archivo movido, o `None` si no se movio nada
+    (modo `obviar` con el destino ya ocupado). Quien cuente imagenes debe tratar
+    ese `None` como "omitida", no como "procesada con exito silencioso".
 
     Arguments:
     ---------
     - src - ruta de origen del archivo a mover.
     - dest - ruta de destino deseada.
+    - modo - uno de `MODOS_DESTINO`. Ver el comentario de las constantes.
     """
-    destino_final = unique_dest(dest)
+    if modo not in MODOS_DESTINO:
+        raise ValueError(f"modo de destino desconocido: {modo!r}; esperaba uno de {MODOS_DESTINO}")
+
+    if modo == MODO_OBVIAR:
+        if os.path.exists(dest):
+            return None
+        destino_final = dest
+    elif modo == MODO_SOBRESCRIBIR:
+        destino_final = dest
+        # `shutil.move` sobre un destino existente NO es fiable de forma
+        # uniforme (depende de si origen y destino comparten sistema de
+        # ficheros, y aqui el destino es gcsfuse). Se borra antes, explicito.
+        if os.path.isfile(destino_final):
+            os.remove(destino_final)
+    else:
+        destino_final = unique_dest(dest)
+
     try:
         shutil.move(src, destino_final)
     except OSError as e:
