@@ -6,6 +6,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "general_functions"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import utils
 from utils import (
     ExternalToolError,
     safe_pct,
@@ -70,3 +71,60 @@ def test_run_external_timeout_lanza_error():
             [sys.executable, "-c", "import time;time.sleep(5)"],
             timeout=0.2,
         )
+
+
+def test_safe_move_modo_sobrescribir_pisa_el_destino(tmp_path):
+    caso = tmp_path / "caso"
+    caso.mkdir()
+    origen = caso / "origen.jpg"
+    origen.write_bytes(b"nuevo")
+    destino = caso / "destino.jpg"
+    destino.write_bytes(b"viejo")
+
+    final = utils.safe_move(str(origen), str(destino), modo=utils.MODO_SOBRESCRIBIR)
+
+    assert final == str(destino)
+    assert destino.read_bytes() == b"nuevo"
+    assert not origen.exists()
+    # Lo que de verdad se comprueba: NO ha nacido ningun `destino_1.jpg`.
+    assert sorted(p.name for p in caso.iterdir()) == ["destino.jpg"]
+
+
+def test_safe_move_modo_obviar_no_toca_nada_si_el_destino_existe(tmp_path):
+    caso = tmp_path / "caso"
+    caso.mkdir()
+    origen = caso / "origen.jpg"
+    origen.write_bytes(b"nuevo")
+    destino = caso / "destino.jpg"
+    destino.write_bytes(b"viejo")
+
+    final = utils.safe_move(str(origen), str(destino), modo=utils.MODO_OBVIAR)
+
+    assert final is None
+    assert destino.read_bytes() == b"viejo"
+    assert origen.exists(), "en modo obviar el origen NO se consume"
+    assert sorted(p.name for p in caso.iterdir()) == ["destino.jpg", "origen.jpg"]
+
+
+def test_safe_move_modo_obviar_mueve_si_el_destino_no_existe(tmp_path):
+    caso = tmp_path / "caso"
+    caso.mkdir()
+    origen = caso / "origen.jpg"
+    origen.write_bytes(b"nuevo")
+    destino = caso / "destino.jpg"
+
+    final = utils.safe_move(str(origen), str(destino), modo=utils.MODO_OBVIAR)
+
+    assert final == str(destino)
+    assert destino.read_bytes() == b"nuevo"
+    assert not origen.exists()
+
+
+def test_safe_move_modo_desconocido_falla_pronto(tmp_path):
+    caso = tmp_path / "caso"
+    caso.mkdir()
+    origen = caso / "origen.jpg"
+    origen.write_bytes(b"x")
+    with pytest.raises(ValueError):
+        utils.safe_move(str(origen), str(caso / "destino.jpg"), modo="loquesea")
+    assert origen.exists(), "un modo invalido no debe consumir el origen"
