@@ -126,3 +126,72 @@ def test_sin_modo_en_la_config_la_etapa_post_sobrescribe(monkeypatch):
     host.split_images(_cfg(), _SignalFalsa(), _SignalFalsa(), _SignalFalsa())
 
     assert host.gen_struct_folder_obj.modo_destino == utils.MODO_SOBRESCRIBIR
+
+
+def test_get_summarize_avisa_de_omitidas_sin_marcarlo_como_error():
+    import pipeline
+
+    class _LogFalso:
+        class logger:
+            @staticmethod
+            def info(*a, **k):
+                pass
+
+    obj = pipeline.GenStructFolder(_LogFalso())
+    obj.total_images_number = 100
+    obj.current_image_number = 100
+    obj.skipped_image_number = 12
+
+    resumen = obj.get_summarize()
+
+    assert "ERROR" not in resumen, "omitir no es fallar: no puede teñir el run de rojo"
+    assert resumen.get("AVISO") == "HA HABIDO AVISOS"
+    assert "12" in str(resumen.get("Imagenes omitidas", ""))
+
+
+def test_get_summarize_sin_omitidas_no_inventa_aviso():
+    import pipeline
+
+    class _LogFalso:
+        class logger:
+            @staticmethod
+            def info(*a, **k):
+                pass
+
+    obj = pipeline.GenStructFolder(_LogFalso())
+    obj.total_images_number = 100
+    obj.current_image_number = 100
+    obj.skipped_image_number = 0
+
+    resumen = obj.get_summarize()
+
+    assert "AVISO" not in resumen
+    assert resumen.get("Sin Errores") == "Sin errores durante el proceso"
+
+
+def test_el_total_de_struct_solo_cuenta_la_entrada_de_la_fase(tmp_path):
+    """Un destino con organizacion previa (PB1/) no puede inflar el total
+    esperado: esas imagenes ya estan en su sitio y struct no las va a mover."""
+    from utils import Utils
+
+    class _LogFalso:
+        class logger:
+            @staticmethod
+            def info(*a, **k):
+                pass
+
+    (tmp_path / "TERMICA").mkdir()
+    (tmp_path / "RGB").mkdir()
+    (tmp_path / "PB1" / "PB1_V1").mkdir(parents=True)
+    for i in range(3):
+        (tmp_path / "TERMICA" / f"t{i}.JPG").write_bytes(b"x")
+    for i in range(2):
+        (tmp_path / "RGB" / f"r{i}.JPG").write_bytes(b"x")
+    for i in range(50):
+        (tmp_path / "PB1" / "PB1_V1" / f"viejo{i}.JPG").write_bytes(b"x")
+
+    utils_obj = Utils(_LogFalso())
+    total = utils_obj.contar_imagenes_or_tmc(str(tmp_path / "TERMICA")) \
+        + utils_obj.contar_imagenes_or_tmc(str(tmp_path / "RGB"))
+
+    assert total == 5, "solo TERMICA + RGB; las 50 ya organizadas no cuentan"

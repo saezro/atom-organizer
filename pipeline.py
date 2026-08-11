@@ -892,11 +892,21 @@ class GenStructFolder:
         # Avisos NO fatales (SIN_ORDENAR). Marcador único para que el orquestador
         # headless lo cuente una sola vez y ponga el run en ámbar. El texto NO
         # contiene "error" para no disparar el conteo de errores.
+        # Omitidas por `--modo-destino obviar`: ya habia un fichero en la ruta
+        # exacta. No es un fallo — es literalmente lo que se pidio — pero tiene
+        # que verse, o una reorganizacion que no reorganizo nada pasaria por
+        # verde indistinguible de una que si.
+        if self.skipped_image_number > 0:
+            summarize_dict["Imagenes omitidas"] = (
+                f"{self.skipped_image_number} imagenes ya existian en su ruta de "
+                f"destino y no se movieron (modo {self.modo_destino}).")
+            summarize_dict["AVISO"] = "HA HABIDO AVISOS"
+
         if self.warning_gen_struct_folder > 0:
             summarize_dict["Detalle avisos"] = self.warnings_type_gen_struct_folder
             summarize_dict["AVISO"] = "HA HABIDO AVISOS"
         return summarize_dict
-    
+
     def checking_results_gen_struct_folder(self, output_folder, progress_callback):
         # Imágenes que quedaron en la raíz de TERMICA/RGB tras gen_folder_struct =
         # no encajan en ningún vuelo del estadillo (p. ej. un clip huérfano cuyo
