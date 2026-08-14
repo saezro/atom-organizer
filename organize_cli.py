@@ -170,9 +170,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="Carpeta del vuelo (la que se sube al bucket).")
     parser.add_argument("--destino", required=True,
                         help="Carpeta de salida. Se crea si no existe.")
-    parser.add_argument("--estadillo", default="",
+    parser.add_argument("--estadillo", nargs="+", default=[], metavar="CSV",
                         help="CSV del estadillo. Sin él no se organiza en la "
-                             "estructura de carpetas de la planta.")
+                             "estructura de carpetas de la planta. Admite "
+                             "varios (`--estadillo a.csv b.csv`): se fusionan "
+                             "en el orden dado, que es el que decide quién "
+                             "gana un solape de horario.")
     parser.add_argument("--task", default="split_images",
                         help="Task del pipeline (por defecto el completo).")
     parser.add_argument("--sin-tif", action="store_true",
@@ -229,18 +232,26 @@ def main(argv: list[str] | None = None) -> int:
     if not origen.is_dir():
         print(f"error: la carpeta de origen no existe: {origen}", file=sys.stderr)
         return 2
-    if args.estadillo and not Path(args.estadillo).expanduser().is_file():
-        print(f"error: el estadillo no existe: {args.estadillo}", file=sys.stderr)
+    faltantes_estadillo = [p for p in args.estadillo if not Path(p).expanduser().is_file()]
+    if faltantes_estadillo:
+        print(f"error: el estadillo no existe: {', '.join(faltantes_estadillo)}",
+              file=sys.stderr)
         return 2
     destino.mkdir(parents=True, exist_ok=True)
 
     # Import aquí y no arriba: `atom_core.organize` arrastra el pipeline entero
     # (numpy, PIL, el SDK térmico). Si el usuario solo pidió `--help`, no tiene
-    # sentido pagar varios segundos de imports para imprimirlo.
+    # sentido pagar varios segundos de imports para imprimirlo. Igual por lo
+    # mismo con `atom_core.estadillo` (importa pandas).
     from atom_core.organize import run_task
+    from atom_core.estadillo import empaquetar_rutas
 
+    # `estadillo` sigue viajando como un único string (es lo que espera
+    # `atom_core.organize`/`GenStructFolderConfig.estad`, que no se toca en
+    # este cambio): con 1 sola ruta `empaquetar_rutas` la devuelve tal cual,
+    # así que el caso de siempre no cambia ni un byte.
     params: dict = {"origen": str(origen), "destino": str(destino),
-                    "estadillo": args.estadillo,
+                    "estadillo": empaquetar_rutas(args.estadillo),
                     "etapa": args.etapa,
                     "modo_destino": args.modo_destino,
                     "shard_index": shard_index, "shard_count": shard_count}
@@ -398,7 +409,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"origen   : {origen}")
     print(f"destino  : {destino}")
-    print(f"estadillo: {args.estadillo or '(ninguno)'}")
+    print(f"estadillo: {', '.join(args.estadillo) if args.estadillo else '(ninguno)'}")
     print(f"task     : {args.task}")
     # La etapa y el shard van en la cabecera porque sin ellos un log de una tarea
     # de Cloud Run es indistinguible del de otra: las N escriben lo mismo salvo
@@ -444,6 +455,22 @@ def main(argv: list[str] | None = None) -> int:
             reporter.fin(ok=not errores, error=errores[0] if errores else None,
                          stats=ultimo_stats)
         except Exception:  # noqa: BLE001 - la telemetría no puede tocar el exit code
+            pass
+
+    # Notifica el estadillo a la Suite (misiones+vuelos), en las mismas
+    # condiciones que el resto de telemetría (solo si hay `reporter`, es decir
+    # solo si había secreto y el run se dio de alta bien) y solo si de verdad
+    # se pasó un estadillo. No hay `planta_id`/`inspeccion_id` numéricos en
+    # este scope (el CLI solo conoce rutas), así que se manda `None` en
+    # ambos: el backend los acepta y crea la misión sin planta/inspección
+    # ligada. `reporter.estadillo` es fail-open por dentro, pero se envuelve
+    # igualmente: esta notificación NUNCA puede tocar el exit code del pipeline.
+    if reporter is not None and args.estadillo:
+        try:
+            from atom_core.estadillo import combinar_estadillos, filas_para_suite
+            df_estadillo = combinar_estadillos(args.estadillo)
+            reporter.estadillo(filas_para_suite(df_estadillo))
+        except Exception:  # noqa: BLE001 - fail-open: la notificacion no puede romper el pipeline
             pass
 
     return 1 if errores else 0

@@ -613,6 +613,59 @@ select.glass-input option {
   background: rgba(240, 184, 102, 0.12);
 }
 
+/* --- Campo Estadillo: lista de varios ficheros (reordenable) -------------- */
+.estad-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.estad-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.estad-order {
+  flex: 0 0 auto;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--orange);
+  min-width: 1.6rem;
+  text-align: center;
+}
+.estad-move {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.estad-arrow {
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.1rem 0.45rem;
+  border-radius: 6px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  transition: background 0.15s ease;
+}
+.estad-arrow:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
+}
+.estad-arrow:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.estad-add {
+  align-self: flex-start;
+}
+.pf-estad-source {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 /* --- Modal previo (info del estadillo) ------------------------------------ */
 .pf-loading {
   margin: 0;
