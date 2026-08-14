@@ -690,8 +690,39 @@ class Api:
 
         try:
             run_task(task, params, emit, advanced or None)
+            self._notificar_estadillo(params)
         finally:
             self._running = False
+
+    def _notificar_estadillo(self, params: dict) -> None:
+        """Manda a la Suite las filas de vuelo del estadillo para que cree
+        misiones+vuelos (`POST /api/organizer/estadillo`).
+
+        Va aquí y no en la subida al bucket porque este es el único punto del
+        flujo de escritorio donde el estadillo está en scope; y va DESPUÉS de
+        `run_task` para no notificar vuelos de una organización que reventó.
+
+        Fail-open de principio a fin: el operador no puede ver un error, ni
+        perder el trabajo ya organizado, porque la Suite no conteste.
+        """
+        try:
+            estadillo = (params or {}).get("estadillo") or ""
+            if not estadillo:
+                return
+            auth = self._get_auth()
+            if auth is None or not getattr(auth, "is_logged_in", lambda: False)():
+                return  # sin login no hay a quién atribuir la misión; se hará en la Suite
+            from atom_core.estadillo import (
+                desempaquetar_rutas, combinar_estadillos, filas_para_suite,
+            )
+            from atom_core.run_reporter import RunReporter
+
+            filas = filas_para_suite(combinar_estadillos(desempaquetar_rutas(estadillo)))
+            if not filas:
+                return
+            RunReporter(auth=auth).estadillo(filas)
+        except Exception:  # noqa: BLE001 - fail-open: no puede romper el pipeline
+            pass
 
     def _push(self, detail: dict) -> None:
         """Empuja un evento a React (Python → JS)."""
