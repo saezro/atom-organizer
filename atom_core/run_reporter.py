@@ -295,6 +295,30 @@ class RunReporter:
         except Exception as exc:  # noqa: BLE001 - fail-open
             _log.debug("run_reporter.fin: excepcion inesperada (%s)", exc)
 
+    def estadillo(self, vuelos: list[dict], planta_id=None, inspeccion_id=None) -> dict | None:
+        """Notifica a la Suite las filas de vuelo de un estadillo, para que cree
+        misiones+vuelos (`POST /api/organizer/estadillo`).
+
+        A diferencia del resto de métodos, es INDEPENDIENTE del ciclo
+        `iniciar`/`fin`: no lee ni depende de `self._id` ni de `activo`, así
+        que funciona igual con o sin un run vivo (p. ej. una corrida local sin
+        telemetría de progreso, pero con estadillo que sí conviene reportar).
+        Fail-open como todo el fichero: si algo falla se traga la excepción y
+        devuelve `None`, nunca puede tumbar el pipeline que la llama.
+        """
+        try:
+            if not vuelos:
+                return None
+            cuerpo = {
+                "planta_id": planta_id,
+                "inspeccion_id": inspeccion_id,
+                "vuelos": vuelos,
+            }
+            return self._peticion("POST", "/api/organizer/estadillo", cuerpo)
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            _log.debug("run_reporter.estadillo: excepcion inesperada (%s)", exc)
+            return None
+
     @property
     def activo(self) -> bool:
         """`True` si hay un run vivo (con id asignado por la Suite)."""
