@@ -16,12 +16,12 @@ MAIN_APP_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__f
 
 
 def _load_dark_qss_from_source() -> str:
-    """Extrae DARK_QSS (y sus constantes de color asociadas: BACKGROUND/ACCENT/TEXT/PANEL)
-    del código fuente de gui.py vía ast, sin importar PySide6."""
+    """Extrae DARK_QSS (y sus constantes de color asociadas: BACKGROUND/ACCENT/ACCENT_SOFT/
+    TEXT/MUTED/PANEL) del código fuente de gui.py vía ast, sin importar PySide6."""
     with open(MAIN_APP_PATH, "r", encoding="utf-8") as f:
         source = f.read()
     tree = ast.parse(source)
-    color_names = {"BACKGROUND", "ACCENT", "TEXT", "PANEL", "DARK_QSS"}
+    color_names = {"BACKGROUND", "ACCENT", "ACCENT_SOFT", "TEXT", "MUTED", "PANEL", "DARK_QSS"}
     nodes = [
         node for node in tree.body
         if isinstance(node, ast.Assign) and any(
