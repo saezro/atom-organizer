@@ -71,7 +71,7 @@ import logging
 import configparser
 
 # --- Tema global QSS para ATOM Organizer — clonado del login de ATOM Suite -------------------
-# Paleta y componentes copiados del frontend de ATOM Suite (naranja marca #EE753A sobre negro
+# Paleta y componentes copiados del frontend de ATOM Suite (naranja marca #EE763C sobre negro
 # #0a0a0a, inputs/botones "glass"). El wordmark usa Space Grotesk 700 (cargada en _load_brand_font).
 # Follow-up (Fase B): neutralizar los ~80 setStyleSheet inline del .ui generado que aún pisan esto.
 
@@ -80,7 +80,7 @@ try:                        # versión mostrada junto al wordmark en la cabecera
 except Exception:           # congelado sin version.py al alcance: no romper la GUI
     APP_VERSION = "0.0.0"
 BACKGROUND = "#0a0a0a"      # fondo login ATOM Suite
-ACCENT = "#EE753A"          # naranja marca (título "SUITE", acentos)
+ACCENT = "#EE763C"          # naranja marca (título "SUITE", acentos)
 ACCENT_SOFT = "rgba(238,117,58,0.6)"
 TEXT = "#f1f5f9"            # texto cuerpo ATOM Suite
 MUTED = "#6b7280"          # gris subtítulo (gray-500)
@@ -723,7 +723,7 @@ class MainWindow(QtWidgets.QMainWindow, aero_gui.Ui_MainWindow, PipelinePhasesMi
 
         title = QtWidgets.QLabel(
             '<span style="color:#F4F4F5;">ATOM</span>'
-            '<span style="color:#EE753A;"> ORGANIZER</span>'
+            '<span style="color:#EE763C;"> ORGANIZER</span>'
         )
         f = QtGui.QFont(self._brand_family, S(48))
         f.setWeight(QtGui.QFont.Weight.Bold)
