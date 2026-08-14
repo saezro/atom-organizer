@@ -202,6 +202,109 @@ jobs:
           path: dist/installer/ATOM-Organizer-Setup-*.exe
           if-no-files-found: error
 
+  # La imagen del Cloud Run Job (Dockerfile.job) se construía A MANO, y por eso
+  # divergía del .exe: el 2026-08-14 el tag v3.4.41 tenía release publicada y
+  # updater ofreciéndola mientras el Job seguía corriendo v3.4.40 — el estadillo
+  # lo notificaba la app de escritorio y no el pipeline en la nube. Aquí se
+  # publica con el mismo tag y en el mismo evento que los binarios.
+  #
+  # NO está en `needs` de `release` a propósito: si el build de la imagen falla,
+  # el workflow queda en rojo pero la release de escritorio se publica igual.
+  # Bloquear el .exe por un problema de GCP sería cambiar un fallo por otro.
+  imagen-job:
+    needs: [meta, checks]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # Necesario para que el runner pida el token OIDC con el que se federa
+      # contra GCP. Sin esto, `auth` falla con "unable to get ACTIONS_ID_TOKEN".
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      # Mismo control que hace build-windows: el tag manda sobre el nombre, pero
+      # el código que va DENTRO de la imagen es el de version.py. Si no coinciden,
+      # se publicaría una imagen mintiendo sobre su versión — justo el tipo de
+      # divergencia que este job existe para evitar.
+      - name: Comprobar que el tag coincide con version.py
+        run: |
+          PY=$(python3 -c "from version import __version__; print(__version__)")
+          TAG=$(echo "${{ needs.meta.outputs.version }}" | sed 's/^v//' | cut -d- -f1)
+          if [ "$PY" != "$TAG" ]; then
+            echo "::error::Tag ($TAG) != version.py ($PY)"
+            exit 1
+          fi
+      # Workload Identity Federation, no una clave JSON: el provider
+      # `atom-organizer` tiene attribute-condition
+      # assertion.repository=='saezro/atom-organizer', así que el token solo vale
+      # desde ESTE repo y no hay credencial de larga vida que rotar ni filtrar.
+      #
+      # El provider va literal y no en `vars.`: no es un secreto (es un nombre de
+      # recurso, y sin el token OIDC de ESTE repo no sirve de nada), y ponerlo en
+      # una variable del repo añade un paso de configuración manual que, si se
+      # olvida, rompe la release con un error opaco. El resto del workflow ya
+      # hardcodea proyecto, región e imagen.
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/217557350193/locations/global/workloadIdentityPools/github/providers/atom-organizer
+          service_account: atom-compute-ops@aerotools-484814.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      # --async + polling en vez de dejar que `gcloud builds submit` espere:
+      # construyendo con la SA (que no es Viewer del proyecto) el submit NO puede
+      # leer el bucket de logs por defecto, imprime un ERROR de streaming y sale
+      # con código 0 SIN saber cómo acabó el build. Es decir: en modo síncrono un
+      # build FALLIDO puede dar el paso por verde. Aquí el veredicto sale de
+      # `builds describe`, que es el estado real.
+      #
+      # --gcs-source-staging-dir es obligatorio: a la SA se le concedió
+      # objectAdmin solo sobre el bucket de staging (a nivel proyecto le daría
+      # escritura sobre gs://plantas_pv_nl), no sobre el bucket por defecto.
+      - name: Construir y publicar la imagen del Job
+        run: |
+          set -euo pipefail
+          VER="${{ needs.meta.outputs.version }}"
+          ID=$(gcloud builds submit --config=cloudbuild-job.yaml \
+                 --substitutions=_VERSION="$VER" \
+                 --project=aerotools-484814 \
+                 --gcs-source-staging-dir=gs://aerotools-484814-cloudbuild-staging/staging \
+                 --async --format='value(id)' .)
+          echo "Build $ID — https://console.cloud.google.com/cloud-build/builds/$ID?project=217557350193"
+          # El build ronda los 10 min con E2_HIGHCPU_8; el timeout del yaml es 3600s.
+          for _ in $(seq 1 120); do
+            STATUS=$(gcloud builds describe "$ID" --project=aerotools-484814 --format='value(status)')
+            case "$STATUS" in
+              SUCCESS) echo "Build SUCCESS"; exit 0 ;;
+              FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED)
+                echo "::error::Build $ID terminó en $STATUS"; exit 1 ;;
+            esac
+            sleep 30
+          done
+          echo "::error::Build $ID sigue en curso tras 60 min"; exit 1
+      # Cinturón sobre tirantes: que el build diga SUCCESS y que el tag exista en
+      # Artifact Registry son dos cosas distintas, y la que importa es la segunda.
+      - name: Verificar el tag en Artifact Registry
+        run: |
+          gcloud artifacts docker tags list \
+            europe-west4-docker.pkg.dev/aerotools-484814/atom-organizer/pipeline \
+            --project=aerotools-484814 --format='value(tag)' \
+            | grep -qx "${{ needs.meta.outputs.version }}"
+      # Solo las estables tocan producción. Una -rc deja la imagen publicada para
+      # poder probarla a mano, pero no cambia el Job que usa el equipo.
+      - name: Actualizar el Cloud Run Job (solo release estable)
+        if: needs.meta.outputs.prerelease == 'false'
+        run: |
+          set -euo pipefail
+          VER="${{ needs.meta.outputs.version }}"
+          IMG="europe-west4-docker.pkg.dev/aerotools-484814/atom-organizer/pipeline:$VER"
+          gcloud run jobs update atom-organizer-pipeline \
+            --region=europe-west4 --project=aerotools-484814 --image="$IMG"
+          # `update` puede devolver 0 y dejar la revisión anterior si algo falló
+          # después; se comprueba lo que el Job tiene puesto de verdad.
+          ACTUAL=$(gcloud run jobs describe atom-organizer-pipeline \
+                     --region=europe-west4 --project=aerotools-484814 \
+                     --format='value(spec.template.spec.template.spec.containers[0].image)')
+          [ "$ACTUAL" = "$IMG" ] || { echo "::error::El Job quedó en $ACTUAL"; exit 1; }
+          echo "Job atom-organizer-pipeline -> $VER"
+
   release:
     needs: [meta, build-linux, build-windows]
     runs-on: ubuntu-latest
