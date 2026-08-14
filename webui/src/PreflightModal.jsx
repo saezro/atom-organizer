@@ -12,6 +12,10 @@ export default function PreflightModal({ info, loading, onStart, onCancel }) {
   const fechas = (info && info.fechas) || (info && info.fecha ? [info.fecha] : [])
   const multiDia = fechas.length > 1
   const cruces = vuelos.filter((v) => v.cruza_medianoche)
+  // Con varios estadillos cada vuelo lleva su fichero de origen (`fuente`);
+  // con uno solo esta lista sale vacía y la tabla no cambia de aspecto.
+  const conFuentes = vuelos.some((v) => v.fuente)
+  const errores = (info && info.errores) || []
 
   return (
     <div className="pm-overlay" role="dialog" aria-modal="true">
@@ -37,6 +41,14 @@ export default function PreflightModal({ info, loading, onStart, onCancel }) {
               <PFItem label={multiDia ? 'De' : 'Franja horaria'} value={franja(info, multiDia)} />
             </dl>
 
+            {errores.length > 0 && (
+              <p className="pm-status err">
+                ⚠ No se {errores.length === 1 ? 'pudo leer' : 'pudieron leer'}{' '}
+                {errores.map((e) => `${e.archivo} (${e.error})`).join('; ')}. Se sigue con el
+                resto.
+              </p>
+            )}
+
             {cruces.length > 0 && (
               <p className="pm-status err">
                 ⚠ {cruces.length === 1 ? 'Un vuelo cruza' : `${cruces.length} vuelos cruzan`} la
@@ -51,6 +63,7 @@ export default function PreflightModal({ info, loading, onStart, onCancel }) {
                 <table className="pf-table">
                   <thead>
                     <tr>
+                      {conFuentes && <th>Estadillo</th>}
                       <th>PB</th>
                       <th>Vuelo</th>
                       <th>Fecha</th>
@@ -61,6 +74,7 @@ export default function PreflightModal({ info, loading, onStart, onCancel }) {
                   <tbody>
                     {vuelos.map((v, i) => (
                       <tr key={i} className={v.cruza_medianoche ? 'pf-row-warn' : undefined}>
+                        {conFuentes && <td className="pf-estad-source">{v.fuente || '—'}</td>}
                         <td>{v.pb || '—'}</td>
                         <td>{v.vuelo || '—'}</td>
                         <td>{v.fecha || '—'}</td>

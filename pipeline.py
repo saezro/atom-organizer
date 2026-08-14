@@ -990,38 +990,65 @@ class GenStructFolder:
         coordinarse—, pero solo mueve las imágenes que le tocan. Por defecto
         `(0, 1)` = una sola tarea, el comportamiento de siempre.
         """
+        # Import diferido: `atom_core.estadillo` importa `utils` (para
+        # `Utils.get_nombres_columnas`), y `utils` importa este módulo
+        # (`pipeline`) a nivel de fichero -> un `import` a nivel de módulo
+        # aquí arriba sería un ciclo (`utils -> pipeline -> atom_core.estadillo
+        # -> utils`, a medio inicializar). Importarlo dentro de la función lo
+        # rompe sin tocar `utils.py`.
+        from atom_core import estadillo as estadillo_mod
+
         self.organizer_logger.logger.debug("---------------------------------------------------------------------")
         self.organizer_logger.logger.debug("Estadillo: " + path_estadillo)
         self.organizer_logger.logger.debug("Output folder: " + output_folder)
-        
+
         self.utils_obj.prepare_output_folder(output_folder, ["RGB", "TERMICA","ESTADILLOS"])
 
         output_path_estadillo = os.path.join(output_folder,"ESTADILLOS")
 
-        # output_path_estadillo es una carpeta, mientras que path_estadillo es el archivo. En la siguiente línea juntamos output_path_estadillo con el nombre.
-        dest_estadillo = os.path.join(output_path_estadillo, os.path.basename(path_estadillo))
-        # La copia del estadillo la hace SOLO la tarea 0. El bloque de abajo
-        # resuelve el choque de nombres añadiendo un contador (`_1`, `_2`…), que
-        # con N tareas a la vez no protege: las ocho ven la carpeta sin su copia,
-        # las ocho copian, y en ESTADILLOS/ acaban ocho estadillos idénticos
-        # numerados. Es el único fichero que escriben todas por igual.
-        # Comparamos transformando en minúsculas e igualando los / o \
-        if shard_index == 0 and os.path.normcase(os.path.abspath(path_estadillo)) != os.path.normcase(os.path.abspath(dest_estadillo)):
-            self.organizer_logger.logger.info(f"Los estadillos son diferentes") # Son diferentes, así que hay que copiarlos y compruebo si hay algún estadillo en la carpeta de destino con el mismo nombre y en el caso de haberlo genero un nombre distinto añadiendo un contador al nombre.
-            dest = pathlib.Path(output_folder) / "ESTADILLOS" / pathlib.Path(path_estadillo).name
-            counter = 1
-            while dest.exists():
-                self.organizer_logger.logger.info(f"Había un estadillo con el mismo nombre. Usamos un counter - Valor: {counter}")
-                dest = dest.with_stem(f"{dest.stem}_{counter}")
-                counter += 1
-            shutil.copy2(path_estadillo, dest)
-        else:
-            self.organizer_logger.logger.info(f"Los estadillos son iguales. No se copia nada.")
-  
-        # Leer el estadillo usando Pandas
-        estadillo = pd.read_csv(path_estadillo, sep=";")
+        # `path_estadillo` puede traer 1 o N rutas empaquetadas (ver
+        # `atom_core.estadillo.empaquetar_rutas`/`desempaquetar_rutas`): es el
+        # mismo string de siempre, así que con 1 sola ruta esto es un no-op
+        # (`desempaquetar_rutas` devuelve `[path_estadillo]` tal cual).
+        rutas_estadillo = estadillo_mod.desempaquetar_rutas(path_estadillo)
+
+        # La copia del/los estadillo(s) la hace SOLO la tarea 0. El bloque de
+        # abajo resuelve el choque de nombres añadiendo un contador (`_1`,
+        # `_2`…), que con N tareas a la vez no protege: las ocho ven la
+        # carpeta sin su copia, las ocho copian, y en ESTADILLOS/ acaban ocho
+        # estadillos idénticos numerados. Es el único fichero que escriben
+        # todas por igual.
+        if shard_index == 0:
+            for ruta in rutas_estadillo:
+                # output_path_estadillo es una carpeta, mientras que ruta es el archivo. En la siguiente línea juntamos output_path_estadillo con el nombre.
+                dest_estadillo = os.path.join(output_path_estadillo, os.path.basename(ruta))
+                # Comparamos transformando en minúsculas e igualando los / o \
+                if os.path.normcase(os.path.abspath(ruta)) == os.path.normcase(os.path.abspath(dest_estadillo)):
+                    self.organizer_logger.logger.info(f"Los estadillos son iguales. No se copia nada.")
+                    continue
+                self.organizer_logger.logger.info(f"Los estadillos son diferentes") # Son diferentes, así que hay que copiarlos y compruebo si hay algún estadillo en la carpeta de destino con el mismo nombre y en el caso de haberlo genero un nombre distinto añadiendo un contador al nombre.
+                dest = pathlib.Path(output_folder) / "ESTADILLOS" / pathlib.Path(ruta).name
+                counter = 1
+                while dest.exists():
+                    self.organizer_logger.logger.info(f"Había un estadillo con el mismo nombre. Usamos un counter - Valor: {counter}")
+                    dest = dest.with_stem(f"{dest.stem}_{counter}")
+                    counter += 1
+                shutil.copy2(ruta, dest)
+
+        # Leer el/los estadillo(s) usando Pandas. Con 1 sola ruta esto lee
+        # exactamente el mismo CSV de siempre, con `sep=";"`; con N rutas las
+        # fusiona EN EL ORDEN dado (ver `combinar_estadillos`), que es el
+        # mismo orden en el que este bucle recorre `estadillo` más abajo, así
+        # que "gana el primero del CSV" sigue valiendo igual con varios.
+        estadillo = estadillo_mod.combinar_estadillos(rutas_estadillo)
         nombres_columnas = self.utils_obj.get_nombres_columnas(list(estadillo.columns.values))
-        
+
+        # Colisiones PB+Vuelo con fecha distinta entre estadillos fusionados:
+        # SOLO esas carpetas llevan sufijo de fecha. Con 1 estadillo esto es
+        # siempre `{}` (no hay con qué colisionar), así que el nombre de
+        # carpeta de siempre (`PB<pb>_V<vuelo>`) no cambia para nadie.
+        colisiones_pb_vuelo = estadillo_mod.detectar_colisiones_pb_vuelo(estadillo, nombres_columnas)
+
         # Guardamos en una variable el número de vuelos
         # TODO: Para mostrar la barra de progreso con este proceso vamos a tener en cuenta el número de vuelos.
         numeroVuelos = estadillo.shape[0]
@@ -1078,6 +1105,15 @@ class GenStructFolder:
                     nombreCarpeta_PB_vuelo = nombreCarpeta_PB+'_V'+str(vuelo_pb)
                 else:
                     nombreCarpeta_PB_vuelo = nombreCarpeta_PB+'_'+str(vuelo_pb)
+
+                # Con 1 solo estadillo `colisiones_pb_vuelo` es siempre `{}` y
+                # esto no toca nada: el nombre de carpeta se queda EXACTAMENTE
+                # como arriba. Solo cuando la fusión de varios estadillos deja
+                # el mismo PB+Vuelo con fecha distinta se añade el sufijo, y
+                # SOLO a esas carpetas colisionadas.
+                clave_pb_vuelo = (str(pb).strip(), str(vuelo_pb).strip())
+                if clave_pb_vuelo in colisiones_pb_vuelo:
+                    nombreCarpeta_PB_vuelo += '_' + estadillo_mod.sufijo_fecha(fecha_estadillo)
 
                 # Las carpetas las crean TODAS las tareas, no solo la 0: son
                 # `makedirs(exist_ok=True)`, cuestan un round-trip y así ninguna

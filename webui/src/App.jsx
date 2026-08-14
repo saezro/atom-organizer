@@ -5,6 +5,7 @@ import TaskBlock, { Field, initialState, buildParams } from './TaskBlock'
 import ProgressModal from './ProgressModal'
 import PreflightModal from './PreflightModal'
 import UpdateModal from './UpdateModal'
+import EstadilloField from './EstadilloField'
 import './App.css'
 
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
@@ -44,6 +45,73 @@ function horaCorta(epochSegundos) {
   const d = new Date(epochSegundos * 1000)
   if (Number.isNaN(d.getTime())) return ''
   return ` a las ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+}
+
+function basename(path) {
+  return (path || '').split(/[\\/]/).pop()
+}
+
+// El backend (`GenStructFolderConfig.estad` / `atom_core.organize.run_task`)
+// sigue esperando el estadillo como UN string: para colar varios por el mismo
+// hueco, `atom_core.estadillo.empaquetar_rutas` los junta con el carácter de
+// control Unit Separator (\x1f, no puede aparecer en un path real). Aquí se
+// replica esa misma codificación en JS. Con 0 o 1 rutas el resultado es
+// idéntico a lo que se mandaba antes (string vacío o el path suelto).
+const ESTADILLO_PATH_SEP = '\x1f'
+function empaquetarRutas(paths) {
+  return (paths || []).map((p) => String(p).trim()).filter(Boolean).join(ESTADILLO_PATH_SEP)
+}
+
+// Combina la info de N estadillos (cada uno leído por separado con
+// `api.readEstadilloInfo`, que solo sabe leer UN fichero) en un único resumen
+// para el modal previo. Con un solo fichero se devuelve tal cual, sin tocar
+// nada: el modal se ve exactamente igual que antes. Con varios, se etiqueta
+// cada vuelo con su fichero de origen (columna «Estadillo» en la tabla) y no
+// se calcula una franja horaria global, porque mezclar el formato de fecha de
+// estadillos distintos podría dar un rango incorrecto; cada fila ya trae su
+// propia hora.
+function mergeEstadilloInfos(paths, infos) {
+  if (infos.length === 1) return infos[0]
+
+  const ok = []
+  const errores = []
+  infos.forEach((info, i) => {
+    if (info && info.error) errores.push({ archivo: basename(paths[i]), error: info.error })
+    else ok.push({ archivo: basename(paths[i]), info })
+  })
+  if (ok.length === 0) {
+    return { error: errores.map((e) => `${e.archivo}: ${e.error}`).join(' · ') }
+  }
+
+  const empresas = []
+  const trabajos = []
+  const pilotos = []
+  const drones = []
+  const fechas = []
+  const vuelos = []
+  let num_vuelos = 0
+  for (const { archivo, info } of ok) {
+    if (info.empresa && !empresas.includes(info.empresa)) empresas.push(info.empresa)
+    if (info.trabajo && !trabajos.includes(info.trabajo)) trabajos.push(info.trabajo)
+    for (const p of info.pilotos || []) if (!pilotos.includes(p)) pilotos.push(p)
+    for (const d of info.drones || []) if (!drones.includes(d)) drones.push(d)
+    for (const f of info.fechas || []) if (!fechas.includes(f)) fechas.push(f)
+    num_vuelos += info.num_vuelos || 0
+    for (const v of info.vuelos || []) vuelos.push({ ...v, fuente: archivo })
+  }
+
+  return {
+    empresa: empresas.join(' + '),
+    trabajo: trabajos.join(' + '),
+    fechas: fechas.sort(),
+    pilotos,
+    drones,
+    num_vuelos,
+    vuelos,
+    hora_inicio: '',
+    hora_final: '',
+    errores,
+  }
 }
 
 // Marca la fase `index` (1-based) como activa y las previas como hechas. Si el
@@ -177,10 +245,12 @@ function App() {
   // Entrada de "Ejecutar": si hay estadillo, primero el modal previo con la
   // info de vuelo; el pipeline no arranca hasta que el operador pulsa Comenzar.
   async function run(task, params, advanced) {
-    if (task === 'split_images' && params.estadillo) {
+    const estadillos = Array.isArray(params.estadillo) ? params.estadillo.filter(Boolean) : []
+    if (task === 'split_images' && estadillos.length) {
       setPreflight({ loading: true, info: null, task, params, advanced })
       try {
-        const info = await api.readEstadilloInfo(params.estadillo)
+        const infos = await Promise.all(estadillos.map((p) => api.readEstadilloInfo(p)))
+        const info = mergeEstadilloInfos(estadillos, infos)
         setPreflight((p) => (p ? { ...p, loading: false, info } : p))
       } catch (e) {
         setPreflight((p) => (p ? { ...p, loading: false, info: { error: String(e) } } : p))
@@ -200,9 +270,15 @@ function App() {
     setFinished(null)
     setModalOpen(true)
     setRunning(true)
+    // `estadillo` viaja como array por toda la UI (así es como se arma el
+    // modal previo), pero el bridge/backend sigue esperando un único string
+    // por ese campo: se empaqueta justo antes de mandarlo.
+    const sendParams = Array.isArray(params.estadillo)
+      ? { ...params, estadillo: empaquetarRutas(params.estadillo) }
+      : params
     ;(async () => {
       try {
-        const res = await api.runTask(task, params, advanced)
+        const res = await api.runTask(task, sendParams, advanced)
         if (res && res.started === false) {
           setRunning(false)
           setFinished({ ok: false, msg: res.reason || 'No se pudo iniciar.' })
@@ -289,18 +365,13 @@ function OrganizarScreen({ ready, running, onRun }) {
   const [origen, setOrigen] = useState('')
   const [destino, setDestino] = useState('')
   const [destinoFull, setDestinoFull] = useState(null) // {count} si la salida no está vacía
-  const [estadillo, setEstadillo] = useState('')
+  const [estadillos, setEstadillos] = useState([]) // rutas, en orden de prioridad
   const [rename, setRename] = useState(true)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [adv, setAdv] = useState(() => initialState(ADV_FIELDS))
   const [detected, setDetected] = useState(null)
 
   const setAdvField = (name, value) => setAdv((s) => ({ ...s, [name]: value }))
-
-  async function pick(setter, kind) {
-    const path = kind === 'file' ? await api.pickFile() : await api.pickFolder()
-    if (path) setter(path)
-  }
 
   // Al elegir la carpeta de salida: comprobar que está vacía. Una corrida sobre
   // residuos de otra previa genera duplicados `_1/_2` y errores de recorte, así
@@ -343,7 +414,7 @@ function OrganizarScreen({ ready, running, onRun }) {
 
   function handleRun() {
     const advanced = buildParams(ADV_FIELDS, adv)
-    onRun('split_images', { origen, destino, estadillo, rename }, advanced)
+    onRun('split_images', { origen, destino, estadillo: estadillos, rename }, advanced)
   }
 
   return (
@@ -358,13 +429,7 @@ function OrganizarScreen({ ready, running, onRun }) {
           residuos genera duplicados y errores de recorte).
         </span>
       )}
-      <FileField
-        label="Estadillo (opcional)"
-        value={estadillo}
-        onPick={() => pick(setEstadillo, 'file')}
-        onType={setEstadillo}
-        placeholder="Si se indica, organiza por planta"
-      />
+      <EstadilloField value={estadillos} onChange={setEstadillos} disabled={running} />
       <div className="field">
         <span className="field-label">Sufijos de separación (según el dron)</span>
         <div className="suffix-row">
