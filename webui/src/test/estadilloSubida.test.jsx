@@ -1,11 +1,14 @@
 /**
  * Estadillo (ubicación canónica del bucket), dentro de SUBIR AL BUCKET.
  *
- * `estadilloValidar` es el preview obligatorio: se llama al pulsar
- * «Comprobar» y su resultado decide si «Subir estadillo» se puede pulsar.
- * Estos tests afirman sobre lo que ve el operador (resumen de vuelos
- * detectados / error) y sobre que un check `ok: false` bloquea la subida sin
- * llegar siquiera a llamar a `estadilloSubir`.
+ * Flujo NUEVO (commit 8514804): el estadillo es obligatorio y ya no tiene
+ * botones propios «Comprobar» / «Subir estadillo». `estadilloValidar` se
+ * llama SOLO al elegir los ficheros (efecto reactivo a `estadRutas`), y su
+ * resultado (`estadCheck`) decide si el ÚNICO botón «Subir al bucket» puede
+ * pulsarse. Al pulsarlo, `subir()` encadena primero `estadilloSubir` (vía
+ * `subirEstadilloEsperando`) y solo si eso resuelve sube las imágenes; un
+ * `estadCheck.ok === false` bloquea el botón antes de llegar a llamar a
+ * `estadilloSubir`.
  *
  * Mismo patrón que `App.test.jsx`: mock de `./bridge`, render de `<App>` y
  * navegación a la pestaña SUBIR AL BUCKET.
@@ -50,6 +53,11 @@ const api = {
     filas_con_problemas: 0,
   })),
   estadilloSubir: vi.fn(async () => ({ ok: true })),
+  // Detecta si la inspección elegida ya tiene estadillo subido (auto-marca
+  // «omitir estadillo»). Se deja en `existe: false` por defecto para que
+  // estos tests, centrados en la validación del estadillo NUEVO, no se
+  // encuentren el checkbox de exención ya marcado por sorpresa.
+  estadilloExistente: vi.fn(async () => ({ existe: false })),
 }
 
 vi.mock('../bridge', () => ({
@@ -64,11 +72,12 @@ const App = (await import('../App')).default
 
 // Navega hasta la pantalla SUBIR AL BUCKET, elige la inspección (para que
 // `prefijo` quede NO vacío, igual que en App.test.jsx) y elige un fichero de
-// estadillo, dejando el botón «Comprobar» listo para pulsar.
+// estadillo. Elegir el fichero YA dispara la validación automática (no hay
+// botón «Comprobar» que pulsar).
 //
-// Elegir la inspección es imprescindible para que «Subir estadillo» pueda
-// depender de verdad de `estadCheck?.ok` en vez de quedar deshabilitado por
-// `!prefijo` (App.jsx:1015): sin este paso cualquier test sobre ese botón
+// Elegir la inspección es imprescindible para que el botón «Subir al bucket»
+// pueda depender de verdad de `estadCheck?.ok` en vez de quedar deshabilitado
+// por `!prefijo` (App.jsx): sin este paso cualquier test sobre ese botón
 // estaría verde en falso.
 async function irAEstadilloConFichero(user) {
   render(<App />)
@@ -83,13 +92,37 @@ async function irAEstadilloConFichero(user) {
   await user.click(elegirBotones[0])
 }
 
+// Además del estadillo, «Subir al bucket» exige un plan de carpeta válido
+// (`plan?.ok`, resultado de `cloudPrepare`). Se elige la carpeta para poder
+// aislar el efecto de `estadCheck` sobre el botón: sin esto, el botón
+// quedaría deshabilitado igualmente por falta de carpeta y el test no
+// probaría nada sobre el estadillo en concreto.
+async function elegirCarpeta(user) {
+  const elegirBotones = await screen.findAllByRole('button', { name: /elegir/i })
+  // El de «Carpeta a subir» es el segundo (el del Estadillo sigue siendo el
+  // primero mientras haya 0 o 1 fichero elegido).
+  await user.click(elegirBotones[1])
+}
+
 describe('Estadillo (ubicación canónica del bucket)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     api.pickFile.mockResolvedValue('/home/saez/Descargas/estadillo.xlsx')
+    api.pickFolder.mockResolvedValue('/home/saez/Descargas/ANTOLIN')
+    api.cloudPrepare.mockResolvedValue({
+      ok: true,
+      prefix: 'ANTOLIN',
+      files: 0,
+      bytes: 0,
+      existing: 0,
+    })
+    api.estadilloExistente.mockResolvedValue({ existe: false })
   })
 
-  it('muestra los vuelos detectados tras validar', async () => {
+  // Antes: pulsaba «Comprobar» y esperaba ver el resumen. Ahora la
+  // validación es automática al elegir el fichero: no hay nada que pulsar,
+  // basta con esperar a que aparezca el resumen.
+  it('muestra los vuelos detectados al elegir el estadillo', async () => {
     api.estadilloValidar.mockResolvedValue({
       ok: true,
       error: null,
@@ -100,12 +133,14 @@ describe('Estadillo (ubicación canónica del bucket)', () => {
     const user = userEvent.setup()
     await irAEstadilloConFichero(user)
 
-    await user.click(await screen.findByRole('button', { name: 'Comprobar' }))
-
     expect(await screen.findByText(/34/)).toBeInTheDocument()
   })
 
-  it('muestra el error y no permite subir si no carga', async () => {
+  // Antes: pulsaba «Comprobar» y comprobaba que «Subir estadillo» quedaba
+  // deshabilitado. Ahora no hay botón propio del estadillo: el check fallido
+  // debe bloquear el ÚNICO botón «Subir al bucket» (con la carpeta ya lista,
+  // para aislar que el bloqueo es por el estadillo y no por falta de plan).
+  it('muestra el error y no permite subir si el estadillo no valida', async () => {
     api.estadilloValidar.mockResolvedValue({
       ok: false,
       error: 'Falta la columna PB',
@@ -115,15 +150,17 @@ describe('Estadillo (ubicación canónica del bucket)', () => {
 
     const user = userEvent.setup()
     await irAEstadilloConFichero(user)
-
-    await user.click(await screen.findByRole('button', { name: 'Comprobar' }))
+    await elegirCarpeta(user)
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Falta la columna PB')
-    expect(screen.getByRole('button', { name: /Subir estadillo/i })).toBeDisabled()
+    expect(await screen.findByRole('button', { name: 'Subir al bucket' })).toBeDisabled()
     expect(api.estadilloSubir).not.toHaveBeenCalled()
   })
 
-  it('habilita subir estadillo con inspección elegida y check ok', async () => {
+  // Antes: pulsaba «Comprobar» y comprobaba que «Subir estadillo» quedaba
+  // habilitado. Ahora es el botón único «Subir al bucket» el que depende de
+  // `estadCheck?.ok`, además de tener el plan de carpeta listo.
+  it('habilita subir al bucket con inspección elegida, estadillo válido y carpeta preparada', async () => {
     api.estadilloValidar.mockResolvedValue({
       ok: true,
       error: null,
@@ -133,14 +170,18 @@ describe('Estadillo (ubicación canónica del bucket)', () => {
 
     const user = userEvent.setup()
     await irAEstadilloConFichero(user)
-
-    await user.click(await screen.findByRole('button', { name: 'Comprobar' }))
+    await elegirCarpeta(user)
 
     await screen.findByText(/12/)
-    expect(screen.getByRole('button', { name: /Subir estadillo/i })).not.toBeDisabled()
+    expect(await screen.findByRole('button', { name: 'Subir al bucket' })).not.toBeDisabled()
   })
 
-  it('deshabilita subir estadillo en cuanto se pulsa, sin esperar al evento start', async () => {
+  // Antes: pulsaba «Subir estadillo» y comprobaba que se deshabilitaba de
+  // inmediato. Ahora ese mismo guardado de doble-click vive dentro de
+  // `subir()`, que llama a `subirEstadilloEsperando` ANTES de tocar ninguna
+  // imagen: se pulsa el único botón «Subir al bucket» y se comprueba que se
+  // deshabilita sin esperar a que la subida del estadillo resuelva.
+  it('deshabilita subir al bucket en cuanto se pulsa, sin esperar al evento start', async () => {
     api.estadilloValidar.mockResolvedValue({
       ok: true,
       error: null,
@@ -160,11 +201,10 @@ describe('Estadillo (ubicación canónica del bucket)', () => {
 
     const user = userEvent.setup()
     await irAEstadilloConFichero(user)
-
-    await user.click(await screen.findByRole('button', { name: 'Comprobar' }))
+    await elegirCarpeta(user)
     await screen.findByText(/12/)
 
-    const botonSubir = screen.getByRole('button', { name: /Subir estadillo/i })
+    const botonSubir = await screen.findByRole('button', { name: 'Subir al bucket' })
     expect(botonSubir).not.toBeDisabled()
 
     await user.click(botonSubir)
@@ -174,7 +214,13 @@ describe('Estadillo (ubicación canónica del bucket)', () => {
     resolver({ ok: true })
   })
 
-  it('rehabilita subir estadillo si la subida no arranca', async () => {
+  // Antes: pulsaba «Subir estadillo» directamente y esperaba a que
+  // `started: false` mostrara el motivo y reactivara ESE botón. Ahora
+  // `started: false` en `estadilloSubir` hace que `subirEstadilloEsperando`
+  // rechace dentro de `subir()`, así que es «Subir al bucket» el que se
+  // reactiva; el motivo se sigue viendo en el mismo hint (`estadResult.error`,
+  // fijado por `subirEstadillo` antes de rechazar).
+  it('rehabilita subir al bucket si la subida del estadillo no arranca', async () => {
     api.estadilloValidar.mockResolvedValue({
       ok: true,
       error: null,
@@ -185,13 +231,12 @@ describe('Estadillo (ubicación canónica del bucket)', () => {
 
     const user = userEvent.setup()
     await irAEstadilloConFichero(user)
-
-    await user.click(await screen.findByRole('button', { name: 'Comprobar' }))
+    await elegirCarpeta(user)
     await screen.findByText(/5/)
 
-    await user.click(screen.getByRole('button', { name: /Subir estadillo/i }))
+    await user.click(await screen.findByRole('button', { name: 'Subir al bucket' }))
 
     expect(await screen.findByText('Primero inicia sesión')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Subir estadillo/i })).not.toBeDisabled()
+    expect(await screen.findByRole('button', { name: 'Subir al bucket' })).not.toBeDisabled()
   })
 })
