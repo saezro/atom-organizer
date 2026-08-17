@@ -17,4 +17,8 @@ def test_lee_xlsx_si_openpyxl_disponible(tmp_path):
 
     df = estadillo._read_dataframe(str(ruta))
 
-    assert list(df["PB"]) == ["1"]
+    # El tipo de la celda no se asserta: `pd.read_excel` infiere `int` para
+    # celdas de solo dígitos, igual que hace `pd.read_csv` en la otra rama.
+    # La normalización a texto es de `filas_para_suite` (`str(v).strip()`),
+    # no de la lectura.
+    assert [str(v) for v in df["PB"]] == ["1"]
