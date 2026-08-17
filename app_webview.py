@@ -571,12 +571,20 @@ class Api:
         return out
 
     def cloud_upload(self, folder: str, force: bool = False,
-                     prefix: str | None = None) -> dict:
+                     prefix: str | None = None,
+                     inspeccion_id: int | None = None) -> dict:
         """Sube la carpeta entera al bucket. El progreso va por `atom:cloud`.
 
         `force` se mantiene por compatibilidad con llamadas antiguas y se
         ignora: ya no hay nada que forzar, porque subir sobre un destino con
         datos dejó de ser destructivo (ver el comentario en `worker`).
+
+        `inspeccion_id` es el id de la inspección elegida en la UI. Si llega,
+        al terminar (éxito o fallo) se avisa a la Suite vía
+        `POST /api/organizer/subidas` para que `/organizer` la saque del
+        panel "SUBIDAS SIN ORGANIZAR" o la enseñe en rojo. Si es `None`
+        (prefijo escrito a mano, inspección no encontrada), no se reporta
+        nada: solo queda en el log local.
         """
         if self._uploading:
             return {"started": False, "reason": "Ya hay una subida en curso."}
@@ -598,6 +606,7 @@ class Api:
         self._cancel_upload = False
 
         def worker() -> None:
+            plan = None
             try:
                 plan = cloud_upload.build_plan(root, prefix)
                 if not plan.items:
@@ -632,8 +641,39 @@ class Api:
                     "cancelled": self._cancel_upload,
                     "log": str(upload_log.ruta()),
                 })
+
+                # Aviso a la Suite (`/organizer`), en su PROPIO try: un fallo
+                # aquí NUNCA debe pisar el resultado ya entregado a la UI
+                # local (`_push_cloud` de arriba). Sin este try anidado, una
+                # excepción del reporte caería al `except` de abajo y
+                # empujaría un `kind:error` DESPUÉS del `kind:done`, además de
+                # reportar a la Suite un fallo sobre una subida que fue bien.
+                # Una subida parcial (`res.ok` False) sí cuenta como fallo: si
+                # completara `vuelo_subida`, el panel invitaría a organizar
+                # datos incompletos.
+                try:
+                    if self._cancel_upload:
+                        self._reportar_subida(inspeccion_id, plan, estado="error",
+                                              error="Subida cancelada por el operador")
+                    elif res.ok:
+                        self._reportar_subida(inspeccion_id, plan, estado="ok")
+                    else:
+                        primeros = "; ".join(
+                            f"{o}: {e}" for o, e in res.failed[:5])
+                        self._reportar_subida(
+                            inspeccion_id, plan, estado="error",
+                            error=f"{len(res.failed)} objetos fallaron: {primeros}")
+                except Exception as exc_rep:  # noqa: BLE001 - fail-open
+                    self._log_subida(
+                        "cloud_upload: fallo reportando a la Suite (%s)", exc_rep)
             except Exception as exc:  # noqa: BLE001 - llega a la UI como error
                 self._push_cloud({"kind": "error", "text": str(exc)})
+                try:
+                    self._reportar_subida(inspeccion_id, plan, estado="error",
+                                          error=str(exc))
+                except Exception as exc_rep:  # noqa: BLE001 - fail-open
+                    self._log_subida(
+                        "cloud_upload: fallo reportando a la Suite (%s)", exc_rep)
             finally:
                 self._uploading = False
 
@@ -800,6 +840,41 @@ class Api:
         if auth is None or not getattr(auth, "is_logged_in", lambda: False)():
             return None
         return RunReporter(auth=auth)
+
+    def _log_subida(self, msg: str, *args) -> None:
+        """Log local del reporte de subida. Nunca lanza: se usa en rutas
+        fail-open donde una excepción del propio log sería absurda."""
+        try:
+            import logging
+
+            from atom_core import upload_log
+
+            logging.getLogger(upload_log.LOGGER_NAME).info(msg, *args)
+        except Exception:  # noqa: BLE001 - fail-open
+            pass
+
+    def _reportar_subida(self, inspeccion_id: int | None, plan, *,
+                          estado: str, error: str | None = None) -> None:
+        """Avisa a la Suite del resultado de una subida (`RunReporter.subida`).
+
+        Sin `inspeccion_id` no se reporta nada (solo queda en el log local):
+        no hay fallback por `planta/tipo/anio`, ver diseño. Telemetría del
+        PLAN, no de lo subido (`plan.items`/`plan.total_bytes`, nunca
+        `res.uploaded`/`res.bytes_sent`): en un reintento donde todo ya
+        estaba en destino esas cifras serían 0 para una subida completa.
+        """
+        if inspeccion_id is None:
+            self._log_subida(
+                "cloud_upload: sin inspeccion_id, no se reporta a la Suite (estado=%s)",
+                estado)
+            return
+        reporter = self._reporter_actual()
+        if reporter is None:
+            return
+        num_objetos = len(plan.items) if plan is not None else None
+        bytes_total = plan.total_bytes if plan is not None else None
+        reporter.subida(inspeccion_id=inspeccion_id, estado=estado,
+                        num_objetos=num_objetos, bytes=bytes_total, error=error)
 
     def _subir_objeto_fichero(self, remoto: str, ruta_local: str) -> None:
         """Puente fino a `cloud_upload.upload_file`: sube un fichero local ya
