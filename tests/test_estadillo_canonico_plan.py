@@ -30,7 +30,7 @@ def _plan():
 
 def test_el_crudo_va_a_la_carpeta_con_timestamp_con_nombre_determinista():
     plan = _plan()
-    base = "MARISOLES_LOS_MANGOS/PREPARACION/ESTADILLOS/2026-08-17T034501Z"
+    base = "MARISOLES_LOS_MANGOS/ESTADILLOS/2026-08-17T034501Z"
 
     assert plan[0]["remoto"] == f"{base}/01__4d186321.xlsx"
     assert plan[0]["ruta_local"] == "/home/op/Estadillo raro (2).xlsx"
@@ -38,7 +38,7 @@ def test_el_crudo_va_a_la_carpeta_con_timestamp_con_nombre_determinista():
 
 def test_el_manifest_se_escribe_despues_del_normalizado_y_del_crudo():
     remotos = [p["remoto"] for p in _plan()]
-    base = "MARISOLES_LOS_MANGOS/PREPARACION/ESTADILLOS/2026-08-17T034501Z"
+    base = "MARISOLES_LOS_MANGOS/ESTADILLOS/2026-08-17T034501Z"
 
     assert remotos.index(f"{base}/01__4d186321.xlsx") < remotos.index(
         f"{base}/estadillo.json"
@@ -50,7 +50,7 @@ def test_el_manifest_se_escribe_despues_del_normalizado_y_del_crudo():
 
 def test_actual_se_escribe_entera_despues_de_la_carpeta_con_timestamp():
     remotos = [p["remoto"] for p in _plan()]
-    base = "MARISOLES_LOS_MANGOS/PREPARACION/ESTADILLOS"
+    base = "MARISOLES_LOS_MANGOS/ESTADILLOS"
 
     assert remotos.index(f"{base}/2026-08-17T034501Z/manifest.json") < remotos.index(
         f"{base}/actual/01__4d186321.xlsx"
