@@ -640,6 +640,120 @@ class Api:
         threading.Thread(target=worker, daemon=True).start()
         return {"started": True}
 
+    # ---- estadillo: ubicación canónica en el bucket ------------------------
+    # Acciones propias: no cuelgan de organizar ni de subir la jornada, así
+    # que la ubicación canónica sale igual en local→Drive→bucket que en RAW.
+    def estadillo_validar(self, rutas: list[str]) -> dict:
+        """Valida los estadillos elegidos y devuelve lo que se ha entendido.
+
+        Síncrono a propósito: el operario tiene que ver el resultado antes de
+        que se suba nada.
+        """
+        from atom_core import estadillo as estadillo_mod
+
+        res = estadillo_mod.validar_para_subida(rutas)
+        return {k: v for k, v in res.items() if k != "vuelos"}
+
+    def estadillo_subir(self, folder: str, rutas: list[str]) -> dict:
+        """Sube los estadillos a la ubicación canónica del bucket.
+
+        Acción propia: no depende de haber organizado ni de haber subido la
+        jornada, así que la ruta canónica es la misma en modo local y en RAW.
+        """
+        from atom_core import estadillo as estadillo_mod
+
+        validacion = estadillo_mod.validar_para_subida(rutas)
+        if not validacion["ok"]:
+            return {"started": False, "reason": validacion["error"]}
+
+        def worker():
+            self._subir_estadillo_worker(folder, rutas, validacion)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"started": True, "reason": None}
+
+    def _subir_estadillo_worker(self, folder: str, rutas: list[str], validacion: dict):
+        from datetime import datetime, timezone
+
+        from atom_core import cloud_upload, estadillo_canonico
+
+        self._push_cloud({"kind": "start", "scope": "estadillo"})
+        try:
+            locales = []
+            for i, ruta in enumerate(rutas, start=1):
+                locales.append(
+                    {
+                        "orden": i,
+                        "ruta": ruta,
+                        "nombre_original": os.path.basename(ruta),
+                        "md5_b64": cloud_upload._file_md5_b64(ruta),
+                        "bytes": os.path.getsize(ruta),
+                        "ext": os.path.splitext(ruta)[1],
+                    }
+                )
+
+            plan = estadillo_canonico.plan_subida(
+                planta=folder,
+                ficheros_locales=locales,
+                vuelos=validacion["vuelos"],
+                validacion=validacion,
+                ahora=datetime.now(timezone.utc),
+                subido_por=self._cuenta_actual(),
+            )
+
+            res = estadillo_canonico.ejecutar_plan(
+                plan,
+                subir_fichero=self._subir_objeto_fichero,
+                subir_json=self._subir_objeto_json,
+            )
+        except Exception as exc:
+            self._push_cloud({"kind": "error", "scope": "estadillo", "error": str(exc)})
+            return
+
+        if not res["ok"]:
+            self._push_cloud({"kind": "error", "scope": "estadillo", "error": res["error"]})
+            return
+
+        self._push_cloud(
+            {
+                "kind": "done",
+                "scope": "estadillo",
+                "ruta_manifest": res["ruta_manifest"],
+                "vuelos_detectados": validacion["vuelos_detectados"],
+            }
+        )
+
+    def _cuenta_actual(self) -> str | None:
+        """El email de la sesión de Google activa, o None sin login."""
+        auth = self._get_auth()
+        ident = auth.identity if auth is not None else None
+        return ident.email if ident else None
+
+    def _subir_objeto_fichero(self, remoto: str, ruta_local: str) -> None:
+        """Puente fino a `cloud_upload.upload_file`: sube un fichero local ya
+        existente al objeto `remoto` del bucket. Sin lógica propia."""
+        from atom_core import cloud_config, cloud_upload
+
+        provider = cloud_upload.GcsOAuthProvider(cloud_config.BUCKET_DATOS, self._get_auth())
+        item = cloud_upload.UploadItem(
+            local=Path(ruta_local), remote=remoto, size=os.path.getsize(ruta_local),
+        )
+        cloud_upload.upload_file(item, provider)
+
+    def _subir_objeto_json(self, remoto: str, contenido: dict) -> None:
+        """Puente fino: vuelca `contenido` a un fichero temporal y lo sube
+        como si fuera un objeto normal, reutilizando `_subir_objeto_fichero`."""
+        import tempfile
+
+        data = json.dumps(contenido, ensure_ascii=False, indent=2).encode("utf-8")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        try:
+            self._subir_objeto_fichero(remoto, tmp_path)
+        finally:
+            os.unlink(tmp_path)
+
     def cloud_cancel(self) -> dict:
         """Pide parar. Los ficheros ya subidos quedan; el manifiesto local deja
         que una subida posterior siga donde se quedó sin repetirlos."""
