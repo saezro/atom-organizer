@@ -63,8 +63,12 @@ def test_no_abre_mas_procesos_que_items(monkeypatch):
     usados = {}
 
     class _FakeExecutor:
-        def __init__(self, max_workers=None):
+        # `mp_context` lo pasa run_batch desde que el pool arranca por spawn (y no
+        # por fork): el fake tiene que aceptar la misma firma que el real o el
+        # test falla por el kwarg, no por lo que pretende medir.
+        def __init__(self, max_workers=None, mp_context=None):
             usados["max_workers"] = max_workers
+            usados["mp_context"] = mp_context
 
         def __enter__(self):
             return self
@@ -75,14 +79,22 @@ def test_no_abre_mas_procesos_que_items(monkeypatch):
         def submit(self, fn, *args):
             return object()  # Solo hace falta que sea hashable: as_completed no devuelve nada.
 
+        def shutdown(self, wait=True):
+            usados["shutdown"] = wait
+
     monkeypatch.setattr(utils, "ProcessPoolExecutor", _FakeExecutor)
-    monkeypatch.setattr(utils, "as_completed", lambda futures: [])
+    # run_batch le pasa `timeout` desde que un lote no puede esperar para siempre.
+    monkeypatch.setattr(utils, "as_completed", lambda futures, timeout=None: [])
 
     utils.run_batch(["a", "b"], lambda x: x, lambda x: (x,))
 
     assert usados["max_workers"] == 2, (
         f"Se abrieron {usados['max_workers']} procesos para 2 items."
     )
+    # El pool debe arrancar por spawn: con fork hereda locks y descriptores del
+    # padre, que es como el pipeline se quedaba mudo a mitad de una rotación.
+    assert usados["mp_context"] is not None, "run_batch dejó de fijar el contexto."
+    assert usados["mp_context"].get_start_method() == "spawn"
 
 
 def test_max_workers_explicito_manda(monkeypatch):
@@ -90,8 +102,12 @@ def test_max_workers_explicito_manda(monkeypatch):
     usados = {}
 
     class _FakeExecutor:
-        def __init__(self, max_workers=None):
+        # `mp_context` lo pasa run_batch desde que el pool arranca por spawn (y no
+        # por fork): el fake tiene que aceptar la misma firma que el real o el
+        # test falla por el kwarg, no por lo que pretende medir.
+        def __init__(self, max_workers=None, mp_context=None):
             usados["max_workers"] = max_workers
+            usados["mp_context"] = mp_context
 
         def __enter__(self):
             return self
@@ -102,8 +118,12 @@ def test_max_workers_explicito_manda(monkeypatch):
         def submit(self, fn, *args):
             return object()  # Solo hace falta que sea hashable: as_completed no devuelve nada.
 
+        def shutdown(self, wait=True):
+            usados["shutdown"] = wait
+
     monkeypatch.setattr(utils, "ProcessPoolExecutor", _FakeExecutor)
-    monkeypatch.setattr(utils, "as_completed", lambda futures: [])
+    # run_batch le pasa `timeout` desde que un lote no puede esperar para siempre.
+    monkeypatch.setattr(utils, "as_completed", lambda futures, timeout=None: [])
     monkeypatch.setattr(utils, "workers_para_lote", lambda *a, **k: 99)
 
     utils.run_batch(["a", "b", "c", "d"], lambda x: x, lambda x: (x,), max_workers=2)
