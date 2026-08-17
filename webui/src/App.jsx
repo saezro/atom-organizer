@@ -544,8 +544,10 @@ function BucketScreen({ ready }) {
   // `estadSubiendo` es la única guarda de doble-click: `estadillo_subir` en
   // Python no tiene mutex propio (a diferencia de `cloud_upload`, que sí usa
   // `self._uploading`), así que dos clicks lanzarían dos hilos con eventos
-  // `atom:cloud` (`scope: 'estadillo'`) intercalados. Se resuelve aquí,
-  // deshabilitando el botón entre los eventos `start` y `done`/`error`.
+  // `atom:cloud` (`scope: 'estadillo'`) intercalados. Lo pone a `true` el
+  // propio `subirEstadillo` antes de llamar al backend —NO el evento `start`,
+  // que llega demasiado tarde— y lo baja `done`/`error`, o el retorno
+  // `started: false` si la subida ni siquiera arranca.
   const [estadSubiendo, setEstadSubiendo] = useState(false)
   const [estadResult, setEstadResult] = useState(null) // {ok, ...} | {error}
 
@@ -767,8 +769,17 @@ function BucketScreen({ ready }) {
   // equivocado.
   async function subirEstadillo() {
     setEstadResult(null)
+    // `true` SÍNCRONO antes del await, igual que `subir()` (:739). El evento
+    // `start` tarda en llegar: IPC de ida, chequeo de sesión, validación
+    // completa de los ficheros y arranque del hilo, todo antes del primer
+    // `_push_cloud`. Esperar a ese evento para deshabilitar el botón deja una
+    // ventana de doble-click, y `estadillo_subir` no tiene mutex propio en
+    // Python (a diferencia de `cloud_upload`), así que dos clicks arrancarían
+    // dos hilos escribiendo los mismos objetos del bucket a la vez.
+    setEstadSubiendo(true)
     const r = await api.estadilloSubir(prefijo, estadRutas)
     if (r && r.started === false) {
+      setEstadSubiendo(false)
       setEstadResult({ error: r.reason })
     }
   }
