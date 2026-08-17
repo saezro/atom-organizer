@@ -46,10 +46,29 @@ No objetivos (fuera de alcance de este spec):
 |---|---|
 | Layout de la ruta | Histórico por subida + puntero `actual/` |
 | Acoplamiento | Subida de estadillo es acción propia, independiente de organizar |
-| Notificación a la Suite | Solo la subida; muere el camino del organizado |
+| Notificación a la Suite | Solo la subida del estadillo, igual en los dos modos |
 | Identificador de carpeta | `<YYYY-MM-DD>T<HHMMSS>Z`, generado en local |
 | Hash de contenido | MD5 base64, no sha256 |
 | Parseo | Sigue en el escritorio, pero como **validador previo a la subida** |
+| Formato | Se guarda el crudo **y** un normalizado de esquema fijo |
+
+## Dos modos de operación, una sola ubicación
+
+Los dos modos van a coexistir; esto no es una migración de uno a otro:
+
+- **Modo local (hoy)**: el operario organiza en su ordenador, sube a Drive, y de
+  Drive al bucket llega por el sync.
+- **Modo RAW (cloud-first)**: se sube todo crudo y el organizado ocurre en el
+  Cloud Run Job.
+
+El estadillo **no viaja por ninguno de los dos caminos**. Al ser una acción
+propia, la app lo sube directamente a `ESTADILLOS/`, con lo que la ubicación
+canónica es **invariante al modo**. En particular, en modo local el estadillo no
+va a Drive esperando que el sync lo coloque en su sitio: eso reintroduciría la
+dependencia del nombre y de la carpeta que este diseño elimina.
+
+Consecuencia de diseño: nada en el flujo del estadillo puede asumir que la
+jornada está subida, ni que el organizado ha ocurrido, ni en qué máquina ocurre.
 
 ## Ruta canónica
 
@@ -60,12 +79,46 @@ gs://plantas_pv_nl/<PLANTA>/PREPARACION/ESTADILLOS/
         02__a71b0d54.csv
         manifest.json
     2026-08-17T034501Z/          <- vigente = max() del prefijo
-        01__9f3c2e11.xlsx
+        01__9f3c2e11.xlsx        <- crudo, tal cual lo entregó el operario
+        estadillo.json           <- normalizado, esquema fijo
         manifest.json
     actual/                      <- reescrita en cada subida correcta
         01__9f3c2e11.xlsx
+        estadillo.json
         manifest.json
 ```
+
+### Formato canónico
+
+Además del crudo se emite `estadillo.json`, resultado de la validación del paso
+1, con esquema fijo y versionado:
+
+```json
+{
+  "version": 1,
+  "vuelos": [
+    {
+      "fecha": "2026-08-17",
+      "piloto": "...",
+      "equipo_vuelo": "...",
+      "pb": "...",
+      "num_vuelo": "...",
+      "hora_inicio": "09:12:33",
+      "hora_fin": "09:41:02",
+      "origen": "..."
+    }
+  ]
+}
+```
+
+El esquema es el mismo que ya acepta `POST /api/organizer/estadillo`
+(`lib/estadillo-ingest.js:65-66`), para no inventar un tercer formato. Esto es lo
+que hace que los estadillos sean legibles a futuro con independencia de que el
+crudo sea xlsx hoy y csv mañana, o de que el cliente mueva las columnas: el crudo
+se conserva como evidencia, el normalizado es el que se consume.
+
+Cuando hay varios ficheros, `estadillo.json` es el resultado **fusionado** en el
+orden de prioridad del manifest.
 
 - `<PLANTA>` se compone con la función que ya existe,
   `prefijo_desde_carpeta()` (`atom_core/cloud_config.py:121-140`). No se añade
@@ -144,20 +197,22 @@ verificable contra el bucket sin descargar nada.
 
 Orden de escritura, importante para no dejar estado a medias:
 
-1. Ficheros de la carpeta con timestamp.
-2. `manifest.json` de esa carpeta — **último**, así su presencia significa
+1. Ficheros crudos de la carpeta con timestamp.
+2. `estadillo.json` normalizado.
+3. `manifest.json` de esa carpeta — **último**, así su presencia significa
    "subida completa".
-3. `actual/` (ficheros y luego manifest).
+4. `actual/` (ficheros, normalizado, y manifest al final).
 
 Si la subida se corta, la carpeta queda sin manifest y ningún consumidor la
 considera válida.
 
 ### 3. Notificar
 
-Un único camino: la subida. Se **elimina** `_notificar_estadillo` del final del
-organizado (`app_webview.py:691-693`) y el Job no notifica. Si se dejaran los
-dos, cuando el escritorio siga organizando en local habría doble ingesta del
-mismo estadillo.
+Un único camino: la subida del estadillo, idéntico en modo local y en modo RAW.
+Se **elimina** `_notificar_estadillo` del final del organizado
+(`app_webview.py:691-693`) y el Job no notifica. Es imprescindible que muera ese
+camino precisamente porque el modo local sigue vivo: si se dejaran los dos, cada
+jornada organizada en local produciría doble ingesta del mismo estadillo.
 
 La notificación sigue usando el endpoint actual, `POST /api/organizer/estadillo`
 (`server.js:2308-2333`, guard `requireIngestOrganizer`), con el body de hoy
@@ -211,8 +266,12 @@ dentro**. En vez del resultado de adivinar, la ruta del manifest canónico.
 
 - El punto de mayor riesgo no es este diseño, es el que sigue abierto en el
   rumbo cloud-first: el **coste y tiempo de subir RAW antes de organizar**. Este
-  spec es compatible con que esa decisión caiga de cualquier lado, porque el
-  estadillo es pequeño y su subida es independiente.
-- Mientras el escritorio siga organizando en local, la única notificación es la
-  de la subida. Si un operario organiza sin haber subido estadillo, no hay
-  ingesta — que es correcto, pero es un cambio de comportamiento observable.
+  spec es deliberadamente independiente de esa decisión —los dos modos coexisten
+  y el estadillo se comporta igual en ambos—, así que puede entrar antes de
+  resolverla.
+- El modo local sigue vivo, y en él la única notificación es la de la subida del
+  estadillo. Si un operario organiza sin haber subido estadillo, no hay ingesta
+  — que es correcto, pero es un cambio de comportamiento observable.
+- El normalizado se genera con el parser actual. Si ese parser tiene un fallo, el
+  `estadillo.json` lo hereda; el crudo conservado al lado es lo que permite
+  regenerarlo, y por eso guardar ambos no es redundancia.
