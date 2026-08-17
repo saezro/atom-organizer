@@ -7,3 +7,6 @@ qtpy==2.4.3
 # deps transitivas de pywebview (fijadas por reproducibilidad):
 bottle==0.13.4
 proxy-tools==0.1.0
+
+# pd.read_excel necesita esta lib para leer estadillos .xlsx
+openpyxl==3.1.2

@@ -6,6 +6,7 @@ Logs/
 __pycache__/
 *.pyc
 .venv*/
+venv/
 *.AppImage
 .DS_Store
 .pytest_cache/
