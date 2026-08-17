@@ -28,8 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Bucket de ENTRADA: aquí deja el operador lo que hay que organizar. El Cloud
-# Run que organiza sólo LEE de aquí y escribe en `plantas_pv_nl`; nunca toca
-# estos objetos. Regla fijada por Cas (2026-08-06).
+# Run que organiza sólo LEE de aquí; el estadillo se queda en este bucket
+# (ya no se publica en `plantas_pv_nl`). Regla fijada por Cas (2026-08-06).
 BUCKET_DATOS = "datos_para_organizar"
 
 # Sólo cuentas de Aerotools. Es un filtro de UI (evita que alguien se loguee con
