@@ -1,4 +1,6 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from atom_core import estadillo_canonico as ec
 
@@ -39,3 +41,14 @@ def test_md5_hex_desde_b64_convierte_el_hash_de_gcs():
     b64 = base64.b64encode(hashlib.md5(b"hola").digest()).decode()
 
     assert ec.md5_hex_desde_b64(b64) == "4d186321c1a7f0f354b297e8914ab240"
+
+
+def test_carpeta_subida_rechaza_si_datetime_naive():
+    with pytest.raises(ValueError):
+        ec.carpeta_subida(datetime(2026, 8, 17, 9, 12, 33))
+
+
+def test_carpeta_subida_normaliza_si_zona_no_utc():
+    madrid = timezone(timedelta(hours=2))
+    ahora = datetime(2026, 8, 17, 11, 12, 33, tzinfo=madrid)
+    assert ec.carpeta_subida(ahora) == "2026-08-17T091233Z"

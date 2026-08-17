@@ -5,7 +5,7 @@ para que la ruta de un estadillo sea reproducible y testeable sin bucket.
 """
 
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 
 from atom_core.cloud_config import prefijo_desde_carpeta
 
@@ -23,8 +23,18 @@ def carpeta_subida(ahora: datetime) -> str:
 
     No se usa el run_id de la Suite a propósito: lo genera el servidor y sin
     login no existe, así que la ruta no puede depender de él.
+
+    Exige un `datetime` con zona y lo pasa a UTC. Un naive se RECHAZA en vez
+    de asumirle UTC: el resto del repo usa `datetime.now()` naive (utils.py,
+    updater.py, organize.py), y formatear una hora local con el sufijo `Z`
+    daría una ruta mentirosa y no comparable entre subidas, sin avisar. Aquí
+    el fallo sale en un test; asumiendo UTC saldría dentro del bucket.
     """
-    return ahora.strftime("%Y-%m-%dT%H%M%SZ")
+    if ahora.tzinfo is None:
+        raise ValueError(
+            "carpeta_subida() exige un datetime con zona horaria: "
+            "usa datetime.now(timezone.utc), no datetime.now().")
+    return ahora.astimezone(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
 
 
 def prefijo_planta(planta: str) -> str:
@@ -68,3 +78,100 @@ def construir_manifest(
 def construir_normalizado(vuelos: list[dict]) -> dict:
     """Formato estable del estadillo, independiente de si el crudo es xlsx o csv."""
     return {"version": VERSION_NORMALIZADO, "vuelos": vuelos}
+
+
+def plan_subida(
+    planta: str,
+    ficheros_locales: list[dict],
+    vuelos: list[dict],
+    validacion: dict,
+    ahora: datetime,
+    subido_por: str | None = None,
+) -> list[dict]:
+    """Objetos a escribir, EN ORDEN.
+
+    El manifest va último en cada carpeta: su presencia es la señal de
+    "subida completa", así que una subida cortada deja la carpeta inválida
+    sin necesidad de estado extra.
+    """
+    base = prefijo_planta(planta)
+    carpeta = carpeta_subida(ahora)
+
+    ficheros_manifest = []
+    entradas_crudo = []
+    for f in sorted(ficheros_locales, key=lambda x: x["orden"]):
+        objeto = nombre_objeto(f["orden"], md5_hex_desde_b64(f["md5_b64"]), f["ext"])
+        entradas_crudo.append({"objeto": objeto, "ruta_local": f["ruta"]})
+        ficheros_manifest.append(
+            {
+                "orden": f["orden"],
+                "objeto": objeto,
+                "nombre_original": f["nombre_original"],
+                "md5_b64": f["md5_b64"],
+                "bytes": f["bytes"],
+            }
+        )
+
+    manifest = construir_manifest(
+        planta=planta,
+        subido_en=ahora,
+        subido_por=subido_por,
+        ficheros=ficheros_manifest,
+        validacion=validacion,
+    )
+    normalizado = construir_normalizado(vuelos)
+
+    plan = []
+    for destino in (carpeta, CARPETA_ACTUAL):
+        for entrada in entradas_crudo:
+            plan.append(
+                {
+                    "remoto": f"{base}/{destino}/{entrada['objeto']}",
+                    "ruta_local": entrada["ruta_local"],
+                }
+            )
+        plan.append(
+            {
+                "remoto": f"{base}/{destino}/{NOMBRE_NORMALIZADO}",
+                "contenido": normalizado,
+            }
+        )
+        plan.append(
+            {
+                "remoto": f"{base}/{destino}/{NOMBRE_MANIFEST}",
+                "contenido": manifest,
+            }
+        )
+
+    return plan
+
+
+def ejecutar_plan(plan: list[dict], subir_fichero, subir_json) -> dict:
+    """Ejecuta el plan en orden y aborta en el primer fallo.
+
+    Abortar deja la carpeta sin manifest, que es exactamente lo que queremos:
+    ningún consumidor la considerará válida.
+    """
+    subidos = 0
+    ruta_manifest = None
+
+    for entrada in plan:
+        remoto = entrada["remoto"]
+        try:
+            if "ruta_local" in entrada:
+                subir_fichero(remoto, entrada["ruta_local"])
+            else:
+                subir_json(remoto, entrada["contenido"])
+        except Exception as exc:
+            return {
+                "ok": False,
+                "subidos": subidos,
+                "ruta_manifest": None,
+                "error": f"Fallo subiendo {remoto}: {exc}",
+            }
+
+        subidos += 1
+        if remoto.endswith(f"/{NOMBRE_MANIFEST}") and ruta_manifest is None:
+            ruta_manifest = remoto
+
+    return {"ok": True, "subidos": subidos, "ruta_manifest": ruta_manifest, "error": None}
