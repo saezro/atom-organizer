@@ -436,3 +436,48 @@ def read_estadillo_info(path: str | list[str]) -> dict:
         "fecha_inicio": ini_min[2] if ini_min else "",
         "fecha_final": fin_max[2] if fin_max else "",
     }
+
+
+def validar_para_subida(rutas: list[str]) -> dict:
+    """Valida N estadillos y devuelve el resumen que se muestra al operario.
+
+    No sube nada ni toca red. Es la puerta que impide subir un estadillo que
+    no se puede leer: si `ok` es False, la subida no debe ocurrir.
+
+    `vuelos_detectados` cuenta las filas del CSV/XLSX combinado ANTES de que
+    `filas_para_suite` descarte las que no tiene PB/Vuelo/Fecha/hora de inicio
+    parseables (ver su docstring): esas filas sí están en el fichero -el
+    operario las metió-, pero el pipeline no podría ubicarlas, así que cuentan
+    como "detectadas" y a la vez como "con problemas" (`filas_con_problemas`
+    = filas detectadas que no llegaron a `vuelos`), en vez de desaparecer sin
+    explicación del resumen.
+    """
+    vacio = {
+        "ok": False,
+        "error": None,
+        "vuelos": [],
+        "vuelos_detectados": 0,
+        "filas_con_problemas": 0,
+    }
+
+    limpias = [str(r).strip() for r in (rutas or []) if str(r).strip()]
+    if not limpias:
+        return {**vacio, "error": "No se ha seleccionado ningún estadillo."}
+
+    try:
+        df = combinar_estadillos(limpias)
+        vuelos = filas_para_suite(df)
+    except EstadilloHeaderError as exc:
+        return {**vacio, "error": str(exc)}
+    except Exception as exc:  # fichero corrupto, extensión ilegible, etc.
+        return {**vacio, "error": f"No se ha podido leer el estadillo: {exc}"}
+
+    vuelos_detectados = len(df)
+
+    return {
+        "ok": True,
+        "error": None,
+        "vuelos": vuelos,
+        "vuelos_detectados": vuelos_detectados,
+        "filas_con_problemas": vuelos_detectados - len(vuelos),
+    }
