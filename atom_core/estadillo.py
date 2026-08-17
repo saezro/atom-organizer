@@ -470,7 +470,11 @@ def validar_para_subida(rutas: list[str]) -> dict:
     except EstadilloHeaderError as exc:
         return {**vacio, "error": str(exc)}
     except Exception as exc:  # fichero corrupto, extensión ilegible, etc.
-        return {**vacio, "error": f"No se ha podido leer el estadillo: {exc}"}
+        # El tipo va en el mensaje a propósito: este `except` es deliberadamente
+        # ancho (la validación no debe reventar la UI), pero eso también se
+        # tragaría un bug nuestro. Con el tipo delante, un `AttributeError` se
+        # distingue de un fichero ilegible sin tener que reproducirlo.
+        return {**vacio, "error": f"No se ha podido leer el estadillo: {type(exc).__name__}: {exc}"}
 
     vuelos_detectados = len(df)
 
