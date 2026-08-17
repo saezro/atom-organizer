@@ -6,6 +6,7 @@ import ProgressModal from './ProgressModal'
 import PreflightModal from './PreflightModal'
 import UpdateModal from './UpdateModal'
 import EstadilloField from './EstadilloField'
+import InspeccionSelector from './InspeccionSelector'
 import './App.css'
 
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
@@ -529,7 +530,6 @@ function BucketScreen({ ready }) {
   // tiempo corre siempre y es el resto de cifras lo que deja de moverse.
   const [desde, setDesde] = useState(null) // Date.now() al empezar la subida
   const [ahora, setAhora] = useState(0) // segundos transcurridos
-  const [texto, setTexto] = useState('') // buscador de inspección
   const [lines, setLines] = useState([])
   const [result, setResult] = useState(null) // {ok, ...} | {error}
 
@@ -797,23 +797,6 @@ function BucketScreen({ ready }) {
   const inspecciones = catalogo?.inspecciones || []
   const puedeSubir = ready && logged && !!prefijo && plan?.ok && !ocupado
 
-  // Filtro del buscador de inspecciones. Son >300 y el desplegable llano
-  // obligaba a recorrerlas a ojo; se parte la búsqueda en palabras y se exigen
-  // todas, así «antolin 2026» encuentra lo que ni «antolin» ni «2026» acotan
-  // por separado. Sin acentos ni mayúsculas: nadie escribe «T_Módulos» bien a
-  // la primera.
-  const normaliza = (s) =>
-    (s || '')
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-  const palabras = normaliza(texto).split(/\s+/).filter(Boolean)
-  const filtradas = palabras.length
-    ? inspecciones.filter((i) => {
-        const heno = normaliza(`${i.etiqueta} ${i.prefijo}`)
-        return palabras.every((p) => heno.includes(p))
-      })
-    : inspecciones
   const elegida = inspecciones.find((i) => i.prefijo === eleccion)
 
   if (status && status.configured === false) {
@@ -903,79 +886,20 @@ function BucketScreen({ ready }) {
             <button
               type="button"
               className="btn-ghost"
-              onClick={() => {
-                elegir('')
-                setTexto('')
-              }}
+              onClick={() => elegir('')}
               disabled={ocupado}
             >
               Cambiar
             </button>
           </div>
         ) : (
-          <>
-            <div className="field-row">
-              <input
-                className="glass-input"
-                type="text"
-                value={texto}
-                onChange={(e) => setTexto(e.target.value)}
-                placeholder="Escribe para buscar: empresa, planta, año…"
-                disabled={ocupado}
-                autoComplete="off"
-              />
-              <button
-                type="button"
-                className="btn-ghost"
-                onClick={cargarInspecciones}
-                disabled={ocupado}
-              >
-                Actualizar lista
-              </button>
-            </div>
-            {/* Se listan como mucho 50: con el buscador delante, tener que
-                bajar más allá significa que la búsqueda hay que afinarla, no
-                que falte scroll. */}
-            <ul className="insp-list">
-              {filtradas.slice(0, 50).map((i) => (
-                <li key={i.prefijo}>
-                  <button
-                    type="button"
-                    className="insp-item"
-                    onClick={() => {
-                      elegir(i.prefijo)
-                      setTexto('')
-                    }}
-                    disabled={ocupado}
-                  >
-                    {i.etiqueta}
-                  </button>
-                </li>
-              ))}
-              {filtradas.length === 0 && (
-                <li className="insp-vacio">
-                  Ninguna inspección coincide con «{texto}». Comprueba el nombre o crea una
-                  nueva.
-                </li>
-              )}
-              <li>
-                <button
-                  type="button"
-                  className="insp-item insp-nueva"
-                  onClick={() => elegir(NUEVA)}
-                  disabled={ocupado}
-                >
-                  + Inspección nueva…
-                </button>
-              </li>
-            </ul>
-            {filtradas.length > 50 && (
-              <span className="field-hint">
-                {filtradas.length} coinciden; se muestran las 50 primeras. Escribe más para
-                acotar.
-              </span>
-            )}
-          </>
+          <InspeccionSelector
+            inspecciones={inspecciones}
+            onElegir={elegir}
+            onNueva={() => elegir(NUEVA)}
+            ocupado={ocupado}
+            onActualizar={cargarInspecciones}
+          />
         )}
         {eleccion === NUEVA && (
           <input
