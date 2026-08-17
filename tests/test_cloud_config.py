@@ -86,5 +86,5 @@ def test_prefijo_desde_carpeta(nombre, esperado):
 
 
 def test_bucket_es_el_de_entrada():
-    """Cloud Run sólo LEE de este bucket; escribe en plantas_pv_nl."""
+    """Cloud Run sólo LEE de este bucket; el estadillo se queda aquí."""
     assert cloud_config.BUCKET_DATOS == "datos_para_organizar"

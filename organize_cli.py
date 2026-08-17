@@ -163,70 +163,6 @@ def _formatear(segundos: float) -> str:
     return f"{seg}s"
 
 
-def publicar_estadillos(ruta_manifest: str, *, shard_index: int, publicar=None) -> dict:
-    """Copia los estadillos de la subida canonica al bucket de PLANTAS.
-
-    Cierra el circulo de la fase 1: la app de escritorio los deja en el bucket
-    de ENTRADA (no puede escribir en `plantas_pv_nl`: 403), y quien si puede
-    —la SA de este Job— los publica aqui en la jerarquia definitiva
-    `<PLANTA>/ESTADILLOS/<timestamp>/` (SIN `PREPARACION/`).
-
-    SOLO la tarea 0, igual que la copia de estadillos a `<destino>/ESTADILLOS/`
-    (pipeline.py:1021): con 8 shards a la vez las ocho subirian el mismo objeto.
-
-    FAIL-CLOSED contra el bucket: si `<PLANTA>/` no existe ya, no se escribe
-    nada. `gs://plantas_pv_nl` es SOLO para plantas y una planta cuyo nombre no
-    haga round-trip limpio desde el prefijo (`OCAÑA` -> `OCANA`) crearia una
-    carpeta basura al lado de la buena.
-
-    FAIL-OPEN hacia el pipeline: devuelve un dict, nunca lanza. Publicar el
-    estadillo es un extra que no puede tumbar una organizacion de 40 000
-    imagenes.
-    """
-    import json as _json
-    import pathlib as _pathlib
-
-    from atom_core import estadillo_publicacion as _pub
-
-    pub = publicar
-    if pub is None:
-        from atom_core import gcs_publicar as pub  # noqa: PLC0415
-
-    if shard_index != 0:
-        return {"publicados": 0, "omitidos": 0, "motivo": "no-lider"}
-
-    try:
-        ruta = _pathlib.Path(ruta_manifest)
-        manifest = _json.loads(ruta.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        return {"publicados": 0, "omitidos": 0, "motivo": "manifest-ilegible"}
-
-    prefijo = str(manifest.get("planta") or "")
-    plan = _pub.plan_publicacion(prefijo, manifest)
-    if not plan:
-        return {"publicados": 0, "omitidos": 0, "motivo": "sin-plan"}
-
-    planta = _pub.planta_desde_prefijo(prefijo)
-    token = pub.token_metadata()
-    if not pub.prefijo_existe(_pub.BUCKET_PLANTAS, f"{planta}/", token=token):
-        return {"publicados": 0, "omitidos": len(plan), "motivo": "planta-no-existe"}
-
-    publicados = 0
-    omitidos = 0
-    for entrada in plan:
-        origen_local = ruta.parent / entrada["nombre_en_manifest"]
-        try:
-            datos = origen_local.read_bytes()
-        except Exception:  # noqa: BLE001
-            omitidos += 1
-            continue
-        if pub.subir_objeto(_pub.BUCKET_PLANTAS, entrada["objeto_destino"], datos, token=token):
-            publicados += 1
-        else:
-            omitidos += 1
-    return {"publicados": publicados, "omitidos": omitidos, "motivo": None}
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Pipeline de ATOM Organizer sin interfaz gráfica.")
@@ -283,9 +219,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--estadillo-manifest", dest="estadillo_manifest", default=None,
         help=("Ruta al manifest.json de la subida canonica (bucket de ENTRADA, "
-              "montado en /gcs). Habilita la publicacion de los estadillos en "
-              "gs://plantas_pv_nl/<PLANTA>/ESTADILLOS/. Opcional: "
-              "sin el, el pipeline se comporta exactamente como antes."),
+              "montado en /gcs). Habilita que la ingesta a la Suite ligue el "
+              "estadillo con la subida que lo origino. Opcional: sin el, el "
+              "pipeline se comporta exactamente como antes."),
     )
     args = parser.parse_args(argv)
 
@@ -526,18 +462,6 @@ def main(argv: list[str] | None = None) -> int:
             reporter.fin(ok=not errores, error=errores[0] if errores else None,
                          stats=ultimo_stats)
         except Exception:  # noqa: BLE001 - la telemetría no puede tocar el exit code
-            pass
-
-    # Publicacion de los estadillos en el bucket de PLANTAS. Solo con
-    # `--estadillo-manifest` (subida canonica de la fase 1) y solo la tarea 0.
-    if args.estadillo_manifest:
-        try:
-            resultado_pub = publicar_estadillos(args.estadillo_manifest, shard_index=shard_index)
-            if resultado_pub["motivo"] not in (None, "no-lider"):
-                print(f"[estadillo] no publicado: {resultado_pub['motivo']}")
-            elif resultado_pub["publicados"]:
-                print(f"[estadillo] publicados {resultado_pub['publicados']} en plantas_pv_nl")
-        except Exception:  # noqa: BLE001 - publicar no puede tocar el exit code
             pass
 
     # Notifica el estadillo a la Suite (misiones+vuelos), en las mismas
