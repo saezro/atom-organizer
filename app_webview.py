@@ -660,7 +660,18 @@ class Api:
         Acción propia: no depende de haber organizado ni de haber subido la
         jornada, así que la ruta canónica es la misma en modo local y en RAW.
         """
+        from atom_core import cloud_config
         from atom_core import estadillo as estadillo_mod
+
+        # Mismo chequeo síncrono que `cloud_upload`: sin él la llamada devolvía
+        # `started: True` y el «no has iniciado sesión» sólo salía después,
+        # disfrazado del error genérico de la primera subida.
+        auth = self._get_auth()
+        if auth is None:
+            return {"started": False, "reason": cloud_config.missing_client_help()}
+        if not auth.is_logged_in():
+            return {"started": False,
+                    "reason": "Primero inicia sesión con tu cuenta de Aerotools."}
 
         validacion = estadillo_mod.validar_para_subida(rutas)
         if not validacion["ok"]:
@@ -714,6 +725,19 @@ class Api:
             self._push_cloud({"kind": "error", "scope": "estadillo", "error": res["error"]})
             return
 
+        # Fail-open de principio a fin, como el `_notificar_estadillo` que esto
+        # sustituye: el crudo ya está en el bucket, así que un fallo avisando a
+        # la Suite no puede dejar al operario sin el evento `done`.
+        try:
+            reporter = self._reporter_actual()
+            if reporter is not None:
+                reporter.estadillo(
+                    validacion["vuelos"],
+                    ruta_manifest=res["ruta_manifest"],
+                )
+        except Exception:  # noqa: BLE001 - fail-open
+            pass
+
         self._push_cloud(
             {
                 "kind": "done",
@@ -728,6 +752,20 @@ class Api:
         auth = self._get_auth()
         ident = auth.identity if auth is not None else None
         return ident.email if ident else None
+
+    def _reporter_actual(self):
+        """`RunReporter` con la sesión activa, o `None` sin login.
+
+        Sin login no hay a quién atribuir la misión ni credencial para
+        avisar a la Suite; el crudo ya está en el bucket, así que el
+        estadillo queda re-ingestable más tarde en vez de perderse.
+        """
+        from atom_core.run_reporter import RunReporter
+
+        auth = self._get_auth()
+        if auth is None or not getattr(auth, "is_logged_in", lambda: False)():
+            return None
+        return RunReporter(auth=auth)
 
     def _subir_objeto_fichero(self, remoto: str, ruta_local: str) -> None:
         """Puente fino a `cloud_upload.upload_file`: sube un fichero local ya
@@ -746,13 +784,17 @@ class Api:
         import tempfile
 
         data = json.dumps(contenido, ensure_ascii=False, indent=2).encode("utf-8")
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
-            tmp.write(data)
-            tmp_path = tmp.name
+        # El `finally` engloba también la escritura: con `delete=False`, un fallo
+        # en `tmp.write` (disco lleno) dejaría el temporal huérfano.
+        tmp_path = None
         try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
+                tmp_path = tmp.name
+                tmp.write(data)
             self._subir_objeto_fichero(remoto, tmp_path)
         finally:
-            os.unlink(tmp_path)
+            if tmp_path is not None:
+                os.unlink(tmp_path)
 
     def cloud_cancel(self) -> dict:
         """Pide parar. Los ficheros ya subidos quedan; el manifiesto local deja
@@ -804,39 +846,8 @@ class Api:
 
         try:
             run_task(task, params, emit, advanced or None)
-            self._notificar_estadillo(params)
         finally:
             self._running = False
-
-    def _notificar_estadillo(self, params: dict) -> None:
-        """Manda a la Suite las filas de vuelo del estadillo para que cree
-        misiones+vuelos (`POST /api/organizer/estadillo`).
-
-        Va aquí y no en la subida al bucket porque este es el único punto del
-        flujo de escritorio donde el estadillo está en scope; y va DESPUÉS de
-        `run_task` para no notificar vuelos de una organización que reventó.
-
-        Fail-open de principio a fin: el operador no puede ver un error, ni
-        perder el trabajo ya organizado, porque la Suite no conteste.
-        """
-        try:
-            estadillo = (params or {}).get("estadillo") or ""
-            if not estadillo:
-                return
-            auth = self._get_auth()
-            if auth is None or not getattr(auth, "is_logged_in", lambda: False)():
-                return  # sin login no hay a quién atribuir la misión; se hará en la Suite
-            from atom_core.estadillo import (
-                desempaquetar_rutas, combinar_estadillos, filas_para_suite,
-            )
-            from atom_core.run_reporter import RunReporter
-
-            filas = filas_para_suite(combinar_estadillos(desempaquetar_rutas(estadillo)))
-            if not filas:
-                return
-            RunReporter(auth=auth).estadillo(filas)
-        except Exception:  # noqa: BLE001 - fail-open: no puede romper el pipeline
-            pass
 
     def _push(self, detail: dict) -> None:
         """Empuja un evento a React (Python → JS)."""
