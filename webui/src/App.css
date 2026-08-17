@@ -844,6 +844,68 @@ select.glass-input option {
   color: var(--muted, #8b93a1);
 }
 
+/* Chips de fase: mismo lenguaje visual que .btn-ghost, pero más compactos y
+   en forma de pastilla (varios conviven en fila, con wrap). */
+.insp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.5rem 0;
+}
+.insp-chip {
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  padding: 0.35rem 0.75rem;
+  border-radius: 2rem;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.insp-chip:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+.insp-chip:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 0.125rem;
+}
+.insp-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.insp-chip-activo {
+  color: var(--text);
+  background: rgba(238, 117, 58, 0.18);
+  border-color: rgba(238, 117, 58, 0.55);
+}
+
+.insp-toggle-terminadas {
+  margin: 0.35rem 0 0.5rem;
+}
+
+.insp-grupo-anio {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.insp-anio {
+  padding: 0.3rem 0.5rem 0.1rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted, #8b93a1);
+}
+.insp-list-anio {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
 /* --- Subir al bucket: progreso en vivo ------------------------------------ */
 /* Una subida son entre 5 minutos y una hora mirando una pantalla. Lo que hace
    falta saber es siempre lo mismo: cuánto lleva, cuánto queda y si sigue
