@@ -1,5 +1,7 @@
 import errno
 import logging
+import math
+import multiprocessing
 import os
 import queue
 import shutil
@@ -8,6 +10,7 @@ import sys
 import time
 import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from datetime import datetime
 from fractions import Fraction
@@ -1191,6 +1194,60 @@ def workers_para_lote(mb_por_worker: int = MB_POR_WORKER) -> int:
     return max(1, limite)
 
 
+#: Segundos que se le conceden a un worker por item antes de dar el lote por colgado.
+#: Rotar y subir un JPG de 48 MP son ~1-3 s; 120 s es un techo que el trabajo real no
+#: roza nunca y que a la vez no deja un pool bloqueado corriendo indefinidamente.
+SEGUNDOS_POR_ITEM = 120
+
+#: Suelo del timeout del lote, para que un lote de dos imágenes no herede un margen ridículo.
+TIMEOUT_MINIMO_LOTE = 300
+
+
+def _contexto_multiproceso():
+    """
+    Contexto de multiprocessing con el que abrir el pool.
+
+    `fork` (el default en Linux) copia el proceso entero, hilos NO incluidos pero SÍ sus
+    locks: si en el instante del fork un hilo de fondo —los latidos de `RunReporter`, el
+    QueueListener del logger— tenía tomado un lock de `logging`/`ssl`, el hijo lo hereda
+    cerrado para siempre, porque el hilo que lo soltaría no existe ahí. El worker se queda
+    bloqueado sin lanzar excepción y el pool no cierra jamás.
+
+    `spawn` arranca el hijo limpio. Cuesta unos cientos de ms más por proceso, y es lo que
+    la aplicación de escritorio ya usa en Windows, así que el código es compatible con él
+    de fábrica (los `worker_fn` son funciones de módulo y los entrypoints tienen su guard
+    `if __name__ == "__main__"`). `ATOM_MP_START` permite volver a `fork` si hiciera falta.
+    """
+    metodo = os.environ.get("ATOM_MP_START", "spawn")
+    try:
+        return multiprocessing.get_context(metodo)
+    except ValueError:  # Método no soportado en esta plataforma.
+        return multiprocessing.get_context()
+
+
+def _matar_pool(executor) -> None:
+    """
+    Desmonta un pool que se ha quedado colgado, sin esperarlo.
+
+    Salir del `with ProcessPoolExecutor` llama a `shutdown(wait=True)`, que hace `join()`
+    de los hijos sin timeout: si uno está bloqueado, el cierre se cuelga igual que el lote.
+    Aquí se cancela lo pendiente y se matan los procesos a mano para que el pipeline pueda
+    seguir (o terminar con error) en vez de quedarse esperando.
+    """
+    # Los handles se recogen ANTES del shutdown: `ProcessPoolExecutor` pone `_processes`
+    # a None al apagarse, y entonces ya no hay a quién matar.
+    procesos = list((getattr(executor, "_processes", None) or {}).values())
+    try:
+        executor.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        pass
+    for proc in procesos:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 def run_batch(items, worker_fn, worker_args_fn, on_progress=None, max_workers=None, mb_por_worker=MB_POR_WORKER):
     """
     Reparte `items` en un ProcessPoolExecutor, ejecutando worker_fn(*worker_args_fn(item)) para
@@ -1224,20 +1281,43 @@ def run_batch(items, worker_fn, worker_args_fn, on_progress=None, max_workers=No
         max_workers = workers_para_lote(mb_por_worker)
     max_workers = max(1, min(max_workers, total))  # Abrir más procesos que items no acelera nada.
 
+    # Techo de tiempo para el lote entero. Sin él, un worker que no entrega su resultado
+    # —muerto por el OOM del cgroup, o bloqueado en una escritura a gcsfuse que no vuelve—
+    # deja `as_completed` esperando para siempre: el pipeline se queda mudo, sin excepción
+    # ni log, y en Cloud Run eso son horas de Job facturadas sin hacer nada.
+    tandas = math.ceil(total / max_workers)
+    timeout_lote = max(TIMEOUT_MINIMO_LOTE, SEGUNDOS_POR_ITEM * tandas)
+
     current = 0
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    colgado = False
+    executor = ProcessPoolExecutor(max_workers=max_workers, mp_context=_contexto_multiproceso())
+    try:
         future_to_item = {
             executor.submit(worker_fn, *worker_args_fn(item)): item for item in items
         }
-        for future in as_completed(future_to_item):
-            item = future_to_item[future]
-            current += 1
-            try:
-                results.append(future.result())
-            except Exception as exc:
-                errors.append((item, str(exc)))
-            if on_progress is not None:
-                on_progress(safe_pct(current, total))
+        try:
+            for future in as_completed(future_to_item, timeout=timeout_lote):
+                item = future_to_item[future]
+                current += 1
+                try:
+                    results.append(future.result())
+                except Exception as exc:
+                    errors.append((item, str(exc)))
+                if on_progress is not None:
+                    on_progress(safe_pct(current, total))
+        except FuturesTimeoutError:
+            # El lote se da por perdido, pero como error explícito y con nombres: los items
+            # que no entregaron resultado se reportan como fallidos igual que cualquier otro
+            # error, para que el pipeline siga su curso y quede escrito qué se quedó atrás.
+            colgado = True
+            for future, item in future_to_item.items():
+                if not future.done():
+                    errors.append((item, f"el worker no entregó resultado en {timeout_lote}s (lote colgado)"))
+    finally:
+        if colgado:
+            _matar_pool(executor)
+        else:
+            executor.shutdown(wait=True)
 
     return {"results": results, "errors": errors}
 
