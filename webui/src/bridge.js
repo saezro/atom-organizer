@@ -96,6 +96,10 @@ export const api = {
   // `cloudUpload`/`cloudPrepare`.
   estadilloValidar: (rutas) => call('estadillo_validar', rutas),
   estadilloSubir: (prefijo, rutas) => call('estadillo_subir', prefijo, rutas),
+  // Detecta si la inspección ya tiene un estadillo subido en el bucket.
+  // Fail-open: {existe, error} — con `error` relleno se trata como `existe:
+  // false` sin bloquear al operador (ver App.jsx, useEffect sobre `prefijo`).
+  estadilloExistente: (prefijo) => call('estadillo_existente', prefijo),
 }
 
 // Python empuja progreso del pipeline con:

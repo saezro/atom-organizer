@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, onCloud, onProgress, whenBridgeReady } from './bridge'
 import { SECTIONS, SPLIT_ADVANCED } from './schema'
 import TaskBlock, { Field, initialState, buildParams } from './TaskBlock'
@@ -550,6 +550,30 @@ function BucketScreen({ ready }) {
   // `started: false` si la subida ni siquiera arranca.
   const [estadSubiendo, setEstadSubiendo] = useState(false)
   const [estadResult, setEstadResult] = useState(null) // {ok, ...} | {error}
+  // El estadillo pasa a ser obligatorio en la subida: `omitirEstadillo` es la
+  // única vía para saltárselo (resubida de una jornada cuyo estadillo ya está
+  // en el bucket, o cuando de verdad no hay estadillo). `estadPrevio` guarda
+  // si el backend ve ya un estadillo subido para la inspección elegida, para
+  // auto-marcar el checkbox y cambiar su etiqueta sin que el operador tenga
+  // que saberlo de memoria.
+  const [omitirEstadillo, setOmitirEstadillo] = useState(false)
+  const [estadPrevio, setEstadPrevio] = useState(null) // null | {existe, error}
+  // Puente entre el `await` de `subirEstadilloEsperando` y el evento
+  // `atom:cloud` (`scope: 'estadillo'`) que trae el resultado real: la llamada
+  // a `estadillo_subir` solo devuelve `{started}`, así que la promesa se
+  // resuelve/rechaza desde el handler de `onCloud` de más abajo.
+  const estadPromesaRef = useRef(null)
+  // Guarda el PREFIJO para el que ya se aplicó el auto-marcado de
+  // «omitir estadillo» a partir de `estadPrevio`. El auto-marcado solo debe
+  // disparar UNA vez por inspección: si gobernara `omitirEstadillo` en un
+  // efecto reactivo a `estadRutas`, marcar el checkbox a mano (que vacía
+  // `estadRutas` vía `cambiarEstadRutas([])`) redispararía el efecto y lo
+  // desharía, dejando el botón SUBIR muerto sin explicación.
+  const autoOmitAplicadoRef = useRef(null)
+  // Token de carrera para `comprobarEstadillo`: si la selección de ficheros
+  // cambia mientras una validación anterior sigue en vuelo, la respuesta
+  // tardía de la selección vieja no debe pisar el resultado de la nueva.
+  const estadCheckTokenRef = useRef(0)
 
   function cambiarEstadRutas(next) {
     setEstadRutas(next)
@@ -612,6 +636,63 @@ function BucketScreen({ ready }) {
     }
   }, [ready])
 
+  // El estadillo ya no se «comprueba» a mano con un botón: se valida solo en
+  // cuanto cambia la selección de ficheros (y se limpia el resultado si se
+  // vacía la selección).
+  useEffect(() => {
+    if (estadRutas.length > 0) {
+      comprobarEstadillo()
+    } else {
+      // Invalida cualquier validación en vuelo: sin esto, una respuesta
+      // tardía de la selección anterior podría pisar este `null` con un
+      // resumen que ya no corresponde a nada seleccionado.
+      estadCheckTokenRef.current += 1
+      setEstadCheck(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [estadRutas])
+
+  // Detecta si la inspección elegida ya tiene un estadillo subido en el
+  // bucket, para auto-marcar «omitir estadillo» en una resubida y cambiar la
+  // etiqueta del checkbox. Fail-open: un error de red aquí no debe bloquear
+  // ni asustar al operador, como mucho se queda sin la pista.
+  useEffect(() => {
+    if (!prefijo) {
+      setEstadPrevio(null)
+      return
+    }
+    let cancelado = false
+    ;(async () => {
+      try {
+        const r = await api.estadilloExistente(prefijo)
+        if (!cancelado) setEstadPrevio(r)
+      } catch (e) {
+        if (!cancelado) setEstadPrevio({ existe: false, error: String(e) })
+      }
+    })()
+    return () => {
+      cancelado = true
+    }
+  }, [prefijo])
+
+  // Auto-marcado: si el backend confirma que ya hay estadillo subido, se
+  // asume resubida y se marca solo. Si no hay estadillo previo, se deja sin
+  // marcar (requiere acción explícita, con confirmación, más abajo). Se
+  // aplica UNA sola vez por inspección (guardado en `autoOmitAplicadoRef`
+  // por `prefijo`), para no pisar la decisión manual del usuario: marcar el
+  // checkbox a mano vacía `estadRutas`, y si este efecto reaccionara a ese
+  // cambio revertiría lo que el operador acaba de confirmar.
+  useEffect(() => {
+    if (!estadPrevio) return
+    if (autoOmitAplicadoRef.current === prefijo) return
+    autoOmitAplicadoRef.current = prefijo
+    // Fail-open: un error de red al consultar `estadPrevio` no debe forzar
+    // ningún estado, solo se marca como «ya intentado» para no reintentar en
+    // bucle en cada render.
+    if (estadPrevio.error) return
+    setOmitirEstadillo(estadPrevio.existe === true)
+  }, [estadPrevio, prefijo])
+
   useEffect(
     () =>
       onCloud((d) => {
@@ -629,10 +710,18 @@ function BucketScreen({ ready }) {
             case 'done':
               setEstadSubiendo(false)
               setEstadResult({ ok: true, vuelos: d.vuelos_detectados, ruta_manifest: d.ruta_manifest })
+              if (estadPromesaRef.current) {
+                estadPromesaRef.current.resolve(d)
+                estadPromesaRef.current = null
+              }
               break
             case 'error':
               setEstadSubiendo(false)
               setEstadResult({ error: d.error })
+              if (estadPromesaRef.current) {
+                estadPromesaRef.current.reject(new Error(d.error))
+                estadPromesaRef.current = null
+              }
               break
             default:
               break
@@ -718,6 +807,18 @@ function BucketScreen({ ready }) {
     setEleccion(valor)
     setPlan(null)
     setResult(null)
+    // El estadillo pertenece a la inspección elegida: si no se limpia aquí,
+    // los ficheros (y el preview validado) de la inspección anterior siguen
+    // vivos y listos para subirse contra la nueva, con riesgo real de subir
+    // el estadillo equivocado a la planta equivocada.
+    cambiarEstadRutas([])
+    setEstadPrevio(null)
+    // Y la exención tampoco se hereda: mientras `estadillo_existente` de la
+    // inspección nueva no conteste, un `true` arrastrado de la anterior
+    // habilitaría SUBIR en cuanto el plan se recalcule, dejando pasar una
+    // subida sin estadillo. Se parte siempre de `false` y ya lo sube el
+    // auto-marcado si procede.
+    setOmitirEstadillo(false)
   }
 
   async function preparar(path, pref) {
@@ -734,6 +835,17 @@ function BucketScreen({ ready }) {
 
   async function subir() {
     setResult(null)
+    // El estadillo va PRIMERO: si no hay una razón explícita para omitirlo y
+    // hay ficheros elegidos, se sube y se espera el resultado real (evento
+    // `atom:cloud`) antes de tocar una sola imagen. Si falla, no se sube nada.
+    if (!omitirEstadillo && estadRutas.length > 0) {
+      try {
+        await subirEstadilloEsperando()
+      } catch (e) {
+        setResult({ error: `No se ha subido el estadillo: ${String(e.message || e)}. No se ha subido ninguna imagen.` })
+        return
+      }
+    }
     setLines([])
     setStats(null)
     setDesde(Date.now())
@@ -750,13 +862,18 @@ function BucketScreen({ ready }) {
   // Preview obligatorio: qué se ha entendido del/de los estadillo(s) elegidos,
   // ANTES de permitir subir nada (síncrono en el backend a propósito).
   async function comprobarEstadillo() {
+    // Token de carrera: si `estadRutas` vuelve a cambiar antes de que esta
+    // validación termine, la respuesta de esta llamada ya no corresponde a
+    // la selección actual y no debe pisar `estadCheck`.
+    const token = ++estadCheckTokenRef.current
     setEstadComprobando(true)
     try {
-      setEstadCheck(await api.estadilloValidar(estadRutas))
+      const r = await api.estadilloValidar(estadRutas)
+      if (estadCheckTokenRef.current === token) setEstadCheck(r)
     } catch (e) {
-      setEstadCheck({ ok: false, error: String(e) })
+      if (estadCheckTokenRef.current === token) setEstadCheck({ ok: false, error: String(e) })
     } finally {
-      setEstadComprobando(false)
+      if (estadCheckTokenRef.current === token) setEstadComprobando(false)
     }
   }
 
@@ -777,11 +894,46 @@ function BucketScreen({ ready }) {
     // Python (a diferencia de `cloud_upload`), así que dos clicks arrancarían
     // dos hilos escribiendo los mismos objetos del bucket a la vez.
     setEstadSubiendo(true)
-    const r = await api.estadilloSubir(prefijo, estadRutas)
-    if (r && r.started === false) {
+    try {
+      const r = await api.estadilloSubir(prefijo, estadRutas)
+      if (r && r.started === false) {
+        setEstadSubiendo(false)
+        setEstadResult({ error: r.reason })
+        // Si había una promesa pendiente de `subirEstadilloEsperando`, hay que
+        // resolverla también aquí: `estadillo_subir` ni siquiera llegó a
+        // arrancar, así que no va a llegar ningún evento `atom:cloud` que la
+        // cierre. Sin esto el ref se queda colgado para siempre.
+        if (estadPromesaRef.current) {
+          estadPromesaRef.current.reject(new Error(r.reason || 'No se pudo iniciar la subida del estadillo.'))
+          estadPromesaRef.current = null
+        }
+      }
+    } catch (e) {
+      // El IPC puede rechazar (p.ej. el puente se cae a medias). Sin este
+      // catch la promesa de `subirEstadilloEsperando` no se resuelve nunca y
+      // `estadSubiendo` se queda en `true` para siempre, matando el botón
+      // SUBIR (que exige `!estadSubiendo`).
       setEstadSubiendo(false)
-      setEstadResult({ error: r.reason })
+      setEstadResult({ error: String(e) })
+      if (estadPromesaRef.current) {
+        estadPromesaRef.current.reject(e)
+        estadPromesaRef.current = null
+      }
     }
+  }
+
+  // Igual que `subirEstadillo`, pero para uso interno desde `subir()`:
+  // devuelve una promesa que no resuelve hasta que llega el resultado REAL
+  // (evento `atom:cloud`, `scope: 'estadillo'`, gestionado en el `onCloud` de
+  // arriba), para poder esperarlo antes de subir ninguna imagen. Reutiliza
+  // `subirEstadillo` tal cual: solo prepara el ref ANTES de llamarla, para no
+  // perder la carrera con un evento que llegara antes de que la promesa
+  // exista.
+  function subirEstadilloEsperando() {
+    return new Promise((resolve, reject) => {
+      estadPromesaRef.current = { resolve, reject }
+      subirEstadillo()
+    })
   }
 
   // El reloj de la subida. Late en la UI mientras `uploading`, con
@@ -793,9 +945,22 @@ function BucketScreen({ ready }) {
   }, [uploading, desde])
 
   const logged = !!status?.logged_in
-  const ocupado = busy || uploading
+  // `estadSubiendo` bloquea también el resto del formulario: cambiar de
+  // inspección o de carpeta mientras el estadillo se está subiendo dejaría
+  // ese estadillo subiéndose contra un destino que ya no es el elegido en
+  // pantalla. El botón «Cancelar subida» de la subida general no depende de
+  // `ocupado` (solo de `uploading`, más abajo), así que esto no bloquea nada
+  // que deba seguir vivo.
+  const ocupado = busy || uploading || estadSubiendo
   const inspecciones = catalogo?.inspecciones || []
-  const puedeSubir = ready && logged && !!prefijo && plan?.ok && !ocupado
+  const puedeSubir =
+    ready &&
+    logged &&
+    !!prefijo &&
+    plan?.ok &&
+    !ocupado &&
+    !estadSubiendo &&
+    (estadCheck?.ok === true || omitirEstadillo)
 
   const elegida = inspecciones.find((i) => i.prefijo === eleccion)
 
@@ -932,26 +1097,29 @@ function BucketScreen({ ready }) {
         <EstadilloField
           value={estadRutas}
           onChange={cambiarEstadRutas}
-          disabled={ocupado || estadSubiendo}
+          disabled={ocupado || estadSubiendo || omitirEstadillo}
         />
-        <div className="field-row">
-          <button
-            type="button"
-            className="btn-ghost"
-            onClick={comprobarEstadillo}
-            disabled={ocupado || estadSubiendo || estadComprobando || estadRutas.length === 0}
-          >
-            {estadComprobando ? 'Comprobando…' : 'Comprobar'}
-          </button>
-          <button
-            type="button"
-            className="btn-ghost"
-            onClick={subirEstadillo}
-            disabled={ocupado || estadSubiendo || !estadCheck?.ok || !prefijo}
-          >
-            {estadSubiendo ? 'Subiendo…' : 'Subir estadillo'}
-          </button>
-        </div>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={omitirEstadillo}
+            disabled={ocupado || estadSubiendo}
+            onChange={(e) => {
+              const marcar = e.target.checked
+              if (marcar && estadPrevio?.existe !== true) {
+                const ok = window.confirm(
+                  'No hay ningún estadillo subido para esta inspección. Si continúas, las ' +
+                    'imágenes se subirán sin estadillo. ¿Seguro?'
+                )
+                if (!ok) return
+              }
+              setOmitirEstadillo(marcar)
+              if (marcar) cambiarEstadRutas([])
+            }}
+          />
+          <span>{estadPrevio?.existe ? 'Ya subí el estadillo de esta inspección' : 'Subir sin estadillo'}</span>
+        </label>
+        {estadComprobando && <span className="field-hint">Comprobando el estadillo…</span>}
         {estadCheck?.ok && (
           <span className="field-hint hint-ok">
             {estadCheck.vuelos_detectados} vuelo{estadCheck.vuelos_detectados === 1 ? '' : 's'} detectado
