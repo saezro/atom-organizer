@@ -20,6 +20,15 @@ import datetime as dt
 
 import pytest
 
+# `mimetypes` fija su `_winreg` interno UNA SOLA VEZ, en el propio import
+# (`try: import winreg as _winreg / except ImportError: _winreg = None`). Si
+# se importa aquí, ANTES de inyectar el stub de `winreg` de abajo, `winreg`
+# aún no existe en Linux y `mimetypes._winreg` queda fijado a `None` para
+# siempre: así el stub que sigue nunca le hace creer que estamos en Windows
+# ni dispara la lectura del registro (que revienta al escribir un `.xlsx`
+# con openpyxl, vía `pandas.to_excel`).
+import mimetypes  # noqa: E402,F401
+
 
 # --- Stub de winreg (solo para permitir el import en Linux; nunca se invoca) ---
 if "winreg" not in sys.modules:
