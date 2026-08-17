@@ -139,4 +139,59 @@ describe('Estadillo (ubicación canónica del bucket)', () => {
     await screen.findByText(/12/)
     expect(screen.getByRole('button', { name: /Subir estadillo/i })).not.toBeDisabled()
   })
+
+  it('deshabilita subir estadillo en cuanto se pulsa, sin esperar al evento start', async () => {
+    api.estadilloValidar.mockResolvedValue({
+      ok: true,
+      error: null,
+      vuelos_detectados: 12,
+      filas_con_problemas: 0,
+    })
+    // `estadilloSubir` no resuelve todavía: simula la ventana entre el click
+    // y el evento `start` (IPC + chequeo de sesión + validación + arranque
+    // de hilo). Si el botón no se deshabilita ANTES de esta await, un
+    // segundo click en esa ventana arrancaría un segundo hilo.
+    let resolver
+    api.estadilloSubir.mockReturnValue(
+      new Promise((r) => {
+        resolver = r
+      }),
+    )
+
+    const user = userEvent.setup()
+    await irAEstadilloConFichero(user)
+
+    await user.click(await screen.findByRole('button', { name: 'Comprobar' }))
+    await screen.findByText(/12/)
+
+    const botonSubir = screen.getByRole('button', { name: /Subir estadillo/i })
+    expect(botonSubir).not.toBeDisabled()
+
+    await user.click(botonSubir)
+
+    expect(botonSubir).toBeDisabled()
+
+    resolver({ ok: true })
+  })
+
+  it('rehabilita subir estadillo si la subida no arranca', async () => {
+    api.estadilloValidar.mockResolvedValue({
+      ok: true,
+      error: null,
+      vuelos_detectados: 5,
+      filas_con_problemas: 0,
+    })
+    api.estadilloSubir.mockResolvedValue({ started: false, reason: 'Primero inicia sesión' })
+
+    const user = userEvent.setup()
+    await irAEstadilloConFichero(user)
+
+    await user.click(await screen.findByRole('button', { name: 'Comprobar' }))
+    await screen.findByText(/5/)
+
+    await user.click(screen.getByRole('button', { name: /Subir estadillo/i }))
+
+    expect(await screen.findByText('Primero inicia sesión')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Subir estadillo/i })).not.toBeDisabled()
+  })
 })
