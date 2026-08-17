@@ -295,7 +295,8 @@ class RunReporter:
         except Exception as exc:  # noqa: BLE001 - fail-open
             _log.debug("run_reporter.fin: excepcion inesperada (%s)", exc)
 
-    def estadillo(self, vuelos: list[dict], planta_id=None, inspeccion_id=None) -> dict | None:
+    def estadillo(self, vuelos: list[dict], planta_id=None, inspeccion_id=None,
+                  ruta_manifest: str | None = None) -> dict | None:
         """Notifica a la Suite las filas de vuelo de un estadillo, para que cree
         misiones+vuelos (`POST /api/organizer/estadillo`).
 
@@ -313,6 +314,7 @@ class RunReporter:
                 "planta_id": planta_id,
                 "inspeccion_id": inspeccion_id,
                 "vuelos": vuelos,
+                "ruta_manifest": ruta_manifest,
             }
             return self._peticion("POST", "/api/organizer/estadillo", cuerpo)
         except Exception as exc:  # noqa: BLE001 - fail-open
