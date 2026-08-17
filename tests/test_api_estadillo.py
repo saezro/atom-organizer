@@ -2,6 +2,7 @@ import pandas as pd
 import pytest
 
 import app_webview
+from atom_core import estadillo as estadillo_mod
 
 
 class _AuthFake:
@@ -91,3 +92,18 @@ def test_subir_avisa_de_iniciar_sesion_si_no_hay_sesion(api, tmp_path, monkeypat
     res = api.estadillo_subir("MI_PLANTA", [_csv(tmp_path)])
 
     assert "sesión" in res["reason"]
+
+
+def test_subir_convierte_excepcion_interna_en_started_false(api_con_sesion, tmp_path, monkeypatch):
+    """Cualquier excepción antes de arrancar el hilo (auth, validación) debe
+    traducirse en `{started: False, reason}`, nunca propagarse por el puente
+    IPC: es el contrato que ya usa el resto de `estadillo_subir`."""
+
+    def _revienta(_rutas):
+        raise RuntimeError("boom inesperado")
+
+    monkeypatch.setattr(estadillo_mod, "validar_para_subida", _revienta)
+
+    res = api_con_sesion.estadillo_subir("MI_PLANTA", [_csv(tmp_path)])
+
+    assert res == {"started": False, "reason": "boom inesperado"}

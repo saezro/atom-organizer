@@ -663,25 +663,59 @@ class Api:
         from atom_core import cloud_config
         from atom_core import estadillo as estadillo_mod
 
-        # Mismo chequeo síncrono que `cloud_upload`: sin él la llamada devolvía
-        # `started: True` y el «no has iniciado sesión» sólo salía después,
-        # disfrazado del error genérico de la primera subida.
-        auth = self._get_auth()
-        if auth is None:
-            return {"started": False, "reason": cloud_config.missing_client_help()}
-        if not auth.is_logged_in():
-            return {"started": False,
-                    "reason": "Primero inicia sesión con tu cuenta de Aerotools."}
+        # Todo lo previo al arranque del hilo (chequeo de sesión, validación)
+        # va envuelto: su contrato con la UI es devolver siempre
+        # `{"started": False, "reason": ...}` ante cualquier problema, nunca
+        # propagar la excepción por el puente IPC (el JS de arriba solo mira
+        # `r.started === false`, no espera un `catch`).
+        try:
+            # Mismo chequeo síncrono que `cloud_upload`: sin él la llamada
+            # devolvía `started: True` y el «no has iniciado sesión» sólo
+            # salía después, disfrazado del error genérico de la primera
+            # subida.
+            auth = self._get_auth()
+            if auth is None:
+                return {"started": False, "reason": cloud_config.missing_client_help()}
+            if not auth.is_logged_in():
+                return {"started": False,
+                        "reason": "Primero inicia sesión con tu cuenta de Aerotools."}
 
-        validacion = estadillo_mod.validar_para_subida(rutas)
-        if not validacion["ok"]:
-            return {"started": False, "reason": validacion["error"]}
+            validacion = estadillo_mod.validar_para_subida(rutas)
+            if not validacion["ok"]:
+                return {"started": False, "reason": validacion["error"]}
+        except Exception as exc:  # noqa: BLE001 - contrato: nunca reventar el IPC
+            return {"started": False, "reason": str(exc)}
 
         def worker():
             self._subir_estadillo_worker(folder, rutas, validacion)
 
         threading.Thread(target=worker, daemon=True).start()
         return {"started": True, "reason": None}
+
+    def estadillo_existente(self, prefijo: str) -> dict:
+        """¿Ya hay un estadillo subido para este prefijo?
+
+        Fail-open: la UI solo usa esto para pre-marcar un checkbox, así que
+        cualquier fallo (sin login, sin red, prefijo vacío) se traduce en
+        `existe: False` y nunca revienta la llamada.
+        """
+        from atom_core import cloud_config, cloud_upload, estadillo_canonico
+
+        try:
+            auth = self._get_auth()
+            if auth is None:
+                return {"existe": False, "error": cloud_config.missing_client_help()}
+            if not auth.is_logged_in():
+                return {"existe": False,
+                        "error": "Primero inicia sesión con tu cuenta de Aerotools."}
+
+            prefix = (f"{estadillo_canonico.prefijo_planta(prefijo)}/"
+                     f"{estadillo_canonico.CARPETA_ACTUAL}/")
+            n = cloud_upload.objetos_en_prefijo(
+                cloud_config.BUCKET_DATOS, prefix, auth)
+            return {"existe": n > 0, "error": None}
+        except Exception as exc:  # noqa: BLE001 - fail-open, la UI solo pre-marca un checkbox
+            return {"existe": False, "error": str(exc)}
 
     def _subir_estadillo_worker(self, folder: str, rutas: list[str], validacion: dict):
         from datetime import datetime, timezone
