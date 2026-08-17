@@ -532,6 +532,28 @@ function BucketScreen({ ready }) {
   const [texto, setTexto] = useState('') // buscador de inspección
   const [lines, setLines] = useState([])
   const [result, setResult] = useState(null) // {ok, ...} | {error}
+
+  // Estadillo → ubicación canónica del bucket: acción propia, no depende de
+  // haber organizado ni de la carpeta a subir de arriba. Preview obligatorio
+  // (`estadCheck`) antes de poder subir: el resumen se invalida en cuanto
+  // cambia la lista de ficheros, para no subir con un resumen que ya no
+  // corresponde a la selección.
+  const [estadRutas, setEstadRutas] = useState([])
+  const [estadCheck, setEstadCheck] = useState(null) // null | {ok, error, vuelos_detectados, filas_con_problemas}
+  const [estadComprobando, setEstadComprobando] = useState(false)
+  // `estadSubiendo` es la única guarda de doble-click: `estadillo_subir` en
+  // Python no tiene mutex propio (a diferencia de `cloud_upload`, que sí usa
+  // `self._uploading`), así que dos clicks lanzarían dos hilos con eventos
+  // `atom:cloud` (`scope: 'estadillo'`) intercalados. Se resuelve aquí,
+  // deshabilitando el botón entre los eventos `start` y `done`/`error`.
+  const [estadSubiendo, setEstadSubiendo] = useState(false)
+  const [estadResult, setEstadResult] = useState(null) // {ok, ...} | {error}
+
+  function cambiarEstadRutas(next) {
+    setEstadRutas(next)
+    setEstadCheck(null)
+    setEstadResult(null)
+  }
   // Estado REAL de la sesión, el que sale de preguntarle a Google. Aparte de
   // `status.logged_in`, que solo dice que hay un token guardado: puede estar
   // revocado o caducado y hasta que no se usa nadie lo sabe. Se separan porque
@@ -591,6 +613,30 @@ function BucketScreen({ ready }) {
   useEffect(
     () =>
       onCloud((d) => {
+        // La subida del estadillo comparte canal (`atom:cloud`) con la subida
+        // general de carpeta, pero es una acción independiente: sus eventos
+        // vienen marcados con `scope: 'estadillo'` y se gestionan aparte para
+        // no cruzar sus `start`/`done`/`error` con el panel de progreso de
+        // «Subir al bucket».
+        if (d.scope === 'estadillo') {
+          switch (d.kind) {
+            case 'start':
+              setEstadSubiendo(true)
+              setEstadResult(null)
+              break
+            case 'done':
+              setEstadSubiendo(false)
+              setEstadResult({ ok: true, vuelos: d.vuelos_detectados, ruta_manifest: d.ruta_manifest })
+              break
+            case 'error':
+              setEstadSubiendo(false)
+              setEstadResult({ error: d.error })
+              break
+            default:
+              break
+          }
+          return
+        }
         switch (d.kind) {
           case 'login':
             setBusy(false)
@@ -696,6 +742,34 @@ function BucketScreen({ ready }) {
       setUploading(false)
       setDesde(null)
       setResult({ error: r.reason })
+    }
+  }
+
+  // Preview obligatorio: qué se ha entendido del/de los estadillo(s) elegidos,
+  // ANTES de permitir subir nada (síncrono en el backend a propósito).
+  async function comprobarEstadillo() {
+    setEstadComprobando(true)
+    try {
+      setEstadCheck(await api.estadilloValidar(estadRutas))
+    } catch (e) {
+      setEstadCheck({ ok: false, error: String(e) })
+    } finally {
+      setEstadComprobando(false)
+    }
+  }
+
+  // El PRIMER argumento es el PREFIJO de la inspección elegida (`prefijo`,
+  // arriba), NO `carpeta` (la carpeta local del vuelo a subir) ni ninguna otra
+  // ruta de disco: `estadillo_subir(folder, rutas)` pasa ese primer argumento
+  // tal cual a `prefijo_desde_carpeta` para construir la ruta canónica dentro
+  // del bucket (igual que `cloudUpload`/`cloudPrepare` con `prefijo`). Mandar
+  // ahí la carpeta local escribiría el estadillo bajo un nombre de planta
+  // equivocado.
+  async function subirEstadillo() {
+    setEstadResult(null)
+    const r = await api.estadilloSubir(prefijo, estadRutas)
+    if (r && r.started === false) {
+      setEstadResult({ error: r.reason })
     }
   }
 
@@ -916,6 +990,58 @@ function BucketScreen({ ready }) {
                 ? `${inspecciones.length} inspecciones de la lista de respaldo (puede estar desactualizada).`
                 : `${inspecciones.length} inspecciones. Los datos se guardarán en «${prefijo || '…'}/».`}
         </span>
+      </div>
+
+      <div className="field">
+        <span className="field-label">Estadillo (ubicación canónica del bucket)</span>
+        <EstadilloField
+          value={estadRutas}
+          onChange={cambiarEstadRutas}
+          disabled={ocupado || estadSubiendo}
+        />
+        <div className="field-row">
+          <button
+            type="button"
+            className="btn-ghost"
+            onClick={comprobarEstadillo}
+            disabled={ocupado || estadSubiendo || estadComprobando || estadRutas.length === 0}
+          >
+            {estadComprobando ? 'Comprobando…' : 'Comprobar'}
+          </button>
+          <button
+            type="button"
+            className="btn-ghost"
+            onClick={subirEstadillo}
+            disabled={ocupado || estadSubiendo || !estadCheck?.ok || !prefijo}
+          >
+            {estadSubiendo ? 'Subiendo…' : 'Subir estadillo'}
+          </button>
+        </div>
+        {estadCheck?.ok && (
+          <span className="field-hint hint-ok">
+            {estadCheck.vuelos_detectados} vuelo{estadCheck.vuelos_detectados === 1 ? '' : 's'} detectado
+            {estadCheck.vuelos_detectados === 1 ? '' : 's'}
+            {estadCheck.filas_con_problemas > 0
+              ? ` · ${estadCheck.filas_con_problemas} fila${estadCheck.filas_con_problemas === 1 ? '' : 's'} con problemas`
+              : ''}
+          </span>
+        )}
+        {estadCheck && !estadCheck.ok && (
+          <span role="alert" className="field-hint hint-warn">
+            {estadCheck.error}
+          </span>
+        )}
+        {estadCheck?.ok && !prefijo && (
+          <span className="field-hint hint-warn">
+            Elige la inspección de arriba antes de subir el estadillo.
+          </span>
+        )}
+        {estadResult?.error && <span className="field-hint hint-warn">{estadResult.error}</span>}
+        {estadResult?.ok && (
+          <span className="field-hint hint-ok">
+            Estadillo subido a «{prefijo}/» ({estadResult.vuelos} vuelo{estadResult.vuelos === 1 ? '' : 's'}).
+          </span>
+        )}
       </div>
 
       <FileField

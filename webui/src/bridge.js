@@ -86,6 +86,16 @@ export const api = {
   cloudUpload: (folder, force, prefix) =>
     call('cloud_upload', folder, force ?? false, prefix ?? null),
   cloudCancel: () => call('cloud_cancel'),
+  // Ubicación canónica del estadillo en el bucket (independiente de organizar
+  // y de la subida de jornada). estadilloValidar es síncrono y no sube nada:
+  // devuelve {ok, error, vuelos_detectados, filas_con_problemas} para enseñar
+  // qué se ha entendido ANTES de permitir subir. estadilloSubir arranca la
+  // subida en background (progreso por `atom:cloud`, `scope: 'estadillo'`) y
+  // el primer argumento es el PREFIJO de la inspección elegida (no una carpeta
+  // local): internamente se pasa a `prefijo_desde_carpeta`, igual que
+  // `cloudUpload`/`cloudPrepare`.
+  estadilloValidar: (rutas) => call('estadillo_validar', rutas),
+  estadilloSubir: (prefijo, rutas) => call('estadillo_subir', prefijo, rutas),
 }
 
 // Python empuja progreso del pipeline con:
