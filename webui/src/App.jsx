@@ -851,7 +851,7 @@ function BucketScreen({ ready }) {
     setDesde(Date.now())
     setAhora(0)
     setUploading(true)
-    const r = await api.cloudUpload(carpeta, false, prefijo)
+    const r = await api.cloudUpload(carpeta, false, prefijo, elegida?.id)
     if (r && r.started === false) {
       setUploading(false)
       setDesde(null)

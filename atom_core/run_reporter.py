@@ -321,6 +321,31 @@ class RunReporter:
             _log.debug("run_reporter.estadillo: excepcion inesperada (%s)", exc)
             return None
 
+    def subida(self, *, inspeccion_id: int, estado: str,
+               num_objetos: int | None = None, bytes: int | None = None,
+               error: str | None = None) -> dict | None:
+        """Notifica el resultado de una subida al bucket (`POST
+        /api/organizer/subidas`), para que `/organizer` la saque del panel
+        "SUBIDAS SIN ORGANIZAR" (éxito) o la enseñe en rojo (fallo).
+
+        A diferencia del resto de métodos, es INDEPENDIENTE del ciclo
+        `iniciar`/`fin`: no lee ni depende de `self._id`. Fail-open como todo
+        el fichero: si algo falla se traga la excepción y devuelve `None`,
+        nunca puede tumbar una subida.
+        """
+        try:
+            cuerpo: dict = {"inspeccion_id": inspeccion_id, "estado": estado}
+            if num_objetos is not None:
+                cuerpo["num_objetos"] = num_objetos
+            if bytes is not None:
+                cuerpo["bytes"] = bytes
+            if error is not None:
+                cuerpo["error_mensaje"] = error[:500]
+            return self._peticion("POST", "/api/organizer/subidas", cuerpo)
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            _log.debug("run_reporter.subida: excepcion inesperada (%s)", exc)
+            return None
+
     @property
     def activo(self) -> bool:
         """`True` si hay un run vivo (con id asignado por la Suite)."""
