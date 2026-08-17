@@ -9,7 +9,12 @@ from datetime import datetime, timezone
 
 from atom_core.cloud_config import prefijo_desde_carpeta
 
-PREFIJO_ESTADILLOS = "PREPARACION/ESTADILLOS"
+# Cuelga de la planta en el bucket de ENTRADA (`BUCKET_DATOS`), que es el único
+# donde escriben las cuentas de oficina: `ofi@aerotools.es` no tiene ningún
+# binding IAM en `plantas_pv_nl`, así que la app de escritorio no puede dejar
+# nada ahí. Sin `PREPARACION/` a propósito: esa jerarquía es del bucket de
+# destino, y el de entrada ya usa `<PLANTA>/ESTADILLOS/` (regla de Cas).
+PREFIJO_ESTADILLOS = "ESTADILLOS"
 NOMBRE_MANIFEST = "manifest.json"
 NOMBRE_NORMALIZADO = "estadillo.json"
 CARPETA_ACTUAL = "actual"

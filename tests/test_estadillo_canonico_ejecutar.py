@@ -46,7 +46,7 @@ def test_devuelve_la_ruta_del_manifest_con_timestamp_no_la_de_actual():
     )
 
     assert res["ruta_manifest"] == (
-        "X/PREPARACION/ESTADILLOS/2026-08-17T034501Z/manifest.json"
+        "X/ESTADILLOS/2026-08-17T034501Z/manifest.json"
     )
 
 
