@@ -1,5 +1,5 @@
 .app {
-  width: min(1280px, 100%);
+  width: min(80rem, 100%);
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
@@ -44,15 +44,15 @@
 /* bloques de tarea (secciones AEROTOOLS / OTROS) */
 .section-blocks {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(22.5rem, 1fr));
   gap: 1.25rem;
   align-items: start;
 }
 .block {
   padding: 1.5rem;
-  border-radius: 16px;
+  border-radius: 1rem;
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.1);
   /* Sin `backdrop-filter`: el fondo de la app es un color PLANO, asi que
      desenfocarlo devuelve el mismo color — el efecto no se ve. Lo que si se
      notaba era el coste: en Windows QtWebEngine arranca con `--disable-gpu`
@@ -72,7 +72,7 @@
 }
 .block-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(13.75rem, 1fr));
   gap: 0.75rem 1rem;
 }
 .block-field {
@@ -89,7 +89,7 @@
   align-items: center;
   align-self: center;
 }
-@media (max-width: 560px) {
+@media (max-width: 35rem) {
   .block-grid {
     grid-template-columns: 1fr;
   }
@@ -121,9 +121,9 @@
 
 .card {
   padding: 2rem;
-  border-radius: 16px;
+  border-radius: 1rem;
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.1);
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
@@ -154,16 +154,16 @@
   min-width: 0;
   font: inherit;
   padding: 0.6rem 0.75rem;
-  border-radius: 10px;
+  border-radius: 0.625rem;
   color: var(--text);
   background: rgba(255, 255, 255, 0.05);
-  border: 2px solid rgba(255, 255, 255, 0.2);
+  border: 0.125rem solid rgba(255, 255, 255, 0.2);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .glass-input:focus {
   outline: none;
   border-color: var(--orange);
-  box-shadow: 0 0 0 3px rgba(238, 117, 58, 0.2);
+  box-shadow: 0 0 0 0.1875rem rgba(238, 117, 58, 0.2);
 }
 
 /* El desplegable de inspección es el primer <select> de la app. Hereda la caja
@@ -191,10 +191,10 @@ select.glass-input option {
   font: inherit;
   cursor: pointer;
   padding: 0.6rem 1rem;
-  border-radius: 10px;
+  border-radius: 0.625rem;
   color: var(--text);
   background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.2);
   transition: background 0.15s ease;
 }
 .btn-ghost:hover {
@@ -221,10 +221,10 @@ select.glass-input option {
   font-weight: 600;
   cursor: pointer;
   padding: 0.8rem 1.5rem;
-  border-radius: 12px;
+  border-radius: var(--radio);
   color: var(--text);
   background: rgba(238, 117, 58, 0.12);
-  border: 1px solid rgba(238, 117, 58, 0.45);
+  border: 0.0625rem solid rgba(238, 117, 58, 0.45);
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 .btn-run:hover:not(:disabled) {
@@ -246,10 +246,10 @@ select.glass-input option {
   font-size: 0.9rem;
   cursor: pointer;
   padding: 0.5rem 0.85rem;
-  border-radius: 10px;
+  border-radius: 0.625rem;
   color: var(--muted);
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.12);
   transition: background 0.15s ease, color 0.15s ease;
 }
 .adv-toggle:hover {
@@ -265,15 +265,15 @@ select.glass-input option {
 }
 .adv-panel {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
   gap: 1rem;
   align-items: start;
 }
 .adv-section {
   padding: 1.15rem 1.25rem;
-  border-radius: 12px;
+  border-radius: var(--radio);
   background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.09);
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
@@ -289,12 +289,12 @@ select.glass-input option {
 
 .log {
   margin: 0;
-  max-height: 260px;
+  max-height: 16.25rem;
   overflow-y: auto;
   padding: 1rem;
-  border-radius: 10px;
+  border-radius: 0.625rem;
   background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.12);
   font-family: ui-monospace, Consolas, monospace;
   font-size: 0.8rem;
   line-height: 1.5;
@@ -319,17 +319,17 @@ select.glass-input option {
   background: rgba(0, 0, 0, 0.78);
 }
 .pm-card {
-  width: min(560px, 100%);
+  width: min(35rem, 100%);
   max-height: 88vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 1.1rem;
   padding: 1.6rem 1.7rem;
-  border-radius: 16px;
+  border-radius: 1rem;
   background: rgba(20, 20, 22, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.55);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 0.75rem 1.5rem rgba(0, 0, 0, 0.55);
 }
 .pm-title {
   margin: 0;
@@ -423,8 +423,8 @@ select.glass-input option {
   font-weight: 700;
   color: #f87171;
   background: rgba(248, 113, 113, 0.14);
-  border: 1px solid rgba(248, 113, 113, 0.35);
-  border-radius: 999px;
+  border: 0.0625rem solid rgba(248, 113, 113, 0.35);
+  border-radius: 62.4375rem;
   padding: 0.05rem 0.45rem;
   white-space: nowrap;
 }
@@ -440,14 +440,14 @@ select.glass-input option {
 }
 .pm-bar {
   flex: 1;
-  height: 7px;
-  border-radius: 999px;
+  height: 0.4375rem;
+  border-radius: 62.4375rem;
   background: rgba(255, 255, 255, 0.1);
   overflow: hidden;
 }
 .pm-bar-fill {
   height: 100%;
-  border-radius: 999px;
+  border-radius: 62.4375rem;
   background: var(--orange);
   transition: width 0.25s ease;
 }
@@ -472,7 +472,7 @@ select.glass-input option {
   color: #fbbf24;
 }
 .pm-detail {
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: 0.0625rem solid rgba(255, 255, 255, 0.1);
   padding-top: 0.8rem;
 }
 .pm-detail-toggle {
@@ -489,12 +489,12 @@ select.glass-input option {
 }
 .pm-log {
   margin: 0.7rem 0 0;
-  max-height: 200px;
+  max-height: 12.5rem;
   overflow-y: auto;
   padding: 0.8rem;
-  border-radius: 10px;
+  border-radius: 0.625rem;
   background: rgba(0, 0, 0, 0.4);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.1);
   font-family: ui-monospace, Consolas, monospace;
   font-size: 0.76rem;
   line-height: 1.5;
@@ -507,13 +507,13 @@ select.glass-input option {
   justify-content: flex-end;
 }
 .pm-close {
-  min-width: 140px;
+  min-width: 8.75rem;
 }
 
 /* --- Sufijos de separación (pantalla simple) ------------------------------ */
 .suffix-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
   gap: 0.6rem;
 }
 .suffix-cell {
@@ -557,7 +557,7 @@ select.glass-input option {
   font: inherit;
   color: inherit;
   text-decoration: underline;
-  text-underline-offset: 2px;
+  text-underline-offset: 0.125rem;
   cursor: pointer;
   opacity: 0.85;
 }
@@ -565,9 +565,9 @@ select.glass-input option {
   opacity: 1;
 }
 .link-inline:focus-visible {
-  outline: 1px solid currentColor;
-  outline-offset: 2px;
-  border-radius: 2px;
+  outline: 0.0625rem solid currentColor;
+  outline-offset: 0.125rem;
+  border-radius: 0.125rem;
 }
 
 /* --- Config: lista de % de recorte por modelo ----------------------------- */
@@ -594,10 +594,10 @@ select.glass-input option {
   cursor: pointer;
   text-align: left;
   padding: 0.55rem 0.75rem;
-  border-radius: 10px;
+  border-radius: 0.625rem;
   color: var(--text);
   background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 .config-item-main:hover {
@@ -616,10 +616,10 @@ select.glass-input option {
   font: inherit;
   cursor: pointer;
   padding: 0 0.7rem;
-  border-radius: 10px;
+  border-radius: 0.625rem;
   color: var(--muted, #8b93a1);
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.12);
   transition: color 0.15s ease, background 0.15s ease;
 }
 .config-del:hover {
@@ -659,10 +659,10 @@ select.glass-input option {
   line-height: 1;
   cursor: pointer;
   padding: 0.1rem 0.45rem;
-  border-radius: 6px;
+  border-radius: 0.375rem;
   color: var(--text);
   background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
   transition: background 0.15s ease;
 }
 .estad-arrow:hover:not(:disabled) {
@@ -689,7 +689,7 @@ select.glass-input option {
 .pf-facts {
   margin: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(12.5rem, 1fr));
   gap: 0.55rem 1.2rem;
 }
 .pf-item {
@@ -712,8 +712,8 @@ select.glass-input option {
 .pf-flights {
   max-height: 34vh;
   overflow-y: auto;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
+  border: 0.0625rem solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.625rem;
 }
 .pf-table {
   width: 100%;
@@ -758,7 +758,7 @@ select.glass-input option {
 
 /* ---- modal de actualización (UpdateModal.jsx) ---------------------------- */
 .up-card {
-  width: min(480px, 100%);
+  width: min(30rem, 100%);
 }
 .up-sub {
   margin: 0;
@@ -770,9 +770,9 @@ select.glass-input option {
   max-height: 9rem;
   overflow-y: auto;
   padding: 0.7rem 0.8rem;
-  border-radius: 10px;
+  border-radius: 0.625rem;
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.08);
   color: var(--muted);
   font-size: 0.82rem;
   white-space: pre-wrap;
@@ -783,8 +783,8 @@ select.glass-input option {
   gap: 0.45rem;
 }
 .up-bar {
-  height: 6px;
-  border-radius: 999px;
+  height: 0.375rem;
+  border-radius: 62.4375rem;
   overflow: hidden;
   background: rgba(255, 255, 255, 0.1);
 }
@@ -823,15 +823,15 @@ select.glass-input option {
   gap: 0.15rem;
   max-height: 15rem;
   overflow-y: auto;
-  border-radius: 10px;
-  border: 2px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.625rem;
+  border: 0.125rem solid rgba(255, 255, 255, 0.12);
   background: rgba(0, 0, 0, 0.2);
 }
 .insp-item {
   width: 100%;
   padding: 0.5rem 0.6rem;
   border: 0;
-  border-radius: 7px;
+  border-radius: 0.4375rem;
   background: none;
   font: inherit;
   color: var(--text);
@@ -842,8 +842,8 @@ select.glass-input option {
   background: rgba(255, 255, 255, 0.08);
 }
 .insp-item:focus-visible {
-  outline: 2px solid var(--orange);
-  outline-offset: -2px;
+  outline: 0.125rem solid var(--orange);
+  outline-offset: -0.125rem;
 }
 .insp-item:disabled {
   opacity: 0.5;
@@ -874,14 +874,14 @@ select.glass-input option {
   border-radius: 2rem;
   color: var(--text);
   background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.2);
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 .insp-chip:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.12);
 }
 .insp-chip:focus-visible {
-  outline: 2px solid var(--orange);
+  outline: 0.125rem solid var(--orange);
   outline-offset: 0.125rem;
 }
 .insp-chip:disabled {
@@ -927,20 +927,20 @@ select.glass-input option {
 .subida-panel {
   margin-top: 0.75rem;
   padding: 0.75rem;
-  border-radius: 10px;
-  border: 2px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.625rem;
+  border: 0.125rem solid rgba(255, 255, 255, 0.12);
   background: rgba(0, 0, 0, 0.2);
 }
 .subida-barra {
   height: 0.5rem;
-  border-radius: 999px;
+  border-radius: 62.4375rem;
   background: rgba(255, 255, 255, 0.1);
   overflow: hidden;
 }
 .subida-relleno {
   display: block;
   height: 100%;
-  border-radius: 999px;
+  border-radius: 62.4375rem;
   background: var(--orange);
   /* Acompaña al dato, no lo anima por gusto: la barra avanza a saltos según
      confirma GCS cada trozo de 16 MB, y sin transición eso se ve a tirones. */
@@ -979,7 +979,7 @@ select.glass-input option {
   overflow: hidden;
   text-overflow: ellipsis;
   padding-bottom: 0.4rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 0.0625rem solid rgba(255, 255, 255, 0.1);
 }
 .picker-lista {
   list-style: none;
@@ -1001,10 +1001,10 @@ select.glass-input option {
   text-align: left;
   cursor: pointer;
   padding: 0.55rem 0.75rem;
-  border-radius: 10px;
+  border-radius: 0.625rem;
   color: var(--text);
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.1);
   transition: background 0.15s ease;
 }
 .picker-fila:hover,
@@ -1035,4 +1035,40 @@ select.glass-input option {
 @media (max-width: 34rem) {
   .seg-btn .seg-txt { display: none; }
   .seg-btn.active .seg-txt { display: inline; }
+}
+
+/* A 480x320 no hay sitio para dos columnas ni para ver varias fases a la vez:
+   una columna, un paso por pantalla y scroll. La cabecera se queda fija para
+   no perder el contexto de en que pestana estas. */
+@media (max-width: 34rem), (max-height: 26rem) {
+  .app { gap: var(--u); }
+  .block-grid { grid-template-columns: 1fr; gap: var(--u); }
+  .brand { position: sticky; top: 0; z-index: 2; background: var(--bg); }
+  .app > main { padding: var(--u); overflow-y: auto; }
+  button, .glass-input, input, select { min-height: var(--toque-min); }
+}
+
+/* Un modal centrado con margenes en 480x320 deja una ventana util ridicula:
+   a esta resolucion ocupan todo. Cubre tambien al FolderPicker, que reusa
+   .pm-overlay/.pm-card. */
+@media (max-width: 34rem), (max-height: 26rem) {
+  .pm-overlay { padding: 0; }
+  .pm-card,
+  .pm-card.up-card,
+  .pm-card.picker-card {
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    max-height: none;
+    border-radius: 0;
+    padding: var(--u);
+    display: flex;
+    flex-direction: column;
+  }
+  /* Lo que crece y scrollea dentro de la caja, en vez de desbordarla. */
+  .picker-lista { flex: 1; max-height: none; }
+  .pm-log { max-height: 30vh; }
+  .pf-flights { max-height: 40vh; }
+  .up-notes { max-height: 20vh; }
+  .pm-close { min-width: 0; }
 }
