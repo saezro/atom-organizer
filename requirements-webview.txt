@@ -1,7 +1,14 @@
 # Capa UI React (pywebview) — se instala ADEMÁS de requirements(-linux).txt
 # En Windows el backend es WebView2 (nativo, sin deps extra).
 # En Linux se usa el backend Qt de pywebview → requiere qtpy + PySide6
-# (PySide6 ya está en el requirements principal).
+# (PySide6 ya está en el requirements principal, hoy 6.11.2).
+#
+# 2026-08-18: pywebview 6.2.1 es la última publicada y no se toca. Lo que sí
+# subió con el resto es PySide6 (6.4.2 -> 6.11.2), que es el backend Qt de
+# pywebview en Linux. Comprobado que `webview.platforms.qt` importa y resuelve
+# el renderer QtWebEngine con esa pareja (no se ha abierto ventana: sin display
+# en el servidor). La Raspberry Pi NO usa esta capa: va en modo `--server`
+# (Chromium del sistema), así que ahí Qt no entra en juego.
 pywebview==6.2.1
 qtpy==2.4.3
 # deps transitivas de pywebview (fijadas por reproducibilidad):
@@ -9,4 +16,4 @@ bottle==0.13.4
 proxy-tools==0.1.0
 
 # pd.read_excel necesita esta lib para leer estadillos .xlsx
-openpyxl==3.1.2
+openpyxl==3.1.5
