@@ -8,17 +8,18 @@ import UpdateModal from './UpdateModal'
 import EstadilloField from './EstadilloField'
 import InspeccionSelector from './InspeccionSelector'
 import FolderPicker from './FolderPicker'
+import NavIcon from './NavIcon'
 import './App.css'
 
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
 const ADV_FIELDS = SPLIT_ADVANCED.flatMap((s) => s.fields)
 
 const NAV = [
-  { id: 'organizar', label: 'Organizar' },
-  { id: 'bucket', label: 'SUBIR AL BUCKET' },
-  { id: 'aerotools', label: 'AEROTOOLS' },
-  { id: 'otros', label: 'OTROS EQUIPOS' },
-  { id: 'config', label: 'CONFIGURACIÓN' },
+  { id: 'organizar', label: 'Organizar', corto: 'Organizar' },
+  { id: 'bucket', label: 'SUBIR AL BUCKET', corto: 'Bucket' },
+  { id: 'aerotools', label: 'AEROTOOLS', corto: 'Aerotools' },
+  { id: 'otros', label: 'OTROS EQUIPOS', corto: 'Equipos' },
+  { id: 'config', label: 'CONFIGURACIÓN', corto: 'Config' },
 ]
 
 function formatBytes(n) {
@@ -336,8 +337,11 @@ function App() {
             key={n.id}
             className={'seg-btn' + (section === n.id ? ' active' : '')}
             onClick={() => setSection(n.id)}
+            title={n.label}
+            aria-label={n.label}
           >
-            {n.label}
+            <NavIcon id={n.id} />
+            <span className="seg-txt">{n.corto}</span>
           </button>
         ))}
       </nav>

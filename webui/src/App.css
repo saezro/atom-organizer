@@ -8,22 +8,28 @@
 /* navegación por secciones (segmented control glass) */
 .seg {
   display: flex;
-  gap: 0.35rem;
-  padding: 0.3rem;
-  border-radius: 12px;
+  gap: var(--u);
+  padding: var(--u);
+  border-radius: var(--radio);
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.1);
 }
 .seg-btn {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) / 2);
   font: inherit;
-  font-size: 0.9rem;
+  font-size: var(--fs-sm);
   cursor: pointer;
-  padding: 0.5rem 0.75rem;
-  border-radius: 9px;
+  padding: var(--u);
+  border-radius: var(--radio);
+  min-height: var(--toque-min);
   color: var(--muted);
   background: transparent;
-  border: 1px solid transparent;
+  border: 0.0625rem solid transparent;
   transition: background 0.15s ease, color 0.15s ease;
 }
 .seg-btn:hover {
@@ -1022,4 +1028,11 @@ select.glass-input option {
 .picker-acciones .btn-ghost,
 .picker-acciones .btn-run {
   min-height: 2.75rem;
+}
+
+/* En 480 de ancho no caben cinco etiquetas: solo se lee la de la pestana
+   activa, el resto quedan como iconos. */
+@media (max-width: 34rem) {
+  .seg-btn .seg-txt { display: none; }
+  .seg-btn.active .seg-txt { display: inline; }
 }
