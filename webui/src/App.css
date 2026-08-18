@@ -1012,17 +1012,19 @@ select.glass-input option {
   background: rgba(255, 255, 255, 0.1);
 }
 /* Relleno de la pulsacion larga: crece de izquierda a derecha durante
-   --pulsacion, y al completarse es cuando la fila se activa. La barra llena
-   significa literalmente "ya esta", no "estoy pensandolo". */
-.picker-fila {
+   --pulsacion, y al completarse es cuando el boton se activa. La barra llena
+   significa literalmente "ya esta", no "estoy pensandolo". Generico via
+   `.pulsable`, usado por cualquier BotonLargo con `larga` (no solo las filas
+   del selector de carpetas). */
+.pulsable {
   position: relative;
   overflow: hidden;
 }
-.picker-fila > * {
+.pulsable > * {
   position: relative;
   z-index: 1;
 }
-.picker-fila.pulsando::after {
+.pulsable.pulsando::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -1269,4 +1271,31 @@ select.glass-input option {
     background-clip: content-box;
   }
   .picker-lista::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.04); }
+}
+
+/* Modo de prueba desde un navegador de escritorio: `?cursor` en la URL repone
+   el puntero. La Pi se maneja con el dedo y el cursor oculto es lo correcto
+   alli, pero al probar el kiosco con raton deja sin ver donde vas a pulsar.
+   La Pi nunca lleva ese parametro, asi que su comportamiento no cambia. */
+html[data-cursor] .kiosk,
+html[data-cursor] .kiosk *,
+html[data-cursor] .pm-overlay,
+html[data-cursor] .pm-overlay * { cursor: default; }
+html[data-cursor] .kiosk button,
+html[data-cursor] .kiosk [role="button"],
+html[data-cursor] .pm-overlay button,
+html[data-cursor] .picker-fila,
+html[data-cursor] .picker-card { cursor: pointer; }
+
+/* Vuelta al kiosco desde la UI completa. Solo se renderiza en modo servidor
+   (ver App.jsx): el avatar del kiosco saca de el, y en la Pi no hay barra de
+   URL para recargar, asi que sin esto la salida seria de un solo sentido. */
+.volver-kiosco {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: auto;
+  align-self: center;
+  font-size: var(--fs-sm);
+  min-height: var(--toque-min);
 }
