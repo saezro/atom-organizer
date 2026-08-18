@@ -36,7 +36,9 @@ fi
 # Se antepone con LD_PRELOAD porque el bundle fija su LD_LIBRARY_PATH más tarde.
 # Si la distro no la trae, no se precarga nada y sigue valiendo la del bundle:
 # preferimos el fallo raro al fallo de no arrancar.
-for _libdir in /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
+# El glob multiarch cubre aarch64 (la Raspberry Pi) sin nombrar cada tripleta:
+# si no expande, el literal no existe y el `-e` lo descarta igual.
+for _libdir in /usr/lib /usr/lib64 /usr/lib/*-linux-gnu* /lib/*-linux-gnu*; do
     if [ -e "$_libdir/libxkbcommon.so.0" ]; then
         LD_PRELOAD="$_libdir/libxkbcommon.so.0${LD_PRELOAD:+:$LD_PRELOAD}"
         export LD_PRELOAD
