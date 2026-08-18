@@ -59,6 +59,18 @@ export default function BotonLargo({ className = '', larga, cancelarAlMover = fa
       className={pulsando ? `${className} pulsable pulsando` : `${className} pulsable`}
       onPointerDown={(e) => {
         y0.current = e.clientY
+        // La onda nace donde cae el dedo, no en el centro: se lee como "he
+        // tocado AQUI". Se pasa por custom properties para que la animacion
+        // siga viviendo entera en CSS. El diametro se calcula a la esquina mas
+        // lejana, asi la onda cubre el boton justo al completarse y ni antes
+        // ni despues (con un tamano fijo, en botones anchos sobraria mucho).
+        const r = e.currentTarget.getBoundingClientRect()
+        const x = e.clientX - r.left
+        const y = e.clientY - r.top
+        const radio = Math.hypot(Math.max(x, r.width - x), Math.max(y, r.height - y))
+        e.currentTarget.style.setProperty('--pulsacion-x', `${x}px`)
+        e.currentTarget.style.setProperty('--pulsacion-y', `${y}px`)
+        e.currentTarget.style.setProperty('--pulsacion-d', `${radio * 2}px`)
         setPulsando(true)
         temporizador.current = setTimeout(() => {
           temporizador.current = null

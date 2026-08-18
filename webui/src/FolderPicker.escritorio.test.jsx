@@ -18,6 +18,7 @@ vi.mock('./bridge.js', () => ({
       }
       return { ok: true, path, parent: '/home/rebeca', dirs: [], files: [] }
     }),
+    defaultDir: vi.fn(async () => ({ ok: true, path: '/media/pi/USB' })),
   },
 }))
 
@@ -49,5 +50,12 @@ describe('FolderPicker en escritorio', () => {
     render(<FolderPicker mode="folder" startPath={null} onPick={() => {}} onCancel={() => {}} />)
     await screen.findByText('VUELOS')
     expect(screen.queryByText(/Mantén el dedo/i)).toBeNull()
+  })
+
+  it('en escritorio no llama a defaultDir: arranca en el home de siempre', async () => {
+    render(<FolderPicker mode="folder" startPath={null} onPick={() => {}} onCancel={() => {}} />)
+    await screen.findByText('VUELOS')
+    expect(api.defaultDir).not.toHaveBeenCalled()
+    expect(api.listDir).toHaveBeenCalledWith(null)
   })
 })

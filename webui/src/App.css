@@ -1027,15 +1027,40 @@ select.glass-input option {
 .pulsable.pulsando::after {
   content: '';
   position: absolute;
-  inset: 0;
+  /* Punto de contacto y diametro los fija BotonLargo en `onPointerDown`. Los
+     valores por defecto (centro) solo actuarian si la onda arrancase sin
+     puntero, que no ocurre. */
+  left: var(--pulsacion-x, 50%);
+  top: var(--pulsacion-y, 50%);
+  width: var(--pulsacion-d, 100%);
+  height: var(--pulsacion-d, 100%);
   z-index: 0;
-  background: rgba(238, 117, 58, 0.55);
-  transform-origin: left center;
-  animation: picker-pulsacion var(--pulsacion) linear forwards;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(238, 117, 58, 0.8) 0%,
+    rgba(238, 117, 58, 0.5) 65%,
+    rgba(238, 117, 58, 0.28) 100%
+  );
+  pointer-events: none;
+  /* `linear` a proposito: la onda mide tiempo, y acelerarla o frenarla mentiria
+     sobre cuanto falta. Que llegue al borde significa literalmente "ya esta". */
+  animation: pulsacion-onda var(--pulsacion) linear forwards;
 }
-@keyframes picker-pulsacion {
-  from { transform: scaleX(0); }
-  to { transform: scaleX(1); }
+/* Solo transform y opacity: el compositor las resuelve sin repintar, que es lo
+   que mantiene la onda fluida en la Raspberry Pi. */
+@keyframes pulsacion-onda {
+  from { transform: translate(-50%, -50%) scale(0); opacity: 0.85; }
+  to { transform: translate(-50%, -50%) scale(1); opacity: 0.5; }
+}
+/* Quien no soporte animaciones (o las tenga desactivadas) sigue viendo que el
+   boton esta pulsado, aunque no la onda. */
+@media (prefers-reduced-motion: reduce) {
+  .pulsable.pulsando::after {
+    animation: none;
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0.4;
+  }
 }
 .picker-txt {
   overflow: hidden;
@@ -1054,6 +1079,20 @@ select.glass-input option {
   font-size: 1rem;
 }
 .picker-vacio {
+  padding: 0.6rem 0.2rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+/* Placeholder DENTRO de la lista mientras carga: el "Cargando..." de
+   pm-status vive debajo de la lista, fuera del sitio donde el operador
+   mira en el kiosco (una <ul> vacia se percibe como "no ha respondido").
+   Este vive donde estaria la primera fila, con el mismo alto minimo de
+   toque que las demas filas para que el layout no salte al llegar datos. */
+.picker-cargando {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--toque-min);
   padding: 0.6rem 0.2rem;
   font-size: 0.85rem;
   color: var(--muted);
