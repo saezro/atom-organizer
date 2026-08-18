@@ -89,12 +89,18 @@ Todo accesible, no menos funcionalidad:
   con breakpoints reales. Una columna, scroll vertical, un paso por pantalla.
 - Las 5 pestañas de texto ("Organizar / SUBIR AL BUCKET / AEROTOOLS / OTROS
   EQUIPOS / CONFIGURACIÓN") no caben en 480 de ancho: pasan a barra de iconos
-  `react-icons/fi` con la etiqueta de la pestaña activa visible.
+  con la etiqueta de la pestaña activa visible. Los iconos van como **SVG
+  inline**, NO con `react-icons`: `webui/package.json` solo depende de `react` y
+  `react-dom`, y añadir esa librería engordaría el bundle que va empaquetado
+  dentro del ejecutable a cambio de cinco iconos.
 - Targets táctiles ≥ 2.75rem.
 - `ProgressModal`, `PreflightModal` y `UpdateModal` a pantalla completa en esa
   resolución.
-- Se respeta el Sistema de Diseño de Atom: dark-first (`#0a0a0a`), naranja
-  `#EE763C` para CTAs, iconos solo de `react-icons/fi`.
+- Se respeta el Sistema de Diseño de Atom en lo aplicable: dark-first
+  (`#0a0a0a`, ya es el `background_color` de la ventana), naranja `#EE763C` para
+  CTAs. `App.css` (959 líneas) no tiene bloque `:root` con variables y usa `px`
+  en 72 sitios: el rediseño introduce las variables y erradica los `px` del
+  layout.
 
 ### Pieza 3 — Dependencias en ARM64
 
