@@ -26,6 +26,8 @@ from pathlib import Path
 
 import webview
 
+from atom_core.event_sink import WebviewSink
+
 def _base_dir() -> Path:
     """Dir base de recursos: bajo PyInstaller onefile los datas se extraen a
     ``sys._MEIPASS``; en ejecución normal, el dir de este script. (Espeja
@@ -110,6 +112,7 @@ class Api:
 
     def __init__(self) -> None:
         self._window = None
+        self._sink = None
         self._running = False
         self._downloading = False
         self._update_path: str | None = None
@@ -131,6 +134,11 @@ class Api:
 
     def bind_window(self, window) -> None:
         self._window = window
+        self._sink = WebviewSink(window)
+
+    def bind_sink(self, sink) -> None:
+        """Modo servidor: no hay ventana, solo un canal de eventos."""
+        self._sink = sink
 
     # ---- utilidades / prueba de vida --------------------------------------
     def ping(self, who: str = "?") -> dict:
@@ -368,14 +376,9 @@ class Api:
         return updater.install(path or self._update_path or "", on_failure=on_failure)
 
     def _push_update(self, detail: dict) -> None:
-        if not self._window:
+        if not self._sink:
             return
-        js = ("window.dispatchEvent(new CustomEvent('atom:update',"
-              f"{{detail:{json.dumps(detail)}}}))")
-        try:
-            self._window.evaluate_js(js)
-        except Exception:
-            pass
+        self._sink.dispatch("atom:update", detail)
 
     def start_update_check(self, delay: float = 3.0) -> None:
         """Chequeo automático diferido tras el arranque (como el migrador: 3 s),
@@ -919,14 +922,9 @@ class Api:
         return {"ok": True}
 
     def _push_cloud(self, detail: dict) -> None:
-        if not self._window:
+        if not self._sink:
             return
-        js = ("window.dispatchEvent(new CustomEvent('atom:cloud',"
-              f"{{detail:{json.dumps(detail)}}}))")
-        try:
-            self._window.evaluate_js(js)
-        except Exception:
-            pass
+        self._sink.dispatch("atom:cloud", detail)
 
     # ---- disparo del pipeline ---------------------------------------------
     def run_organize(self, params: dict, advanced: dict | None = None) -> dict:
@@ -991,7 +989,7 @@ class Api:
         vaciado: marcan cambios de estado que la UI no puede mostrar con retraso,
         y `done` ademas cierra la corrida.
         """
-        if not self._window:
+        if not self._sink:
             return
         with self._push_lock:
             self._push_buf.append(detail)
@@ -1031,15 +1029,8 @@ class Api:
             if d.get("kind") != "progress" or d is ultimo_progress
         ]
 
-        js = "".join(
-            "window.dispatchEvent(new CustomEvent('atom:progress',"
-            f"{{detail:{json.dumps(d)}}}));"
-            for d in compactados
-        )
-        try:
-            self._window.evaluate_js(js)
-        except Exception:
-            pass  # ventana cerrada a mitad de proceso
+        if self._sink:
+            self._sink.dispatch_many("atom:progress", compactados)
 
 
 def resolve_target(dev: bool) -> str:
