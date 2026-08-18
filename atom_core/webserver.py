@@ -1,6 +1,9 @@
 """Modo servidor: sirve la webui por HTTP en vez de meterla en una ventana Qt.
 
-Existe para la Raspberry Pi (ARM64), donde PySide6/QtWebEngine no es viable.
+Existe para la Raspberry Pi para no arrastrar un segundo Chromium (el de
+QtWebEngine, ~400 MB) en una maquina que ya trae el suyo con aceleracion
+propia, y porque los dialogos nativos de Qt son inusables en una pantalla
+tactil de 480x320.
 Usa solo la stdlib a proposito: anadir dependencias es justo el problema que
 este modo resuelve.
 """
@@ -12,7 +15,9 @@ import mimetypes
 import os
 import queue
 import threading
+import traceback
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 # Allowlist explicita. NO se usa `hasattr` para decidir que es alcanzable: un
 # metodo nuevo debe entrar aqui a mano y de forma consciente.
@@ -31,9 +36,23 @@ METODOS_EXPUESTOS = frozenset({
     "run_organize", "run_task",
 })
 
+# Origenes considerados same-origin/local para la validacion de CSRF en
+# `do_POST`. El puerto es irrelevante, solo importa el host.
+_ORIGENES_LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+# Ningun metodo de la allowlist sube ficheros por HTTP (`cloud_upload` sube
+# al bucket desde disco), asi que un body razonable basta de sobra.
+_MAX_BODY = 10 * 1024 * 1024  # 10 MB
+
+
+def _origen_permitido(origin: str) -> bool:
+    return urlsplit(origin).hostname in _ORIGENES_LOOPBACK
+
 
 def _handler_factory(api, dist_dir: str, sink):
     class Handler(SimpleHTTPRequestHandler):
+        timeout = 30  # no aplica al SSE, que es de larga duracion por diseno
+
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=dist_dir, **kw)
 
@@ -86,18 +105,43 @@ def _handler_factory(api, dist_dir: str, sink):
                 sink.unsubscribe(cola)
 
         def do_POST(self):
-            if not self.path.startswith("/api/"):
+            ruta = self.path.split("?", 1)[0]
+            if not ruta.startswith("/api/"):
                 return self._json(404, {"error": "ruta desconocida"})
-            metodo = self.path[len("/api/"):].strip("/")
+            metodo = ruta[len("/api/"):].strip("/")
             if metodo not in METODOS_EXPUESTOS:
                 return self._json(404, {"error": f"metodo no expuesto: {metodo}"})
+
+            # CSRF: sin esto, un <form enctype="text/plain"> en cualquier web
+            # abierta en el Chromium de la Pi puede llamar a estos metodos sin
+            # interaccion del usuario (simple request, sin preflight CORS).
+            content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                return self._json(415, {"error": "Content-Type debe ser application/json"})
+
+            origin = self.headers.get("Origin")
+            if origin and not _origen_permitido(origin):
+                return self._json(403, {"error": "origen no permitido"})
+
+            # Content-Length llega del cliente: puede no ser un numero, o ser
+            # negativo (y `rfile.read(-1)` leeria hasta EOF, colgando el hilo
+            # hasta el timeout). Se valida antes de usarlo.
             try:
                 largo = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return self._json(400, {"error": "Content-Length invalido"})
+            if largo < 0:
+                return self._json(400, {"error": "Content-Length invalido"})
+            if largo > _MAX_BODY:
+                return self._json(413, {"error": "cuerpo demasiado grande"})
+
+            try:
                 cuerpo = json.loads(self.rfile.read(largo) or b"{}")
                 args = cuerpo.get("args") or []
                 resultado = getattr(api, metodo)(*args)
-            except Exception as exc:  # noqa: BLE001 — el front necesita el motivo
-                return self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # noqa: BLE001 — no filtrar detalles internos al cliente
+                traceback.print_exc()
+                return self._json(500, {"error": "error interno al ejecutar el metodo"})
             return self._json(200, {"result": resultado})
 
     return Handler

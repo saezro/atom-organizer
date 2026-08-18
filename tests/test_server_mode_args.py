@@ -32,7 +32,7 @@ def test_import_webview_da_error_claro_si_no_esta(monkeypatch):
     monkeypatch.setattr(app_webview.importlib, "import_module", _boom)
     try:
         app_webview._import_webview()
-    except SystemExit as exc:
+    except RuntimeError as exc:
         assert "--server" in str(exc)  # le dice al usuario la salida
     else:
-        raise AssertionError("deberia haber salido con SystemExit")
+        raise AssertionError("deberia haber saltado RuntimeError")
