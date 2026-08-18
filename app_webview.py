@@ -38,7 +38,7 @@ def _import_webview():
     try:
         return importlib.import_module("webview")
     except ImportError as exc:
-        sys.exit(
+        raise RuntimeError(
             f"[app_webview] No se pudo cargar pywebview/Qt: {exc}\n"
             "Si estas en Raspberry Pi u otro ARM64, arranca en modo servidor:\n"
             "    python app_webview.py --server\n"
@@ -1111,7 +1111,10 @@ def main() -> None:
         servir(api, str(DIST_INDEX.parent), args.host, args.port, sink)
         return
 
-    webview = _import_webview()
+    try:
+        webview = _import_webview()
+    except RuntimeError as exc:
+        sys.exit(str(exc))
 
     target = resolve_target(args.dev)
     api = Api()
