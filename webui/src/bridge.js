@@ -1,5 +1,29 @@
-// Puente con el backend Python (pywebview). Todo el acceso a `window.pywebview`
-// pasa por aquí para aislar la app de React del shell.
+// Puente con el backend Python (pywebview) o con el servidor HTTP+SSE del
+// modo `--server` (Raspberry Pi). Todo el acceso a `window.pywebview` pasa
+// por aquí para aislar la app de React del shell.
+
+// El Organizer corre en dos shells: pywebview/Qt (Windows) y un navegador
+// contra el modo `--server` (Raspberry Pi, donde se sirve la UI por HTTP para
+// no arrastrar un segundo Chromium ni depender de dialogos nativos).
+// La deteccion es por presencia: si `window.pywebview` no aparece, es servidor.
+// No se puede decidir al importar el modulo porque en Qt la inyeccion es
+// asincrona; por eso `whenBridgeReady` da un plazo antes de rendirse.
+const ESPERA_PYWEBVIEW_MS = 1500
+let modoServidor = null
+
+// Heuristica sincrona para quien necesite el modo antes de que
+// `whenBridgeReady` concluya: si `modoServidor` sigue en null, se responde por
+// la presencia de `window.pywebview` AHORA MISMO. OJO: durante el arranque en
+// Windows puede decir `true` en falso, porque la inyeccion de Qt es asincrona.
+// Solo vale para decisiones reversibles de presentacion; nada irreversible ni
+// con efectos de red debe colgar de esto (ver el bloque de `conectarEventos`).
+function modoServidorActual() {
+  return modoServidor === null ? !window.pywebview : modoServidor
+}
+
+export function isServerMode() {
+  return modoServidorActual()
+}
 
 // El puente queda "ready" cuando pywebview inyecta `window.pywebview.api`.
 // En WebView2 (Windows) el evento one-shot `pywebviewready` puede dispararse
@@ -10,25 +34,59 @@
 // Linux/Qt (ahí gana el check inicial o el evento y el intervalo se limpia).
 export function whenBridgeReady() {
   return new Promise((resolve) => {
-    if (window.pywebview?.api) return resolve()
+    if (window.pywebview?.api) { modoServidor = false; return resolve() }
     let done = false
     let timer = null
-    const finish = () => {
+    const finish = (servidor) => {
       if (done) return
       done = true
+      modoServidor = servidor
       if (timer !== null) clearInterval(timer)
-      window.removeEventListener('pywebviewready', finish)
+      clearTimeout(plazo)
+      window.removeEventListener('pywebviewready', alListo)
+      if (servidor) conectarEventos()
       resolve()
     }
-    window.addEventListener('pywebviewready', finish, { once: true })
-    timer = setInterval(() => {
-      if (window.pywebview?.api) finish()
-    }, 100)
+    const alListo = () => finish(false)
+    window.addEventListener('pywebviewready', alListo, { once: true })
+    timer = setInterval(() => { if (window.pywebview?.api) finish(false) }, 100)
+    // Si en este plazo no aparecio, no va a aparecer: es un navegador normal.
+    const plazo = setTimeout(() => finish(true), ESPERA_PYWEBVIEW_MS)
   })
 }
 
+let fuenteEventos = null
+
+function conectarEventos() {
+  if (fuenteEventos) return
+  fuenteEventos = new EventSource('/events')
+  for (const canal of ['atom:progress', 'atom:update', 'atom:cloud']) {
+    fuenteEventos.addEventListener(canal, (e) => {
+      window.dispatchEvent(new CustomEvent(canal, { detail: JSON.parse(e.data) }))
+    })
+  }
+}
+
+// El SSE se conecta SOLO desde `whenBridgeReady` al confirmar modo servidor.
+// No se conecta al cargar el modulo aunque `window.pywebview` aun no exista:
+// en Windows la inyeccion de Qt es asincrona y la pagina se carga por `file://`,
+// asi que un EventSource especulativo apuntaria a `file:///events`, fallaria y
+// se reconectaria en bucle para siempre. Adelantarlo tampoco aporta nada: los
+// eventos solo los emite Python en respuesta a una accion, y toda accion pasa
+// por `call`, que espera a `whenBridgeReady`.
+
 async function call(method, ...args) {
   await whenBridgeReady()
+  if (modoServidor) {
+    const r = await fetch(`/api/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ args }),
+    })
+    const cuerpo = await r.json()
+    if (!r.ok) throw new Error(cuerpo.error || `Error llamando a «${method}»`)
+    return cuerpo.result
+  }
   const fn = window.pywebview.api[method]
   if (!fn) throw new Error(`El bridge no expone «${method}»`)
   return fn(...args)
