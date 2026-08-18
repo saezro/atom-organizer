@@ -16,11 +16,32 @@
   --orange: #ee753a;
   --dot: rgba(255, 255, 255, 0.06);
 
+  /* Escala en rem para que la misma UI sirva en un portatil de 1100x760 y en
+     la pantalla de 480x320 de la Raspberry Pi: basta mover --u y --fs-* en el
+     breakpoint, sin tocar cada regla. */
+  --u: 0.5rem;
+  --fs-base: 1rem;
+  --fs-sm: 0.875rem;
+  --fs-lg: 1.125rem;
+  --radio: 0.75rem;
+  --toque-min: 2.75rem;       /* target tactil minimo */
+
   color-scheme: dark;
   color: var(--text);
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Pantalla de la Raspberry Pi: 480x320. Todo encoge de golpe desde aqui. */
+@media (max-width: 34rem), (max-height: 26rem) {
+  :root {
+    --u: 0.3125rem;
+    --fs-base: 0.8125rem;
+    --fs-sm: 0.6875rem;
+    --fs-lg: 0.9375rem;
+    --radio: 0.5rem;
+  }
 }
 
 * {
