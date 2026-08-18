@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, onCloud, onProgress, registerPicker, whenBridgeReady } from './bridge'
+import { api, isServerMode, onCloud, onProgress, registerPicker, whenBridgeReady } from './bridge'
 import { SECTIONS, SPLIT_ADVANCED } from './schema'
 import TaskBlock, { Field, initialState, buildParams } from './TaskBlock'
 import ProgressModal from './ProgressModal'
@@ -9,6 +9,7 @@ import EstadilloField from './EstadilloField'
 import InspeccionSelector from './InspeccionSelector'
 import FolderPicker from './FolderPicker'
 import NavIcon from './NavIcon'
+import KioskScreen from './KioskScreen'
 import './App.css'
 
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
@@ -187,6 +188,64 @@ function App() {
     return () => registerPicker(null)
   }, [])
 
+  // Pantalla por defecto en la Raspberry Pi (modo `--server`): la UI completa
+  // sigue montada debajo, `onAbrirCompleta` solo apaga este flag. La detección
+  // reutiliza el helper de bridge.js (no hay heurística propia aquí).
+  const [kiosco, setKiosco] = useState(() => isServerMode())
+  // Estado propio del kiosco, separado a propósito del de `BucketScreen`
+  // (`carpeta`) y `OrganizarScreen` (`destino`/`origen`): son pantallas
+  // independientes y no deben compartir selección.
+  const [kioskCarpeta, setKioskCarpeta] = useState('')
+  const [kioskEstadillo, setKioskEstadillo] = useState('')
+  const [kioskInspeccion, setKioskInspeccion] = useState(null)
+  // Estado de sesión cloud + catálogo de inspecciones para el kiosco. Se
+  // replica aquí lo que ya hace `BucketScreen` (misma llamada, mismo shape)
+  // porque esa pantalla no está montada cuando el kiosco es la vista activa.
+  const [kioskCloudStatus, setKioskCloudStatus] = useState(null)
+  const [kioskInspecciones, setKioskInspecciones] = useState([])
+  // Único job de subida «en crudo» propio del kiosco (no hay equivalente
+  // reutilizable a nivel de App: la subida normal vive dentro de
+  // `BucketScreen`, que no está montado en modo kiosco).
+  const [kioskSubiendo, setKioskSubiendo] = useState(false)
+  const [kioskCloudPct, setKioskCloudPct] = useState(null)
+
+  useEffect(() => {
+    if (!ready || !kiosco) return
+    api.cloudStatus().then(setKioskCloudStatus).catch(() => setKioskCloudStatus(null))
+    api
+      .cloudInspecciones()
+      .then((r) => setKioskInspecciones(r?.inspecciones || []))
+      .catch(() => setKioskInspecciones([]))
+  }, [ready, kiosco])
+
+  // Progreso de la subida «en crudo»: no hay suscripción a `atom:cloud` a
+  // nivel de App (solo la tiene `BucketScreen`, montada aparte), así que se
+  // añade aquí una mínima y local al kiosco, ignorando los eventos con
+  // `scope: 'estadillo'` (el kiosco no sube estadillos).
+  useEffect(
+    () =>
+      onCloud((d) => {
+        if (d.scope === 'estadillo') return
+        switch (d.kind) {
+          case 'start':
+            setKioskSubiendo(true)
+            setKioskCloudPct(0)
+            break
+          case 'stats':
+            setKioskCloudPct(d.bytes_total ? Math.round((d.bytes_done / d.bytes_total) * 100) : 0)
+            break
+          case 'done':
+          case 'error':
+            setKioskSubiendo(false)
+            setKioskCloudPct(null)
+            break
+          default:
+            break
+        }
+      }),
+    []
+  )
+
   useEffect(() => {
     whenBridgeReady()
       .then(() => api.appVersion())
@@ -322,32 +381,89 @@ function App() {
     startRun(task, params, advanced)
   }
 
+  // Replica `OrganizarScreen.handleRun`: mismo `task`/params que «Organizar
+  // completo» (`rename` por defecto, sin panel avanzado → `advanced: null`),
+  // así que pasa por el mismo `run()` de arriba y abre el mismo modal previo
+  // (si hay estadillo) y el mismo `ProgressModal`.
+  function kioskOrganizar({ origen, destino, estadillo }) {
+    run('split_images', { origen, destino, estadillo: estadillo ? [estadillo] : [], rename: true }, null)
+  }
+
+  async function kioskPickCarpeta() {
+    const path = await api.pickFolder()
+    if (path) setKioskCarpeta(path)
+  }
+
+  // Replica el tramo relevante de `BucketScreen.subir`: preparar + subir,
+  // sin el paso intermedio de «Comprobar carpeta» (el kiosco no tiene ese
+  // botón) y sin subida de estadillo (fuera del alcance de esta pantalla).
+  async function kioskSubirCrudo({ carpeta, inspeccion }) {
+    const prefijo = inspeccion?.prefijo
+    if (!carpeta || !prefijo) return
+    setKioskSubiendo(true)
+    try {
+      await api.cloudPrepare(carpeta, prefijo)
+      const r = await api.cloudUpload(carpeta, false, prefijo, inspeccion?.id)
+      if (r && r.started === false) setKioskSubiendo(false)
+    } catch {
+      setKioskSubiendo(false)
+    }
+  }
+
+  const kioskBusy = running || kioskSubiendo
+  const kioskFaseActiva = phases.find((p) => p.status === 'active')?.name || plant
+  const kioskProgreso = running
+    ? { fase: kioskFaseActiva || 'Procesando…', pct: progress }
+    : kioskSubiendo
+      ? { fase: 'Subiendo', pct: kioskCloudPct ?? 0 }
+      : null
+
   return (
     <div className="app">
-      <header className="brand">
-        <h1>
-          <span className="atom">ATOM</span> <span className="org">ORGANIZER</span>
-        </h1>
-        {version && <span className="ver">v{version}</span>}
-      </header>
+      {!kiosco && (
+        <header className="brand">
+          <h1>
+            <span className="atom">ATOM</span> <span className="org">ORGANIZER</span>
+          </h1>
+          {version && <span className="ver">v{version}</span>}
+        </header>
+      )}
 
-      <nav className="seg">
-        {NAV.map((n) => (
-          <button
-            key={n.id}
-            className={'seg-btn' + (section === n.id ? ' active' : '')}
-            onClick={() => setSection(n.id)}
-            title={n.label}
-            aria-label={n.label}
-          >
-            <NavIcon id={n.id} />
-            <span className="seg-txt">{n.corto}</span>
-          </button>
-        ))}
-      </nav>
+      {!kiosco && (
+        <nav className="seg">
+          {NAV.map((n) => (
+            <button
+              key={n.id}
+              className={'seg-btn' + (section === n.id ? ' active' : '')}
+              onClick={() => setSection(n.id)}
+              title={n.label}
+              aria-label={n.label}
+            >
+              <NavIcon id={n.id} />
+              <span className="seg-txt">{n.corto}</span>
+            </button>
+          ))}
+        </nav>
+      )}
 
       <main>
-        {section === 'organizar' ? (
+        {kiosco ? (
+          <KioskScreen
+            status={kioskCloudStatus}
+            carpeta={kioskCarpeta}
+            onPickCarpeta={kioskPickCarpeta}
+            inspecciones={kioskInspecciones}
+            inspeccion={kioskInspeccion}
+            onSelectInspeccion={setKioskInspeccion}
+            estadillo={kioskEstadillo}
+            onEstadillo={setKioskEstadillo}
+            onOrganizar={kioskOrganizar}
+            onSubirCrudo={kioskSubirCrudo}
+            busy={kioskBusy}
+            progreso={kioskProgreso}
+            onAbrirCompleta={() => setKiosco(false)}
+          />
+        ) : section === 'organizar' ? (
           <OrganizarScreen ready={ready} running={running} onRun={run} />
         ) : section === 'bucket' ? (
           <BucketScreen ready={ready} />

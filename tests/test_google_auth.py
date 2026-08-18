@@ -33,11 +33,13 @@ CLIENT_ID = "123.apps.googleusercontent.com"
 CLIENT_SECRET = "secreto-que-no-es-secreto"
 
 
-def _id_token(email: str, hd: str | None = None) -> str:
+def _id_token(email: str, hd: str | None = None, picture: str | None = None) -> str:
     """Un id_token con la firma sin rellenar: el módulo solo lee los claims."""
     claims = {"email": email}
     if hd:
         claims["hd"] = hd
+    if picture:
+        claims["picture"] = picture
     payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
     return f"cabecera.{payload}.firma"
 
@@ -263,6 +265,30 @@ def test_el_hint_hd_se_manda_para_ahorrarle_el_selector_al_usuario(auth):
     holder: dict = {}
     auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
     assert holder["params"]["hd"] == "aerotools.es"
+
+
+# --------------------------------------------------------------------------
+# Foto de perfil (`picture`) — para el kiosco de la Raspberry Pi
+# --------------------------------------------------------------------------
+
+def test_el_scope_profile_se_pide_para_tener_foto():
+    assert "profile" in ga.SCOPES
+
+
+def test_la_identidad_expone_la_foto_cuando_el_claim_viene():
+    token = _id_token("ofi@aerotools.es", "aerotools.es",
+                      picture="https://lh3.googleusercontent.com/a/foto.jpg")
+    identidad = ga._identidad_de_id_token(token)
+    assert identidad.picture == "https://lh3.googleusercontent.com/a/foto.jpg"
+
+
+def test_una_sesion_sin_claim_picture_no_rompe_y_queda_vacia():
+    """Un id_token de antes de pedir el scope `profile` no trae `picture`:
+    debe quedar vacío, no reventar la identidad entera."""
+    token = _id_token("ofi@aerotools.es", "aerotools.es")
+    identidad = ga._identidad_de_id_token(token)
+    assert identidad is not None
+    assert identidad.picture == ""
 
 
 # --------------------------------------------------------------------------

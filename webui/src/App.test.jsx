@@ -51,6 +51,7 @@ vi.mock('./bridge', () => ({
   onCloud: () => () => {},
   onUpdate: () => () => {},
   registerPicker: vi.fn(),
+  isServerMode: () => false,
 }))
 
 const App = (await import('./App')).default
