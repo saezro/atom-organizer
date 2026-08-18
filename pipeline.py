@@ -2693,6 +2693,10 @@ class SplitImages:
         un dji_irp.exe por imagen: aísla el proceso y permite paralelizar sin dudas de
         thread-safety de la librería nativa.
 
+        En aarch64 (Raspberry Pi) ese subproceso va bajo box64 con un Python x86-64,
+        porque el SDK de DJI no tiene build ARM. Es la MISMA librería y el mismo
+        script: verificado byte a byte contra x86 sobre un vuelo real.
+
         IMPORTANTE — el rc NO es fiable: los hilos nativos de libdirp segfaultean
         SIEMPRE en el teardown del proceso (rc 139), pero es BENIGNO: la medida se
         completa y el .raw se escribe de forma atómica (.part + fsync + rename) ANTES
@@ -2701,10 +2705,19 @@ class SplitImages:
         existe y su tamaño es un múltiplo de float32 no vacío, la conversión fue OK;
         si falta (la escritura atómica nunca deja un .raw a medias), fue un fallo real.
         """
+        # En x86-64 el lanzador es el propio intérprete; en ARM es box64 + un Python
+        # x86-64 mínimo, porque el SDK de DJI solo existe para x86 (ver
+        # external_tools.dji_linux_launcher). El .raw resultante es byte-idéntico en
+        # ambas rutas, así que de aquí para abajo el pipeline es el mismo.
+        lanzador, env_extra = external_tools.dji_linux_launcher(lib_dir)
+        env = None
+        if env_extra:
+            env = os.environ.copy()
+            env.update(env_extra)
         result = subprocess.run(
-            [sys.executable, _DJI_IRP_LINUX, image_path, raw_path,
-             repr(float(humidity)), repr(float(emissivity)), lib_dir],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+            lanzador + [_DJI_IRP_LINUX, image_path, raw_path,
+                        repr(float(humidity)), repr(float(emissivity)), lib_dir],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=env,
         )
         raw_ok = (os.path.exists(raw_path) and os.path.getsize(raw_path) > 0
                   and os.path.getsize(raw_path) % 4 == 0)
