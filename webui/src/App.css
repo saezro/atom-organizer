@@ -1201,12 +1201,26 @@ select.glass-input option {
 }
 
 /* Pantalla tactil de la Pi: el panel es un raton absoluto, asi que arrastrar
-   selecciona texto en vez de hacer scroll. Se bloquea la seleccion en toda la
-   UI del selector de carpetas y se engorda la barra de scroll hasta un tamano
-   que el dedo pueda arrastrar (con eventos de raton, arrastrar la barra si
-   funciona; deslizar sobre la lista, no). */
+   selecciona texto en vez de hacer scroll. Se bloquea la seleccion en todo el
+   selector de carpetas (sin media query: ahi no hay nada que seleccionar en
+   ninguna resolucion, y el arrastre para scrollear lo maneja FolderPicker.jsx).
+   OJO: la clase real es .picker-card, no .picker — el primer intento uso un
+   selector inexistente y por eso no aplicaba nada. */
+.picker-card,
+.picker-card * {
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* Los inputs si deben dejar seleccionar. */
+.picker-card input,
+.picker-card textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* La barra de scroll se engorda solo en la pantalla pequena, para que el dedo
+   pueda arrastrarla como alternativa al deslizamiento. */
 @media (max-height: 26rem) {
-  .picker, .picker * { user-select: none; -webkit-user-select: none; }
   .picker-lista { scrollbar-width: auto; }
   .picker-lista::-webkit-scrollbar { width: 2.5rem; }
   .picker-lista::-webkit-scrollbar-thumb {

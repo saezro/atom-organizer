@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 vi.mock('./bridge.js', () => ({
@@ -62,5 +62,36 @@ describe('FolderPicker', () => {
     await screen.findByText('VUELOS')
     await userEvent.click(screen.getByRole('button', { name: /cancelar/i }))
     expect(onCancel).toHaveBeenCalled()
+  })
+  // El panel resistivo llega como raton: deslizar sobre la lista debe scrollear
+  // y NO navegar a la carpeta sobre la que se empezo el gesto.
+  it('arrastrar la lista hace scroll y no abre la carpeta', async () => {
+    const { api } = await import('./bridge.js')
+    render(<FolderPicker mode="folder" startPath={null} onPick={() => {}} onCancel={() => {}} />)
+    const fila = await screen.findByText('VUELOS')
+    const lista = document.querySelector('.picker-lista')
+    lista.scrollTop = 0
+
+    fireEvent.pointerDown(lista, { clientY: 200 })
+    fireEvent.pointerMove(lista, { clientY: 120 })
+    fireEvent.pointerUp(lista, { clientY: 120 })
+    fireEvent.click(fila)
+
+    expect(lista.scrollTop).toBe(80)
+    expect(api.listDir).toHaveBeenCalledTimes(1) // solo la carga inicial
+  })
+
+  it('un toque sin desplazamiento si abre la carpeta', async () => {
+    const { api } = await import('./bridge.js')
+    render(<FolderPicker mode="folder" startPath={null} onPick={() => {}} onCancel={() => {}} />)
+    const fila = await screen.findByText('VUELOS')
+    const lista = document.querySelector('.picker-lista')
+
+    fireEvent.pointerDown(lista, { clientY: 200 })
+    fireEvent.pointerMove(lista, { clientY: 197 }) // por debajo del umbral
+    fireEvent.pointerUp(lista, { clientY: 197 })
+    fireEvent.click(fila)
+
+    await waitFor(() => expect(api.listDir).toHaveBeenCalledWith('/home/rebeca/VUELOS'))
   })
 })
