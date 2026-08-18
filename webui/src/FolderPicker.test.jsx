@@ -13,8 +13,20 @@ vi.mock('./bridge.js', () => ({
           files: [{ name: 'estadillo.xlsx', path: '/home/rebeca/estadillo.xlsx', size: 12 }],
         }
       }
+      if (path === '/media/pi/USB') {
+        return {
+          ok: true, path: '/media/pi/USB', parent: '/media/pi',
+          dirs: [{ name: 'INSPECCION_01', path: '/media/pi/USB/INSPECCION_01' }],
+          files: [],
+        }
+      }
       return { ok: true, path, parent: '/home/rebeca', dirs: [], files: [] }
     }),
+    // Por defecto no hay disco USB (mismo comportamiento que antes de esta
+    // funcionalidad): los tests existentes de este fichero siguen arrancando
+    // en el home vía listDir(null). El test dedicado abajo sobreescribe esto
+    // con mockResolvedValueOnce para probar el camino con disco.
+    defaultDir: vi.fn(async () => ({ ok: false, error: 'sin disco' })),
   },
 }))
 
@@ -111,5 +123,36 @@ describe('FolderPicker', () => {
 
     expect(lista.scrollTop).toBe(80)
     expect(api.listDir).toHaveBeenCalledTimes(1) // solo la carga inicial
+  })
+
+  it('mientras carga muestra el placeholder DENTRO de la lista', async () => {
+    const { api } = await import('./bridge.js')
+    let resolver
+    api.listDir.mockReturnValueOnce(new Promise((r) => { resolver = r }))
+    render(<FolderPicker mode="folder" startPath={null} onPick={() => {}} onCancel={() => {}} />)
+    const lista = document.querySelector('.picker-lista')
+    expect(lista.querySelector('.picker-cargando')).not.toBeNull()
+    resolver({
+      ok: true, path: '/home/rebeca', parent: '/home',
+      dirs: [{ name: 'VUELOS', path: '/home/rebeca/VUELOS' }],
+      files: [],
+    })
+    await screen.findByText('VUELOS')
+    expect(lista.querySelector('.picker-cargando')).toBeNull()
+  })
+
+  it('en modo servidor arranca en el disco USB si hay uno (api.defaultDir)', async () => {
+    const { api } = await import('./bridge.js')
+    // defaultDir ya trae el listado completo (mismo shape que listDir): una
+    // sola llamada HTTP, sin encadenar un listDir despues.
+    api.defaultDir.mockResolvedValueOnce({
+      ok: true, path: '/media/pi/USB', parent: '/media/pi',
+      dirs: [{ name: 'INSPECCION_01', path: '/media/pi/USB/INSPECCION_01' }],
+      files: [],
+    })
+    render(<FolderPicker mode="folder" startPath={null} onPick={() => {}} onCancel={() => {}} />)
+    expect(await screen.findByText('INSPECCION_01')).toBeInTheDocument()
+    expect(api.defaultDir).toHaveBeenCalledTimes(1)
+    expect(api.listDir).not.toHaveBeenCalled()
   })
 })

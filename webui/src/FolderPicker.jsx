@@ -52,7 +52,33 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
     }
   }, [])
 
-  useEffect(() => { cargar(startPath) }, [cargar, startPath])
+  // En modo servidor (Raspberry Pi), sin ruta inicial explicita, arrancamos
+  // en el disco USB de inspecciones si hay uno montado (`api.defaultDir`)
+  // en vez del home. `defaultDir` ya devuelve el listado completo (mismo
+  // shape que `listDir`): una sola llamada HTTP, no dos encadenadas, que es
+  // lo que hacia percibir el selector como colgado en el kiosco. Si falla o
+  // no hay disco, cae al home de siempre. En escritorio (pywebview) o con
+  // `startPath` explicito el comportamiento no cambia: se sigue cargando
+  // tal cual.
+  useEffect(() => {
+    if (startPath !== null || !isServerMode()) {
+      cargar(startPath)
+      return
+    }
+    let cancelado = false
+    setEstado((s) => ({ ...s, cargando: true, error: null }))
+    api.defaultDir()
+      .then((r) => {
+        if (cancelado) return
+        if (r && r.ok) {
+          setEstado({ cargando: false, datos: r, error: null })
+        } else {
+          cargar(null)
+        }
+      })
+      .catch(() => { if (!cancelado) cargar(null) })
+    return () => { cancelado = true }
+  }, [cargar, startPath])
 
   // Deslizar sobre la lista tiene que scrollear: el panel resistivo llega como
   // puntero de raton, asi que no hay scroll tactil que aprovechar y se mueve
@@ -115,6 +141,9 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
             onClickCapture: alHacerClick,
           } : {})}
         >
+          {cargando && !datos && (
+            <li className="picker-cargando">Cargando…</li>
+          )}
           {datos?.parent && (
             <li>
               <BotonLargo className="picker-fila" larga={larga} cancelarAlMover onActivar={() => cargar(datos.parent)}>

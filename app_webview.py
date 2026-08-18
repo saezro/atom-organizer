@@ -304,6 +304,71 @@ class Api:
             "files": files,
         }
 
+    def default_dir(self) -> dict:
+        """Carpeta con la que arranca el selector, YA con su listado.
+
+        Devuelve el mismo shape que list_dir() para que el front no tenga
+        que encadenar una segunda llamada HTTP tras esta (evita el "no ha
+        respondido" del kiosco: dos peticiones secuenciales duplican la
+        latencia percibida).
+
+        En Windows (pywebview/Qt, produccion actual) el comportamiento debe
+        quedar EXACTAMENTE igual que antes: arranca en el home. Esto solo
+        cambia en Linux (Raspberry Pi), donde las inspecciones llegan por
+        disco USB externo y forzar al operador a navegar desde el home cada
+        vez es friccion innecesaria.
+        """
+        home = os.path.expanduser("~")
+        if not sys.platform.startswith("linux"):
+            return {"ok": True, "path": home}
+
+        try:
+            # Candidatos tipicos de montaje automatico en Linux: udisks2/gvfs
+            # montan en /media/<usuario>/<etiqueta>, algunos gestores en
+            # /media/<etiqueta> a secas, y /mnt/<lo-que-sea> es el sitio
+            # habitual para montajes manuales (fstab, script de arranque).
+            import glob
+
+            candidatos = set()
+            for patron in ("/media/*/*", "/media/*", "/mnt/*"):
+                candidatos.update(glob.glob(patron))
+
+            raiz_dev = os.stat("/").st_dev
+            validos = []
+            for cand in candidatos:
+                try:
+                    if not os.path.isdir(cand):
+                        continue
+                    # Un disco "extra" es, por definicion, uno en un
+                    # dispositivo distinto al de la raiz del sistema. Este
+                    # criterio no depende de nombres ni de convenciones de
+                    # montaje, asi que es robusto ante cualquier gestor de
+                    # discos (udisks2, gvfs, montaje manual...).
+                    if os.stat(cand).st_dev == raiz_dev:
+                        continue
+                    if not os.access(cand, os.R_OK):
+                        continue
+                    # Basta con la primera entrada para saber que no esta
+                    # vacio: os.scandir es perezoso, a diferencia de
+                    # os.listdir (que en un disco USB con miles de fotos de
+                    # inspeccion lee el directorio entero solo para tirarlo).
+                    with os.scandir(cand) as it:
+                        if next(iter(it), None) is None:
+                            continue  # disco montado pero vacio: no sirve de nada
+                except OSError:
+                    continue  # disco a medio montar, desconectado, etc.
+                validos.append(cand)
+
+            if validos:
+                destino = sorted(validos)[0]
+                resultado = self.list_dir(destino)
+                if resultado.get("ok"):
+                    return resultado
+        except Exception:  # noqa: BLE001 — un disco raro no puede tumbar el selector
+            pass
+
+        return self.list_dir(home)
+
     def folder_is_empty(self, path: str) -> dict:
         """¿Está vacía la carpeta de salida? El front avisa al elegirla (una
         corrida sobre residuos genera duplicados `_1/_2` y errores de recorte).

@@ -135,6 +135,13 @@ export const api = {
   // home del usuario. Devuelve {ok, path, parent, dirs[], files[]} |
   // {ok:false, error}; `parent` es null en la raíz.
   listDir: (path) => call('list_dir', path ?? null),
+  // Carpeta con la que debe arrancar el explorador (`FolderPicker`). En
+  // Windows/pywebview siempre el home; en la Pi, el disco USB de
+  // inspecciones si hay uno montado. En Linux devuelve el mismo shape que
+  // listDir ({ok, path, parent, dirs[], files[]}), o sea con el listado ya
+  // dentro: una sola llamada HTTP en vez de dos encadenadas. Solo se usa en
+  // modo servidor; en escritorio el picker ni la llama.
+  defaultDir: () => call('default_dir'),
   runOrganize: (params, advanced) => call('run_organize', params, advanced ?? null),
   runTask: (task, params, advanced) => call('run_task', task, params, advanced ?? null),
   // Lectura sincrónica del estadillo para el modal previo (pilotos, dron,

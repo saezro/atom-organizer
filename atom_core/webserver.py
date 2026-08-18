@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 # metodo nuevo debe entrar aqui a mano y de forma consciente.
 METODOS_EXPUESTOS = frozenset({
     "ping",
-    "pick_folder", "pick_file", "list_dir",
+    "pick_folder", "pick_file", "list_dir", "default_dir",
     "folder_is_empty", "read_estadillo_info", "detect_suffixes",
     "read_config", "write_config",
     "app_version", "check_update", "download_update", "install_update",
