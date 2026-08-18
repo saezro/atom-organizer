@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, isServerMode } from './bridge.js'
+import BotonLargo, { pxDeRem, UMBRAL_REM } from './pulsacion.jsx'
 
 // Sustituye al dialogo nativo de ficheros, que solo existia via Qt/pywebview.
 // Aparte de no estar disponible en modo servidor (Raspberry Pi), un dialogo
@@ -29,83 +30,6 @@ function Ico({ tipo }) {
     return <svg {...comun}><path d="M9.5 2H4.5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5zM9.5 2v3h3" /></svg>
   }
   return <svg {...comun}><path d="M2 12.5v-9a1 1 0 0 1 1-1h3l1.5 2H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" /></svg>
-}
-
-// Los dos gestos comparten umbral: por debajo de esto el dedo se considera
-// quieto (es un toque), por encima esta scrolleando.
-const UMBRAL_REM = 0.625
-
-function pxDeRem(rem) {
-  const base = parseFloat(getComputedStyle(document.documentElement).fontSize)
-  return rem * (base || 16)
-}
-
-// La duracion de la pulsacion larga vive en CSS (--pulsacion) para que la
-// animacion de relleno y el temporizador no se puedan desincronizar: JS la lee
-// de ahi en vez de tener su propia copia.
-function msDePulsacion() {
-  const v = getComputedStyle(document.documentElement).getPropertyValue('--pulsacion').trim()
-  if (v.endsWith('ms')) return parseFloat(v) || 700
-  if (v.endsWith('s')) return (parseFloat(v) || 0.7) * 1000
-  return 700
-}
-
-// Fila de la lista. Con puntero de raton (el panel resistivo de la Pi) el
-// click se sintetiza al soltar, asi que deslizar para scrollear acababa
-// abriendo la carpeta donde empezaba o terminaba el gesto. En modo servidor la
-// activacion pasa a ser pulsacion larga: hay que mantener el dedo quieto
-// ~1s, con el boton rellenandose como feedback, y la accion salta al cumplirse
-// el tiempo (no al soltar, que es justo el momento ambiguo). El click queda
-// neutralizado. En escritorio no hay gesto de scroll que desambiguar, asi que
-// se mantiene el click de siempre.
-function Fila({ className, onActivar, larga, children }) {
-  const [pulsando, setPulsando] = useState(false)
-  const temporizador = useRef(null)
-  const y0 = useRef(0)
-
-  const cancelar = useCallback(() => {
-    if (temporizador.current) clearTimeout(temporizador.current)
-    temporizador.current = null
-    setPulsando(false)
-  }, [])
-
-  // Si la lista se recarga, la fila se desmonta con el temporizador vivo.
-  useEffect(() => cancelar, [cancelar])
-
-  if (!larga) {
-    return (
-      <button type="button" className={className} onClick={onActivar}>
-        {children}
-      </button>
-    )
-  }
-
-  return (
-    <button
-      type="button"
-      className={pulsando ? `${className} pulsando` : className}
-      onPointerDown={(e) => {
-        y0.current = e.clientY
-        setPulsando(true)
-        temporizador.current = setTimeout(() => {
-          temporizador.current = null
-          setPulsando(false)
-          onActivar()
-        }, msDePulsacion())
-      }}
-      onPointerMove={(e) => {
-        if (temporizador.current && Math.abs(e.clientY - y0.current) > pxDeRem(UMBRAL_REM)) {
-          cancelar()
-        }
-      }}
-      onPointerUp={cancelar}
-      onPointerCancel={cancelar}
-      onPointerLeave={cancelar}
-      onClick={(e) => e.preventDefault()}
-    >
-      {children}
-    </button>
-  )
 }
 
 export default function FolderPicker({ mode = 'folder', startPath = null, onPick, onCancel }) {
@@ -193,23 +117,23 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
         >
           {datos?.parent && (
             <li>
-              <Fila className="picker-fila" larga={larga} onActivar={() => cargar(datos.parent)}>
+              <BotonLargo className="picker-fila" larga={larga} cancelarAlMover onActivar={() => cargar(datos.parent)}>
                 <Ico tipo="subir" /> <span className="picker-txt">.. subir</span>
-              </Fila>
+              </BotonLargo>
             </li>
           )}
           {datos?.dirs.map((d) => (
             <li key={d.path}>
-              <Fila className="picker-fila picker-dir" larga={larga} onActivar={() => cargar(d.path)}>
+              <BotonLargo className="picker-fila picker-dir" larga={larga} cancelarAlMover onActivar={() => cargar(d.path)}>
                 <Ico tipo="carpeta" /> <span className="picker-txt">{d.name}</span>
-              </Fila>
+              </BotonLargo>
             </li>
           ))}
           {mode === 'file' && datos?.files.map((f) => (
             <li key={f.path}>
-              <Fila className="picker-fila picker-file" larga={larga} onActivar={() => onPick(f.path)}>
+              <BotonLargo className="picker-fila picker-file" larga={larga} cancelarAlMover onActivar={() => onPick(f.path)}>
                 <Ico tipo="fichero" /> <span className="picker-txt">{f.name}</span>
-              </Fila>
+              </BotonLargo>
             </li>
           ))}
           {datos && datos.dirs.length === 0 && !(mode === 'file' && datos.files.length > 0) && (

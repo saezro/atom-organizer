@@ -2,8 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
+// Esta suite prueba la estructura/flujo del componente con click normal
+// (modo escritorio). El comportamiento de pulsacion larga en modo servidor
+// se cubre aparte en KioskScreen.pulsacion.test.jsx.
 vi.mock('./bridge.js', () => ({
-  isServerMode: () => true,
+  isServerMode: () => false,
   api: {},
 }))
 

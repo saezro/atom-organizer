@@ -12,6 +12,8 @@
 // así que el paso 1 son dos botones que ocupan media pantalla cada uno y en el
 // paso 2 nada táctil baja de `--toque-min`.
 import { useState } from 'react'
+import { isServerMode } from './bridge.js'
+import BotonLargo from './pulsacion.jsx'
 
 // Deriva la ruta de destino a partir de la carpeta de origen, añadiendo el
 // sufijo "_ORGANIZADO". Función pura: sin efectos, sin acceso a props/estado.
@@ -43,9 +45,10 @@ export default function KioskScreen({
   const destino = derivarDestino(carpeta)
   const email = status?.email || ''
   const inicial = email ? email[0].toUpperCase() : ''
+  const larga = isServerMode()
 
   const avatar = (
-    <button type="button" className="kiosk-avatar" data-testid="kiosk-avatar" onClick={onAbrirCompleta}>
+    <BotonLargo className="kiosk-avatar" data-testid="kiosk-avatar" larga={larga} onActivar={onAbrirCompleta}>
       {status ? (
         status.picture ? (
           <img src={status.picture} alt={`Avatar de ${email}`} className="kiosk-avatar-img" />
@@ -55,7 +58,7 @@ export default function KioskScreen({
       ) : (
         <span className="kiosk-sin-sesion">Sin sesión</span>
       )}
-    </button>
+    </BotonLargo>
   )
 
   const barraProgreso = progreso && (
@@ -72,22 +75,22 @@ export default function KioskScreen({
         <div className="kiosk-header">{avatar}</div>
         {barraProgreso}
         <div className="kiosk-menu">
-          <button
-            type="button"
+          <BotonLargo
             className="kiosk-menu-btn kiosk-menu-organizar"
-            onClick={() => setAccion('organizar')}
+            larga={larga}
+            onActivar={() => setAccion('organizar')}
             disabled={busy}
           >
             Organizar
-          </button>
-          <button
-            type="button"
+          </BotonLargo>
+          <BotonLargo
             className="kiosk-menu-btn kiosk-menu-subir"
-            onClick={() => setAccion('subir')}
+            larga={larga}
+            onActivar={() => setAccion('subir')}
             disabled={busy}
           >
             Subir en crudo
-          </button>
+          </BotonLargo>
         </div>
       </div>
     )
@@ -107,17 +110,17 @@ export default function KioskScreen({
   return (
     <div className="kiosk">
       <div className="kiosk-header kiosk-header-paso">
-        <button type="button" className="kiosk-atras" onClick={() => setAccion(null)} disabled={busy}>
+        <BotonLargo className="kiosk-atras" larga={larga} onActivar={() => setAccion(null)} disabled={busy}>
           ← Atrás
-        </button>
+        </BotonLargo>
         <span className="kiosk-titulo">{esOrganizar ? 'Organizar' : 'Subir en crudo'}</span>
         {avatar}
       </div>
 
       <div className="kiosk-carpeta">
-        <button type="button" className="btn-ghost kiosk-btn-carpeta" onClick={onPickCarpeta} disabled={busy}>
+        <BotonLargo className="btn-ghost kiosk-btn-carpeta" larga={larga} onActivar={onPickCarpeta} disabled={busy}>
           Elegir carpeta…
-        </button>
+        </BotonLargo>
         <span className="kiosk-carpeta-actual">{carpeta || 'Sin carpeta'}</span>
         {esOrganizar && carpeta && <span className="kiosk-destino">{destino}</span>}
       </div>
@@ -158,14 +161,14 @@ export default function KioskScreen({
       {barraProgreso}
 
       <div className="kiosk-acciones">
-        <button
-          type="button"
+        <BotonLargo
           className={'kiosk-btn ' + (esOrganizar ? 'kiosk-btn-organizar' : 'kiosk-btn-subir-crudo')}
-          onClick={confirmar}
+          larga={larga}
+          onActivar={confirmar}
           disabled={!listo || busy}
         >
           {esOrganizar ? 'Organizar' : 'Subir'}
-        </button>
+        </BotonLargo>
       </div>
     </div>
   )
