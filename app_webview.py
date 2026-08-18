@@ -268,6 +268,42 @@ class Api:
                         "text": f"No se pudo abrir el diálogo de archivo: {type(exc).__name__}: {exc}"})
             return None
 
+    def list_dir(self, path: str | None = None) -> dict:
+        """Lista un directorio para el explorador de la UI.
+
+        En modo servidor no hay dialogo nativo de ficheros (eso lo daba Qt), y
+        en una pantalla de 480x320 manejada con el dedo tampoco seria usable.
+        El explorador vive en la webui y esto es lo que lo alimenta.
+        """
+        destino = os.path.abspath(os.path.expanduser(path or "~"))
+        if not os.path.isdir(destino):
+            return {"ok": False, "error": f"No es una carpeta: {destino}"}
+        dirs, files = [], []
+        try:
+            entradas = sorted(os.listdir(destino), key=str.lower)
+        except OSError as exc:
+            return {"ok": False, "error": f"No se pudo leer: {exc}"}
+        for nombre in entradas:
+            if nombre.startswith("."):
+                continue  # ocultos fuera: ruido en una pantalla diminuta
+            completo = os.path.join(destino, nombre)
+            try:
+                if os.path.isdir(completo):
+                    dirs.append({"name": nombre, "path": completo})
+                else:
+                    files.append({"name": nombre, "path": completo,
+                                  "size": os.stat(completo).st_size})
+            except OSError:
+                continue  # permisos, enlace roto, unidad desconectada
+        padre = os.path.dirname(destino)
+        return {
+            "ok": True,
+            "path": destino,
+            "parent": None if padre == destino else padre,
+            "dirs": dirs,
+            "files": files,
+        }
+
     def folder_is_empty(self, path: str) -> dict:
         """¿Está vacía la carpeta de salida? El front avisa al elegirla (una
         corrida sobre residuos genera duplicados `_1/_2` y errores de recorte).
