@@ -1102,7 +1102,14 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.server:
-        sys.exit("modo servidor aun no implementado")
+        from atom_core.event_sink import QueueSink
+        from atom_core.webserver import servir
+
+        api = Api()
+        sink = QueueSink()
+        api.bind_sink(sink)
+        servir(api, str(DIST_INDEX.parent), args.host, args.port, sink)
+        return
 
     webview = _import_webview()
 
