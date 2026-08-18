@@ -1095,6 +1095,17 @@ select.glass-input option {
 /* Sin esto Chromium reserva cada toque ~300 ms por si es un doble-tap de zoom:
    en el panel resistivo eso se percibe como toques que no responden. */
 .kiosk, .kiosk * { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+/* El panel resistivo se presenta como un RATON absoluto, no como touchscreen:
+   arrastrar el dedo equivale a arrastrar con el boton pulsado, que en una UI
+   normal significa "seleccionar texto". Sin esto, deslizar por la pantalla
+   deja medio kiosco en azul de seleccion en vez de hacer nada. */
+.kiosk, .kiosk * {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+}
+/* El campo de texto del estadillo es la unica excepcion: ahi se escribe. */
+.kiosk input, .kiosk select { user-select: text; -webkit-user-select: text; }
 
 .kiosk-header { display: flex; justify-content: flex-end; align-items: center; }
 .kiosk-header-paso { justify-content: space-between; gap: calc(var(--u) / 2); }
@@ -1187,4 +1198,22 @@ select.glass-input option {
   .kiosk-btn { min-height: 2.75rem; }
   .kiosk-progreso { padding: calc(var(--u) / 4) calc(var(--u) / 2); }
   .kiosk-menu-btn { font-size: 1.25rem; }
+}
+
+/* Pantalla tactil de la Pi: el panel es un raton absoluto, asi que arrastrar
+   selecciona texto en vez de hacer scroll. Se bloquea la seleccion en toda la
+   UI del selector de carpetas y se engorda la barra de scroll hasta un tamano
+   que el dedo pueda arrastrar (con eventos de raton, arrastrar la barra si
+   funciona; deslizar sobre la lista, no). */
+@media (max-height: 26rem) {
+  .picker, .picker * { user-select: none; -webkit-user-select: none; }
+  .picker-lista { scrollbar-width: auto; }
+  .picker-lista::-webkit-scrollbar { width: 2.5rem; }
+  .picker-lista::-webkit-scrollbar-thumb {
+    background: rgba(238, 117, 58, 0.55);
+    border-radius: var(--radio);
+    border: 0.375rem solid transparent;
+    background-clip: content-box;
+  }
+  .picker-lista::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.04); }
 }
