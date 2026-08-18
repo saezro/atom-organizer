@@ -47,7 +47,13 @@
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(8px);
+  /* Sin `backdrop-filter`: el fondo de la app es un color PLANO, asi que
+     desenfocarlo devuelve el mismo color — el efecto no se ve. Lo que si se
+     notaba era el coste: en Windows QtWebEngine arranca con `--disable-gpu`
+     (guarda contra la ventana en negro en VM/RDP, ver app_webview.py), y con
+     rasterizado por software cada repintado obligaba a leer y desenfocar por
+     CPU la region de detras de CADA panel. Se pagaba el efecto caro sin
+     recibirlo. */
   display: flex;
   flex-direction: column;
   gap: 1rem;
@@ -112,7 +118,6 @@
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(8px);
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
@@ -301,8 +306,11 @@ select.glass-input option {
   align-items: center;
   justify-content: center;
   padding: 1.5rem;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(4px);
+  /* Antes: rgba(0,0,0,.6) + backdrop-filter: blur(4px). El blur cubria la
+     ventana ENTERA y se repintaba con cada avance de la barra de progreso que
+     hay encima — el mas caro de los tres por mucho. Subir el negro a .78 tapa
+     el fondo igual de bien y no cuesta nada. */
+  background: rgba(0, 0, 0, 0.78);
 }
 .pm-card {
   width: min(560px, 100%);
@@ -315,7 +323,7 @@ select.glass-input option {
   border-radius: 16px;
   background: rgba(20, 20, 22, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.55);
 }
 .pm-title {
   margin: 0;

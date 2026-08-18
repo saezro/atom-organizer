@@ -140,6 +140,20 @@ function advancePhases(prev, data) {
   })
 }
 
+// Tope de lineas del log crudo. El pipeline emite un "." por imagen: en un
+// vuelo de 5.000 fotos el array llegaba a 5.000+ entradas y CADA una se anexaba
+// con `[...l, txt]`, que copia el array entero -> O(n^2) en el hilo de React.
+// 500 lineas son mas de las que nadie lee hacia atras en un log en vivo, y el
+// resumen final (evento `done`) no vive aqui, asi que no se pierde nada util.
+const MAX_LOG = 500
+
+function anexarLog(lineas, texto) {
+  const siguiente = lineas.length >= MAX_LOG
+    ? [...lineas.slice(lineas.length - MAX_LOG + 1), texto]
+    : [...lineas, texto]
+  return siguiente
+}
+
 function App() {
   const [ready, setReady] = useState(false)
   const [section, setSection] = useState('organizar')
@@ -192,11 +206,11 @@ function App() {
           setStats(d.data || null)
           break
         case 'log':
-          if (d.text) setDetail((l) => [...l, d.text])
+          if (d.text) setDetail((l) => anexarLog(l, d.text))
           break
         case 'summary':
           if (d.text && d.text.trim() && !/^_+$/.test(d.text)) {
-            setDetail((l) => [...l, d.text])
+            setDetail((l) => anexarLog(l, d.text))
           }
           break
         case 'done': {

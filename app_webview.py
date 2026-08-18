@@ -121,6 +121,13 @@ class Api:
         self._verifying = False
         self._uploading = False
         self._cancel_upload = False
+        # Batcher de eventos de progreso (ver `_push`). El pipeline emite DOS
+        # eventos por imagen y cada uno era un `evaluate_js` bloqueante: en un
+        # vuelo de 5.000 fotos, 10.000 viajes Python->Qt->Chromium con el worker
+        # parado en un semaforo. Se acumulan aqui y se sueltan de golpe.
+        self._push_buf: list[dict] = []
+        self._push_lock = threading.Lock()
+        self._push_last = 0.0
 
     def bind_window(self, window) -> None:
         self._window = window
@@ -957,14 +964,77 @@ class Api:
             run_task(task, params, emit, advanced or None)
         finally:
             self._running = False
+            # Sin esto, lo que quedara en el buffer cuando el pipeline deja de
+            # emitir no llegaria nunca: el vaciado lo dispara el evento
+            # SIGUIENTE, y despues del ultimo no hay ninguno.
+            self._flush_push()
+
+    # Cada cuanto (segundos) y cada cuantos eventos se vacia el buffer de
+    # progreso. 0,15 s es el limite por debajo del cual el ojo ya no distingue
+    # que la barra avanza a saltos, y mantiene el coste de UI en ~7 viajes/s
+    # pase lo rapido que pase el pipeline.
+    _PUSH_INTERVALO = 0.15
+    _PUSH_MAX_BUFER = 200
 
     def _push(self, detail: dict) -> None:
-        """Empuja un evento a React (Python → JS)."""
+        """Encola un evento para React (Python → JS).
+
+        No lo manda al momento a proposito: `evaluate_js` de pywebview/Qt es
+        SINCRONO (crea un `Semaphore(0)`, dispara la señal al hilo de UI y hace
+        `acquire()` hasta que Chromium ejecuta el JS), asi que cada evento
+        PARABA el hilo del pipeline hasta que React terminaba de renderizar. Con
+        dos eventos por imagen eso ataba la velocidad de organizar al ritmo de
+        repintado del navegador — y en Windows, donde el compositing va por
+        software (`--disable-gpu`, ver `main`), ese ritmo es lento.
+
+        Los eventos estructurados (`plan`/`phase`/`stats`/`done`) fuerzan el
+        vaciado: marcan cambios de estado que la UI no puede mostrar con retraso,
+        y `done` ademas cierra la corrida.
+        """
         if not self._window:
             return
-        js = (
+        with self._push_lock:
+            self._push_buf.append(detail)
+            urgente = detail.get("kind") in ("plan", "phase", "stats", "done")
+            ahora = time.monotonic()
+            if not urgente and len(self._push_buf) < self._PUSH_MAX_BUFER \
+                    and (ahora - self._push_last) < self._PUSH_INTERVALO:
+                return
+        self._flush_push()
+
+    def _flush_push(self) -> None:
+        """Suelta el buffer en UNA sola llamada a `evaluate_js`.
+
+        Va todo en un unico script con N `dispatchEvent` seguidos, en vez de N
+        llamadas: lo caro no es el `dispatchEvent` (microsegundos) sino el viaje
+        con semaforo hasta el hilo de UI. Y como React 19 agrupa por defecto los
+        `setState` que ocurren dentro de la misma tarea del bucle de eventos,
+        los N eventos producen UN solo re-render en lugar de N.
+
+        Los `progress` intermedios se descartan y solo sobrevive el ultimo: es
+        un porcentaje, y pintar el 41 % para pisarlo con el 47 % en el mismo
+        fotograma no lo ve nadie. El texto del log NO se toca — cada linea se
+        entrega tal cual y en orden, que ahi si se perderia informacion.
+        """
+        with self._push_lock:
+            if not self._push_buf:
+                return
+            pendientes, self._push_buf = self._push_buf, []
+            self._push_last = time.monotonic()
+
+        ultimo_progress = None
+        for d in pendientes:
+            if d.get("kind") == "progress":
+                ultimo_progress = d
+        compactados = [
+            d for d in pendientes
+            if d.get("kind") != "progress" or d is ultimo_progress
+        ]
+
+        js = "".join(
             "window.dispatchEvent(new CustomEvent('atom:progress',"
-            f"{{detail:{json.dumps(detail)}}}))"
+            f"{{detail:{json.dumps(d)}}}));"
+            for d in compactados
         )
         try:
             self._window.evaluate_js(js)
