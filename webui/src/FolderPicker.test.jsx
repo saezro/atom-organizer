@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 vi.mock('./bridge.js', () => ({
@@ -32,15 +32,14 @@ vi.mock('./bridge.js', () => ({
 
 import FolderPicker from './FolderPicker.jsx'
 
-// En modo servidor la fila se activa manteniendo el dedo, no al soltar: el
-// panel resistivo es un raton y el click al soltar era justo el evento
-// ambiguo. Se espera en tiempo real (--pulsacion no esta definida en jsdom, asi
-// que msDePulsacion cae al fallback de 700 ms).
-const MS = 700
-async function mantener(el, ms = MS + 150) {
-  fireEvent.pointerDown(el, { clientY: 100 })
-  await act(async () => { await new Promise((r) => setTimeout(r, ms)) })
-  fireEvent.pointerUp(el, { clientY: 100 })
+// En modo servidor la fila se activa al SOLTAR, al instante. Lo que distingue
+// un toque de un scroll es el recorrido del dedo, no el tiempo: el panel
+// resistivo llega como raton y el click sintetico no basta para desambiguar.
+// Sin esperas en ninguno de estos tests: si alguna vez vuelve a hacer falta un
+// setTimeout aqui, es que la activacion ha vuelto a depender del reloj.
+function tocar(el, y = 100) {
+  fireEvent.pointerDown(el, { clientY: y })
+  fireEvent.pointerUp(el, { clientY: y })
 }
 
 describe('FolderPicker', () => {
@@ -57,38 +56,39 @@ describe('FolderPicker', () => {
     expect(screen.queryByText('estadillo.xlsx')).not.toBeInTheDocument()
   })
 
-  it('en modo fichero mantener el dedo devuelve la ruta', async () => {
+  it('en modo fichero un toque devuelve la ruta', async () => {
     const onPick = vi.fn()
     render(<FolderPicker mode="file" startPath={null} onPick={onPick} onCancel={() => {}} />)
-    await mantener(await screen.findByText('estadillo.xlsx'))
+    tocar(await screen.findByText('estadillo.xlsx'))
     expect(onPick).toHaveBeenCalledWith('/home/rebeca/estadillo.xlsx')
   })
 
-  it('mantener el dedo sobre una carpeta la lista', async () => {
+  it('un toque sobre una carpeta la abre, sin esperar nada', async () => {
     const { api } = await import('./bridge.js')
     render(<FolderPicker mode="folder" startPath={null} onPick={() => {}} onCancel={() => {}} />)
-    await mantener(await screen.findByText('VUELOS'))
-    await waitFor(() => expect(api.listDir).toHaveBeenCalledWith('/home/rebeca/VUELOS'))
+    tocar(await screen.findByText('VUELOS'))
+    // Sin waitFor ni timers: al soltar ya tiene que estar pedida la carpeta.
+    expect(api.listDir).toHaveBeenCalledWith('/home/rebeca/VUELOS')
   })
 
-  it('un toque corto NO abre la carpeta', async () => {
+  it('el click sintetico posterior al toque no la abre dos veces', async () => {
     const { api } = await import('./bridge.js')
     render(<FolderPicker mode="folder" startPath={null} onPick={() => {}} onCancel={() => {}} />)
     const fila = await screen.findByText('VUELOS')
-    await mantener(fila, 150) // suelta mucho antes de completarse
-    fireEvent.click(fila)     // el click sintetico del raton tampoco debe abrir
-    expect(api.listDir).toHaveBeenCalledTimes(1) // solo la carga inicial
+    tocar(fila)
+    fireEvent.click(fila)  // el raton sintetiza un click tras soltar
+    // La inicial + una sola apertura: el click no cuenta como segunda.
+    await waitFor(() => expect(api.listDir).toHaveBeenCalledTimes(2))
   })
 
-  it('moverse durante la pulsacion la cancela (era un scroll)', async () => {
+  it('arrastrar sobre una fila NO la abre (era un scroll)', async () => {
     const { api } = await import('./bridge.js')
     render(<FolderPicker mode="folder" startPath={null} onPick={() => {}} onCancel={() => {}} />)
     const fila = await screen.findByText('VUELOS')
     fireEvent.pointerDown(fila, { clientY: 100 })
-    fireEvent.pointerMove(fila, { clientY: 40 })
-    await act(async () => { await new Promise((r) => setTimeout(r, MS + 150)) })
+    fireEvent.pointerMove(fila, { clientY: 40 })  // 60px, muy por encima del umbral
     fireEvent.pointerUp(fila, { clientY: 40 })
-    expect(api.listDir).toHaveBeenCalledTimes(1)
+    expect(api.listDir).toHaveBeenCalledTimes(1)  // solo la carga inicial
   })
 
   it('el boton de elegir devuelve la carpeta ACTUAL, no la seleccionada', async () => {

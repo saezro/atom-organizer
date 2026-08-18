@@ -10,10 +10,11 @@
 
 /* Paleta ATOM Suite (login) */
 :root {
-  /* Pulsacion larga del kiosco tactil: la lee tambien FolderPicker.jsx
-     (msDePulsacion), asi que animacion y temporizador no pueden
-     desincronizarse. */
-  --pulsacion: 700ms;
+  /* Destello de confirmacion del toque en el kiosco tactil. Lo lee tambien
+     pulsacion.jsx (msDeOnda) para no quitar la clase antes de que la
+     animacion termine. No cronometra la activacion: el boton se activa al
+     soltar, esto es solo el acuse de recibo visual. */
+  --onda: 200ms;
   --bg: #0a0a0a;
   --text: #f1f5f9;
   --muted: #6b7280;

@@ -1011,11 +1011,11 @@ select.glass-input option {
 .picker-fila:active {
   background: rgba(255, 255, 255, 0.1);
 }
-/* Relleno de la pulsacion larga: crece de izquierda a derecha durante
-   --pulsacion, y al completarse es cuando el boton se activa. La barra llena
-   significa literalmente "ya esta", no "estoy pensandolo". Generico via
-   `.pulsable`, usado por cualquier BotonLargo con `larga` (no solo las filas
-   del selector de carpetas). */
+/* Acuse de recibo del toque: una onda que nace bajo el dedo y se desvanece.
+   NO es una barra de progreso — el boton ya se ha activado cuando esto se
+   ve; solo confirma que el panel registro el toque, que en una pantalla sin
+   hover es la unica realimentacion que hay. Generico via `.pulsable`, usado
+   por cualquier BotonToque con `tactil`. */
 .pulsable {
   position: relative;
   overflow: hidden;
@@ -1027,13 +1027,13 @@ select.glass-input option {
 .pulsable.pulsando::after {
   content: '';
   position: absolute;
-  /* Punto de contacto y diametro los fija BotonLargo en `onPointerDown`. Los
+  /* Punto de contacto y diametro los fija BotonToque en `onPointerDown`. Los
      valores por defecto (centro) solo actuarian si la onda arrancase sin
      puntero, que no ocurre. */
-  left: var(--pulsacion-x, 50%);
-  top: var(--pulsacion-y, 50%);
-  width: var(--pulsacion-d, 100%);
-  height: var(--pulsacion-d, 100%);
+  left: var(--onda-x, 50%);
+  top: var(--onda-y, 50%);
+  width: var(--onda-d, 100%);
+  height: var(--onda-d, 100%);
   z-index: 0;
   border-radius: 50%;
   background: radial-gradient(
@@ -1043,15 +1043,15 @@ select.glass-input option {
     rgba(238, 117, 58, 0.28) 100%
   );
   pointer-events: none;
-  /* `linear` a proposito: la onda mide tiempo, y acelerarla o frenarla mentiria
-     sobre cuanto falta. Que llegue al borde significa literalmente "ya esta". */
-  animation: pulsacion-onda var(--pulsacion) linear forwards;
+  /* `ease-out` ahora que no mide tiempo: sale rapida y se frena al disiparse,
+     que es como se lee un impacto. Con `linear` parecia una barra de carga. */
+  animation: pulsacion-onda var(--onda) ease-out forwards;
 }
 /* Solo transform y opacity: el compositor las resuelve sin repintar, que es lo
    que mantiene la onda fluida en la Raspberry Pi. */
 @keyframes pulsacion-onda {
-  from { transform: translate(-50%, -50%) scale(0); opacity: 0.85; }
-  to { transform: translate(-50%, -50%) scale(1); opacity: 0.5; }
+  from { transform: translate(-50%, -50%) scale(0); opacity: 0.75; }
+  to { transform: translate(-50%, -50%) scale(1); opacity: 0; }
 }
 /* Quien no soporte animaciones (o las tenga desactivadas) sigue viendo que el
    boton esta pulsado, aunque no la onda. */
@@ -1066,11 +1066,6 @@ select.glass-input option {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.picker-ayuda {
-  margin: 0;
-  font-size: 0.75rem;
-  color: var(--muted);
 }
 .picker-fila.picker-file {
   color: var(--muted);
