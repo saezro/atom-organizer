@@ -41,8 +41,20 @@ export function isServerMode() {
 // solo del evento: polleamos `window.pywebview.api` con un intervalo y
 // resolvemos en cuanto exista, por cualquiera de las tres vías. Inocuo en
 // Linux/Qt (ahí gana el check inicial o el evento y el intervalo se limpia).
+// La promesa se memoiza: el modo, una vez determinado, es definitivo, y sin
+// esto CADA llamada al bridge arrancaba su propio plazo de
+// ESPERA_PYWEBVIEW_MS. En pywebview no se notaba (el check inicial
+// cortocircuita en cuanto Qt inyecta), pero en modo servidor `window.pywebview`
+// no aparece JAMAS, asi que no habia cortocircuito posible y toda llamada
+// pagaba 1500 ms integros antes del fetch. Abrir el selector encadenaba dos
+// (`pickFolder` + `defaultDir`) = ~3 s de espera pura con el backend
+// respondiendo en 4 ms.
+let promesaBridge = null
+
 export function whenBridgeReady() {
-  return new Promise((resolve) => {
+  if (modoServidor !== null) return Promise.resolve()
+  if (promesaBridge) return promesaBridge
+  promesaBridge = new Promise((resolve) => {
     if (window.pywebview?.api) { modoServidor = false; return resolve() }
     let done = false
     let timer = null
@@ -68,6 +80,7 @@ export function whenBridgeReady() {
     // indefinidamente, que es como se comportaba antes del modo servidor.
     const plazo = setTimeout(() => { if (!esFile()) finish(true) }, ESPERA_PYWEBVIEW_MS)
   })
+  return promesaBridge
 }
 
 let fuenteEventos = null

@@ -50,6 +50,26 @@ describe('bridge en modo servidor (sin pywebview)', () => {
     await expect(api.pickFolder()).rejects.toThrow(/ruta invalida/)
   })
 
+  // Regresion: `whenBridgeReady` creaba una promesa NUEVA en cada llamada, y
+  // con ella su propio setTimeout(ESPERA_PYWEBVIEW_MS). El unico cortocircuito
+  // de entrada miraba `window.pywebview`, que en modo servidor no aparece
+  // jamas, asi que TODA llamada pagaba el plazo integro antes del fetch: abrir
+  // el selector encadenaba `pickFolder` + `defaultDir` = ~3 s de espera con el
+  // backend contestando en 4 ms.
+  it('el modo se determina una sola vez: las llamadas siguientes no repiten el plazo', async () => {
+    const { api, whenBridgeReady } = await import('./bridge.js')
+    await whenBridgeReady()  // aqui si se paga el plazo, una unica vez
+    // Con el reloj congelado, cualquier espera por temporizador se quedaria
+    // colgada para siempre: si esto resuelve, es que no la hay.
+    vi.useFakeTimers()
+    try {
+      await expect(api.ping('rebeca')).resolves.toBeTruthy()
+      await expect(api.listDir('/media/usb')).resolves.toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('los eventos SSE se reemiten como CustomEvent y onCloud los recibe', async () => {
     const { onCloud, whenBridgeReady } = await import('./bridge.js')
     const visto = []
