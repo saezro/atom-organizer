@@ -1011,6 +1011,40 @@ select.glass-input option {
 .picker-fila:active {
   background: rgba(255, 255, 255, 0.1);
 }
+/* Relleno de la pulsacion larga: crece de izquierda a derecha durante
+   --pulsacion, y al completarse es cuando la fila se activa. La barra llena
+   significa literalmente "ya esta", no "estoy pensandolo". */
+.picker-fila {
+  position: relative;
+  overflow: hidden;
+}
+.picker-fila > * {
+  position: relative;
+  z-index: 1;
+}
+.picker-fila.pulsando::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: rgba(238, 117, 58, 0.55);
+  transform-origin: left center;
+  animation: picker-pulsacion var(--pulsacion) linear forwards;
+}
+@keyframes picker-pulsacion {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+.picker-txt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.picker-ayuda {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
 .picker-fila.picker-file {
   color: var(--muted);
 }
@@ -1092,6 +1126,11 @@ select.glass-input option {
   cursor: none;
 }
 .kiosk * { cursor: none; }
+/* Los modales (selector de carpetas incluido) se montan en .pm-overlay, FUERA
+   de .kiosk: sin esto el cursor reaparecia justo al abrir el selector. */
+@media (max-height: 26rem) {
+  .pm-overlay, .pm-overlay * { cursor: none; }
+}
 /* Sin esto Chromium reserva cada toque ~300 ms por si es un doble-tap de zoom:
    en el panel resistivo eso se percibe como toques que no responden. */
 .kiosk, .kiosk * { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
