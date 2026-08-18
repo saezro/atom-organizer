@@ -110,3 +110,75 @@ describe('bridge en modo pywebview (Windows)', () => {
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 })
+
+// Regresion de Windows: la pagina se carga por `file://` y la inyeccion de Qt
+// puede tardar MAS que `ESPERA_PYWEBVIEW_MS` (arranque en frio del onefile de
+// PyInstaller, antivirus, disco lento). Rendirse por reloj era irreversible y
+// dejaba el shell de produccion hablando por HTTP con un servidor inexistente.
+describe('bridge bajo file:// con pywebview lento (Windows, arranque en frio)', () => {
+  let locOriginal
+
+  beforeEach(() => {
+    vi.resetModules()
+    vi.useFakeTimers()
+    delete window.pywebview
+    locOriginal = Object.getOwnPropertyDescriptor(window, 'location')
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'file:', href: 'file:///C:/dist/index.html' },
+      configurable: true,
+      writable: true,
+    })
+    class FakeEventSource {
+      constructor(url) { this.url = url; this.listeners = {}; FakeEventSource.ultima = this }
+      addEventListener(tipo, fn) { this.listeners[tipo] = fn }
+      close() { this.cerrada = true }
+    }
+    window.EventSource = FakeEventSource
+    globalThis.fetch = vi.fn()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    if (locOriginal) Object.defineProperty(window, 'location', locOriginal)
+    vi.restoreAllMocks()
+  })
+
+  it('bajo file:// isServerMode es false aunque pywebview aun no exista', async () => {
+    const { isServerMode } = await import('./bridge.js')
+    expect(isServerMode()).toBe(false)
+  })
+
+  it('no se rinde al vencer el plazo: espera a Qt y nunca abre SSE ni fetch', async () => {
+    const { whenBridgeReady, isServerMode, api } = await import('./bridge.js')
+    const listo = whenBridgeReady()
+    // El plazo vence de sobra y aun no hay bridge: antes esto fijaba modo
+    // servidor de forma irreversible.
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(isServerMode()).toBe(false)
+    expect(window.EventSource.ultima).toBeUndefined()
+    // Qt inyecta tarde; el polling debe seguir vivo y resolver.
+    const ping = vi.fn(async () => ({ ok: true, msg: 'pong qt' }))
+    window.pywebview = { api: { ping, pick_folder: vi.fn(async () => 'C:/plantas') } }
+    await vi.advanceTimersByTimeAsync(200)
+    await listo
+    expect(isServerMode()).toBe(false)
+    expect(await api.ping('rebeca')).toEqual({ ok: true, msg: 'pong qt' })
+    expect(globalThis.fetch).not.toHaveBeenCalled()
+    expect(window.EventSource.ultima).toBeUndefined()
+  })
+
+  it('con picker registrado, pickFolder usa el dialogo NATIVO, no el explorador', async () => {
+    const { api, registerPicker, whenBridgeReady } = await import('./bridge.js')
+    // `App.jsx` registra el picker al montar, sin saber el modo todavia.
+    const pickerUI = vi.fn()
+    registerPicker(pickerUI)
+    const pedido = api.pickFolder()
+    const pick_folder = vi.fn(async () => 'C:/plantas')
+    window.pywebview = { api: { pick_folder } }
+    await vi.advanceTimersByTimeAsync(200)
+    await whenBridgeReady()
+    expect(await pedido).toBe('C:/plantas')
+    expect(pickerUI).not.toHaveBeenCalled()
+    expect(pick_folder).toHaveBeenCalled()
+  })
+})
