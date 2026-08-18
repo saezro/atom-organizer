@@ -206,7 +206,10 @@ def process_one_image(path: str, cfg: ImageProcessConfig) -> str:
 # los signals de Qt lo son: se sustituyen por los stand-ins de abajo, locales al
 # proceso hijo, y el padre re-emite lo que haya que sacar por pantalla.
 
-_ROTATION_JPEG_QUALITY = 45  # La calidad con la que se ha guardado siempre el giro.
+_ROTATION_JPEG_QUALITY = 40  # Calidad del giro de RGB, la del Organizer original.
+# OJO: en v2.1.5 las llamadas a rotate_and_save pasaban quality=45, pero ese parametro
+# solo se aplicaba a la rama de termicas/miniaturas (compress_image.py:296). La rama RGB
+# lo ignoraba y grababa con quality=40 hardcodeado (compress_image.py:302 y :306).
 
 
 class _WorkerLogger:
