@@ -11,14 +11,23 @@
 const ESPERA_PYWEBVIEW_MS = 1500
 let modoServidor = null
 
+// Bajo pywebview la pagina se carga por `file://` (`resolve_target` devuelve la
+// ruta del index, app_webview.py). El modo `--server` siempre sirve por HTTP.
+// El protocolo es, por tanto, una senal POSITIVA y sincrona del shell, a
+// diferencia de `window.pywebview`, que en Qt aparece tarde: si esto es
+// `file://`, es pywebview aunque el bridge aun no este inyectado.
+function esFile() {
+  return window.location.protocol === 'file:'
+}
+
 // Heuristica sincrona para quien necesite el modo antes de que
-// `whenBridgeReady` concluya: si `modoServidor` sigue en null, se responde por
-// la presencia de `window.pywebview` AHORA MISMO. OJO: durante el arranque en
-// Windows puede decir `true` en falso, porque la inyeccion de Qt es asincrona.
-// Solo vale para decisiones reversibles de presentacion; nada irreversible ni
-// con efectos de red debe colgar de esto (ver el bloque de `conectarEventos`).
+// `whenBridgeReady` concluya. Con `file://` la respuesta ya es definitiva (no
+// hay servidor posible); fuera de `file://` se responde por la presencia de
+// `window.pywebview` AHORA MISMO.
 function modoServidorActual() {
-  return modoServidor === null ? !window.pywebview : modoServidor
+  if (modoServidor !== null) return modoServidor
+  if (esFile()) return false
+  return !window.pywebview
 }
 
 export function isServerMode() {
@@ -51,7 +60,13 @@ export function whenBridgeReady() {
     window.addEventListener('pywebviewready', alListo, { once: true })
     timer = setInterval(() => { if (window.pywebview?.api) finish(false) }, 100)
     // Si en este plazo no aparecio, no va a aparecer: es un navegador normal.
-    const plazo = setTimeout(() => finish(true), ESPERA_PYWEBVIEW_MS)
+    // PERO solo si NO estamos en `file://`: ahi es pywebview con la inyeccion
+    // lenta (arranque en frio de PyInstaller, antivirus). Rendirse por reloj
+    // seria irreversible —`finish` limpia intervalo y listener— y dejaria
+    // Windows hablando por `fetch` con un servidor que no existe, ademas de un
+    // EventSource contra `file:///events`. En ese caso seguimos esperando
+    // indefinidamente, que es como se comportaba antes del modo servidor.
+    const plazo = setTimeout(() => { if (!esFile()) finish(true) }, ESPERA_PYWEBVIEW_MS)
   })
 }
 
@@ -102,8 +117,12 @@ export function registerPicker(fn) {
   pickerUI = fn
 }
 
-function pick(mode, method) {
-  if (isServerMode() && pickerUI) return pickerUI(mode)
+// El modo se consulta con `whenBridgeReady` YA resuelto, no con la heuristica
+// sincrona: elegir explorador es una decision funcional, y bajo `file://` la
+// heuristica puede decir «servidor» en falso mientras Qt inyecta.
+async function pick(mode, method) {
+  await whenBridgeReady()
+  if (modoServidor && pickerUI) return pickerUI(mode)
   return call(method)
 }
 
