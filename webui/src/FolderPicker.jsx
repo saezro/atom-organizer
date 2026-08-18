@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, isServerMode } from './bridge.js'
-import BotonLargo, { pxDeRem, UMBRAL_REM } from './pulsacion.jsx'
+import BotonToque, { pxDeRem, UMBRAL_REM } from './pulsacion.jsx'
 
 // Sustituye al dialogo nativo de ficheros, que solo existia via Qt/pywebview.
 // Aparte de no estar disponible en modo servidor (Raspberry Pi), un dialogo
@@ -36,7 +36,7 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
   const [estado, setEstado] = useState({ cargando: true, datos: null, error: null })
   const listaRef = useRef(null)
   const arrastre = useRef({ activo: false, y0: 0, top0: 0, umbral: pxDeRem(UMBRAL_REM), movido: false })
-  const larga = isServerMode()
+  const tactil = isServerMode()
 
   const cargar = useCallback(async (ruta) => {
     setEstado((s) => ({ ...s, cargando: true, error: null }))
@@ -127,12 +127,10 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
 
         {error && <p className="pm-status err">{error}</p>}
 
-        {larga && <p className="picker-ayuda">Mantén el dedo sobre una carpeta para abrirla.</p>}
-
         <ul
           className="picker-lista"
           ref={listaRef}
-          {...(larga ? {
+          {...(tactil ? {
             onPointerDown: alPulsar,
             onPointerMove: alMover,
             onPointerUp: alSoltar,
@@ -146,23 +144,23 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
           )}
           {datos?.parent && (
             <li>
-              <BotonLargo className="picker-fila" larga={larga} cancelarAlMover onActivar={() => cargar(datos.parent)}>
+              <BotonToque className="picker-fila" tactil={tactil} cancelarAlMover onActivar={() => cargar(datos.parent)}>
                 <Ico tipo="subir" /> <span className="picker-txt">.. subir</span>
-              </BotonLargo>
+              </BotonToque>
             </li>
           )}
           {datos?.dirs.map((d) => (
             <li key={d.path}>
-              <BotonLargo className="picker-fila picker-dir" larga={larga} cancelarAlMover onActivar={() => cargar(d.path)}>
+              <BotonToque className="picker-fila picker-dir" tactil={tactil} cancelarAlMover onActivar={() => cargar(d.path)}>
                 <Ico tipo="carpeta" /> <span className="picker-txt">{d.name}</span>
-              </BotonLargo>
+              </BotonToque>
             </li>
           ))}
           {mode === 'file' && datos?.files.map((f) => (
             <li key={f.path}>
-              <BotonLargo className="picker-fila picker-file" larga={larga} cancelarAlMover onActivar={() => onPick(f.path)}>
+              <BotonToque className="picker-fila picker-file" tactil={tactil} cancelarAlMover onActivar={() => onPick(f.path)}>
                 <Ico tipo="fichero" /> <span className="picker-txt">{f.name}</span>
-              </BotonLargo>
+              </BotonToque>
             </li>
           ))}
           {datos && datos.dirs.length === 0 && !(mode === 'file' && datos.files.length > 0) && (

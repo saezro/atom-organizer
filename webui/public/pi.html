@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Organizer · pantalla de la Pi (480x320)</title>
+<!--
+  Banco de pruebas del kiosco: mete la app en un iframe de EXACTAMENTE 480x320
+  para poder mirar en un portatil como queda en la pantalla de la Raspberry Pi.
+
+  Por que un iframe y no un div de 480x320: dentro de un iframe las media
+  queries y las unidades de viewport (vh/vw) resuelven contra SU propio
+  viewport, no contra la ventana del navegador. Con un div, el breakpoint
+  compacto de index.css (max-width: 34rem) no dispararia y veriamos la UI
+  grande metida en una caja pequena, que no es lo que corre en la Pi. Asi
+  ademas no hace falta tocar ni una linea del CSS de la app.
+
+  Aqui SI se usan px, a proposito y solo aqui: no es UI que deba escalar, es
+  la reproduccion de un panel fisico de 480x320 puntos. La app de dentro
+  sigue en rem.
+
+  Este fichero vive en public/, asi que Vite lo copia tal cual a dist/ sin
+  procesarlo. La Pi nunca lo abre: arranca en index.html directamente.
+-->
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --text: #f1f5f9;
+    --muted: #6b7280;
+    --orange: #ee753a;
+    --linea: rgba(255, 255, 255, 0.12);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1.25rem;
+    padding: 1.5rem;
+    background: var(--bg);
+    background-image: radial-gradient(rgba(255,255,255,.06) 1.5px, transparent 1.5px);
+    background-size: 22px 22px;
+    color: var(--text);
+    font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+    color-scheme: dark;
+  }
+
+  .barra {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    justify-content: center;
+    font-size: 0.8125rem;
+  }
+  .grupo { display: flex; align-items: center; gap: 0.4rem; }
+  .etiqueta { color: var(--muted); }
+
+  button {
+    font: inherit;
+    font-size: 0.8125rem;
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--linea);
+    border-radius: 0.5rem;
+    padding: 0.35rem 0.7rem;
+    cursor: pointer;
+  }
+  button:hover { background: rgba(255, 255, 255, 0.12); }
+  button[aria-pressed="true"] {
+    background: var(--orange);
+    border-color: var(--orange);
+    color: #0a0a0a;
+    font-weight: 600;
+  }
+
+  /* El marco: el hueco lo dimensiona el zoom, el iframe nunca cambia de
+     tamano (siempre 480x320 CSS px) para que su viewport sea el de la Pi. */
+  .marco {
+    position: relative;
+    border: 1px solid var(--linea);
+    border-radius: 0.75rem;
+    padding: 10px;
+    background: #141414;
+    box-shadow: 0 1.5rem 3rem rgba(0, 0, 0, 0.6);
+  }
+  .hueco { overflow: hidden; }
+  iframe {
+    width: 480px;
+    height: 320px;
+    border: 0;
+    display: block;
+    background: var(--bg);
+    transform-origin: top left;
+  }
+  .pie {
+    font-size: 0.75rem;
+    color: var(--muted);
+    text-align: center;
+    max-width: 34rem;
+    line-height: 1.5;
+  }
+  code {
+    color: var(--text);
+    background: rgba(255,255,255,.07);
+    padding: 0.05rem 0.3rem;
+    border-radius: 0.25rem;
+  }
+</style>
+</head>
+<body>
+
+<div class="barra">
+  <span class="grupo"><span class="etiqueta">480 × 320</span></span>
+  <span class="grupo">
+    <span class="etiqueta">zoom</span>
+    <button type="button" data-zoom="1">1×</button>
+    <button type="button" data-zoom="1.5">1,5×</button>
+    <button type="button" data-zoom="2">2×</button>
+  </span>
+  <span class="grupo">
+    <button type="button" id="cursor" aria-pressed="true">puntero</button>
+    <button type="button" id="recargar">recargar</button>
+  </span>
+</div>
+
+<div class="marco">
+  <div class="hueco" id="hueco">
+    <iframe id="pantalla" title="Kiosco del Organizer a tamaño de la Raspberry Pi"></iframe>
+  </div>
+</div>
+
+<p class="pie">
+  El iframe mide siempre 480×320 reales — el zoom solo agranda lo que ves, no
+  cambia el viewport, así que los breakpoints y el <code>rem</code> son los de
+  la Pi. «puntero» activa <code>?cursor</code>, que repone el ratón dentro del
+  kiosco (la Pi arranca sin él).
+</p>
+
+<script>
+  const pantalla = document.getElementById('pantalla')
+  const hueco = document.getElementById('hueco')
+  const btnCursor = document.getElementById('cursor')
+  const ANCHO = 480, ALTO = 320
+
+  let zoom = 1
+  let cursor = true
+
+  function cargar() {
+    pantalla.src = './index.html' + (cursor ? '?cursor' : '')
+  }
+
+  function aplicarZoom(z) {
+    zoom = z
+    pantalla.style.transform = z === 1 ? '' : 'scale(' + z + ')'
+    // El hueco se queda con el tamano ya escalado para que el marco encaje.
+    hueco.style.width = (ANCHO * z) + 'px'
+    hueco.style.height = (ALTO * z) + 'px'
+    for (const b of document.querySelectorAll('[data-zoom]')) {
+      b.setAttribute('aria-pressed', String(Number(b.dataset.zoom) === z))
+    }
+  }
+
+  for (const b of document.querySelectorAll('[data-zoom]')) {
+    b.addEventListener('click', () => aplicarZoom(Number(b.dataset.zoom)))
+  }
+  btnCursor.addEventListener('click', () => {
+    cursor = !cursor
+    btnCursor.setAttribute('aria-pressed', String(cursor))
+    cargar()
+  })
+  document.getElementById('recargar').addEventListener('click', cargar)
+
+  aplicarZoom(1)
+  cargar()
+</script>
+
+</body>
+</html>

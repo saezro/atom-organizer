@@ -28,7 +28,7 @@ import { api } from './bridge.js'
 describe('FolderPicker en escritorio', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('un click normal abre la carpeta (sin mantener el dedo)', async () => {
+  it('un click normal abre la carpeta', async () => {
     render(<FolderPicker mode="folder" startPath={null} onPick={() => {}} onCancel={() => {}} />)
     await userEvent.click(await screen.findByText('VUELOS'))
     await waitFor(() => expect(api.listDir).toHaveBeenCalledWith('/home/rebeca/VUELOS'))
@@ -44,12 +44,6 @@ describe('FolderPicker en escritorio', () => {
     fireEvent.pointerUp(fila, { clientY: 130 })
     fireEvent.click(fila)
     await waitFor(() => expect(api.listDir).toHaveBeenCalledWith('/home/rebeca/VUELOS'))
-  })
-
-  it('no muestra la ayuda de pulsacion larga', async () => {
-    render(<FolderPicker mode="folder" startPath={null} onPick={() => {}} onCancel={() => {}} />)
-    await screen.findByText('VUELOS')
-    expect(screen.queryByText(/Mantén el dedo/i)).toBeNull()
   })
 
   it('en escritorio no llama a defaultDir: arranca en el home de siempre', async () => {

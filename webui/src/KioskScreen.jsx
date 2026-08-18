@@ -13,7 +13,7 @@
 // paso 2 nada táctil baja de `--toque-min`.
 import { useState } from 'react'
 import { isServerMode } from './bridge.js'
-import BotonLargo from './pulsacion.jsx'
+import BotonToque from './pulsacion.jsx'
 
 // Deriva la ruta de destino a partir de la carpeta de origen, añadiendo el
 // sufijo "_ORGANIZADO". Función pura: sin efectos, sin acceso a props/estado.
@@ -45,10 +45,10 @@ export default function KioskScreen({
   const destino = derivarDestino(carpeta)
   const email = status?.email || ''
   const inicial = email ? email[0].toUpperCase() : ''
-  const larga = isServerMode()
+  const tactil = isServerMode()
 
   const avatar = (
-    <BotonLargo className="kiosk-avatar" data-testid="kiosk-avatar" larga={larga} onActivar={onAbrirCompleta}>
+    <BotonToque className="kiosk-avatar" data-testid="kiosk-avatar" tactil={tactil} onActivar={onAbrirCompleta}>
       {status ? (
         status.picture ? (
           <img src={status.picture} alt={`Avatar de ${email}`} className="kiosk-avatar-img" />
@@ -58,7 +58,7 @@ export default function KioskScreen({
       ) : (
         <span className="kiosk-sin-sesion">Sin sesión</span>
       )}
-    </BotonLargo>
+    </BotonToque>
   )
 
   const barraProgreso = progreso && (
@@ -75,22 +75,22 @@ export default function KioskScreen({
         <div className="kiosk-header">{avatar}</div>
         {barraProgreso}
         <div className="kiosk-menu">
-          <BotonLargo
+          <BotonToque
             className="kiosk-menu-btn kiosk-menu-organizar"
-            larga={larga}
+            tactil={tactil}
             onActivar={() => setAccion('organizar')}
             disabled={busy}
           >
             Organizar
-          </BotonLargo>
-          <BotonLargo
+          </BotonToque>
+          <BotonToque
             className="kiosk-menu-btn kiosk-menu-subir"
-            larga={larga}
+            tactil={tactil}
             onActivar={() => setAccion('subir')}
             disabled={busy}
           >
             Subir en crudo
-          </BotonLargo>
+          </BotonToque>
         </div>
       </div>
     )
@@ -110,17 +110,17 @@ export default function KioskScreen({
   return (
     <div className="kiosk">
       <div className="kiosk-header kiosk-header-paso">
-        <BotonLargo className="kiosk-atras" larga={larga} onActivar={() => setAccion(null)} disabled={busy}>
+        <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setAccion(null)} disabled={busy}>
           ← Atrás
-        </BotonLargo>
+        </BotonToque>
         <span className="kiosk-titulo">{esOrganizar ? 'Organizar' : 'Subir en crudo'}</span>
         {avatar}
       </div>
 
       <div className="kiosk-carpeta">
-        <BotonLargo className="btn-ghost kiosk-btn-carpeta" larga={larga} onActivar={onPickCarpeta} disabled={busy}>
+        <BotonToque className="btn-ghost kiosk-btn-carpeta" tactil={tactil} onActivar={onPickCarpeta} disabled={busy}>
           Elegir carpeta…
-        </BotonLargo>
+        </BotonToque>
         <span className="kiosk-carpeta-actual">{carpeta || 'Sin carpeta'}</span>
         {esOrganizar && carpeta && <span className="kiosk-destino">{destino}</span>}
       </div>
@@ -161,14 +161,14 @@ export default function KioskScreen({
       {barraProgreso}
 
       <div className="kiosk-acciones">
-        <BotonLargo
+        <BotonToque
           className={'kiosk-btn ' + (esOrganizar ? 'kiosk-btn-organizar' : 'kiosk-btn-subir-crudo')}
-          larga={larga}
+          tactil={tactil}
           onActivar={confirmar}
           disabled={!listo || busy}
         >
           {esOrganizar ? 'Organizar' : 'Subir'}
-        </BotonLargo>
+        </BotonToque>
       </div>
     </div>
   )

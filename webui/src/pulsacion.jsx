@@ -1,51 +1,52 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-// Los dos gestos comparten umbral: por debajo de esto el dedo se considera
-// quieto (es un toque), por encima esta scrolleando.
-export const UMBRAL_REM = 0.625
+// Por debajo de este recorrido el dedo se considera quieto (es un toque); por
+// encima esta scrolleando. Generoso a proposito: el panel resistivo de la Pi
+// tiembla bastante en un toque legitimo, y un umbral corto se traduce en
+// toques muertos, que es peor que un scroll de mas.
+export const UMBRAL_REM = 1
 
 export function pxDeRem(rem) {
   const base = parseFloat(getComputedStyle(document.documentElement).fontSize)
   return rem * (base || 16)
 }
 
-// La duracion de la pulsacion larga vive en CSS (--pulsacion) para que la
-// animacion de relleno y el temporizador no se puedan desincronizar: JS la lee
-// de ahi en vez de tener su propia copia.
-export function msDePulsacion() {
-  const v = getComputedStyle(document.documentElement).getPropertyValue('--pulsacion').trim()
-  if (v.endsWith('ms')) return parseFloat(v) || 700
-  if (v.endsWith('s')) return (parseFloat(v) || 0.7) * 1000
-  return 700
+// Duracion del destello de confirmacion. Vive en CSS (--onda) y JS la lee de
+// ahi para que la clase no se quite antes de que termine la animacion.
+export function msDeOnda() {
+  const v = getComputedStyle(document.documentElement).getPropertyValue('--onda').trim()
+  if (v.endsWith('ms')) return parseFloat(v) || 200
+  if (v.endsWith('s')) return (parseFloat(v) || 0.2) * 1000
+  return 200
 }
 
-// Boton generico con soporte de pulsacion larga. Con puntero de raton (el
-// panel resistivo de la Pi) el click se sintetiza al soltar, asi que en modo
-// servidor la activacion pasa a ser pulsacion larga: hay que mantener el dedo
-// quieto ~1s, con el boton rellenandose como feedback, y la accion salta al
-// cumplirse el tiempo (no al soltar, que es justo el momento ambiguo). El
-// click queda neutralizado. En escritorio (larga=false) se mantiene el click
-// de siempre.
+// Boton generico para el panel tactil de la Pi. Chromium ve ese panel como un
+// RATON, asi que el click se sintetiza al soltar y no se puede distinguir un
+// toque de un scroll solo con el click. Lo que los distingue es el RECORRIDO,
+// no el tiempo: se activa al soltar, al instante, salvo que el dedo se haya
+// movido mas de UMBRAL_REM. Antes esto era una pulsacion larga de 700 ms y
+// resultaba lentisima para lo unico que hace falta, que es abrir una carpeta.
 //
-// `cancelarAlMover` solo aplica cuando `larga` es cierto: en listas con gesto
-// de scroll (FolderPicker) hay que desambiguar moviendo el dedo; en botones
-// sueltos del kiosco no hay ese gesto y cancelar por el temblor del dedo en
-// el panel resistivo dejaria botones que no responden.
-export default function BotonLargo({ className = '', larga, cancelarAlMover = false, onActivar, children, ...rest }) {
-  const [pulsando, setPulsando] = useState(false)
-  const temporizador = useRef(null)
-  const y0 = useRef(0)
+// `cancelarAlMover` solo aplica cuando `tactil` es cierto: en listas con gesto
+// de scroll (FolderPicker) hay que descartar el arrastre; en botones sueltos
+// del kiosco no hay ese gesto, y descartar por el temblor del dedo dejaria
+// botones que no responden. En escritorio (tactil=false) se usa el click de
+// siempre y nada de esto entra.
+export default function BotonToque({ className = '', tactil, cancelarAlMover = false, onActivar, children, ...rest }) {
+  const [tocando, setTocando] = useState(false)
+  const arrastrado = useRef(false)
+  const destello = useRef(null)
 
-  const cancelar = useCallback(() => {
-    if (temporizador.current) clearTimeout(temporizador.current)
-    temporizador.current = null
-    setPulsando(false)
+  const apagar = useCallback(() => {
+    if (destello.current) clearTimeout(destello.current)
+    destello.current = null
+    setTocando(false)
   }, [])
 
-  // Si el componente se recarga, el boton se desmonta con el temporizador vivo.
-  useEffect(() => cancelar, [cancelar])
+  // El boton puede desmontarse (navegar de carpeta) con el destello vivo.
+  useEffect(() => apagar, [apagar])
 
-  if (!larga) {
+  if (!tactil) {
     return (
       <button type="button" className={className} onClick={onActivar} {...rest}>
         {children}
@@ -56,36 +57,49 @@ export default function BotonLargo({ className = '', larga, cancelarAlMover = fa
   return (
     <button
       type="button"
-      className={pulsando ? `${className} pulsable pulsando` : `${className} pulsable`}
+      className={tocando ? `${className} pulsable pulsando` : `${className} pulsable`}
       onPointerDown={(e) => {
-        y0.current = e.clientY
+        arrastrado.current = false
+        e.currentTarget.dataset.y0 = String(e.clientY)
         // La onda nace donde cae el dedo, no en el centro: se lee como "he
-        // tocado AQUI". Se pasa por custom properties para que la animacion
-        // siga viviendo entera en CSS. El diametro se calcula a la esquina mas
-        // lejana, asi la onda cubre el boton justo al completarse y ni antes
-        // ni despues (con un tamano fijo, en botones anchos sobraria mucho).
+        // tocado AQUI". Va por custom properties para que la animacion siga
+        // viviendo entera en CSS. El diametro se calcula a la esquina mas
+        // lejana para que cubra el boton entero.
         const r = e.currentTarget.getBoundingClientRect()
         const x = e.clientX - r.left
         const y = e.clientY - r.top
         const radio = Math.hypot(Math.max(x, r.width - x), Math.max(y, r.height - y))
-        e.currentTarget.style.setProperty('--pulsacion-x', `${x}px`)
-        e.currentTarget.style.setProperty('--pulsacion-y', `${y}px`)
-        e.currentTarget.style.setProperty('--pulsacion-d', `${radio * 2}px`)
-        setPulsando(true)
-        temporizador.current = setTimeout(() => {
-          temporizador.current = null
-          setPulsando(false)
-          onActivar()
-        }, msDePulsacion())
+        e.currentTarget.style.setProperty('--onda-x', `${x}px`)
+        e.currentTarget.style.setProperty('--onda-y', `${y}px`)
+        e.currentTarget.style.setProperty('--onda-d', `${radio * 2}px`)
+        setTocando(true)
+        // El destello se apaga solo, no al soltar: un toque rapido dura menos
+        // que la animacion y si no se veria cortado a medias.
+        if (destello.current) clearTimeout(destello.current)
+        destello.current = setTimeout(() => {
+          destello.current = null
+          setTocando(false)
+        }, msDeOnda())
       }}
       onPointerMove={(e) => {
-        if (cancelarAlMover && temporizador.current && Math.abs(e.clientY - y0.current) > pxDeRem(UMBRAL_REM)) {
-          cancelar()
+        if (!cancelarAlMover || arrastrado.current) return
+        const y0 = Number(e.currentTarget.dataset.y0 ?? e.clientY)
+        if (Math.abs(e.clientY - y0) > pxDeRem(UMBRAL_REM)) {
+          arrastrado.current = true  // era un scroll: al soltar no se activa
+          apagar()
         }
       }}
-      onPointerUp={cancelar}
-      onPointerCancel={cancelar}
-      onPointerLeave={cancelar}
+      onPointerUp={() => {
+        if (arrastrado.current) {
+          arrastrado.current = false
+          return
+        }
+        onActivar()
+      }}
+      onPointerCancel={() => { arrastrado.current = false; apagar() }}
+      onPointerLeave={() => { arrastrado.current = true; apagar() }}
+      // El click sintetizado al soltar llega DESPUES de onPointerUp; ya hemos
+      // actuado nosotros, asi que se neutraliza para no activar dos veces.
       onClick={(e) => e.preventDefault()}
       {...rest}
     >
