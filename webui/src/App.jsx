@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, onCloud, onProgress, whenBridgeReady } from './bridge'
+import { api, onCloud, onProgress, registerPicker, whenBridgeReady } from './bridge'
 import { SECTIONS, SPLIT_ADVANCED } from './schema'
 import TaskBlock, { Field, initialState, buildParams } from './TaskBlock'
 import ProgressModal from './ProgressModal'
@@ -7,6 +7,7 @@ import PreflightModal from './PreflightModal'
 import UpdateModal from './UpdateModal'
 import EstadilloField from './EstadilloField'
 import InspeccionSelector from './InspeccionSelector'
+import FolderPicker from './FolderPicker'
 import './App.css'
 
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
@@ -176,6 +177,14 @@ function App() {
   // Versión REAL, la que dice version.py (vía updater.current_version()). Antes era
   // un literal en el header y quedó congelado en "v3.9" tras el reseteo de versionado.
   const [version, setVersion] = useState('')
+
+  // El explorador in-app sustituye al diálogo nativo en modo servidor: se
+  // registra una vez y `api.pickFolder`/`api.pickFile` lo invocan solos.
+  const [picker, setPicker] = useState(null)
+  useEffect(() => {
+    registerPicker((mode) => new Promise((resolve) => setPicker({ mode, resolve })))
+    return () => registerPicker(null)
+  }, [])
 
   useEffect(() => {
     whenBridgeReady()
@@ -372,6 +381,15 @@ function App() {
 
       {/* Se pinta solo si Python avisa de que hay versión nueva (`atom:update`). */}
       <UpdateModal />
+
+      {picker && (
+        <FolderPicker
+          mode={picker.mode}
+          startPath={null}
+          onPick={(p) => { picker.resolve(p); setPicker(null) }}
+          onCancel={() => { picker.resolve(null); setPicker(null) }}
+        />
+      )}
     </div>
   )
 }

@@ -92,10 +92,30 @@ async function call(method, ...args) {
   return fn(...args)
 }
 
+// En modo servidor (Raspberry Pi) no hay diálogo nativo de ficheros: la webui
+// registra aquí su propio explorador (`FolderPicker`) y `pickFolder`/`pickFile`
+// lo usan en su lugar, sin que los call sites tengan que enterarse. Bajo
+// pywebview (Windows) `pickerUI` se queda a null y la ruta nativa sigue igual.
+let pickerUI = null
+
+export function registerPicker(fn) {
+  pickerUI = fn
+}
+
+function pick(mode, method) {
+  if (isServerMode() && pickerUI) return pickerUI(mode)
+  return call(method)
+}
+
 export const api = {
   ping: (who) => call('ping', who),
-  pickFolder: () => call('pick_folder'),
-  pickFile: () => call('pick_file'),
+  pickFolder: () => pick('folder', 'pick_folder'),
+  pickFile: () => pick('file', 'pick_file'),
+  // Listado de un directorio para el explorador in-app (`FolderPicker`), la
+  // alternativa al diálogo nativo en modo servidor. Sin argumento lista el
+  // home del usuario. Devuelve {ok, path, parent, dirs[], files[]} |
+  // {ok:false, error}; `parent` es null en la raíz.
+  listDir: (path) => call('list_dir', path ?? null),
   runOrganize: (params, advanced) => call('run_organize', params, advanced ?? null),
   runTask: (task, params, advanced) => call('run_task', task, params, advanced ?? null),
   // Lectura sincrónica del estadillo para el modal previo (pilotos, dron,

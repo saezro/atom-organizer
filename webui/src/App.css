@@ -957,3 +957,69 @@ select.glass-input option {
     transition: none;
   }
 }
+
+/* --- FolderPicker: explorador táctil in-app (modo servidor) --------------- */
+/* Reutiliza .pm-overlay/.pm-card/.pm-title/.pm-actions del modal de progreso;
+   aquí solo lo propio del explorador. Pantalla objetivo: 480x320 con el dedo,
+   así que las filas son objetivos de toque grandes (min-height ~2.75rem), no
+   depende de hover. */
+.picker-card {
+  width: min(30rem, 100%);
+}
+.picker-ruta {
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.picker-lista {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 45vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.picker-fila {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 2.75rem;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0.55rem 0.75rem;
+  border-radius: 10px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: background 0.15s ease;
+}
+.picker-fila:hover,
+.picker-fila:active {
+  background: rgba(255, 255, 255, 0.1);
+}
+.picker-fila.picker-file {
+  color: var(--muted);
+}
+.picker-ico {
+  font-size: 1rem;
+}
+.picker-vacio {
+  padding: 0.6rem 0.2rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.picker-acciones {
+  gap: 0.6rem;
+}
+.picker-acciones .btn-ghost,
+.picker-acciones .btn-run {
+  min-height: 2.75rem;
+}
