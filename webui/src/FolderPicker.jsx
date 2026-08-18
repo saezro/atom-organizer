@@ -111,7 +111,7 @@ function Fila({ className, onActivar, larga, children }) {
 export default function FolderPicker({ mode = 'folder', startPath = null, onPick, onCancel }) {
   const [estado, setEstado] = useState({ cargando: true, datos: null, error: null })
   const listaRef = useRef(null)
-  const arrastre = useRef({ activo: false, y0: 0, top0: 0, umbral: 10, movido: false })
+  const arrastre = useRef({ activo: false, y0: 0, top0: 0, umbral: pxDeRem(UMBRAL_REM), movido: false })
   const larga = isServerMode()
 
   const cargar = useCallback(async (ruta) => {
@@ -132,7 +132,9 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
 
   // Deslizar sobre la lista tiene que scrollear: el panel resistivo llega como
   // puntero de raton, asi que no hay scroll tactil que aprovechar y se mueve
-  // scrollTop a mano.
+  // scrollTop a mano. Solo se engancha en modo servidor (ver el <ul>): en
+  // escritorio el scroll nativo ya funciona y este arrastre se comeria clicks
+  // legitimos si el raton tiembla mas de UMBRAL_REM.
   const alPulsar = (e) => {
     const ul = listaRef.current
     if (!ul) return
@@ -180,12 +182,14 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
         <ul
           className="picker-lista"
           ref={listaRef}
-          onPointerDown={alPulsar}
-          onPointerMove={alMover}
-          onPointerUp={alSoltar}
-          onPointerCancel={alSoltar}
-          onPointerLeave={alSoltar}
-          onClickCapture={alHacerClick}
+          {...(larga ? {
+            onPointerDown: alPulsar,
+            onPointerMove: alMover,
+            onPointerUp: alSoltar,
+            onPointerCancel: alSoltar,
+            onPointerLeave: alSoltar,
+            onClickCapture: alHacerClick,
+          } : {})}
         >
           {datos?.parent && (
             <li>
