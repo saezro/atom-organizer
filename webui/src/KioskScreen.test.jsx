@@ -63,8 +63,17 @@ describe('derivarDestino', () => {
   })
 })
 
-describe('KioskScreen', () => {
+describe('KioskScreen — paso 1 (menú)', () => {
   beforeEach(() => vi.clearAllMocks())
+
+  it('muestra los botones "Organizar" y "Subir en crudo", sin campos del paso 2', () => {
+    render(<KioskScreen {...baseProps()} />)
+    expect(screen.getByRole('button', { name: /^organizar$/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /subir en crudo/i })).toBeInTheDocument()
+    expect(screen.queryByText(/elegir carpeta/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(screen.queryByText(/estadillo/i)).not.toBeInTheDocument()
+  })
 
   it('muestra "Sin sesión" cuando status es null', () => {
     render(<KioskScreen {...baseProps({ status: null })} />)
@@ -94,66 +103,9 @@ describe('KioskScreen', () => {
     expect(onAbrirCompleta).toHaveBeenCalled()
   })
 
-  it('muestra el destino derivado cuando hay carpeta', () => {
-    render(<KioskScreen {...baseProps({ carpeta: '/home/pi/vuelo/PLANTA' })} />)
-    expect(screen.getByText('/home/pi/vuelo/PLANTA_ORGANIZADO')).toBeInTheDocument()
-  })
-
-  it('boton Organizar llama a onOrganizar con origen/destino/estadillo', async () => {
-    const onOrganizar = vi.fn()
-    render(
-      <KioskScreen
-        {...baseProps({
-          carpeta: '/home/pi/vuelo/PLANTA',
-          estadillo: '/home/pi/estadillo.xlsx',
-          onOrganizar,
-        })}
-      />
-    )
-    await userEvent.click(screen.getByRole('button', { name: /organizar/i }))
-    expect(onOrganizar).toHaveBeenCalledTimes(1)
-    expect(onOrganizar).toHaveBeenCalledWith({
-      origen: '/home/pi/vuelo/PLANTA',
-      destino: '/home/pi/vuelo/PLANTA_ORGANIZADO',
-      estadillo: '/home/pi/estadillo.xlsx',
-    })
-  })
-
-  it('boton Subir en crudo llama a onSubirCrudo con carpeta e inspeccion', async () => {
-    const onSubirCrudo = vi.fn()
-    const inspeccion = { id: 1, nombre: 'ACME 2026' }
-    render(
-      <KioskScreen
-        {...baseProps({
-          carpeta: '/home/pi/vuelo/PLANTA',
-          inspeccion,
-          onSubirCrudo,
-        })}
-      />
-    )
-    await userEvent.click(screen.getByRole('button', { name: /subir en crudo/i }))
-    expect(onSubirCrudo).toHaveBeenCalledWith({ carpeta: '/home/pi/vuelo/PLANTA', inspeccion })
-  })
-
-  it('sin carpeta, ambos botones están deshabilitados', () => {
-    render(<KioskScreen {...baseProps({ carpeta: '', inspeccion: { id: 1, nombre: 'X' } })} />)
-    expect(screen.getByRole('button', { name: /organizar/i })).toBeDisabled()
-    expect(screen.getByRole('button', { name: /subir en crudo/i })).toBeDisabled()
-  })
-
-  it('sin inspeccion, "Subir en crudo" deshabilitado pero "Organizar" no depende de eso', () => {
-    render(<KioskScreen {...baseProps({ carpeta: '/x/y', inspeccion: null })} />)
-    expect(screen.getByRole('button', { name: /subir en crudo/i })).toBeDisabled()
-    expect(screen.getByRole('button', { name: /organizar/i })).not.toBeDisabled()
-  })
-
-  it('con busy=true, ambos botones deshabilitados aunque haya carpeta e inspeccion', () => {
-    render(
-      <KioskScreen
-        {...baseProps({ carpeta: '/x/y', inspeccion: { id: 1, nombre: 'X' }, busy: true })}
-      />
-    )
-    expect(screen.getByRole('button', { name: /organizar/i })).toBeDisabled()
+  it('con busy=true, los dos botones del menú están deshabilitados', () => {
+    render(<KioskScreen {...baseProps({ busy: true })} />)
+    expect(screen.getByRole('button', { name: /^organizar$/i })).toBeDisabled()
     expect(screen.getByRole('button', { name: /subir en crudo/i })).toBeDisabled()
   })
 
@@ -168,8 +120,124 @@ describe('KioskScreen', () => {
     expect(screen.getByText(/42/)).toBeInTheDocument()
   })
 
-  it('el campo de estadillo existe, empieza vacío y se puede dejar vacío sin deshabilitar Organizar', () => {
-    render(<KioskScreen {...baseProps({ estadillo: '' })} />)
-    expect(screen.getByRole('button', { name: /organizar/i })).not.toBeDisabled()
+  it('pulsar "Organizar" lleva al paso 2 de organizar (sin selector de inspección)', async () => {
+    render(<KioskScreen {...baseProps()} />)
+    await userEvent.click(screen.getByRole('button', { name: /^organizar$/i }))
+    expect(screen.getByText(/elegir carpeta/i)).toBeInTheDocument()
+    expect(screen.getByText(/estadillo \(opcional\)/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /← atrás/i })).toBeInTheDocument()
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+  })
+
+  it('pulsar "Subir en crudo" lleva al paso 2 de subir (sin estadillo)', async () => {
+    render(<KioskScreen {...baseProps()} />)
+    await userEvent.click(screen.getByRole('button', { name: /subir en crudo/i }))
+    expect(screen.getByText(/elegir carpeta/i)).toBeInTheDocument()
+    expect(screen.getByRole('combobox')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /← atrás/i })).toBeInTheDocument()
+    expect(screen.queryByText(/estadillo/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('KioskScreen — paso 2 (organizar)', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('muestra el destino derivado cuando hay carpeta', () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizar', carpeta: '/home/pi/vuelo/PLANTA' })} />)
+    expect(screen.getByText('/home/pi/vuelo/PLANTA_ORGANIZADO')).toBeInTheDocument()
+  })
+
+  it('sin carpeta no muestra destino y el botón "Organizar" está deshabilitado', () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizar', carpeta: '' })} />)
+    expect(screen.queryByText(/_ORGANIZADO/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^organizar$/i })).toBeDisabled()
+  })
+
+  it('botón "Organizar" llama a onOrganizar con origen/destino/estadillo', async () => {
+    const onOrganizar = vi.fn()
+    render(
+      <KioskScreen
+        {...baseProps({
+          accionInicial: 'organizar',
+          carpeta: '/home/pi/vuelo/PLANTA',
+          estadillo: '/home/pi/estadillo.xlsx',
+          onOrganizar,
+        })}
+      />
+    )
+    await userEvent.click(screen.getByRole('button', { name: /^organizar$/i }))
+    expect(onOrganizar).toHaveBeenCalledTimes(1)
+    expect(onOrganizar).toHaveBeenCalledWith({
+      origen: '/home/pi/vuelo/PLANTA',
+      destino: '/home/pi/vuelo/PLANTA_ORGANIZADO',
+      estadillo: '/home/pi/estadillo.xlsx',
+    })
+  })
+
+  it('el campo de estadillo empieza vacío y no deshabilita "Organizar"', () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizar', estadillo: '' })} />)
+    expect(screen.getByPlaceholderText(/ruta del estadillo/i)).toHaveValue('')
+    expect(screen.getByRole('button', { name: /^organizar$/i })).not.toBeDisabled()
+  })
+
+  it('con busy=true, "Elegir carpeta…" y "Organizar" están deshabilitados', () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizar', carpeta: '/x/y', busy: true })} />)
+    expect(screen.getByRole('button', { name: /elegir carpeta/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^organizar$/i })).toBeDisabled()
+  })
+
+  it('"← Atrás" vuelve al paso 1 y muestra de nuevo el menú', async () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizar' })} />)
+    await userEvent.click(screen.getByRole('button', { name: /← atrás/i }))
+    expect(screen.getByRole('button', { name: /^organizar$/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /subir en crudo/i })).toBeInTheDocument()
+    expect(screen.queryByText(/elegir carpeta/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('KioskScreen — paso 2 (subir en crudo)', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('no muestra el destino derivado', () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'subir', carpeta: '/home/pi/vuelo/PLANTA' })} />)
+    expect(screen.queryByText(/_ORGANIZADO/)).not.toBeInTheDocument()
+  })
+
+  it('sin carpeta o sin inspección, el botón "Subir" está deshabilitado', () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'subir', carpeta: '', inspeccion: null })} />)
+    expect(screen.getByRole('button', { name: /^subir$/i })).toBeDisabled()
+  })
+
+  it('botón "Subir" llama a onSubirCrudo con carpeta e inspección', async () => {
+    const onSubirCrudo = vi.fn()
+    const inspeccion = { id: 1, nombre: 'ACME 2026' }
+    render(
+      <KioskScreen
+        {...baseProps({
+          accionInicial: 'subir',
+          carpeta: '/home/pi/vuelo/PLANTA',
+          inspeccion,
+          onSubirCrudo,
+        })}
+      />
+    )
+    await userEvent.click(screen.getByRole('button', { name: /^subir$/i }))
+    expect(onSubirCrudo).toHaveBeenCalledTimes(1)
+    expect(onSubirCrudo).toHaveBeenCalledWith({ carpeta: '/home/pi/vuelo/PLANTA', inspeccion })
+  })
+
+  it('con busy=true, "Elegir carpeta…" y "Subir" están deshabilitados', () => {
+    render(
+      <KioskScreen
+        {...baseProps({
+          accionInicial: 'subir',
+          carpeta: '/x/y',
+          inspeccion: { id: 1, nombre: 'X' },
+          busy: true,
+        })}
+      />
+    )
+    expect(screen.getByRole('button', { name: /elegir carpeta/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^subir$/i })).toBeDisabled()
   })
 })
