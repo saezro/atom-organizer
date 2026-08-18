@@ -62,6 +62,25 @@ describe('bridge en modo servidor (sin pywebview)', () => {
     expect(visto).toEqual([{ kind: 'done', uploaded: 3 }])
   })
 
+  it('con un picker registrado, pickFolder lo usa y no llama a fetch', async () => {
+    const { api, registerPicker } = await import('./bridge.js')
+    const fn = vi.fn(async (mode) => `/elegido/${mode}`)
+    registerPicker(fn)
+    const res = await api.pickFolder()
+    expect(fn).toHaveBeenCalledWith('folder')
+    expect(res).toBe('/elegido/folder')
+    expect(globalThis.fetch).not.toHaveBeenCalled()
+  })
+
+  it('sin picker registrado, pickFolder va por fetch/POST', async () => {
+    const { api } = await import('./bridge.js')
+    await api.pickFolder()
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      '/api/pick_folder',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
   it('no abre SSE si pywebview aparece despues (arranque asincrono de Qt)', async () => {
     const { whenBridgeReady, isServerMode } = await import('./bridge.js')
     // Este es el arranque REAL de Windows: al evaluar el modulo todavia no hay
