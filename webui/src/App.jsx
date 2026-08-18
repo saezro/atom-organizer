@@ -426,6 +426,19 @@ function App() {
             <span className="atom">ATOM</span> <span className="org">ORGANIZER</span>
           </h1>
           {version && <span className="ver">v{version}</span>}
+          {/* La salida del kiosco (el avatar) era de un solo sentido: sin esto,
+              en la Pi no hay forma de volver, porque Chromium arranca en modo
+              kiosco y no tiene barra de URL para recargar. Solo en modo
+              servidor: en escritorio no existe el kiosco. */}
+          {isServerMode() && (
+            <button type="button" className="btn-ghost volver-kiosco" onClick={() => setKiosco(true)}>
+              <svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                <polyline points="9 22 9 12 15 12 15 22" />
+              </svg>
+              Volver al kiosco
+            </button>
+          )}
         </header>
       )}
 
