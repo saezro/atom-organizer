@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import queue
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -46,6 +47,43 @@ def _handler_factory(api, dist_dir: str, sink):
             self.send_header("Content-Length", str(len(cuerpo)))
             self.end_headers()
             self.wfile.write(cuerpo)
+
+        def do_GET(self):
+            if self.path.rstrip("/") == "/events":
+                return self._sse()
+            return super().do_GET()
+
+        def _sse(self) -> None:
+            """Un solo stream para los tres canales de eventos.
+
+            Sustituye a `evaluate_js`: el navegador no puede recibir un push que
+            el shell le inyecte, asi que se invierte el sentido y es el cliente
+            quien mantiene la conexion abierta.
+            """
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            cola = sink.subscribe()
+            try:
+                while True:
+                    try:
+                        evento, detalle = cola.get(timeout=15)
+                    except queue.Empty:
+                        # Comentario keep-alive: sin trafico, un proxy o el
+                        # propio navegador cerrarian la conexion en silencio.
+                        self.wfile.write(b": keep-alive\n\n")
+                        self.wfile.flush()
+                        continue
+                    payload = (f"event: {evento}\n"
+                               f"data: {json.dumps(detalle)}\n\n").encode("utf-8")
+                    self.wfile.write(payload)
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # el navegador cerro la pestana
+            finally:
+                sink.unsubscribe(cola)
 
         def do_POST(self):
             if not self.path.startswith("/api/"):
