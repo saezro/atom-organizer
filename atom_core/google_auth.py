@@ -68,7 +68,7 @@ REVOKE_URI = "https://oauth2.googleapis.com/revoke"
 # práctico. Quien acota de verdad es IAM — con `roles/storage.objectCreator`
 # sobre el bucket, este mismo token puede crear objetos y nada más.
 SCOPE_STORAGE_RW = "https://www.googleapis.com/auth/devstorage.read_write"
-SCOPES = ("openid", "email", SCOPE_STORAGE_RW)
+SCOPES = ("openid", "email", "profile", SCOPE_STORAGE_RW)
 
 # Margen antes de dar un token por caducado. Una subida de un fichero grande
 # puede empezar con 20 s de vida por delante y morir a mitad.
@@ -86,6 +86,7 @@ class AuthError(RuntimeError):
 class Identity:
     email: str
     domain: str
+    picture: str = ""
 
     def __str__(self) -> str:  # lo que se enseña en la UI
         return self.email
@@ -217,6 +218,9 @@ class GoogleAuth:
         self._refresh_token = sesion.refresh_token
         self._validada_en = sesion.validada_en
         if sesion.email:
+            # La sesión persistida solo guarda el email (`session_store.py`):
+            # una sesión creada antes de pedir el scope `profile` queda sin
+            # foto hasta el próximo login, y no pasa nada.
             self._identity = Identity(email=sesion.email,
                                       domain=sesion.email.rsplit("@", 1)[-1])
 
@@ -530,4 +534,8 @@ def _identidad_de_id_token(id_token: str) -> Identity | None:
     email = claims.get("email")
     if not email:
         return None
-    return Identity(email=email, domain=claims.get("hd") or email.rsplit("@", 1)[-1])
+    # `picture` solo llega si el scope `profile` fue concedido; una sesión
+    # anterior a ese cambio (o un id_token recortado) no lo trae, y no debe
+    # romper el login por eso.
+    return Identity(email=email, domain=claims.get("hd") or email.rsplit("@", 1)[-1],
+                    picture=claims.get("picture") or "")
