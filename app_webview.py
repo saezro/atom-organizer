@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import importlib
 import json
 import multiprocessing
 import os
@@ -24,9 +25,26 @@ import threading
 import time
 from pathlib import Path
 
-import webview
-
 from atom_core.event_sink import WebviewSink
+
+
+def _import_webview():
+    """Importa pywebview solo cuando de verdad se va a abrir una ventana.
+
+    En Raspberry Pi (ARM64) no hay wheel de PySide6 6.4.2, asi que el import
+    revienta. Como el modo `--server` no necesita ventana, el import no puede
+    estar en la cabecera del modulo o el proceso muere antes de arrancar.
+    """
+    try:
+        return importlib.import_module("webview")
+    except ImportError as exc:
+        sys.exit(
+            f"[app_webview] No se pudo cargar pywebview/Qt: {exc}\n"
+            "Si estas en Raspberry Pi u otro ARM64, arranca en modo servidor:\n"
+            "    python app_webview.py --server\n"
+            "y abre http://127.0.0.1:8765 en Chromium."
+        )
+
 
 def _base_dir() -> Path:
     """Dir base de recursos: bajo PyInstaller onefile los datas se extraen a
@@ -226,6 +244,7 @@ class Api:
         try:
             if platform.system() == "Windows":
                 return self._win_pick_folder()
+            webview = _import_webview()
             res = self._window.create_file_dialog(webview.FOLDER_DIALOG)
             return res[0] if res else None
         except Exception as exc:  # noqa: BLE001 — se traza y se avisa al front
@@ -239,6 +258,7 @@ class Api:
         try:
             if platform.system() == "Windows":
                 return self._win_pick_file()
+            webview = _import_webview()
             res = self._window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False)
             return res[0] if res else None
         except Exception as exc:  # noqa: BLE001 — se traza y se avisa al front
@@ -1054,14 +1074,37 @@ def _app_version_for_title() -> str:
         return "?"
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="ATOM Organizer (UI React/pywebview)")
     parser.add_argument(
         "--dev",
         action="store_true",
         help="Cargar el dev server de Vite (localhost:5173) con HMR.",
     )
+    parser.add_argument(
+        "--server",
+        action="store_true",
+        help="No abrir ventana: servir la UI por HTTP (Raspberry Pi / ARM64).",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Interfaz del modo servidor. Por defecto solo local; usa 0.0.0.0 "
+             "SOLO si quieres abrirla desde otro equipo de la red.",
+    )
+    parser.add_argument("--port", type=int, default=8765,
+                        help="Puerto del modo servidor (por defecto 8765).")
+    return parser
+
+
+def main() -> None:
+    parser = _build_parser()
     args = parser.parse_args()
+
+    if args.server:
+        sys.exit("modo servidor aun no implementado")
+
+    webview = _import_webview()
 
     target = resolve_target(args.dev)
     api = Api()
