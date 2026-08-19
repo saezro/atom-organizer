@@ -27,7 +27,6 @@ function baseProps(overrides = {}) {
     onSubirCrudo: vi.fn(),
     busy: false,
     progreso: null,
-    onAbrirCompleta: vi.fn(),
     ...overrides,
   }
 }

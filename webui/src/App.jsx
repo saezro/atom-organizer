@@ -189,8 +189,10 @@ function App() {
   }, [])
 
   // Pantalla por defecto en la Raspberry Pi (modo `--server`): la UI completa
-  // sigue montada debajo, `onAbrirCompleta` solo apaga este flag. La detección
-  // reutiliza el helper de bridge.js (no hay heurística propia aquí).
+  // sigue montada debajo, pero el kiosco es un callejón sin salida táctil (el
+  // avatar ya no abre nada); solo `setKiosco(true)` desde "Volver al kiosco"
+  // vuelve a levantar este flag. La detección reutiliza el helper de
+  // bridge.js (no hay heurística propia aquí).
   const [kiosco, setKiosco] = useState(() => isServerMode())
   // Estado propio del kiosco, separado a propósito del de `BucketScreen`
   // (`carpeta`) y `OrganizarScreen` (`destino`/`origen`): son pantallas
@@ -426,8 +428,9 @@ function App() {
             <span className="atom">ATOM</span> <span className="org">ORGANIZER</span>
           </h1>
           {version && <span className="ver">v{version}</span>}
-          {/* La salida del kiosco (el avatar) era de un solo sentido: sin esto,
-              en la Pi no hay forma de volver, porque Chromium arranca en modo
+          {/* El kiosco es un callejón sin salida táctil (el avatar ya no
+              abre nada): sin este botón, en la Pi no habría forma de volver
+              a él desde la UI completa, porque Chromium arranca en modo
               kiosco y no tiene barra de URL para recargar. Solo en modo
               servidor: en escritorio no existe el kiosco. */}
           {isServerMode() && (
@@ -474,7 +477,6 @@ function App() {
             onSubirCrudo={kioskSubirCrudo}
             busy={kioskBusy}
             progreso={kioskProgreso}
-            onAbrirCompleta={() => setKiosco(false)}
           />
         ) : section === 'organizar' ? (
           <OrganizarScreen ready={ready} running={running} onRun={run} />
