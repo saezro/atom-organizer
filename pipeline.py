@@ -3651,7 +3651,12 @@ class RGBCropping:
         - model: Description
         - percentage_cropping_dict: Description
         """
-        return percentage_cropping_dict[model]
+        # Las claves se guardan normalizadas a mayúsculas (external_tools.py,
+        # gui.py, app_webview.py); el valor EXIF crudo puede venir en minúsculas
+        # o con espacios extra, así que se normaliza igual en el lookup.
+        normalized_model = model.strip().upper()
+        normalized_dict = {str(key).strip().upper(): value for key, value in percentage_cropping_dict.items()}
+        return normalized_dict[normalized_model]
         
 
 class RGBProcessing:
