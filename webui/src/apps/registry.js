@@ -36,10 +36,25 @@ function IconoSubir() {
   )
 }
 
-function IconoCuenta() {
+function IconoTareas() {
   return h('svg', PROPS_SVG,
-    h('circle', { cx: '12', cy: '8', r: '4' }),
-    h('path', { d: 'M4 21a8 8 0 0116 0' })
+    h('path', { d: 'M9 6h11' }),
+    h('path', { d: 'M9 12h11' }),
+    h('path', { d: 'M9 18h11' }),
+    h('path', { d: 'M4 6l1.5 1.5L8 5' }),
+    h('path', { d: 'M4 12l1.5 1.5L8 11' }),
+    h('path', { d: 'M4 18l1.5 1.5L8 17' })
+  )
+}
+
+function IconoAjustes() {
+  return h('svg', PROPS_SVG,
+    h('path', { d: 'M4 6h10' }),
+    h('circle', { cx: '17', cy: '6', r: '2.5' }),
+    h('path', { d: 'M20 12H10' }),
+    h('circle', { cx: '7', cy: '12', r: '2.5' }),
+    h('path', { d: 'M4 18h10' }),
+    h('circle', { cx: '17', cy: '18', r: '2.5' })
   )
 }
 
@@ -52,9 +67,21 @@ function IconoSistema() {
   )
 }
 
+// «Cuenta» NO es una app: la sesión ya cuelga del avatar de la esquina
+// superior derecha, que está en TODAS las pantallas. Duplicarla en la rejilla
+// era el mismo destino dos veces.
+//
+// «Organizer» agrupa las dos acciones del flujo de fotos (organizar y subir en
+// crudo): son un mismo trabajo en dos pasos, no dos apps distintas.
 export const APPS = [
+  { id: 'organizer', nombre: 'Organizer', Icono: IconoOrganizar },
+  { id: 'tareas', nombre: 'Tareas', Icono: IconoTareas },
+  { id: 'ajustes', nombre: 'Ajustes', Icono: IconoAjustes },
+  { id: 'sistema', nombre: 'Sistema', Icono: IconoSistema },
+]
+
+// Sub-acciones de la app «Organizer», su menú interno.
+export const ACCIONES_ORGANIZER = [
   { id: 'organizar', nombre: 'Organizar', Icono: IconoOrganizar },
   { id: 'subir', nombre: 'Subir en crudo', Icono: IconoSubir },
-  { id: 'cuenta', nombre: 'Cuenta', Icono: IconoCuenta },
-  { id: 'sistema', nombre: 'Sistema', Icono: IconoSistema },
 ]

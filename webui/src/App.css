@@ -2000,3 +2000,106 @@ html[data-cursor] .picker-card { cursor: pointer; }
 }
 .kiosk-sistema-botones .kiosk-btn { flex: 1; min-height: var(--toque-min); }
 .kiosk-sistema-error { color: var(--orange); font-size: var(--fs-sm); text-align: center; }
+
+/* Pantalla «Ajustes» del kiosco (`KioskAjustes.jsx`): ruta del ThermoViewer y
+   tabla modelo->% de recorte. En 480x320 no cabe una tabla de verdad: cada
+   modelo es una fila de una linea y la lista scrollea. */
+.kiosk-ajustes { display: flex; flex-direction: column; gap: var(--u); }
+.kiosk-ajustes-seccion {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) / 2);
+  min-height: 0;
+}
+.kiosk-ajustes-label { font-size: var(--fs-sm); color: var(--muted); }
+.kiosk-ajustes-ruta {
+  font-size: var(--fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.kiosk-ajustes-lista {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) / 3);
+  overflow-y: auto;
+  max-height: 9rem;
+}
+.kiosk-ajustes-item { display: flex; align-items: center; gap: calc(var(--u) / 2); }
+.kiosk-ajustes-modelo { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kiosk-ajustes-pct { color: var(--muted); }
+.kiosk-ajustes-nuevo { display: flex; gap: calc(var(--u) / 2); align-items: center; }
+.kiosk-ajustes-vacio,
+.kiosk-ajustes-cargando { color: var(--muted); font-size: var(--fs-sm); }
+.kiosk-ajustes-ok { color: var(--ok, #6ee7a8); font-size: var(--fs-sm); }
+.kiosk-ajustes-error { color: var(--orange); font-size: var(--fs-sm); }
+
+/* Pantalla «Tareas» del kiosco (`KioskTareas.jsx`): catalogo completo de
+   `schema.js` en lista paginada (el arrastre no prende en el panel resistivo)
+   y, al elegir una, su formulario de campos. */
+.kiosk-tareas { display: flex; flex-direction: column; gap: calc(var(--u) / 2); }
+.kiosk-tareas-lista {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) / 3);
+  overflow: hidden;
+  min-height: 0;
+}
+.kiosk-tareas-item {
+  min-height: var(--toque-min);
+  justify-content: flex-start;
+  text-align: left;
+}
+.kiosk-tareas-separador {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.kiosk-tareas-nav { display: flex; gap: var(--u); align-items: center; justify-content: center; }
+.kiosk-tareas-nav-btn {
+  width: var(--toque-min);
+  height: calc(var(--toque-min) * 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radio);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+.kiosk-tareas-nav-btn:disabled { opacity: 0.3; }
+.kiosk-tareas-nav-btn svg { width: 1.25rem; height: 1.25rem; }
+.kiosk-tareas-pagina { font-size: var(--fs-sm); color: var(--muted); }
+.kiosk-tareas-form {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) / 2);
+  overflow-y: auto;
+  min-height: 0;
+}
+.kiosk-tareas-campo { display: flex; flex-direction: column; gap: calc(var(--u) / 4); }
+.kiosk-tareas-ruta {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.kiosk-tareas-ejecutar { min-height: var(--toque-min); }
+.kiosk-input {
+  min-height: var(--toque-min);
+  border-radius: var(--radio);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  padding: 0 calc(var(--u) / 2);
+  font-size: 1rem;
+  width: 100%;
+}
