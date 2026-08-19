@@ -34,6 +34,7 @@ METODOS_EXPUESTOS = frozenset({
     "estadillo_validar", "estadillo_subir", "estadillo_existente",
     "run_organize", "run_task",
     "sistema_apagar",
+    "red_listar", "red_conectar",
 })
 
 # Origenes considerados same-origin/local para la validacion de CSRF en

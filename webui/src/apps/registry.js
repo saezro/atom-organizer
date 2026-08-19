@@ -58,6 +58,15 @@ function IconoAjustes() {
   )
 }
 
+function IconoRed() {
+  return h('svg', PROPS_SVG,
+    h('path', { d: 'M4.5 10a11 11 0 0115 0' }),
+    h('path', { d: 'M7.5 13.2a7 7 0 019 0' }),
+    h('path', { d: 'M10.5 16.4a3 3 0 013 0' }),
+    h('circle', { cx: '12', cy: '19', r: '0.75', fill: 'currentColor', stroke: 'none' })
+  )
+}
+
 function IconoSistema() {
   return h('svg', PROPS_SVG,
     h('circle', { cx: '12', cy: '12', r: '3' }),
@@ -76,6 +85,7 @@ function IconoSistema() {
 export const APPS = [
   { id: 'organizer', nombre: 'Organizer', Icono: IconoOrganizar },
   { id: 'tareas', nombre: 'Tareas', Icono: IconoTareas },
+  { id: 'red', nombre: 'Red', Icono: IconoRed },
   { id: 'ajustes', nombre: 'Ajustes', Icono: IconoAjustes },
   { id: 'sistema', nombre: 'Sistema', Icono: IconoSistema },
 ]

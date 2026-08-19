@@ -97,11 +97,14 @@ describe('derivarDestino', () => {
 describe('KioskScreen — paso 1 (menú)', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('muestra el launcher con las apps del registry, sin campos del paso 2', () => {
+  it('muestra el launcher con las apps del registry, sin campos del paso 2', async () => {
     render(<KioskScreen {...baseProps()} />)
     expect(screen.getByTestId('kiosk-app-organizer')).toBeInTheDocument()
     expect(screen.getByTestId('kiosk-app-tareas')).toBeInTheDocument()
+    expect(screen.getByTestId('kiosk-app-red')).toBeInTheDocument()
     expect(screen.getByTestId('kiosk-app-ajustes')).toBeInTheDocument()
+    // «Sistema» es la 5ª app: con 4 por página cae en la segunda.
+    await userEvent.click(screen.getByTestId('kiosk-apps-abajo'))
     expect(screen.getByTestId('kiosk-app-sistema')).toBeInTheDocument()
     expect(screen.queryByText(/elegir carpeta/i)).not.toBeInTheDocument()
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()

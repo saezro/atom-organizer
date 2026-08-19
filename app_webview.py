@@ -1289,6 +1289,111 @@ class Api:
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
+    def red_listar(self) -> dict:
+        """Lista las redes wifi visibles (modo servidor / Raspberry Pi).
+
+        Usa `nmcli -t` (salida estable en formato tabulado con ':') en vez
+        del formato humano, para no depender de columnas alineadas. El SSID
+        puede contener ':' escapado como '\\:', asi que el parseo no puede
+        ser un split(':') ingenuo.
+        """
+        try:
+            proc = subprocess.run(
+                ["nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL,SECURITY", "device", "wifi", "list"],
+                check=False, capture_output=True, text=True, timeout=15,
+            )
+            if proc.returncode != 0:
+                return {"ok": False, "error": proc.stderr.strip() or f"returncode={proc.returncode}"}
+            redes, actual = _parse_nmcli_wifi(proc.stdout)
+            return {"ok": True, "actual": actual, "redes": redes}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def red_conectar(self, ssid: str, password: str | None = None) -> dict:
+        """Conecta a una red wifi por SSID (modo servidor / Raspberry Pi).
+
+        Nunca se debe filtrar la password: ni en el comando (se pasa como
+        argumento a subprocess, nunca por shell) ni en el error devuelto,
+        que se sanitiza si por lo que sea nmcli la reflejase en stderr.
+        """
+        if password:
+            cmd = ["nmcli", "device", "wifi", "connect", ssid, "password", password]
+        else:
+            cmd = ["nmcli", "device", "wifi", "connect", ssid]
+        try:
+            proc = subprocess.run(
+                cmd, check=False, capture_output=True, text=True, timeout=60,
+            )
+            if proc.returncode == 0:
+                return {"ok": True}
+            error = proc.stderr.strip() or f"returncode={proc.returncode}"
+            if password:
+                error = error.replace(password, "***")
+            return {"ok": False, "error": error}
+        except Exception as exc:
+            error = str(exc)
+            if password:
+                error = error.replace(password, "***")
+            return {"ok": False, "error": error}
+
+
+def _parse_nmcli_wifi(salida: str) -> tuple[list[dict], str | None]:
+    """Parsea la salida de `nmcli -t -f ACTIVE,SSID,SIGNAL,SECURITY device wifi list`.
+
+    Devuelve (redes, ssid_activo). Descarta SSID vacios, deduplica por SSID
+    quedandose con la senal mas alta, y ordena por senal descendente.
+    Tiene en cuenta que el SSID puede traer ':' escapado como '\\:'.
+    """
+    vistas: dict[str, dict] = {}
+    actual = None
+    for linea in salida.splitlines():
+        if not linea:
+            continue
+        campos = _split_nmcli_line(linea)
+        if len(campos) < 4:
+            continue
+        active, ssid, signal, security = campos[0], campos[1], campos[2], campos[3]
+        if not ssid:
+            continue
+        try:
+            senal = int(signal)
+        except ValueError:
+            senal = 0
+        es_activa = active == "yes"
+        if es_activa:
+            actual = ssid
+        red = {
+            "ssid": ssid,
+            "senal": senal,
+            "segura": bool(security) and security != "--",
+            "activa": es_activa,
+        }
+        existente = vistas.get(ssid)
+        if existente is None or red["senal"] > existente["senal"]:
+            vistas[ssid] = red
+    redes = sorted(vistas.values(), key=lambda r: r["senal"], reverse=True)
+    return redes, actual
+
+
+def _split_nmcli_line(linea: str) -> list[str]:
+    """Divide una linea `-t` de nmcli por ':' respetando el escape '\\:'."""
+    campos = []
+    actual = []
+    escapando = False
+    for ch in linea:
+        if escapando:
+            actual.append(ch)
+            escapando = False
+        elif ch == "\\":
+            escapando = True
+        elif ch == ":":
+            campos.append("".join(actual))
+            actual = []
+        else:
+            actual.append(ch)
+    campos.append("".join(actual))
+    return campos
+
 
 def resolve_target(dev: bool) -> str:
     if dev:

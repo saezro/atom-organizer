@@ -21,14 +21,20 @@ function appsFicticias(n) {
 }
 
 describe('MenuApps', () => {
-  it('pinta las apps del registry real y no pinta paginación (caben en una página)', () => {
+  it('pinta las apps del registry real, paginadas de 4 en 4', async () => {
     render(<MenuApps apps={APPS} tactil={false} disabled={false} onAbrir={vi.fn()} />)
-    for (const app of APPS) {
+    for (const app of APPS.slice(0, 4)) {
       expect(screen.getByTestId(`kiosk-app-${app.id}`)).toBeInTheDocument()
     }
-    expect(screen.queryByTestId('kiosk-apps-pagina')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('kiosk-apps-arriba')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('kiosk-apps-abajo')).not.toBeInTheDocument()
+    if (APPS.length > 4) {
+      expect(screen.getByTestId('kiosk-apps-pagina')).toBeInTheDocument()
+      await userEvent.click(screen.getByTestId('kiosk-apps-abajo'))
+      for (const app of APPS.slice(4)) {
+        expect(screen.getByTestId(`kiosk-app-${app.id}`)).toBeInTheDocument()
+      }
+    } else {
+      expect(screen.queryByTestId('kiosk-apps-pagina')).not.toBeInTheDocument()
+    }
   })
 
   it('con 6 apps pagina de 4 en 4: pulsar ▼ muestra el resto y actualiza el indicador', async () => {
@@ -53,10 +59,13 @@ describe('MenuApps', () => {
     expect(onAbrir).toHaveBeenCalledWith('organizer')
   })
 
-  it('con disabled los botones de app quedan deshabilitados', () => {
+  it('con disabled los botones de app (y de paginación) quedan deshabilitados', () => {
     render(<MenuApps apps={APPS} tactil={false} disabled onAbrir={vi.fn()} />)
-    for (const app of APPS) {
+    for (const app of APPS.slice(0, 4)) {
       expect(screen.getByTestId(`kiosk-app-${app.id}`)).toBeDisabled()
+    }
+    if (APPS.length > 4) {
+      expect(screen.getByTestId('kiosk-apps-abajo')).toBeDisabled()
     }
   })
 })

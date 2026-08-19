@@ -2115,6 +2115,122 @@ html[data-cursor] .picker-card { cursor: pointer; }
   width: 100%;
 }
 
+/* Pantalla «Red» del kiosco (`KioskRed.jsx`): lista de WiFi paginada igual
+   que `kiosk-tareas-lista`, y una pantalla de contraseña con teclado en
+   pantalla propio (la Pi no tiene teclado físico). */
+.kiosk-red { display: flex; flex-direction: column; gap: calc(var(--u) / 2); }
+.kiosk-red-actual,
+.kiosk-red-cargando,
+.kiosk-red-vacio { color: var(--muted); font-size: var(--fs-sm); }
+.kiosk-red-error { color: var(--orange); font-size: var(--fs-sm); }
+.kiosk-red-lista {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) / 3);
+  overflow: hidden;
+  min-height: 0;
+}
+.kiosk-red-item {
+  min-height: var(--toque-min);
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) / 2);
+  justify-content: flex-start;
+  text-align: left;
+  border-radius: var(--radio);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  padding: 0 calc(var(--u) / 2);
+}
+.kiosk-red-item.activa { border-color: rgba(238, 117, 58, 0.5); background: rgba(238, 117, 58, 0.1); }
+.kiosk-red-nombre { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kiosk-red-senal {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) / 4);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.kiosk-red-candado { display: flex; align-items: center; color: var(--muted); }
+.kiosk-red-activa {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) / 4);
+  color: var(--ok, #6ee7a8);
+  font-size: var(--fs-sm);
+}
+.kiosk-red-nav { display: flex; gap: var(--u); align-items: center; justify-content: center; }
+.kiosk-red-nav-btn {
+  width: var(--toque-min);
+  height: calc(var(--toque-min) * 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radio);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+.kiosk-red-nav-btn:disabled { opacity: 0.3; }
+.kiosk-red-nav-btn svg { width: 1.25rem; height: 1.25rem; }
+.kiosk-red-pagina { font-size: var(--fs-sm); color: var(--muted); }
+.kiosk-red-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--u);
+  padding: calc(var(--u) / 2);
+  border-radius: var(--radio);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: var(--fs-sm);
+}
+.kiosk-red-banner-error { color: var(--orange); }
+
+/* Pantalla de contraseña: campo + teclado en pantalla. */
+.kiosk-red-password { gap: calc(var(--u) / 2); }
+.kiosk-red-campo { display: flex; gap: calc(var(--u) / 2); align-items: center; }
+.kiosk-red-campo .kiosk-input { flex: 1; }
+.kiosk-red-ver {
+  width: var(--toque-min);
+  min-height: var(--toque-min);
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.kiosk-red-teclado {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) / 4);
+}
+.kiosk-red-fila { display: flex; gap: calc(var(--u) / 4); justify-content: center; }
+.kiosk-teclado-tecla {
+  flex: 1;
+  min-width: 0;
+  min-height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: calc(var(--radio) / 1.5);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-transform: none;
+  padding: 0;
+}
+.kiosk-teclado-especial { flex: 1.4; color: var(--muted); }
+.kiosk-teclado-especial.activa { color: var(--text); background: rgba(238, 117, 58, 0.25); border-color: rgba(238, 117, 58, 0.5); }
+.kiosk-teclado-especial:disabled { opacity: 0.3; }
+.kiosk-teclado-espacio { flex: 4; color: var(--muted); }
+.kiosk-red-conectar { min-height: var(--toque-min); }
+
+@media (max-height: 26rem) {
+  .kiosk-teclado-tecla { min-height: 1.75rem; }
+}
+
 /* En el kiosco no hay raton: el puntero solo estorba (y en el panel resistivo
    se queda clavado donde tocaste). `xsetroot -cursor_name none` lo quita del
    escritorio, pero dentro de Chromium manda el CSS. */
