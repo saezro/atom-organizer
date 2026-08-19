@@ -46,12 +46,10 @@ export default function KioskScreen({
   accionInicial = null,
 }) {
   const [accion, setAccion] = useState(accionInicial)
-  // El catálogo trae cientos de inspecciones de todo el ciclo de vida, pero en
-  // la Pi solo se sube lo recién volado o en preparación: arrancar filtrado a
-  // esas dos fases deja una lista corta y navegable (Cas: «que salgan solo
-  // vuelos primero, luego en preparación y las demás no salgan a no ser que
-  // las seleccione»). El resto sigue a un toque, en la pantalla de fases.
-  const [fasesKiosco, setFasesKiosco] = useState(['Vuelo', 'Preparacion'])
+  // El catálogo trae cientos de inspecciones de todo el ciclo de vida, pero si
+  // estás subiendo material la inspección está en vuelo: arrancar filtrado a esa
+  // fase deja una lista corta. El resto sigue a un toque, en la pantalla de fases.
+  const [fasesKiosco, setFasesKiosco] = useState(['Vuelo'])
   const [eligiendoFases, setEligiendoFases] = useState(false)
   const destino = derivarDestino(carpeta)
   const email = status?.email || ''
