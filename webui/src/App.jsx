@@ -11,6 +11,7 @@ import FolderPicker from './FolderPicker'
 import NavIcon from './NavIcon'
 import KioskScreen from './KioskScreen'
 import PairScreen from './PairScreen'
+import { formatBytes, formatDuracion } from './formato'
 import './App.css'
 
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
@@ -23,25 +24,6 @@ const NAV = [
   { id: 'otros', label: 'OTROS EQUIPOS', corto: 'Equipos' },
   { id: 'config', label: 'CONFIGURACIÓN', corto: 'Config' },
 ]
-
-function formatBytes(n) {
-  if (!n) return '0 B'
-  const u = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.min(u.length - 1, Math.floor(Math.log(n) / Math.log(1024)))
-  return `${(n / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${u[i]}`
-}
-
-// Duración en lenguaje llano: «18 min 12 s», «1 h 04 min», «45 s». Se usa
-// tanto para el tiempo que lleva la subida como para el que acabó tardando, y
-// por eso no lleva ni «hace» ni «quedan»: lo pone quien la llama.
-function formatDuracion(segundos) {
-  if (segundos == null || !Number.isFinite(segundos) || segundos < 0) return '—'
-  const s = Math.round(segundos)
-  if (s < 60) return `${s} s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m} min ${String(s % 60).padStart(2, '0')} s`
-  return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`
-}
 
 // « a las 17:42 » para la última comprobación de sesión. Devuelve cadena vacía
 // si no hay fecha, para poder concatenarla sin condicionales en el JSX.
@@ -214,6 +196,11 @@ function App() {
   // `BucketScreen`, que no está montado en modo kiosco).
   const [kioskSubiendo, setKioskSubiendo] = useState(false)
   const [kioskCloudPct, setKioskCloudPct] = useState(null)
+  // Últimas estadísticas de la subida tal cual las manda el backend por
+  // `atom:cloud` (`kind: 'stats'`): files_done/total, mbps, eta... La pantalla
+  // de subida del kiosco las pinta; el porcentaje suelto no dice si van 3 o
+  // 3.000 fotos ni cuánto queda.
+  const [kioskCloudStats, setKioskCloudStats] = useState(null)
 
   // Misma llamada que `BucketScreen.cargarInspecciones`: se extrae para
   // poder invocarla también desde el botón «Actualizar lista» de
@@ -243,14 +230,17 @@ function App() {
           case 'start':
             setKioskSubiendo(true)
             setKioskCloudPct(0)
+            setKioskCloudStats(null)
             break
           case 'stats':
             setKioskCloudPct(d.bytes_total ? Math.round((d.bytes_done / d.bytes_total) * 100) : 0)
+            setKioskCloudStats(d)
             break
           case 'done':
           case 'error':
             setKioskSubiendo(false)
             setKioskCloudPct(null)
+            setKioskCloudStats(null)
             break
           default:
             break
@@ -410,15 +400,29 @@ function App() {
     if (path) setKioskCarpeta(path)
   }
 
-  // Replica el tramo relevante de `BucketScreen.subir`: preparar + subir,
-  // sin el paso intermedio de «Comprobar carpeta» (el kiosco no tiene ese
-  // botón) y sin subida de estadillo (fuera del alcance de esta pantalla).
+  // Comprobación EN SECO previa a subir: `cloudPrepare` dice cuántos ficheros
+  // hay pendientes de verdad y `estadillosDetectar` qué se ha volado (días,
+  // vuelos, pilotos, drones). No sube nada; el kiosco pinta el resultado como
+  // resumen y solo entonces `kioskSubirCrudo` arranca la subida real.
+  async function kioskComprobarSubida({ carpeta, inspeccion }) {
+    const prefijo = inspeccion?.prefijo
+    if (!carpeta || !prefijo) return null
+    const [prepare, estadillos] = await Promise.all([
+      api.cloudPrepare(carpeta, prefijo).catch((e) => ({ ok: false, error: String(e) })),
+      // Que falle la detección de estadillos NO impide subir: es informativa.
+      api.estadillosDetectar(carpeta).catch((e) => ({ n_estadillos: 0, info: null, error: String(e) })),
+    ])
+    return { prepare, estadillos }
+  }
+
+  // Replica el tramo relevante de `BucketScreen.subir`, sin el `cloudPrepare`
+  // (ya lo hizo `kioskComprobarSubida` para pintar el resumen) y sin subida de
+  // estadillo (fuera del alcance de esta pantalla).
   async function kioskSubirCrudo({ carpeta, inspeccion }) {
     const prefijo = inspeccion?.prefijo
     if (!carpeta || !prefijo) return
     setKioskSubiendo(true)
     try {
-      await api.cloudPrepare(carpeta, prefijo)
       const r = await api.cloudUpload(carpeta, false, prefijo, inspeccion?.id)
       if (r && r.started === false) setKioskSubiendo(false)
     } catch {
@@ -431,7 +435,7 @@ function App() {
   const kioskProgreso = running
     ? { fase: kioskFaseActiva || 'Procesando…', pct: progress }
     : kioskSubiendo
-      ? { fase: 'Subiendo', pct: kioskCloudPct ?? 0 }
+      ? { fase: 'Subiendo', pct: kioskCloudPct ?? 0, subida: true, stats: kioskCloudStats }
       : null
 
   return (
@@ -490,6 +494,7 @@ function App() {
             onEstadillo={setKioskEstadillo}
             onOrganizar={kioskOrganizar}
             onSubirCrudo={kioskSubirCrudo}
+            onComprobarSubida={kioskComprobarSubida}
             onRefreshStatus={() =>
               api.cloudStatus().then(setKioskCloudStatus).catch(() => setKioskCloudStatus(null))
             }

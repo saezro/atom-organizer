@@ -226,6 +226,11 @@ export const api = {
   // Fail-open: {existe, error} — con `error` relleno se trata como `existe:
   // false` sin bloquear al operador (ver App.jsx, useEffect sobre `prefijo`).
   estadilloExistente: (prefijo) => call('estadillo_existente', prefijo),
+  // Escanea una carpeta (2 niveles) y devuelve los estadillos que encuentra YA
+  // resumidos: {rutas, n_estadillos, info, error}, con `info` = el mismo objeto
+  // de `read_estadillo_info` (fechas, pilotos, drones, num_vuelos...). No
+  // encontrar ninguno no es un error: `n_estadillos: 0`, `info: null`.
+  estadillosDetectar: (carpeta) => call('estadillos_detectar', carpeta),
 }
 
 // Python empuja progreso del pipeline con:
