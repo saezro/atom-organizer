@@ -238,3 +238,48 @@ def test_una_bd_danada_se_aparta_para_no_bloquear_el_siguiente_guardado(tmp_path
     store.guardar("piloto@aerotools.es", TOKEN)
     assert store.leer().refresh_token == TOKEN
     assert (tmp_path / "session.db.dañado").exists()
+
+
+# --- migración de esquema: columna `modo` (llegó con el broker) -------------
+
+def test_una_bd_sin_columna_modo_se_migra_sola_sin_perder_la_sesion(tmp_path):
+    """`modo` la añadió el broker de la Raspberry Pi. Un perfil de escritorio
+    ya en uso tiene una BD creada con el `CREATE TABLE` de antes de esa
+    columna: abrirla no puede perder la sesión que ya tenía guardada."""
+    db_path = tmp_path / "session.db"
+    protector = KeyfileProtector(tmp_path / "session.key")
+    cifrado = protector.proteger(TOKEN.encode("utf-8"))
+
+    # El CREATE TABLE tal cual era antes de que existiera `modo`.
+    con = sqlite3.connect(db_path)
+    con.execute("""
+        CREATE TABLE sesion (
+            id              INTEGER PRIMARY KEY CHECK (id = 1),
+            email           TEXT,
+            refresh_cifrado BLOB NOT NULL,
+            backend         TEXT NOT NULL,
+            creado_en       REAL NOT NULL,
+            actualizado_en  REAL NOT NULL,
+            validada_en     REAL
+        )""")
+    con.execute(
+        "INSERT INTO sesion (id, email, refresh_cifrado, backend, creado_en, "
+        "actualizado_en, validada_en) VALUES (1, ?, ?, ?, ?, ?, NULL)",
+        ("piloto@aerotools.es", cifrado, protector.nombre, 1.0, 1.0))
+    con.commit()
+    con.close()
+
+    store = SessionStore(db_path, protector=protector)
+    sesion = store.leer()
+
+    assert sesion is not None
+    assert sesion.refresh_token == TOKEN
+    assert sesion.email == "piloto@aerotools.es"
+    # Sin `pair()`, una fila que ya existía antes del broker es una sesión
+    # 'google' de toda la vida: el `DEFAULT 'google'` del ALTER TABLE es lo
+    # que lo garantiza.
+    assert sesion.modo == "google"
+
+    columnas = {fila[1] for fila in
+                sqlite3.connect(db_path).execute("PRAGMA table_info(sesion)")}
+    assert "modo" in columnas

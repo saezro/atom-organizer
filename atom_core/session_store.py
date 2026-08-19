@@ -70,6 +70,12 @@ class Sesion:
     refresh_token: str
     actualizado_en: float
     validada_en: float | None = None
+    # 'google' (flujo normal, ver `google_auth.login`) o 'broker' (la Raspberry
+    # Pi, que no guarda refresh_token de Google sino un `device_token` que solo
+    # vale contra ATOM Suite). OJO: no confundir con la columna `backend`, que
+    # ya existía y dice con qué se **cifró** la fila (dpapi/keyfile) — esto es
+    # un dato nuevo y distinto, con qué **flujo de auth** se guardó.
+    modo: str = "google"
 
 
 # --------------------------------------------------------------------------
@@ -255,6 +261,13 @@ class SessionStore:
                 actualizado_en  REAL NOT NULL,
                 validada_en     REAL
             )""")
+        # Migración in-place: una BD creada antes del modo broker no tiene esta
+        # columna. `CREATE TABLE IF NOT EXISTS` no la añade sola, así que se
+        # comprueba con PRAGMA y se agrega si falta — perfiles ya en uso no
+        # deben perder la sesión guardada por un `ALTER TABLE` que no corrió.
+        columnas = {fila[1] for fila in con.execute("PRAGMA table_info(sesion)")}
+        if "modo" not in columnas:
+            con.execute("ALTER TABLE sesion ADD COLUMN modo TEXT NOT NULL DEFAULT 'google'")
         con.execute("CREATE TABLE IF NOT EXISTS meta (clave TEXT PRIMARY KEY, valor TEXT)")
         con.execute("INSERT OR IGNORE INTO meta VALUES ('esquema', ?)", (str(ESQUEMA),))
         con.commit()
@@ -272,7 +285,7 @@ class SessionStore:
         try:
             con = self._conectar()
             fila = con.execute(
-                "SELECT email, refresh_cifrado, actualizado_en, validada_en "
+                "SELECT email, refresh_cifrado, actualizado_en, validada_en, modo "
                 "FROM sesion WHERE id = 1").fetchone()
         except sqlite3.OperationalError as exc:
             # Transitorio (BD bloqueada por otro hilo, permiso momentáneo): el
@@ -295,7 +308,7 @@ class SessionStore:
 
         if fila is None:
             return None
-        email, cifrado, actualizado, validada = fila
+        email, cifrado, actualizado, validada, modo = fila
         try:
             refresh = self.protector.desproteger(bytes(cifrado)).decode("utf-8")
         except Exception as exc:  # noqa: BLE001 - descifrar es lo que puede fallar aquí
@@ -308,9 +321,15 @@ class SessionStore:
             self.borrar()
             return None
         return Sesion(email=email, refresh_token=refresh,
-                      actualizado_en=actualizado, validada_en=validada)
+                      actualizado_en=actualizado, validada_en=validada,
+                      modo=modo or "google")
 
-    def guardar(self, email: str | None, refresh_token: str) -> None:
+    def guardar(self, email: str | None, refresh_token: str, *,
+                modo: str = "google") -> None:
+        """Guarda la credencial de sesión (refresh_token de Google, o
+        device_token en modo `broker`). `modo` distingue el flujo de auth; no
+        confundir con la columna `backend`, que sigue siendo el cifrador
+        (dpapi/keyfile) y no cambia por esto."""
         if not refresh_token:
             raise ValueError("no se guarda una sesión sin refresh_token")
         cifrado = self.protector.proteger(refresh_token.encode("utf-8"))
@@ -319,14 +338,15 @@ class SessionStore:
         try:
             con.execute("""
                 INSERT INTO sesion (id, email, refresh_cifrado, backend,
-                                    creado_en, actualizado_en, validada_en)
-                VALUES (1, ?, ?, ?, ?, ?, NULL)
+                                    creado_en, actualizado_en, validada_en, modo)
+                VALUES (1, ?, ?, ?, ?, ?, NULL, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     email = excluded.email,
                     refresh_cifrado = excluded.refresh_cifrado,
                     backend = excluded.backend,
-                    actualizado_en = excluded.actualizado_en
-            """, (email, cifrado, self.protector.nombre, ahora, ahora))
+                    actualizado_en = excluded.actualizado_en,
+                    modo = excluded.modo
+            """, (email, cifrado, self.protector.nombre, ahora, ahora, modo))
             con.commit()
         finally:
             con.close()

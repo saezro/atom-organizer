@@ -10,6 +10,7 @@ import InspeccionSelector from './InspeccionSelector'
 import FolderPicker from './FolderPicker'
 import NavIcon from './NavIcon'
 import KioskScreen from './KioskScreen'
+import PairScreen from './PairScreen'
 import './App.css'
 
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
@@ -1130,6 +1131,21 @@ function BucketScreen({ ready }) {
     (estadCheck?.ok === true || omitirEstadillo)
 
   const elegida = inspecciones.find((i) => i.prefijo === eleccion)
+
+  // Equipo sin navegador propio (Raspberry Pi): el login no es "abrir Google
+  // y volver", es vincular el movil por QR. `pairing` manda por encima del
+  // aviso de "falta configurar el cliente OAuth" de abajo, porque en este
+  // equipo esa configuracion ni aplica. `refresh` es el mismo que usa el
+  // resto de la pantalla tras login/logout: en cuanto el vinculo esta listo,
+  // vuelve a pedir `cloud_status` y `BucketScreen` sale de esta rama sola.
+  if (status && status.pairing === true && status.logged_in === false) {
+    return (
+      <div className="card">
+        <h2 className="card-title">Subir al bucket</h2>
+        <PairScreen onPaired={refresh} />
+      </div>
+    )
+  }
 
   if (status && status.configured === false) {
     return (

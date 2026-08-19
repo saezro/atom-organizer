@@ -64,6 +64,16 @@ AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 REVOKE_URI = "https://oauth2.googleapis.com/revoke"
 
+# Backend de ATOM Suite en su papel de broker (ver `pair()` / `_broker_token_request`).
+# La env existe por lo mismo que en `inspecciones.py`: apuntar a dev sin recompilar.
+SUITE_URL = os.environ.get("ATOM_SUITE_URL") or "https://suite.atom-uas.com"
+BROKER_TOKEN_URI = f"{SUITE_URL}/api/organizer/token"
+
+# Modos de sesión guardados en `session_store` (columna `modo`, no `backend`:
+# esa ya significaba "con qué se cifró la fila").
+MODO_GOOGLE = "google"
+MODO_BROKER = "broker"
+
 # No existe un scope "solo escribir" en Cloud Storage: `read_write` es el mínimo
 # práctico. Quien acota de verdad es IAM — con `roles/storage.objectCreator`
 # sobre el bucket, este mismo token puede crear objetos y nada más.
@@ -157,6 +167,17 @@ class GoogleAuth:
     `session_store` (DPAPI en Windows, keyfile 0600 en Linux). El permiso de
     verdad sigue estando en IAM: esto acota el daño de que el fichero se pasee
     por un backup, no sustituye al control de acceso.
+
+    **Modo broker (Raspberry Pi).** El flujo de arriba exige el `client_secret`
+    del cliente OAuth Web tanto para canjear el `code` como para refrescar —
+    pasarle a la Pi ese secreto para que se autorrefresque sería meterlo en una
+    SD que sale de la oficina. En vez de eso, la Pi se empareja una vez con
+    `pair()` y guarda solo un `device_token` opaco y revocable: para pedir un
+    access_token no habla con Google, habla con ATOM Suite
+    (`POST /api/organizer/token`, ver `_broker_token_request`), que es quien de
+    verdad custodia el refresh de Google. Perder la Pi solo expone un token que
+    se apaga desde la Suite; el `login()` de escritorio, en Windows, no cambia
+    en nada.
     """
 
     # Se reexpone como atributo de clase porque `cloud_upload` y los tests lo
@@ -167,8 +188,13 @@ class GoogleAuth:
                  hosted_domain: str | None = None,
                  scopes: tuple[str, ...] = SCOPES,
                  store_path: Path | None = None,
-                 store: SessionStore | None = None):
-        if not client_id:
+                 store: SessionStore | None = None,
+                 broker_only: bool = False):
+        # `broker_only`: la Raspberry Pi construye esta instancia sin cliente
+        # OAuth (nunca lo tendrá, ver docstring de clase), así que aquí no hay
+        # `client_id`/`client_secret` que exigir. En el resto de equipos (el
+        # escritorio de verdad) el `raise` de abajo sigue intacto.
+        if not client_id and not broker_only:
             raise ValueError("client_id vacío")
         self.client_id = client_id
         self.client_secret = client_secret
@@ -193,6 +219,13 @@ class GoogleAuth:
         self._identity: Identity | None = None
         self._validada_en: float | None = None
         self._aviso_store: str | None = None
+        self.broker_only = bool(broker_only)
+        # 'google' por defecto: hasta que no se llame a `pair()`, esta instancia
+        # se comporta exactamente igual que antes de que existiera el broker.
+        # Salvo en `broker_only`: ahí no hay flujo Google posible (no hay
+        # cliente), así que ya arranca en modo broker aunque `pair()` todavía
+        # no se haya llamado — es lo único que esta instancia puede hacer.
+        self._modo: str = MODO_BROKER if self.broker_only else MODO_GOOGLE
         self._load()
 
     # -- estado persistido ------------------------------------------------
@@ -217,6 +250,7 @@ class GoogleAuth:
                 return
         self._refresh_token = sesion.refresh_token
         self._validada_en = sesion.validada_en
+        self._modo = sesion.modo or MODO_GOOGLE
         if sesion.email:
             # La sesión persistida solo guarda el email (`session_store.py`):
             # una sesión creada antes de pedir el scope `profile` queda sin
@@ -249,7 +283,7 @@ class GoogleAuth:
         if not self._refresh_token:
             return
         self._store.guardar(self._identity.email if self._identity else None,
-                            self._refresh_token)
+                            self._refresh_token, modo=self._modo)
 
     def _olvidar_local(self) -> None:
         """Tira la sesión de memoria y de disco. No habla con Google."""
@@ -258,6 +292,9 @@ class GoogleAuth:
         self._id_token = None
         self._expires_at = 0.0
         self._validada_en = None
+        # En una instancia `broker_only` no hay vuelta al modo google: sin
+        # cliente OAuth ese flujo no puede completarse nunca en este equipo.
+        self._modo = MODO_BROKER if self.broker_only else MODO_GOOGLE
         self._store.borrar()
 
     # -- consultas --------------------------------------------------------
@@ -316,6 +353,14 @@ class GoogleAuth:
     def login(self, *, open_browser=abrir_en_navegador,
               timeout: int = LOGIN_TIMEOUT) -> Identity:
         """Abre el navegador, espera el consentimiento y guarda la sesión."""
+        if self.broker_only:
+            # Sin `client_id`/`client_secret` no hay nada que abrir: fallar
+            # rápido en vez de mandar al navegador (que aquí ni existe, es la
+            # Pi) a una URL de Google que va a rebotar. `cloud_pair_poll` es el
+            # único camino de entrada en este equipo.
+            raise AuthError(
+                "Este equipo solo puede emparejarse por QR desde ATOM Suite; "
+                "no tiene cliente OAuth propio.")
         verifier = base64.urlsafe_b64encode(secrets.token_bytes(64)).rstrip(b"=").decode()
         challenge = base64.urlsafe_b64encode(
             hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -398,14 +443,55 @@ class GoogleAuth:
                 pass
         return identidad
 
+    def pair(self, device_token: str, email: str) -> Identity:
+        """Empareja este equipo con la Suite (modo broker, Raspberry Pi).
+
+        No hay canje con Google aquí: el `device_token` lo emite la Suite tras
+        el consentimiento OAuth que hizo Rodrigo desde el móvil escaneando el
+        QR (ver `app_webview.cloud_pair_poll`). Lo único que hace esta llamada
+        es guardar ese token como si fuera la credencial de sesión — igual que
+        `login()` guarda el `refresh_token` — pero marcando `modo='broker'`
+        para que `access_token()` sepa que no debe ir a Google con él.
+        """
+        if not device_token:
+            raise ValueError("device_token vacío")
+        if not email:
+            raise ValueError("email vacío")
+        identidad = Identity(email=email, domain=email.rsplit("@", 1)[-1])
+        with self._lock:
+            self._refresh_token = device_token
+            self._identity = identidad
+            self._modo = MODO_BROKER
+            self._aviso_store = None
+            # Se tira cualquier access/id token que quedara de una sesión
+            # anterior: son de otro flujo y no hay que arrastrarlos.
+            self._access_token = None
+            self._id_token = None
+            self._expires_at = 0.0
+            # El emparejamiento acaba de confirmarse contra la Suite (fue ella
+            # quien entregó el device_token): no hace falta una segunda vuelta
+            # de red solo para poder decir "sesión válida".
+            self._validada_en = time.time()
+            self._save()
+            try:
+                self._store.marcar_validada(self._validada_en)
+            except Exception:  # noqa: BLE001
+                pass
+        return identidad
+
     def logout(self) -> None:
         """Olvida la sesión local y revoca el refresh token en Google."""
         with self._lock:
             token = self._refresh_token
+            # En modo broker `token` es el `device_token` de la Suite, no un
+            # refresh_token de Google: mandarlo a `REVOKE_URI` no revocaría
+            # nada (no es un token de Google) y solo lo pasearía sin motivo.
+            # La revocación del device_token es cosa de la Suite, no de aquí.
+            revocar_en_google = token and self._modo != MODO_BROKER
             self._identity = None
             self._aviso_store = None
             self._olvidar_local()
-        if token:
+        if revocar_en_google:
             try:
                 self._post(REVOKE_URI, {"token": token})
             except Exception:  # noqa: BLE001 - revocar es cortesía, no requisito
@@ -426,12 +512,17 @@ class GoogleAuth:
             if not self._refresh_token:
                 raise AuthError("No hay sesión iniciada. Inicia sesión con Google.")
 
-            tokens = self._token_request({
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-                "refresh_token": self._refresh_token,
-                "grant_type": "refresh_token",
-            })
+            if self._modo == MODO_BROKER:
+                # La Pi no tiene refresh_token de Google: pide el access_token
+                # a la Suite, que es quien lo custodia (ver docstring de clase).
+                tokens = self._broker_token_request()
+            else:
+                tokens = self._token_request({
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "refresh_token": self._refresh_token,
+                    "grant_type": "refresh_token",
+                })
             self._aplicar_access(tokens)
             return self._access_token  # type: ignore[return-value]
 
@@ -492,6 +583,39 @@ class GoogleAuth:
                     f"La sesión de Google ya no es válida ({detalle}). "
                     "Vuelve a iniciar sesión.") from exc
             raise AuthError(f"Google devolvió un error ({exc.code}): {detalle}") from exc
+
+    def _broker_token_request(self) -> dict:
+        """Pide el access_token a ATOM Suite en vez de a Google (modo broker).
+
+        El `device_token` va como Bearer, nunca en el body ni en la URL, para
+        no dejarlo en logs de acceso HTTP. Un 401 significa que la Suite dejó
+        de reconocer este dispositivo (revocado a mano, o expiró) — no hay
+        forma de recuperarlo sin volver a emparejar, así que la sesión local
+        se descarta igual que un `invalid_grant` de Google.
+        """
+        req = urllib.request.Request(
+            BROKER_TOKEN_URI, method="POST",
+            headers={"Authorization": f"Bearer {self._refresh_token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+                cuerpo = resp.read().decode()
+        except urllib.error.HTTPError as exc:
+            detalle = _mensaje_de_error(exc)
+            if exc.code == 401:
+                with self._lock:
+                    self._olvidar_local()
+                raise AuthError(
+                    "Este dispositivo ya no está autorizado en ATOM Suite "
+                    f"({detalle}). Vuelve a emparejarlo con el QR.") from exc
+            raise AuthError(
+                f"ATOM Suite devolvió un error ({exc.code}): {detalle}") from exc
+        datos = json.loads(cuerpo) if cuerpo else {}
+        if not datos.get("ok") or not datos.get("access_token"):
+            raise AuthError("ATOM Suite no pudo emitir un access_token.")
+        # Se homogeneiza al formato que espera `_aplicar_access` (el mismo que
+        # devuelve Google): así el resto del flujo no distingue de dónde vino.
+        return {"access_token": datos["access_token"],
+                "expires_in": datos.get("expires_in", 3600)}
 
     @staticmethod
     def _post(url: str, campos: dict) -> dict:

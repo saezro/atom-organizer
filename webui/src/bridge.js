@@ -194,10 +194,19 @@ export const api = {
   // cloudVerify pregunta a Google si ese token sigue sirviendo y contesta por
   // el evento `atom:cloud` (kind 'session'). Son dos cosas distintas y la UI
   // las enseña por separado: «sesión recordada» no es «sesión válida».
+  // `cloud_status` puede traer ademas `pairing: true`: senal de que este
+  // equipo (Raspberry Pi) solo puede identificarse por vinculo QR con el
+  // movil, nunca abriendo un navegador propio a Google. cloudPairStart arranca
+  // un vinculo nuevo ({ok, pair_id, url, expires_in} | {ok:false, error});
+  // cloudPairPoll consulta su estado ({estado: 'pendiente'|'expirado'|'listo',
+  // email?}) — con 'listo' la sesion YA esta activa por dentro, la UI solo
+  // tiene que refrescar `cloudStatus`.
   cloudStatus: () => call('cloud_status'),
   cloudVerify: () => call('cloud_verify'),
   cloudLogin: () => call('cloud_login'),
   cloudLogout: () => call('cloud_logout'),
+  cloudPairStart: () => call('cloud_pair_start'),
+  cloudPairPoll: (pairId) => call('cloud_pair_poll', pairId),
   cloudInspecciones: () => call('cloud_inspecciones'),
   cloudPrepare: (folder, prefix) => call('cloud_prepare', folder, prefix ?? null),
   cloudUpload: (folder, force, prefix, inspeccionId) =>
