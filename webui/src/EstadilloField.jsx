@@ -64,11 +64,19 @@ export default function EstadilloField({ value, onChange, disabled, tactil }) {
             value={path}
             placeholder="Si se indica, organiza por planta"
             disabled={disabled}
+            readOnly={tactil}
             spellCheck={false}
-            onChange={(e) => {
-              const t = e.target.value
-              onChange(t ? [t] : [])
-            }}
+            // En kiosco (`tactil`) no se puede escribir a mano: la selección
+            // va solo por "Elegir…" (lista de ficheros detectados). En
+            // escritorio se sigue pudiendo teclear la ruta tal cual siempre.
+            onChange={
+              tactil
+                ? undefined
+                : (e) => {
+                    const t = e.target.value
+                    onChange(t ? [t] : [])
+                  }
+            }
           />
           <button
             type="button"
@@ -117,8 +125,11 @@ export default function EstadilloField({ value, onChange, disabled, tactil }) {
               type="text"
               value={path}
               disabled={disabled}
+              readOnly={tactil}
               spellCheck={false}
-              onChange={(e) => escribir(i, e.target.value)}
+              // Mismo criterio que en el campo simple: en kiosco no se
+              // teclea, solo "Elegir…"; en escritorio no cambia nada.
+              onChange={tactil ? undefined : (e) => escribir(i, e.target.value)}
             />
             <button
               type="button"
