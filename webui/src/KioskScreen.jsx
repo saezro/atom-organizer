@@ -59,6 +59,16 @@ export default function KioskScreen({
   // Solo para pruebas: permite montar el componente directamente en un paso.
   accionInicial = null,
 }) {
+  // El puntero de X sigue al dedo en el panel resistivo y se queda clavado
+  // donde tocaste. `cursor: none` sobre `.kiosk` no basta: el hueco entre las
+  // tarjetas del launcher cae fuera y ahi reaparece. Se marca el documento
+  // entero mientras el kiosco esta montado; en escritorio (Windows) este
+  // componente no se monta nunca, asi que no puede filtrarse.
+  useEffect(() => {
+    document.documentElement.classList.add('kiosk-modo')
+    return () => document.documentElement.classList.remove('kiosk-modo')
+  }, [])
+
   const [accion, setAccion] = useState(accionInicial)
   // El catálogo trae cientos de inspecciones de todo el ciclo de vida, pero si
   // estás subiendo material la inspección está en vuelo: arrancar filtrado a esa

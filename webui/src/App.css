@@ -1664,6 +1664,9 @@ select.glass-input option {
    el puntero. La Pi se maneja con el dedo y el cursor oculto es lo correcto
    alli, pero al probar el kiosco con raton deja sin ver donde vas a pulsar.
    La Pi nunca lleva ese parametro, asi que su comportamiento no cambia. */
+html[data-cursor].kiosk-modo,
+html[data-cursor].kiosk-modo body,
+html[data-cursor].kiosk-modo body *,
 html[data-cursor] .kiosk,
 html[data-cursor] .kiosk *,
 html[data-cursor] .pm-overlay,
@@ -2235,6 +2238,9 @@ html[data-cursor] .picker-card { cursor: pointer; }
    se queda clavado donde tocaste). `xsetroot -cursor_name none` lo quita del
    escritorio, pero dentro de Chromium manda el CSS. */
 .kiosk,
-.kiosk * {
+.kiosk *,
+html.kiosk-modo,
+html.kiosk-modo body,
+html.kiosk-modo body * {
   cursor: none;
 }
