@@ -15,7 +15,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { api, isServerMode } from './bridge.js'
 import BotonToque, { pxDeRem, UMBRAL_REM } from './pulsacion.jsx'
 import PairScreen from './PairScreen.jsx'
-import InspeccionSelector from './InspeccionSelector.jsx'
+import InspeccionSelector, { COLOR_FASE, COLOR_FASE_DEFECTO, ORDEN_FASES, chip } from './InspeccionSelector.jsx'
 import EstadilloField from './EstadilloField.jsx'
 
 // Deriva la ruta de destino a partir de la carpeta de origen, añadiendo el
@@ -46,6 +46,13 @@ export default function KioskScreen({
   accionInicial = null,
 }) {
   const [accion, setAccion] = useState(accionInicial)
+  // El catálogo trae cientos de inspecciones de todo el ciclo de vida, pero en
+  // la Pi solo se sube lo recién volado o en preparación: arrancar filtrado a
+  // esas dos fases deja una lista corta y navegable (Cas: «que salgan solo
+  // vuelos primero, luego en preparación y las demás no salgan a no ser que
+  // las seleccione»). El resto sigue a un toque, en la pantalla de fases.
+  const [fasesKiosco, setFasesKiosco] = useState(['Vuelo', 'Preparacion'])
+  const [eligiendoFases, setEligiendoFases] = useState(false)
   const destino = derivarDestino(carpeta)
   const email = status?.email || ''
   const inicial = email ? email[0].toUpperCase() : ''
@@ -100,7 +107,7 @@ export default function KioskScreen({
 
   // Al montar la pantalla y cada vez que cambia el catálogo: el número de
   // páginas depende del alto real ya pintado, no se puede saber antes.
-  useLayoutEffect(recalcularPaginas, [recalcularPaginas, accion, inspecciones])
+  useLayoutEffect(recalcularPaginas, [recalcularPaginas, accion, inspecciones, fasesKiosco, eligiendoFases])
   useEffect(() => {
     const el = inspRef.current
     if (!el || typeof ResizeObserver === 'undefined') return undefined
@@ -109,27 +116,39 @@ export default function KioskScreen({
     return () => ro.disconnect()
   }, [recalcularPaginas, accion])
 
+  // Mientras dura el desplazamiento animado el `onScroll` dispara con las
+  // posiciones INTERMEDIAS: sin esta bandera el indicador iba 1 → 2 → 1 → 2
+  // (el número de destino, el redondeo del punto medio, y otra vez el
+  // destino), que es justo el parpadeo que se veía. Durante la animación
+  // manda el número que hemos fijado nosotros; el scroll solo reconcilia
+  // cuando el movimiento viene del dedo.
+  const animandoInsp = useRef(null)
   const paginarInsp = (signo) => {
     const el = inspRef.current
     if (!el) return
     const salto = saltoInsp(el)
-    const destino = Math.max(
-      0,
-      Math.min((pagina + signo) * salto, el.scrollHeight - el.clientHeight),
-    )
+    const siguiente = Math.max(0, Math.min(pagina + signo, paginas - 1))
+    const destino = Math.max(0, Math.min(siguiente * salto, el.scrollHeight - el.clientHeight))
+    setPagina(siguiente)
     // `scrollTo` con `smooth` no existe en jsdom (tests) ni en navegadores
     // viejos: se cae a la asignación directa, que hace lo mismo sin animar.
-    if (typeof el.scrollTo === 'function') el.scrollTo({ top: destino, behavior: 'smooth' })
-    else el.scrollTop = destino
-    setPagina(Math.max(0, Math.min(pagina + signo, paginas - 1)))
+    if (typeof el.scrollTo === 'function') {
+      if (animandoInsp.current) clearTimeout(animandoInsp.current)
+      animandoInsp.current = setTimeout(() => { animandoInsp.current = null }, 450)
+      el.scrollTo({ top: destino, behavior: 'smooth' })
+    } else {
+      el.scrollTop = destino
+    }
   }
+  useEffect(() => () => { if (animandoInsp.current) clearTimeout(animandoInsp.current) }, [])
 
   // El arrastre también mueve la lista, así que la página mostrada se
-  // reconcilia con la posición real en cada scroll (venga de donde venga).
+  // reconcilia con la posición real en cada scroll que NO venga de paginar.
   const alScrollInsp = () => {
     const el = inspRef.current
-    if (!el) return
-    setPagina(Math.min(Math.round(el.scrollTop / saltoInsp(el)), Math.max(paginas - 1, 0)))
+    if (!el || animandoInsp.current) return
+    const siguiente = Math.min(Math.round(el.scrollTop / saltoInsp(el)), Math.max(paginas - 1, 0))
+    setPagina((prev) => (prev === siguiente ? prev : siguiente))
   }
   // Si hubo arrastre, el toque era scroll, no selección: se descarta el click
   // sintetizado antes de que llegue al botón de la inspección.
@@ -249,6 +268,64 @@ export default function KioskScreen({
   // dejaba la lista de inspecciones sin apenas alto. Pantalla dedicada: solo
   // cabecera + lista a pantalla completa, nada de carpeta ni botón de subir
   // (ese llega en el sub-paso B, una vez ya hay inspección elegida).
+  // Fases realmente presentes en el catálogo, con su recuento, ordenadas por
+  // prioridad de trabajo (Vuelo y Preparación primero).
+  const conteoFasesKiosco = {}
+  for (const i of inspecciones || []) {
+    const f = i.fase || ''
+    conteoFasesKiosco[f] = (conteoFasesKiosco[f] || 0) + 1
+  }
+  const fasesDisponibles = Object.keys(conteoFasesKiosco).sort((a, b) => {
+    const pa = ORDEN_FASES.indexOf(a), pb = ORDEN_FASES.indexOf(b)
+    return (pa === -1 ? 99 : pa) - (pb === -1 ? 99 : pb)
+  })
+  const alternarFase = (fase) =>
+    setFasesKiosco((prev) => (prev.includes(fase) ? prev.filter((f) => f !== fase) : [...prev, fase]))
+
+  if (accion === 'subir' && !inspeccion && eligiendoFases) {
+    return (
+      <div className="kiosk">
+        <div className="kiosk-header kiosk-header-paso">
+          <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setEligiendoFases(false)} disabled={busy}>
+            ← Listo
+          </BotonToque>
+          <span className="kiosk-titulo">Fases</span>
+          {avatar}
+        </div>
+        <div className="kiosk-fases">
+          {fasesDisponibles.map((fase) => {
+            const activa = fasesKiosco.includes(fase)
+            const color = COLOR_FASE[fase] || COLOR_FASE_DEFECTO
+            return (
+              <BotonToque
+                key={fase || 'sin-fase'}
+                className={activa ? 'kiosk-fase-btn activa' : 'kiosk-fase-btn'}
+                tactil={tactil}
+                onActivar={() => alternarFase(fase)}
+                disabled={busy}
+                style={activa ? chip(color) : undefined}
+              >
+                <span className="kiosk-fase-punto" style={{ background: color }} />
+                <span className="kiosk-fase-nombre">{fase || 'Sin fase'}</span>
+                <span className="kiosk-fase-num">{conteoFasesKiosco[fase]}</span>
+              </BotonToque>
+            )
+          })}
+          {/* Sin ninguna marcada el selector no filtra: sale el catálogo
+              entero, que es justo lo que "Todas" significa aquí. */}
+          <BotonToque
+            className="kiosk-fase-btn kiosk-fase-todas"
+            tactil={tactil}
+            onActivar={() => setFasesKiosco([])}
+            disabled={busy}
+          >
+            Todas las fases
+          </BotonToque>
+        </div>
+      </div>
+    )
+  }
+
   if (accion === 'subir' && !inspeccion) {
     return (
       <div className="kiosk">
@@ -260,6 +337,19 @@ export default function KioskScreen({
           {/* Con `soloLista` el botón "Actualizar lista" de InspeccionSelector
               no se pinta (no cabe encima de la lista en 480x320): esta es la
               única vía para recargar el catálogo en este sub-paso. */}
+          <BotonToque
+            className="kiosk-actualizar-insp kiosk-filtro-insp"
+            tactil={tactil}
+            onActivar={() => setEligiendoFases(true)}
+            disabled={busy}
+            aria-label="Filtrar por fase"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                 strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 5h18l-7 8v6l-4 2v-8z" />
+            </svg>
+            {fasesKiosco.length > 0 && <span className="kiosk-filtro-num">{fasesKiosco.length}</span>}
+          </BotonToque>
           <BotonToque
             className="kiosk-actualizar-insp"
             tactil={tactil}
@@ -307,6 +397,7 @@ export default function KioskScreen({
               // completa (el filtrado por defecto sigue siendo el mismo de
               // siempre: sin texto, sin fase activa, sin terminadas).
               soloLista
+              fasesControladas={fasesKiosco}
             />
           </div>
           <div className="kiosk-insp-nav">

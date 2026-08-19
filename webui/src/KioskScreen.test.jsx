@@ -313,10 +313,28 @@ describe('KioskScreen — paso 2 (subir en crudo)', () => {
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
     expect(screen.queryByPlaceholderText(/escribe para buscar/i)).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox', { name: /mostrar terminadas/i })).not.toBeInTheDocument()
+    // Por defecto solo Vuelo y Preparación: BETA está en Confirmada y no sale.
     expect(screen.getByText('ACME PLANTA1 2026')).toBeInTheDocument()
-    expect(screen.getByText('BETA PLANTA2 2025')).toBeInTheDocument()
+    expect(screen.queryByText('BETA PLANTA2 2025')).not.toBeInTheDocument()
     // Recargar el catálogo sigue accesible desde la cabecera del sub-paso.
     expect(screen.getByRole('button', { name: /actualizar lista de inspecciones/i })).toBeInTheDocument()
+  })
+
+  it('la pantalla de fases deja añadir otra fase y esa inspección aparece', async () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'subir', inspeccion: null })} />)
+    await userEvent.click(screen.getByRole('button', { name: /filtrar por fase/i }))
+    await userEvent.click(screen.getByRole('button', { name: /confirmada/i }))
+    await userEvent.click(screen.getByRole('button', { name: /listo/i }))
+    expect(screen.getByText('BETA PLANTA2 2025')).toBeInTheDocument()
+    expect(screen.getByText('ACME PLANTA1 2026')).toBeInTheDocument()
+  })
+
+  it('«Todas las fases» quita el filtro y salen todas', async () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'subir', inspeccion: null })} />)
+    await userEvent.click(screen.getByRole('button', { name: /filtrar por fase/i }))
+    await userEvent.click(screen.getByRole('button', { name: /todas las fases/i }))
+    await userEvent.click(screen.getByRole('button', { name: /listo/i }))
+    expect(screen.getByText('BETA PLANTA2 2025')).toBeInTheDocument()
   })
 
   it('el botón de actualizar del sub-paso A llama a onActualizarInspecciones', async () => {
