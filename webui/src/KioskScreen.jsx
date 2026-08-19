@@ -11,9 +11,12 @@
 // El panel de la Pi es resistivo (ADS7846): menos preciso que uno capacitivo,
 // así que el paso 1 son dos botones que ocupan media pantalla cada uno y en el
 // paso 2 nada táctil baja de `--toque-min`.
-import { useState } from 'react'
-import { isServerMode } from './bridge.js'
-import BotonToque from './pulsacion.jsx'
+import { useRef, useState } from 'react'
+import { api, isServerMode } from './bridge.js'
+import BotonToque, { pxDeRem, UMBRAL_REM } from './pulsacion.jsx'
+import PairScreen from './PairScreen.jsx'
+import InspeccionSelector from './InspeccionSelector.jsx'
+import EstadilloField from './EstadilloField.jsx'
 
 // Deriva la ruta de destino a partir de la carpeta de origen, añadiendo el
 // sufijo "_ORGANIZADO". Función pura: sin efectos, sin acceso a props/estado.
@@ -31,10 +34,12 @@ export default function KioskScreen({
   inspecciones,
   inspeccion,
   onSelectInspeccion,
+  onActualizarInspecciones,
   estadillo,
   onEstadillo,
   onOrganizar,
   onSubirCrudo,
+  onRefreshStatus,
   busy,
   progreso,
   // Solo para pruebas: permite montar el componente directamente en un paso.
@@ -46,12 +51,51 @@ export default function KioskScreen({
   const inicial = email ? email[0].toUpperCase() : ''
   const tactil = isServerMode()
 
-  // El kiosco es un callejón sin salida táctil: el avatar ya no abre la UI
-  // completa (era la única vía para colarse en una interfaz inusable con el
-  // dedo en un panel de 480x320 sin ratón/teclado), así que ya no es un
-  // BotonToque, solo un contenedor visual.
+  // La lista de `InspeccionSelector` puede crecer por encima del hueco
+  // disponible en el paso 2: mismo problema que la lista de `FolderPicker`
+  // (panel resistivo = ratón absoluto, arrastrar el dedo no scrollea solo),
+  // mismo arreglo (`FolderPicker.jsx:83-116`), aplicado al `div` que la
+  // envuelve porque el componente en sí no expone su `<ul>` interno.
+  const inspRef = useRef(null)
+  const arrastreInsp = useRef({ activo: false, y0: 0, top0: 0, umbral: pxDeRem(UMBRAL_REM), movido: false })
+  const alPulsarInsp = (e) => {
+    const el = inspRef.current
+    if (!el) return
+    arrastreInsp.current = {
+      activo: true, y0: e.clientY, top0: el.scrollTop,
+      umbral: pxDeRem(UMBRAL_REM), movido: false,
+    }
+  }
+  const alMoverInsp = (e) => {
+    const a = arrastreInsp.current
+    const el = inspRef.current
+    if (!a.activo || !el) return
+    const dy = e.clientY - a.y0
+    if (!a.movido && Math.abs(dy) < a.umbral) return
+    a.movido = true
+    el.scrollTop = a.top0 - dy
+  }
+  const alSoltarInsp = () => { arrastreInsp.current.activo = false }
+  // Si hubo arrastre, el toque era scroll, no selección: se descarta el click
+  // sintetizado antes de que llegue al botón de la inspección.
+  const alHacerClickInsp = (e) => {
+    if (!arrastreInsp.current.movido) return
+    arrastreInsp.current.movido = false
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
+  // El avatar es la ÚNICA vía táctil a la sesión: abre una pantalla propia
+  // dentro del kiosco (cuenta vinculada o QR de emparejamiento). Sigue sin ser
+  // una puerta a la UI completa de escritorio, que es inusable con el dedo en
+  // un panel de 480x320 sin ratón ni teclado.
   const avatar = (
-    <div className="kiosk-avatar" data-testid="kiosk-avatar">
+    <BotonToque
+      className="kiosk-avatar"
+      tactil={tactil}
+      onActivar={() => setAccion('cuenta')}
+      data-testid="kiosk-avatar"
+    >
       {status ? (
         status.picture ? (
           <img src={status.picture} alt={`Avatar de ${email}`} className="kiosk-avatar-img" />
@@ -61,7 +105,7 @@ export default function KioskScreen({
       ) : (
         <span className="kiosk-sin-sesion">Sin sesión</span>
       )}
-    </div>
+    </BotonToque>
   )
 
   const barraProgreso = progreso && (
@@ -70,6 +114,40 @@ export default function KioskScreen({
       <span className="kiosk-progreso-pct">{progreso.pct}%</span>
     </div>
   )
+
+  // ------------------------------------------------------------- cuenta
+  // Sin sesión vinculada la única salida es el QR: este equipo no tiene
+  // navegador propio para el consentimiento OAuth (ver PairScreen).
+  if (accion === 'cuenta') {
+    const logueado = Boolean(status?.logged_in)
+    return (
+      <div className="kiosk kiosk-cuenta">
+        <div className="kiosk-header kiosk-header-paso">
+          <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setAccion(null)}>
+            ← Atrás
+          </BotonToque>
+          <span className="kiosk-titulo">Cuenta</span>
+        </div>
+        {logueado ? (
+          <div className="kiosk-cuenta-datos">
+            <span className="kiosk-cuenta-email">{email}</span>
+            <BotonToque
+              className="btn-ghost kiosk-btn"
+              tactil={tactil}
+              onActivar={async () => {
+                await api.cloudLogout().catch(() => {})
+                onRefreshStatus?.()
+              }}
+            >
+              Cerrar sesión
+            </BotonToque>
+          </div>
+        ) : (
+          <PairScreen onPaired={() => { onRefreshStatus?.(); setAccion(null) }} />
+        )}
+      </div>
+    )
+  }
 
   // ---------------------------------------------------------------- paso 1
   if (!accion) {
@@ -129,35 +207,51 @@ export default function KioskScreen({
       </div>
 
       {esOrganizar ? (
-        <details className="kiosk-estadillo">
-          <summary>Estadillo (opcional)</summary>
-          <input
-            className="glass-input"
-            type="text"
-            value={estadillo || ''}
-            onChange={(e) => onEstadillo(e.target.value)}
-            disabled={busy}
-            placeholder="Ruta del estadillo"
-          />
-        </details>
+        <div className="kiosk-estadillo">
+          <EstadilloField value={estadillo} onChange={onEstadillo} disabled={busy} />
+        </div>
       ) : (
         <div className="kiosk-inspeccion">
-          <select
-            className="glass-input"
-            value={inspeccion?.id ?? ''}
-            disabled={busy}
-            onChange={(e) => {
-              const elegida = inspecciones.find((i) => String(i.id) === e.target.value) || null
-              onSelectInspeccion(elegida)
-            }}
-          >
-            <option value="">Sin inspección</option>
-            {inspecciones.map((i) => (
-              <option key={i.id} value={i.id}>
-                {i.nombre}
-              </option>
-            ))}
-          </select>
+          {inspeccion ? (
+            <div className="field-row">
+              <input className="glass-input" type="text" value={inspeccion.etiqueta || inspeccion.nombre || ''} readOnly />
+              <BotonToque
+                className="btn-ghost"
+                tactil={tactil}
+                onActivar={() => onSelectInspeccion(null)}
+                disabled={busy}
+              >
+                Cambiar
+              </BotonToque>
+            </div>
+          ) : (
+            <div
+              className="kiosk-insp-scroll"
+              ref={inspRef}
+              {...(tactil ? {
+                onPointerDown: alPulsarInsp,
+                onPointerMove: alMoverInsp,
+                onPointerUp: alSoltarInsp,
+                onPointerCancel: alSoltarInsp,
+                onPointerLeave: alSoltarInsp,
+                onClickCapture: alHacerClickInsp,
+              } : {})}
+            >
+              <InspeccionSelector
+                inspecciones={inspecciones}
+                onElegir={(prefijo) => {
+                  const elegida = inspecciones.find((i) => i.prefijo === prefijo) || null
+                  onSelectInspeccion(elegida)
+                }}
+                // El kiosco no crea inspecciones nuevas: requiere teclear
+                // Empresa--Planta--Año--Tipo, inviable con el panel táctil sin
+                // teclado. Esa vía sigue solo en la UI de escritorio.
+                onNueva={() => {}}
+                ocupado={busy}
+                onActualizar={onActualizarInspecciones}
+              />
+            </div>
+          )}
         </div>
       )}
 
