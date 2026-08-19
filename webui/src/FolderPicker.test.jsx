@@ -50,10 +50,15 @@ describe('FolderPicker', () => {
     expect(await screen.findByText('VUELOS')).toBeInTheDocument()
   })
 
-  it('en modo carpeta no ofrece ficheros como elegibles', async () => {
+  it('en modo carpeta se ven los ficheros pero no son elegibles', async () => {
     render(<FolderPicker mode="folder" startPath={null} onPick={() => {}} onCancel={() => {}} />)
     await screen.findByText('VUELOS')
-    expect(screen.queryByText('estadillo.xlsx')).not.toBeInTheDocument()
+    const fichero = screen.getByText('estadillo.xlsx')
+    expect(fichero).toBeInTheDocument()
+    // No es un boton (no es pulsable): esta en un <li> inerte, no envuelto
+    // por BotonToque como las carpetas.
+    expect(fichero.closest('button')).toBeNull()
+    expect(fichero.closest('li')).toHaveAttribute('aria-disabled', 'true')
   })
 
   it('en modo fichero un toque devuelve la ruta', async () => {
@@ -139,6 +144,25 @@ describe('FolderPicker', () => {
     })
     await screen.findByText('VUELOS')
     expect(lista.querySelector('.picker-cargando')).toBeNull()
+  })
+
+  it('un toque marca la fila al instante, antes de que listDir resuelva', async () => {
+    const { api } = await import('./bridge.js')
+    let resolver
+    render(<FolderPicker mode="folder" startPath={null} onPick={() => {}} onCancel={() => {}} />)
+    const fila = (await screen.findByText('VUELOS')).closest('button')
+    api.listDir.mockReturnValueOnce(new Promise((r) => { resolver = r }))
+    tocar(fila)
+    expect(document.querySelector('.picker-fila-cargando')).not.toBeNull()
+    resolver({ ok: true, path: '/home/rebeca/VUELOS', parent: '/home/rebeca', dirs: [], files: [] })
+    await waitFor(() => expect(document.querySelector('.picker-fila-cargando')).toBeNull())
+  })
+
+  it('la lista lleva botones de paginado en tactil', async () => {
+    render(<FolderPicker mode="folder" startPath={null} onPick={() => {}} onCancel={() => {}} />)
+    await screen.findByText('VUELOS')
+    expect(screen.getByLabelText('Subir en la lista')).toBeInTheDocument()
+    expect(screen.getByLabelText('Bajar en la lista')).toBeInTheDocument()
   })
 
   it('en modo servidor arranca en el disco USB si hay uno (api.defaultDir)', async () => {
