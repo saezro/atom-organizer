@@ -171,11 +171,14 @@ describe('KioskScreen — paso 1 (menú)', () => {
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
   })
 
-  it('pulsar "Subir en crudo" lleva al paso 2 de subir (sin estadillo, con buscador de inspección)', async () => {
+  it('pulsar "Subir en crudo" lleva al sub-paso A: solo la lista de inspecciones, nada de carpeta', async () => {
     render(<KioskScreen {...baseProps()} />)
     await userEvent.click(screen.getByRole('button', { name: /subir en crudo/i }))
-    expect(screen.getByText(/elegir carpeta/i)).toBeInTheDocument()
-    expect(screen.getByPlaceholderText(/escribe para buscar/i)).toBeInTheDocument()
+    // Sub-paso A: se elige inspección antes que carpeta; sin bloque de
+    // carpeta, sin buscador de texto (no cabe con la lista en 480x320).
+    expect(screen.queryByText(/elegir carpeta/i)).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText(/escribe para buscar/i)).not.toBeInTheDocument()
+    expect(screen.getByText('ACME PLANTA1 2026')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /← atrás/i })).toBeInTheDocument()
     expect(screen.queryByText(/estadillo/i)).not.toBeInTheDocument()
   })
@@ -251,13 +254,25 @@ describe('KioskScreen — paso 2 (subir en crudo)', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('no muestra el destino derivado', () => {
-    render(<KioskScreen {...baseProps({ accionInicial: 'subir', carpeta: '/home/pi/vuelo/PLANTA' })} />)
+    render(
+      <KioskScreen
+        {...baseProps({ accionInicial: 'subir', carpeta: '/home/pi/vuelo/PLANTA', inspeccion: inspecciones[0] })}
+      />
+    )
     expect(screen.queryByText(/_ORGANIZADO/)).not.toBeInTheDocument()
   })
 
-  it('sin carpeta o sin inspección, el botón "Subir" está deshabilitado', () => {
-    render(<KioskScreen {...baseProps({ accionInicial: 'subir', carpeta: '', inspeccion: null })} />)
+  it('sin carpeta, con inspección ya elegida (sub-paso B), el botón "Subir" está deshabilitado', () => {
+    render(
+      <KioskScreen {...baseProps({ accionInicial: 'subir', carpeta: '', inspeccion: inspecciones[0] })} />
+    )
     expect(screen.getByRole('button', { name: /^subir$/i })).toBeDisabled()
+  })
+
+  it('sin inspección elegida (sub-paso A), no se pinta el botón "Subir" ni el de carpeta', () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'subir', carpeta: '', inspeccion: null })} />)
+    expect(screen.queryByRole('button', { name: /^subir$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /elegir carpeta/i })).not.toBeInTheDocument()
   })
 
   it('botón "Subir" llama a onSubirCrudo con carpeta e inspección', async () => {
@@ -293,12 +308,24 @@ describe('KioskScreen — paso 2 (subir en crudo)', () => {
     expect(screen.getByRole('button', { name: /^subir$/i })).toBeDisabled()
   })
 
-  it('sin inspección elegida muestra el buscador InspeccionSelector, no un <select>', () => {
+  it('sin inspección elegida muestra SOLO la lista de InspeccionSelector (sin buscador ni chips)', () => {
     render(<KioskScreen {...baseProps({ accionInicial: 'subir', inspeccion: null })} />)
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
-    expect(screen.getByPlaceholderText(/escribe para buscar/i)).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText(/escribe para buscar/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: /mostrar terminadas/i })).not.toBeInTheDocument()
     expect(screen.getByText('ACME PLANTA1 2026')).toBeInTheDocument()
     expect(screen.getByText('BETA PLANTA2 2025')).toBeInTheDocument()
+    // Recargar el catálogo sigue accesible desde la cabecera del sub-paso.
+    expect(screen.getByRole('button', { name: /actualizar lista de inspecciones/i })).toBeInTheDocument()
+  })
+
+  it('el botón de actualizar del sub-paso A llama a onActualizarInspecciones', async () => {
+    const onActualizarInspecciones = vi.fn()
+    render(
+      <KioskScreen {...baseProps({ accionInicial: 'subir', inspeccion: null, onActualizarInspecciones })} />
+    )
+    await userEvent.click(screen.getByRole('button', { name: /actualizar lista de inspecciones/i }))
+    expect(onActualizarInspecciones).toHaveBeenCalledTimes(1)
   })
 
   it('elegir una inspección del buscador llama a onSelectInspeccion con el objeto completo', async () => {
