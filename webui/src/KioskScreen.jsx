@@ -17,6 +17,7 @@ import BotonToque, { pxDeRem, UMBRAL_REM } from './pulsacion.jsx'
 import PairScreen from './PairScreen.jsx'
 import InspeccionSelector, { COLOR_FASE, COLOR_FASE_DEFECTO, ORDEN_FASES, chip } from './InspeccionSelector.jsx'
 import EstadilloField from './EstadilloField.jsx'
+import { formatBytes, formatDuracion } from './formato.js'
 
 // Deriva la ruta de destino a partir de la carpeta de origen, añadiendo el
 // sufijo "_ORGANIZADO". Función pura: sin efectos, sin acceso a props/estado.
@@ -39,6 +40,7 @@ export default function KioskScreen({
   onEstadillo,
   onOrganizar,
   onSubirCrudo,
+  onComprobarSubida,
   onRefreshStatus,
   busy,
   progreso,
@@ -51,6 +53,10 @@ export default function KioskScreen({
   // fase deja una lista corta. El resto sigue a un toque, en la pantalla de fases.
   const [fasesKiosco, setFasesKiosco] = useState(['Vuelo'])
   const [eligiendoFases, setEligiendoFases] = useState(false)
+  // Comprobación en seco previa a subir (ver `confirmar`): `null` mientras no
+  // se ha pedido, `{prepare, estadillos}` cuando ya hay resumen que pintar.
+  const [resumen, setResumen] = useState(null)
+  const [comprobando, setComprobando] = useState(false)
   const destino = derivarDestino(carpeta)
   const email = status?.email || ''
   const inicial = email ? email[0].toUpperCase() : ''
@@ -187,6 +193,62 @@ export default function KioskScreen({
     </div>
   )
 
+  // ------------------------------------------------------------ subiendo
+  // Mientras sube no hay nada que tocar, así que la subida ocupa el kiosco
+  // entero en lugar de esconderse en la barra de una esquina. Cas: «al subir
+  // que salga una animación del logo de Atom en medio con el porcentaje y el
+  // logo girando, y a la derecha una nube».
+  //
+  // El anillo es un `circle` con `stroke-dasharray`: el mismo truco de siempre
+  // para un progreso circular sin dependencias. El logo gira y late en CSS
+  // (`.kiosk-subida-logo`), y los puntos que suben a la nube son tres `circle`
+  // con la misma animación desfasada.
+  if (progreso?.subida) {
+    const st = progreso.stats || {}
+    const pct = Math.max(0, Math.min(Math.round(progreso.pct || 0), 100))
+    const CIRC = 2 * Math.PI * 46
+    return (
+      <div className="kiosk kiosk-subida" data-testid="kiosk-subida">
+        <div className="kiosk-subida-escena">
+          <div className="kiosk-subida-anillo">
+            <svg viewBox="0 0 100 100" aria-hidden="true">
+              <circle className="kiosk-subida-pista" cx="50" cy="50" r="46" />
+              <circle
+                className="kiosk-subida-arco"
+                cx="50" cy="50" r="46"
+                strokeDasharray={CIRC}
+                strokeDashoffset={CIRC * (1 - pct / 100)}
+              />
+            </svg>
+            <img className="kiosk-subida-logo" src="/atom-logo.svg" alt="" />
+            <span className="kiosk-subida-pct" data-testid="kiosk-subida-pct">{pct}%</span>
+          </div>
+
+          <svg className="kiosk-subida-nube" viewBox="0 0 64 48" aria-hidden="true">
+            <path
+              className="kiosk-subida-nube-trazo"
+              d="M18 38a10 10 0 0 1-.6-19.98A14 14 0 0 1 44 16.5a9.5 9.5 0 0 1 2 18.8"
+            />
+            <circle className="kiosk-subida-punto kiosk-subida-punto-1" cx="24" cy="44" r="2.4" />
+            <circle className="kiosk-subida-punto kiosk-subida-punto-2" cx="32" cy="44" r="2.4" />
+            <circle className="kiosk-subida-punto kiosk-subida-punto-3" cx="40" cy="44" r="2.4" />
+          </svg>
+        </div>
+
+        <div className="kiosk-subida-datos">
+          <span className="kiosk-subida-fase">{progreso.fase}</span>
+          <span className="kiosk-subida-cifras">
+            {st.files_total
+              ? `${st.files_done ?? 0}/${st.files_total} archivos`
+              : formatBytes(st.bytes_done || 0)}
+            {st.mbps ? ` · ${st.mbps.toFixed(1)} MB/s` : ''}
+            {st.eta != null ? ` · quedan ~${formatDuracion(st.eta)}` : ''}
+          </span>
+        </div>
+      </div>
+    )
+  }
+
   // ------------------------------------------------------------- cuenta
   // Sin sesión vinculada la única salida es el QR: este equipo no tiene
   // navegador propio para el consentimiento OAuth (ver PairScreen).
@@ -255,9 +317,27 @@ export default function KioskScreen({
   // bucket, que sale de la inspección elegida.
   const listo = esOrganizar ? Boolean(carpeta) : Boolean(carpeta && inspeccion)
 
-  function confirmar() {
-    if (esOrganizar) onOrganizar({ origen: carpeta, destino, estadillo })
-    else onSubirCrudo({ carpeta, inspeccion })
+  // Organizar arranca directo (ya tiene su propio modal previo en la UI
+  // común). Subir en crudo pasa antes por el resumen: qué se ha volado y
+  // cuántos ficheros hay pendientes de verdad. Sin `onComprobarSubida` (tests
+  // antiguos, escritorio) se mantiene el comportamiento de siempre.
+  async function confirmar() {
+    if (esOrganizar) {
+      onOrganizar({ origen: carpeta, destino, estadillo })
+      return
+    }
+    if (!onComprobarSubida) {
+      onSubirCrudo({ carpeta, inspeccion })
+      return
+    }
+    setComprobando(true)
+    try {
+      const r = await onComprobarSubida({ carpeta, inspeccion })
+      if (r) setResumen(r)
+      else onSubirCrudo({ carpeta, inspeccion })
+    } finally {
+      setComprobando(false)
+    }
   }
 
   // «Subir en crudo», sub-paso A: primero se elige la INSPECCIÓN (destino) y
@@ -434,6 +514,100 @@ export default function KioskScreen({
     )
   }
 
+  // «Subir en crudo», sub-paso C: resumen EN SECO de lo que se va a subir.
+  // Cas: «que los detecte y saque la info de días de vuelo, cantidad de
+  // vuelos, piloto, dron etc. y de ahí diga que se han detectado 3 estadillos,
+  // 3 días de vuelo y todo eso, y un Aceptar para empezar a subir».
+  //
+  // No encontrar estadillos NO bloquea (se avisa y se puede subir igual); no
+  // haber NADA pendiente sí, porque el botón no haría nada.
+  if (resumen) {
+    const est = resumen.estadillos || {}
+    const info = est.info || null
+    const prep = resumen.prepare || {}
+    const nEst = est.n_estadillos || 0
+    const dias = (info?.fechas || []).length
+    const nVuelos = info?.num_vuelos || 0
+    const pilotos = (info?.pilotos || []).filter(Boolean)
+    const drones = (info?.drones || []).filter(Boolean)
+    // `pendientes` es null si no hay sesión (no se pudo listar el bucket): en
+    // ese caso el total de la carpeta es la mejor estimación disponible.
+    const pendientes = prep.pendientes ?? prep.files ?? 0
+    const bytesPend = prep.bytes_pendientes ?? prep.bytes ?? 0
+    const sinArchivos = !prep.ok || pendientes === 0
+    const plural = (n, sing, pl) => `${n} ${n === 1 ? sing : pl}`
+    return (
+      <div className="kiosk">
+        <div className="kiosk-header kiosk-header-paso">
+          <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setResumen(null)} disabled={busy}>
+            ← Atrás
+          </BotonToque>
+          <span className="kiosk-titulo">Antes de subir</span>
+          {avatar}
+        </div>
+
+        <div className="kiosk-resumen" data-testid="kiosk-resumen">
+          <div className="kiosk-resumen-cifras">
+            <div className="kiosk-resumen-cifra">
+              <strong>{nEst}</strong>
+              <span>{nEst === 1 ? 'estadillo' : 'estadillos'}</span>
+            </div>
+            <div className="kiosk-resumen-cifra">
+              <strong>{dias}</strong>
+              <span>{dias === 1 ? 'día de vuelo' : 'días de vuelo'}</span>
+            </div>
+            <div className="kiosk-resumen-cifra">
+              <strong>{nVuelos}</strong>
+              <span>{nVuelos === 1 ? 'vuelo' : 'vuelos'}</span>
+            </div>
+          </div>
+
+          <dl className="kiosk-resumen-detalle">
+            {pilotos.length > 0 && (
+              <>
+                <dt>{pilotos.length === 1 ? 'Piloto' : 'Pilotos'}</dt>
+                <dd>{pilotos.join(', ')}</dd>
+              </>
+            )}
+            {drones.length > 0 && (
+              <>
+                <dt>{drones.length === 1 ? 'Dron' : 'Drones'}</dt>
+                <dd>{drones.join(', ')}</dd>
+              </>
+            )}
+            <dt>Archivos</dt>
+            <dd data-testid="kiosk-resumen-archivos">
+              {sinArchivos ? '—' : `${plural(pendientes, 'archivo', 'archivos')} · ${formatBytes(bytesPend)}`}
+            </dd>
+          </dl>
+
+          {nEst === 0 && (
+            <p className="kiosk-resumen-aviso" data-testid="kiosk-resumen-sin-estadillo">
+              No se ha detectado ningún estadillo. Se puede subir igual.
+            </p>
+          )}
+          {sinArchivos && (
+            <p className="kiosk-resumen-aviso kiosk-resumen-aviso-bloqueo" data-testid="kiosk-resumen-sin-archivos">
+              {prep.error || 'No hay ningún archivo pendiente de subir.'}
+            </p>
+          )}
+        </div>
+
+        <div className="kiosk-acciones">
+          <BotonToque
+            className="kiosk-btn kiosk-btn-subir-crudo"
+            tactil={tactil}
+            onActivar={() => { setResumen(null); onSubirCrudo({ carpeta, inspeccion }) }}
+            disabled={busy || sinArchivos}
+            data-testid="kiosk-resumen-aceptar"
+          >
+            Aceptar y subir
+          </BotonToque>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="kiosk">
       <div className="kiosk-header kiosk-header-paso">
@@ -481,9 +655,9 @@ export default function KioskScreen({
           className={'kiosk-btn ' + (esOrganizar ? 'kiosk-btn-organizar' : 'kiosk-btn-subir-crudo')}
           tactil={tactil}
           onActivar={confirmar}
-          disabled={!listo || busy}
+          disabled={!listo || busy || comprobando}
         >
-          {esOrganizar ? 'Organizar' : 'Subir'}
+          {esOrganizar ? 'Organizar' : comprobando ? 'Comprobando…' : 'Subir'}
         </BotonToque>
       </div>
     </div>

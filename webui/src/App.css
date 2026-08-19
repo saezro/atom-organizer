@@ -1434,6 +1434,162 @@ select.glass-input option {
   font-size: var(--fs-sm);
 }
 
+/* Pantalla de subida: el kiosco entero mientras dura la subida. Logo de Atom
+   girando dentro de un anillo de progreso, la nube a la derecha recibiendo los
+   ficheros, y debajo las cifras reales (archivos, MB/s, ETA). */
+.kiosk-subida {
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) * 1.5);
+}
+.kiosk-subida-escena {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) * 2);
+}
+.kiosk-subida-anillo {
+  position: relative;
+  width: 9rem;
+  height: 9rem;
+  flex: none;
+}
+.kiosk-subida-anillo svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+.kiosk-subida-pista {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.1);
+  stroke-width: 4;
+}
+.kiosk-subida-arco {
+  fill: none;
+  stroke: var(--orange);
+  stroke-width: 4;
+  stroke-linecap: round;
+  /* El arco persigue al porcentaje en vez de saltar: los `stats` llegan a
+     ráfagas y sin esto el anillo da tirones. */
+  transition: stroke-dashoffset 0.4s ease-out;
+}
+.kiosk-subida-logo {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3.75rem;
+  height: 3.75rem;
+  margin: -2.5rem 0 0 -1.875rem;
+  animation: kiosk-subida-latido 2.4s ease-in-out infinite;
+}
+.kiosk-subida-pct {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 1.75rem;
+  text-align: center;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text);
+}
+@keyframes kiosk-subida-latido {
+  0%, 100% { transform: scale(1) rotate(0deg); opacity: 1; }
+  50% { transform: scale(1.12) rotate(8deg); opacity: 0.75; }
+}
+.kiosk-subida-nube { width: 5rem; height: 3.75rem; flex: none; }
+.kiosk-subida-nube-trazo {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.kiosk-subida-punto {
+  fill: var(--orange);
+  animation: kiosk-subida-sube 1.5s ease-in infinite;
+}
+.kiosk-subida-punto-2 { animation-delay: 0.5s; }
+.kiosk-subida-punto-3 { animation-delay: 1s; }
+@keyframes kiosk-subida-sube {
+  0% { transform: translateY(0); opacity: 0; }
+  25% { opacity: 1; }
+  100% { transform: translateY(-1.375rem); opacity: 0; }
+}
+.kiosk-subida-datos {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--u) / 4);
+}
+.kiosk-subida-fase { font-weight: 700; }
+.kiosk-subida-cifras { font-size: var(--fs-sm); color: var(--muted); }
+
+/* Sin motion: el anillo sigue avanzando (es información), pero el logo deja de
+   latir y los puntos de subir. */
+@media (prefers-reduced-motion: reduce) {
+  .kiosk-subida-logo,
+  .kiosk-subida-punto { animation: none; }
+}
+
+/* Resumen previo a subir en crudo: qué se ha volado y cuánto queda por subir.
+   Cabe entero en los 480x320 de la Pi sin scroll: tres cifras grandes arriba
+   (lo que se lee de un vistazo) y el detalle en letra pequeña debajo. */
+.kiosk-resumen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--u);
+  min-height: 0;
+  overflow: auto;
+}
+.kiosk-resumen-cifras { display: flex; gap: calc(var(--u) / 2); }
+.kiosk-resumen-cifra {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--u) / 4);
+  padding: calc(var(--u) / 2);
+  border-radius: var(--radio);
+  background: rgba(255, 255, 255, 0.05);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.08);
+}
+.kiosk-resumen-cifra strong {
+  font-size: 1.75rem;
+  line-height: 1;
+  color: var(--orange);
+}
+.kiosk-resumen-cifra span {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  text-align: center;
+}
+.kiosk-resumen-detalle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: calc(var(--u) / 4) var(--u);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+.kiosk-resumen-detalle dt { color: var(--muted); }
+.kiosk-resumen-detalle dd {
+  margin: 0;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kiosk-resumen-aviso {
+  margin: 0;
+  padding: calc(var(--u) / 2);
+  border-radius: var(--radio);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.kiosk-resumen-aviso-bloqueo {
+  background: rgba(238, 117, 58, 0.15);
+  color: var(--text);
+}
+
 .kiosk-acciones { margin-top: auto; display: flex; gap: var(--u); }
 
 .kiosk-btn {

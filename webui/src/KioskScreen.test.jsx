@@ -378,3 +378,103 @@ describe('KioskScreen — paso 2 (subir en crudo)', () => {
     expect(onSelectInspeccion).toHaveBeenCalledWith(null)
   })
 })
+
+describe('KioskScreen — paso 2 (subir en crudo), pantalla de resumen', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('al pulsar "Subir" con onComprobarSubida se pinta el resumen antes de subir, y solo tras Aceptar se sube', async () => {
+    const onSubirCrudo = vi.fn()
+    const onComprobarSubida = vi.fn().mockResolvedValue({
+      prepare: { ok: true, files: 120, bytes: 1024 * 1024 * 500, pendientes: 80, bytes_pendientes: 1024 * 1024 * 300 },
+      estadillos: {
+        n_estadillos: 3,
+        info: { fechas: ['01/08/2026', '02/08/2026', '03/08/2026'], num_vuelos: 12, pilotos: ['Nacho'], drones: ['M3T'] },
+      },
+    })
+    render(
+      <KioskScreen
+        {...baseProps({
+          accionInicial: 'subir',
+          carpeta: '/home/pi/vuelo/PLANTA',
+          inspeccion: inspecciones[0],
+          onSubirCrudo,
+          onComprobarSubida,
+        })}
+      />
+    )
+    await userEvent.click(screen.getByRole('button', { name: /^subir$/i }))
+    expect(onComprobarSubida).toHaveBeenCalledTimes(1)
+    expect(onComprobarSubida).toHaveBeenCalledWith({ carpeta: '/home/pi/vuelo/PLANTA', inspeccion: inspecciones[0] })
+
+    const resumen = await screen.findByTestId('kiosk-resumen')
+    expect(resumen).toBeInTheDocument()
+    // 3 estadillos y 3 días de vuelo: dos "3" distintos en la misma pantalla.
+    expect(screen.getAllByText('3')).toHaveLength(2)
+    expect(screen.getByText('12')).toBeInTheDocument()
+    expect(onSubirCrudo).not.toHaveBeenCalled()
+
+    await userEvent.click(screen.getByTestId('kiosk-resumen-aceptar'))
+    expect(onSubirCrudo).toHaveBeenCalledTimes(1)
+    expect(onSubirCrudo).toHaveBeenCalledWith({ carpeta: '/home/pi/vuelo/PLANTA', inspeccion: inspecciones[0] })
+  })
+
+  it('sin estadillos detectados pero con archivos pendientes, sale el aviso pero no bloquea el botón', async () => {
+    const onComprobarSubida = vi.fn().mockResolvedValue({
+      prepare: { ok: true, files: 10, bytes: 1024, pendientes: 10, bytes_pendientes: 1024 },
+      estadillos: { n_estadillos: 0, info: null },
+    })
+    render(
+      <KioskScreen
+        {...baseProps({
+          accionInicial: 'subir',
+          carpeta: '/home/pi/vuelo/PLANTA',
+          inspeccion: inspecciones[0],
+          onComprobarSubida,
+        })}
+      />
+    )
+    await userEvent.click(screen.getByRole('button', { name: /^subir$/i }))
+    await screen.findByTestId('kiosk-resumen')
+    expect(screen.getByTestId('kiosk-resumen-sin-estadillo')).toBeInTheDocument()
+    expect(screen.getByTestId('kiosk-resumen-aceptar')).not.toBeDisabled()
+  })
+
+  it('sin archivos pendientes (prepare.ok=false), sale el aviso y el botón Aceptar queda deshabilitado', async () => {
+    const onComprobarSubida = vi.fn().mockResolvedValue({
+      prepare: { ok: false, error: 'La carpeta no tiene ningún fichero subible' },
+      estadillos: { n_estadillos: 1, info: { fechas: ['01/08/2026'], num_vuelos: 1, pilotos: [], drones: [] } },
+    })
+    render(
+      <KioskScreen
+        {...baseProps({
+          accionInicial: 'subir',
+          carpeta: '/home/pi/vuelo/PLANTA',
+          inspeccion: inspecciones[0],
+          onComprobarSubida,
+        })}
+      />
+    )
+    await userEvent.click(screen.getByRole('button', { name: /^subir$/i }))
+    await screen.findByTestId('kiosk-resumen')
+    expect(screen.getByTestId('kiosk-resumen-sin-archivos')).toBeInTheDocument()
+    expect(screen.getByTestId('kiosk-resumen-aceptar')).toBeDisabled()
+  })
+
+  it('sin la prop onComprobarSubida, pulsar "Subir" llama directo a onSubirCrudo (comportamiento antiguo)', async () => {
+    const onSubirCrudo = vi.fn()
+    render(
+      <KioskScreen
+        {...baseProps({
+          accionInicial: 'subir',
+          carpeta: '/home/pi/vuelo/PLANTA',
+          inspeccion: inspecciones[0],
+          onSubirCrudo,
+        })}
+      />
+    )
+    await userEvent.click(screen.getByRole('button', { name: /^subir$/i }))
+    expect(onSubirCrudo).toHaveBeenCalledTimes(1)
+    expect(onSubirCrudo).toHaveBeenCalledWith({ carpeta: '/home/pi/vuelo/PLANTA', inspeccion: inspecciones[0] })
+    expect(screen.queryByTestId('kiosk-resumen')).not.toBeInTheDocument()
+  })
+})
