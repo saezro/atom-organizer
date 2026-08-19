@@ -33,6 +33,7 @@ METODOS_EXPUESTOS = frozenset({
     "cloud_inspecciones", "cloud_prepare", "cloud_upload", "cloud_cancel",
     "estadillo_validar", "estadillo_subir", "estadillo_existente",
     "run_organize", "run_task",
+    "sistema_apagar",
 })
 
 # Origenes considerados same-origin/local para la validacion de CSRF en

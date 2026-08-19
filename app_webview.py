@@ -1267,6 +1267,28 @@ class Api:
         if self._sink:
             self._sink.dispatch_many("atom:progress", compactados)
 
+    # ---- control del sistema (modo servidor / Raspberry Pi) ---------------
+    def sistema_apagar(self, modo: str) -> dict:
+        """Apaga o reinicia el equipo desde el modo servidor (kiosco Raspberry Pi).
+
+        Sin `sudo`: en la Pi hay una regla de polkit que autoriza a este
+        usuario a ejecutar `systemctl poweroff`/`reboot` sin contraseña, asi
+        que invocar `sudo` aqui solo anadiria un paso que pide password y
+        rompe el flujo no interactivo del kiosco.
+        """
+        if modo not in ("poweroff", "reboot"):
+            return {"ok": False, "error": "modo no valido"}
+        try:
+            proc = subprocess.run(
+                ["systemctl", modo],
+                check=False, capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode == 0:
+                return {"ok": True}
+            return {"ok": False, "error": proc.stderr.strip() or f"returncode={proc.returncode}"}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
 
 def resolve_target(dev: bool) -> str:
     if dev:
