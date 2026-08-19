@@ -202,7 +202,16 @@ def descargar_catalogo_api(auth, *,
     """
     url = f"{(base or API_BASE).rstrip('/')}{RUTA_CATALOGO}"
     req = urllib.request.Request(url, method="GET")
-    req.add_header("Authorization", f"Bearer {auth.id_token()}")
+    # En modo broker (Raspberry Pi emparejada por QR) no hay id_token: Google
+    # nunca se lo dio a este equipo, solo el device_token que custodia la
+    # Suite. `auth.id_token()` lanzaría siempre en ese modo, así que aquí se
+    # autentica con el device_token en su propia cabecera; fuera de broker el
+    # comportamiento no cambia (Authorization: Bearer <id_token>, como antes).
+    device_token = getattr(auth, "device_token", None)
+    if device_token:
+        req.add_header("X-Organizer-Device", device_token)
+    else:
+        req.add_header("Authorization", f"Bearer {auth.id_token()}")
     req.add_header("User-Agent", USER_AGENT)
     req.add_header("Accept", "application/json")
     with urllib.request.urlopen(req, timeout=timeout) as resp:

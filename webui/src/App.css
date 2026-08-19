@@ -1201,6 +1201,23 @@ select.glass-input option {
   font: inherit;
 }
 .kiosk-titulo { font-weight: 700; color: var(--text); }
+/* Botón de "Actualizar lista" para el sub-paso A de "Subir en crudo": con
+   `soloLista` el de InspeccionSelector no se pinta (no cabe encima de la
+   lista), así que esta es la única vía para recargar el catálogo ahí. */
+.kiosk-actualizar-insp {
+  margin-left: auto;
+  width: var(--toque-min);
+  height: var(--toque-min);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  padding: 0;
+}
+.kiosk-actualizar-insp svg { width: 1.25rem; height: 1.25rem; }
 
 /* Paso 1: elegir la acción. Dos dianas enormes — es lo primero que se toca y
    el panel resistivo agradece cuanta más superficie, mejor. */
@@ -1264,6 +1281,14 @@ select.glass-input option {
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+/* Sub-paso A de "Subir en crudo": sin bloque de carpeta ni botón de confirmar
+   debajo, así que la lista es el único hijo con `flex:1` de `.kiosk` y ya
+   ocupa todo el alto sobrante; este modificador solo deja constancia de la
+   intención (pantalla completa) para el siguiente que lo toque. */
+.kiosk-inspeccion-full {
+  flex: 1;
+  min-height: 0;
 }
 /* Contenedor de scroll manual (drag = `scrollTop`, ver KioskScreen.jsx): el
    panel resistivo entrega el dedo como ratón absoluto, así que el scroll

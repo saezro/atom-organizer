@@ -326,6 +326,17 @@ class GoogleAuth:
         """
         return self._aviso_store
 
+    @property
+    def device_token(self) -> str | None:
+        """Token de emparejamiento con la Suite, solo en modo broker.
+
+        En modo broker `_refresh_token` no es de Google: es el `device_token`
+        que la Pi guarda tras `pair()`. Se expone aparte (en vez de leer
+        `_refresh_token` desde fuera) para que quien lo consuma no tenga que
+        conocer ese solapamiento interno de campos.
+        """
+        return self._refresh_token if self._modo == MODO_BROKER else None
+
     def verificar(self) -> tuple[bool, str]:
         """¿Sigue viva la sesión? Pregunta a Google — hace red.
 

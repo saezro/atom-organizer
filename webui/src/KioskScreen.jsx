@@ -188,6 +188,76 @@ export default function KioskScreen({
     else onSubirCrudo({ carpeta, inspeccion })
   }
 
+  // «Subir en crudo», sub-paso A: primero se elige la INSPECCIÓN (destino) y
+  // solo después la carpeta de origen — orden invertido a como se pedían
+  // antes, porque juntar los dos bloques en una sola pantalla de 480x320
+  // dejaba la lista de inspecciones sin apenas alto. Pantalla dedicada: solo
+  // cabecera + lista a pantalla completa, nada de carpeta ni botón de subir
+  // (ese llega en el sub-paso B, una vez ya hay inspección elegida).
+  if (accion === 'subir' && !inspeccion) {
+    return (
+      <div className="kiosk">
+        <div className="kiosk-header kiosk-header-paso">
+          <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setAccion(null)} disabled={busy}>
+            ← Atrás
+          </BotonToque>
+          <span className="kiosk-titulo">Subir en crudo</span>
+          {/* Con `soloLista` el botón "Actualizar lista" de InspeccionSelector
+              no se pinta (no cabe encima de la lista en 480x320): esta es la
+              única vía para recargar el catálogo en este sub-paso. */}
+          <BotonToque
+            className="kiosk-actualizar-insp"
+            tactil={tactil}
+            onActivar={onActualizarInspecciones}
+            disabled={busy}
+            aria-label="Actualizar lista de inspecciones"
+          >
+            <svg viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 12a9 9 0 0115.3-6.3M21 12a9 9 0 01-15.3 6.3" />
+              <path d="M18 3v4h-4M6 21v-4h4" />
+            </svg>
+          </BotonToque>
+          {avatar}
+        </div>
+
+        <div className="kiosk-inspeccion kiosk-inspeccion-full">
+          <div
+            className="kiosk-insp-scroll"
+            ref={inspRef}
+            {...(tactil ? {
+              onPointerDown: alPulsarInsp,
+              onPointerMove: alMoverInsp,
+              onPointerUp: alSoltarInsp,
+              onPointerCancel: alSoltarInsp,
+              onPointerLeave: alSoltarInsp,
+              onClickCapture: alHacerClickInsp,
+            } : {})}
+          >
+            <InspeccionSelector
+              inspecciones={inspecciones}
+              onElegir={(prefijo) => {
+                const elegida = inspecciones.find((i) => i.prefijo === prefijo) || null
+                onSelectInspeccion(elegida)
+              }}
+              // El kiosco no crea inspecciones nuevas: requiere teclear
+              // Empresa--Planta--Año--Tipo, inviable con el panel táctil sin
+              // teclado. Esa vía sigue solo en la UI de escritorio.
+              onNueva={() => {}}
+              ocupado={busy}
+              onActualizar={onActualizarInspecciones}
+              // Sin teclado físico no hay dónde teclear ni sitio para chips o
+              // checkbox en 480x320: en el kiosco la lista va sola, a pantalla
+              // completa (el filtrado por defecto sigue siendo el mismo de
+              // siempre: sin texto, sin fase activa, sin terminadas).
+              soloLista
+            />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="kiosk">
       <div className="kiosk-header kiosk-header-paso">
@@ -198,6 +268,22 @@ export default function KioskScreen({
         {avatar}
       </div>
 
+      {!esOrganizar && (
+        <div className="kiosk-inspeccion">
+          <div className="field-row">
+            <input className="glass-input" type="text" value={inspeccion.etiqueta || inspeccion.nombre || ''} readOnly />
+            <BotonToque
+              className="btn-ghost"
+              tactil={tactil}
+              onActivar={() => onSelectInspeccion(null)}
+              disabled={busy}
+            >
+              Cambiar
+            </BotonToque>
+          </div>
+        </div>
+      )}
+
       <div className="kiosk-carpeta">
         <BotonToque className="btn-ghost kiosk-btn-carpeta" tactil={tactil} onActivar={onPickCarpeta} disabled={busy}>
           Elegir carpeta…
@@ -206,52 +292,9 @@ export default function KioskScreen({
         {esOrganizar && carpeta && <span className="kiosk-destino">{destino}</span>}
       </div>
 
-      {esOrganizar ? (
+      {esOrganizar && (
         <div className="kiosk-estadillo">
           <EstadilloField value={estadillo} onChange={onEstadillo} disabled={busy} />
-        </div>
-      ) : (
-        <div className="kiosk-inspeccion">
-          {inspeccion ? (
-            <div className="field-row">
-              <input className="glass-input" type="text" value={inspeccion.etiqueta || inspeccion.nombre || ''} readOnly />
-              <BotonToque
-                className="btn-ghost"
-                tactil={tactil}
-                onActivar={() => onSelectInspeccion(null)}
-                disabled={busy}
-              >
-                Cambiar
-              </BotonToque>
-            </div>
-          ) : (
-            <div
-              className="kiosk-insp-scroll"
-              ref={inspRef}
-              {...(tactil ? {
-                onPointerDown: alPulsarInsp,
-                onPointerMove: alMoverInsp,
-                onPointerUp: alSoltarInsp,
-                onPointerCancel: alSoltarInsp,
-                onPointerLeave: alSoltarInsp,
-                onClickCapture: alHacerClickInsp,
-              } : {})}
-            >
-              <InspeccionSelector
-                inspecciones={inspecciones}
-                onElegir={(prefijo) => {
-                  const elegida = inspecciones.find((i) => i.prefijo === prefijo) || null
-                  onSelectInspeccion(elegida)
-                }}
-                // El kiosco no crea inspecciones nuevas: requiere teclear
-                // Empresa--Planta--Año--Tipo, inviable con el panel táctil sin
-                // teclado. Esa vía sigue solo en la UI de escritorio.
-                onNueva={() => {}}
-                ocupado={busy}
-                onActualizar={onActualizarInspecciones}
-              />
-            </div>
-          )}
         </div>
       )}
 

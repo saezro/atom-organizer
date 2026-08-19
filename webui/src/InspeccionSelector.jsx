@@ -37,7 +37,22 @@ const MAX_RESULTADOS = 50
 // toggle de terminadas + lista agrupada por año (desc) y ordenada por fase
 // dentro de cada año. Deliberadamente sin portal ni posicionamiento absoluto:
 // es una lista inline, igual que antes.
-export default function InspeccionSelector({ inspecciones, onElegir, onNueva, ocupado, onActualizar }) {
+export default function InspeccionSelector({
+  inspecciones,
+  onElegir,
+  onNueva,
+  ocupado,
+  onActualizar,
+  // Opt-in para dejar SOLO la lista: en la Pi (480x320) el buscador + chips +
+  // checkbox se comían toda la pantalla y la lista quedaba fuera de vista
+  // (reporte Cas probando en la Pi real). Con `soloLista` no se pinta nada de
+  // eso (ni el botón "Actualizar lista": esa vía queda en la cabecera del
+  // kiosco, ver KioskScreen). El filtrado sigue exactamente igual por debajo
+  // (sin texto, sin fases activas, sin terminadas) porque el estado no
+  // cambia, solo se deja de pintar sus controles. Por defecto en `false` para
+  // no tocar el comportamiento de escritorio (BucketScreen).
+  soloLista = false,
+}) {
   const [texto, setTexto] = useState('')
   const [fasesActivas, setFasesActivas] = useState([])
   const [mostrarTerminadas, setMostrarTerminadas] = useState(false)
@@ -119,22 +134,24 @@ export default function InspeccionSelector({ inspecciones, onElegir, onNueva, oc
 
   return (
     <>
-      <div className="field-row">
-        <input
-          className="glass-input"
-          type="text"
-          value={texto}
-          onChange={(e) => setTexto(e.target.value)}
-          placeholder="Escribe para buscar: empresa, planta, año…"
-          disabled={ocupado}
-          autoComplete="off"
-        />
-        <button type="button" className="btn-ghost" onClick={onActualizar} disabled={ocupado}>
-          Actualizar lista
-        </button>
-      </div>
+      {!soloLista && (
+        <div className="field-row">
+          <input
+            className="glass-input"
+            type="text"
+            value={texto}
+            onChange={(e) => setTexto(e.target.value)}
+            placeholder="Escribe para buscar: empresa, planta, año…"
+            disabled={ocupado}
+            autoComplete="off"
+          />
+          <button type="button" className="btn-ghost" onClick={onActualizar} disabled={ocupado}>
+            Actualizar lista
+          </button>
+        </div>
+      )}
 
-      {fasesPresentes.length > 0 && (
+      {!soloLista && fasesPresentes.length > 0 && (
         <div className="insp-chips">
           {fasesPresentes.map((fase) => (
             <button
@@ -151,15 +168,17 @@ export default function InspeccionSelector({ inspecciones, onElegir, onNueva, oc
         </div>
       )}
 
-      <label className="check insp-toggle-terminadas">
-        <input
-          type="checkbox"
-          checked={mostrarTerminadas}
-          onChange={(e) => setMostrarTerminadas(e.target.checked)}
-          disabled={ocupado}
-        />
-        Mostrar terminadas y canceladas
-      </label>
+      {!soloLista && (
+        <label className="check insp-toggle-terminadas">
+          <input
+            type="checkbox"
+            checked={mostrarTerminadas}
+            onChange={(e) => setMostrarTerminadas(e.target.checked)}
+            disabled={ocupado}
+          />
+          Mostrar terminadas y canceladas
+        </label>
+      )}
 
       <ul className="insp-list">
         {grupos.map(([anio, items]) => (
@@ -183,22 +202,30 @@ export default function InspeccionSelector({ inspecciones, onElegir, onNueva, oc
         ))}
         {total === 0 && (
           <li className="insp-vacio">
-            Ninguna inspección coincide con «{texto}». Comprueba el nombre o crea una nueva.
+            {soloLista
+              ? 'No hay inspecciones disponibles. Pulsa el botón de actualizar.'
+              : !texto
+                ? 'Ninguna inspección coincide con los filtros. Prueba a cambiarlos o crea una nueva.'
+                : `Ninguna inspección coincide con «${texto}». Comprueba el nombre o crea una nueva.`}
           </li>
         )}
-        <li>
-          <button type="button" className="insp-item insp-nueva" onClick={onNueva} disabled={ocupado}>
-            + Inspección nueva…
-          </button>
-        </li>
+        {/* El kiosco (`soloLista`) no crea inspecciones: pasa un `onNueva`
+            vacío, así que el botón sería una diana muerta. */}
+        {!soloLista && (
+          <li>
+            <button type="button" className="insp-item insp-nueva" onClick={onNueva} disabled={ocupado}>
+              + Inspección nueva…
+            </button>
+          </li>
+        )}
       </ul>
 
-      {total > MAX_RESULTADOS && (
+      {!soloLista && total > MAX_RESULTADOS && (
         <span className="field-hint">
           {total} coinciden; se muestran las {MAX_RESULTADOS} primeras. Escribe más para acotar.
         </span>
       )}
-      {ocultasPorTerminadas > 0 && (
+      {!soloLista && ocultasPorTerminadas > 0 && (
         <span className="field-hint hint-warn">
           {ocultasPorTerminadas} terminada{ocultasPorTerminadas === 1 ? '' : 's'} oculta
           {ocultasPorTerminadas === 1 ? '' : 's'} — activa «Mostrar terminadas y canceladas» para verla
