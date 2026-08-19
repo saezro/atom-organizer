@@ -79,9 +79,3 @@ export const APPS = [
   { id: 'ajustes', nombre: 'Ajustes', Icono: IconoAjustes },
   { id: 'sistema', nombre: 'Sistema', Icono: IconoSistema },
 ]
-
-// Sub-acciones de la app «Organizer», su menú interno.
-export const ACCIONES_ORGANIZER = [
-  { id: 'organizar', nombre: 'Organizar', Icono: IconoOrganizar },
-  { id: 'subir', nombre: 'Subir en crudo', Icono: IconoSubir },
-]

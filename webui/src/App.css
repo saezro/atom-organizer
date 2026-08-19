@@ -1599,6 +1599,17 @@ select.glass-input option {
   font-weight: 700;
   border-radius: var(--radio);
   border: 0.0625rem solid rgba(255, 255, 255, 0.15);
+  /* Sin caja flex propia el texto largo («Cancelar», «Subir en crudo») se
+     desbordaba del boton en 480x320: el ancho lo fija el `flex: 1`, no el
+     contenido. Centrado explicito + recorte para que nunca se salga. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  line-height: 1.15;
+  padding: calc(var(--u) / 4) calc(var(--u) / 2);
+  overflow: hidden;
+  min-width: 0;
 }
 .kiosk-btn-organizar { background: var(--orange); color: #fff; border-color: transparent; }
 .kiosk-btn-subir-crudo { background: rgba(255, 255, 255, 0.06); color: var(--text); }
@@ -2102,4 +2113,12 @@ html[data-cursor] .picker-card { cursor: pointer; }
   padding: 0 calc(var(--u) / 2);
   font-size: 1rem;
   width: 100%;
+}
+
+/* En el kiosco no hay raton: el puntero solo estorba (y en el panel resistivo
+   se queda clavado donde tocaste). `xsetroot -cursor_name none` lo quita del
+   escritorio, pero dentro de Chromium manda el CSS. */
+.kiosk,
+.kiosk * {
+  cursor: none;
 }
