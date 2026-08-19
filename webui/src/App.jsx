@@ -8,6 +8,7 @@ import UpdateModal from './UpdateModal'
 import EstadilloField from './EstadilloField'
 import InspeccionSelector from './InspeccionSelector'
 import FolderPicker from './FolderPicker'
+import SplashInicio from './SplashInicio'
 import NavIcon from './NavIcon'
 import KioskScreen from './KioskScreen'
 import PairScreen from './PairScreen'
@@ -177,6 +178,9 @@ function App() {
   // vuelve a levantar este flag. La detección reutiliza el helper de
   // bridge.js (no hay heurística propia aquí).
   const [kiosco, setKiosco] = useState(() => isServerMode())
+  // Splash de arranque: solo en el kiosco de la Pi. Se desmonta solo (el
+  // propio componente avisa por `onFin`), no bloquea nada de debajo.
+  const [splash, setSplash] = useState(() => isServerMode())
   // Estado propio del kiosco, separado a propósito del de `BucketScreen`
   // (`carpeta`) y `OrganizarScreen` (`destino`/`origen`): son pantallas
   // independientes y no deben compartir selección.
@@ -195,6 +199,9 @@ function App() {
   // reutilizable a nivel de App: la subida normal vive dentro de
   // `BucketScreen`, que no está montado en modo kiosco).
   const [kioskSubiendo, setKioskSubiendo] = useState(false)
+  // Resultado de la última subida del kiosco (done/error/no-arrancada). Se
+  // pinta como pantalla propia y solo lo borra el operador.
+  const [kioskResultado, setKioskResultado] = useState(null)
   const [kioskCloudPct, setKioskCloudPct] = useState(null)
   // Últimas estadísticas de la subida tal cual las manda el backend por
   // `atom:cloud` (`kind: 'stats'`): files_done/total, mbps, eta... La pantalla
@@ -237,10 +244,27 @@ function App() {
             setKioskCloudStats(d)
             break
           case 'done':
+            // Feedback SIEMPRE: la subida no puede desaparecer sin decir qué
+            // hizo. `kioskResultado` mantiene la pantalla de resumen hasta que
+            // el operador la cierra (en la Pi no hay logs a mano).
+            setKioskSubiendo(false)
+            setKioskCloudPct(null)
+            setKioskCloudStats(null)
+            setKioskResultado({
+              ok: d.ok !== false && !d.cancelled,
+              cancelada: Boolean(d.cancelled),
+              subidos: d.uploaded ?? 0,
+              omitidos: (d.skipped ?? 0) + (d.skipped_remoto ?? 0),
+              bytes: d.bytes ?? 0,
+              elapsed: d.elapsed ?? null,
+              fallidos: d.failed_total ?? 0,
+            })
+            break
           case 'error':
             setKioskSubiendo(false)
             setKioskCloudPct(null)
             setKioskCloudStats(null)
+            setKioskResultado({ ok: false, error: d.text || 'Error en la subida' })
             break
           default:
             break
@@ -421,12 +445,19 @@ function App() {
   async function kioskSubirCrudo({ carpeta, inspeccion }) {
     const prefijo = inspeccion?.prefijo
     if (!carpeta || !prefijo) return
+    setKioskResultado(null)
     setKioskSubiendo(true)
     try {
       const r = await api.cloudUpload(carpeta, false, prefijo, inspeccion?.id)
-      if (r && r.started === false) setKioskSubiendo(false)
-    } catch {
+      // `started:false` no emite ningún evento `atom:cloud`: sin esto la
+      // pantalla de subida se cerraría sola y en la Pi no quedaría rastro.
+      if (r && r.started === false) {
+        setKioskSubiendo(false)
+        setKioskResultado({ ok: false, error: r.reason || 'No se pudo iniciar la subida.' })
+      }
+    } catch (e) {
       setKioskSubiendo(false)
+      setKioskResultado({ ok: false, error: String(e?.message || e) })
     }
   }
 
@@ -435,11 +466,17 @@ function App() {
   const kioskProgreso = running
     ? { fase: kioskFaseActiva || 'Procesando…', pct: progress }
     : kioskSubiendo
-      ? { fase: 'Subiendo', pct: kioskCloudPct ?? 0, subida: true, stats: kioskCloudStats }
+      ? {
+          fase: kioskCloudStats ? 'Subiendo' : 'Empezando subida…',
+          pct: kioskCloudPct ?? 0,
+          subida: true,
+          stats: kioskCloudStats,
+        }
       : null
 
   return (
     <div className="app">
+      {splash && <SplashInicio onFin={() => setSplash(false)} />}
       {!kiosco && (
         <header className="brand">
           <h1>
@@ -500,6 +537,8 @@ function App() {
             }
             busy={kioskBusy}
             progreso={kioskProgreso}
+            resultado={kioskResultado}
+            onCerrarResultado={() => setKioskResultado(null)}
           />
         ) : section === 'organizar' ? (
           <OrganizarScreen ready={ready} running={running} onRun={run} />

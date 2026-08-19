@@ -1819,3 +1819,184 @@ html[data-cursor] .picker-card { cursor: pointer; }
   line-height: 1.125rem;
   text-align: center;
 }
+
+/* Splash de arranque del kiosco (ver SplashInicio.jsx). Tapa toda la pantalla
+   sobre el fondo negro del kiosco mientras entra el menu; luego se desvanece.
+   Solo se monta en modo servidor, el escritorio no lo ve nunca. */
+.splash-inicio {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--u);
+  background: #0a0a0a;
+  animation: splash-inicio-entra 0.6s ease-out both;
+}
+.splash-inicio.saliendo {
+  animation: splash-inicio-sale 0.5s ease-in forwards;
+}
+.splash-inicio-logo {
+  width: 6rem;
+  height: 6rem;
+  animation: splash-inicio-logo 0.9s ease-out both;
+}
+.splash-inicio-marca {
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  font-size: 1.25rem;
+  animation: splash-inicio-marca 0.7s ease-out 0.35s both;
+}
+.splash-inicio-marca .atom { color: #f4f4f5; }
+.splash-inicio-marca .org { color: var(--orange); }
+@keyframes splash-inicio-entra {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes splash-inicio-sale {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes splash-inicio-logo {
+  0% { opacity: 0; transform: scale(0.6) rotate(-12deg); }
+  60% { opacity: 1; transform: scale(1.06) rotate(2deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0deg); }
+}
+@keyframes splash-inicio-marca {
+  from { opacity: 0; transform: translateY(0.5rem); }
+  to { opacity: 1; transform: translateY(0); }
+}
+/* Sin motion: se ve el logo quieto, sin escalados ni desplazamientos. */
+@media (prefers-reduced-motion: reduce) {
+  .splash-inicio,
+  .splash-inicio-logo,
+  .splash-inicio-marca { animation: none; }
+  .splash-inicio.saliendo { opacity: 0; }
+}
+
+/* Resultado de la subida en el kiosco: pantalla completa, un solo mensaje y
+   un boton grande. Nunca se cierra sola. */
+.kiosk-resultado {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--u);
+  text-align: center;
+  padding: var(--u);
+}
+.kiosk-resultado-icono {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: kiosk-resultado-entra 0.35s ease-out both;
+}
+.kiosk-resultado-icono svg { width: 2rem; height: 2rem; }
+.kiosk-resultado-icono.ok {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.12);
+}
+.kiosk-resultado-icono.mal {
+  color: var(--orange);
+  background: rgba(238, 117, 58, 0.14);
+}
+.kiosk-resultado-titulo { font-weight: 700; font-size: 1.0625rem; }
+.kiosk-resultado-detalle {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  max-width: 22rem;
+}
+@keyframes kiosk-resultado-entra {
+  from { opacity: 0; transform: scale(0.7); }
+  to { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kiosk-resultado-icono { animation: none; }
+}
+.kiosk-resultado-verifica {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+/* Launcher tipo movil del paso 1: rejilla de 2x2 apps a pantalla completa
+   (480x320), con paginacion a la derecha cuando hay mas de 4. Cuadrados
+   grandes en vez de lista, mismo motivo que .kiosk-menu-btn: dedo sobre
+   panel resistivo, nada por debajo de --toque-min. */
+.kiosk-apps-wrap { flex: 1; display: flex; gap: var(--u); min-height: 0; }
+.kiosk-apps {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  gap: var(--u);
+}
+.kiosk-app {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) / 2);
+  min-height: var(--toque-min);
+  border-radius: var(--radio);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+.kiosk-app:disabled { opacity: 0.4; }
+.kiosk-app svg { width: 1.75rem; height: 1.75rem; color: var(--orange); }
+.kiosk-app-nombre { font-size: var(--fs-sm); text-align: center; }
+
+.kiosk-apps-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) / 2);
+  width: var(--toque-min);
+}
+.kiosk-apps-nav-btn {
+  width: var(--toque-min);
+  height: var(--toque-min);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radio);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+.kiosk-apps-nav-btn:disabled { opacity: 0.3; }
+.kiosk-apps-nav-btn svg { width: 1.25rem; height: 1.25rem; }
+.kiosk-apps-pagina { font-size: var(--fs-sm); color: var(--muted); }
+
+/* Pantalla «Sistema» del kiosco: apagar/reiniciar la Pi con dos toques. */
+.kiosk-sistema {
+  display: flex;
+  flex-direction: column;
+  gap: var(--u);
+}
+.kiosk-sistema-confirmar {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--u);
+  text-align: center;
+}
+.kiosk-sistema-pregunta { font-weight: 700; font-size: 1.0625rem; }
+.kiosk-sistema-aviso { color: var(--orange); font-size: var(--fs-sm); }
+.kiosk-sistema-botones {
+  display: flex;
+  gap: var(--u);
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+}
+.kiosk-sistema-botones .kiosk-btn { flex: 1; min-height: var(--toque-min); }
+.kiosk-sistema-error { color: var(--orange); font-size: var(--fs-sm); text-align: center; }

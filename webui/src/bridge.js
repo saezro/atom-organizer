@@ -231,6 +231,9 @@ export const api = {
   // de `read_estadillo_info` (fechas, pilotos, drones, num_vuelos...). No
   // encontrar ninguno no es un error: `n_estadillos: 0`, `info: null`.
   estadillosDetectar: (carpeta) => call('estadillos_detectar', carpeta),
+  // Apaga o reinicia el EQUIPO (la Pi), no la app. `modo` in {poweroff,
+  // reboot}; el backend valida y no necesita sudo (polkit).
+  sistemaApagar: (modo) => call('sistema_apagar', modo),
 }
 
 // Python empuja progreso del pipeline con:

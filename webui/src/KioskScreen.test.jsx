@@ -478,3 +478,35 @@ describe('KioskScreen — paso 2 (subir en crudo), pantalla de resumen', () => {
     expect(screen.queryByTestId('kiosk-resumen')).not.toBeInTheDocument()
   })
 })
+
+describe('KioskScreen — pantalla de resultado', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('resultado ok con subidos>0 muestra "Subida completada" y el detalle menciona los archivos subidos', () => {
+    render(
+      <KioskScreen
+        {...baseProps({ resultado: { ok: true, subidos: 42, bytes: 1024 * 1024 * 10 } })}
+      />
+    )
+    expect(screen.getByTestId('kiosk-resultado')).toBeInTheDocument()
+    expect(screen.getByText('Subida completada')).toBeInTheDocument()
+    expect(screen.getByTestId('kiosk-resultado-detalle')).toHaveTextContent('42 archivos subidos')
+  })
+
+  it('resultado ok con subidos=0 muestra "No había nada nuevo que subir"', () => {
+    render(<KioskScreen {...baseProps({ resultado: { ok: true, subidos: 0 } })} />)
+    expect(screen.getByText('No había nada nuevo que subir')).toBeInTheDocument()
+  })
+
+  it('resultado {ok:false, error} muestra el error en el detalle y "Aceptar" llama a onCerrarResultado', async () => {
+    const onCerrarResultado = vi.fn()
+    render(
+      <KioskScreen
+        {...baseProps({ resultado: { ok: false, error: 'X' }, onCerrarResultado })}
+      />
+    )
+    expect(screen.getByTestId('kiosk-resultado-detalle')).toHaveTextContent('X')
+    await userEvent.click(screen.getByTestId('kiosk-resultado-aceptar'))
+    expect(onCerrarResultado).toHaveBeenCalledTimes(1)
+  })
+})

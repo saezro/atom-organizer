@@ -18,6 +18,8 @@ import PairScreen from './PairScreen.jsx'
 import InspeccionSelector, { COLOR_FASE, COLOR_FASE_DEFECTO, ORDEN_FASES, chip } from './InspeccionSelector.jsx'
 import EstadilloField from './EstadilloField.jsx'
 import { formatBytes, formatDuracion } from './formato.js'
+import MenuApps from './MenuApps.jsx'
+import { APPS } from './apps/registry.js'
 
 // Deriva la ruta de destino a partir de la carpeta de origen, añadiendo el
 // sufijo "_ORGANIZADO". Función pura: sin efectos, sin acceso a props/estado.
@@ -44,6 +46,10 @@ export default function KioskScreen({
   onRefreshStatus,
   busy,
   progreso,
+  // Resultado de la última subida: {ok, error?, subidos, omitidos, bytes,
+  // elapsed, fallidos, cancelada}. Mientras exista se pinta su pantalla.
+  resultado,
+  onCerrarResultado,
   // Solo para pruebas: permite montar el componente directamente en un paso.
   accionInicial = null,
 }) {
@@ -56,6 +62,14 @@ export default function KioskScreen({
   // Comprobación en seco previa a subir (ver `confirmar`): `null` mientras no
   // se ha pedido, `{prepare, estadillos}` cuando ya hay resumen que pintar.
   const [resumen, setResumen] = useState(null)
+  // Comprobación final tras subir: se vuelve a listar el bucket para confirmar
+  // que no queda nada pendiente. null = aún no lanzada, 'curso' | {pendientes}
+  const [verificacion, setVerificacion] = useState(null)
+  // Pantalla «Sistema»: modo pendiente de confirmar ('poweroff'|'reboot'),
+  // orden ya enviada, y último error de apagado.
+  const [confirmarApagado, setConfirmarApagado] = useState(null)
+  const [apagando, setApagando] = useState(false)
+  const [errorSistema, setErrorSistema] = useState(null)
   const [comprobando, setComprobando] = useState(false)
   const destino = derivarDestino(carpeta)
   const email = status?.email || ''
@@ -203,6 +217,89 @@ export default function KioskScreen({
   // para un progreso circular sin dependencias. El logo gira y late en CSS
   // (`.kiosk-subida-logo`), y los puntos que suben a la nube son tres `circle`
   // con la misma animación desfasada.
+  // Comprobación final: al aparecer el resultado de una subida correcta se
+  // vuelve a preguntar al bucket qué falta. Es lo que convierte «acabó» en
+  // «acabó BIEN» sin tener que mirar logs desde la Pi.
+  useEffect(() => {
+    if (!resultado || !resultado.ok || !onComprobarSubida || !carpeta || !inspeccion) return
+    let vivo = true
+    setVerificacion('curso')
+    onComprobarSubida({ carpeta, inspeccion })
+      .then((r) => {
+        if (!vivo) return
+        const prep = r?.prepare || {}
+        setVerificacion(
+          prep.ok === false
+            ? { error: prep.error || 'No se pudo comprobar el bucket.' }
+            : { pendientes: prep.pendientes ?? prep.files ?? 0 }
+        )
+      })
+      .catch((e) => { if (vivo) setVerificacion({ error: String(e?.message || e) }) })
+    return () => { vivo = false }
+  }, [resultado, onComprobarSubida, carpeta, inspeccion])
+
+  // ---------------------------------------------------------- resultado
+  // Toda subida termina en una pantalla explícita (bien, vacía o error): en la
+  // Pi no hay consola ni logs a mano, y una subida que se cierra sola parece
+  // que «no ha pasado nada» (feedback pedido tras la subida de prueba de 0
+  // archivos).
+  if (resultado) {
+    const okey = Boolean(resultado.ok)
+    const vacia = okey && !resultado.subidos
+    return (
+      <div className="kiosk kiosk-resultado" data-testid="kiosk-resultado">
+        <div className={'kiosk-resultado-icono' + (okey ? ' ok' : ' mal')} aria-hidden="true">
+          {okey ? (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="4 13 9 18 20 6" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 4v10" />
+              <circle cx="12" cy="19" r="0.6" fill="currentColor" />
+            </svg>
+          )}
+        </div>
+        <span className="kiosk-resultado-titulo">
+          {resultado.cancelada
+            ? 'Subida cancelada'
+            : !okey
+              ? 'La subida no se completó'
+              : vacia
+                ? 'No había nada nuevo que subir'
+                : 'Subida completada'}
+        </span>
+        <span className="kiosk-resultado-detalle" data-testid="kiosk-resultado-detalle">
+          {okey
+            ? `${resultado.subidos ?? 0} archivos subidos` +
+              (resultado.omitidos ? ` · ${resultado.omitidos} ya estaban` : '') +
+              (resultado.bytes ? ` · ${formatBytes(resultado.bytes)}` : '') +
+              (resultado.elapsed ? ` · ${formatDuracion(resultado.elapsed)}` : '')
+            : resultado.error || `${resultado.fallidos ?? 0} archivos fallaron`}
+        </span>
+        {okey && (
+          <span className="kiosk-resultado-verifica" data-testid="kiosk-resultado-verifica">
+            {verificacion === 'curso' || verificacion === null
+              ? 'Comprobando que todo está en la nube…'
+              : verificacion.error
+                ? `No se pudo comprobar: ${verificacion.error}`
+                : verificacion.pendientes === 0
+                  ? '✓ Comprobado: no queda nada pendiente'
+                  : `⚠ Quedan ${verificacion.pendientes} archivos sin subir`}
+          </span>
+        )}
+        <BotonToque
+          className="btn kiosk-btn"
+          tactil={tactil}
+          onActivar={() => { setVerificacion(null); onCerrarResultado?.() }}
+          data-testid="kiosk-resultado-aceptar"
+        >
+          Aceptar
+        </BotonToque>
+      </div>
+    )
+  }
+
   if (progreso?.subida) {
     const st = progreso.stats || {}
     const pct = Math.max(0, Math.min(Math.round(progreso.pct || 0), 100))
@@ -238,13 +335,94 @@ export default function KioskScreen({
         <div className="kiosk-subida-datos">
           <span className="kiosk-subida-fase">{progreso.fase}</span>
           <span className="kiosk-subida-cifras">
-            {st.files_total
-              ? `${st.files_done ?? 0}/${st.files_total} archivos`
-              : formatBytes(st.bytes_done || 0)}
-            {st.mbps ? ` · ${st.mbps.toFixed(1)} MB/s` : ''}
-            {st.eta != null ? ` · quedan ~${formatDuracion(st.eta)}` : ''}
+            {progreso.stats
+              ? `${st.files_total
+                    ? `${st.files_done ?? 0}/${st.files_total} archivos`
+                    : formatBytes(st.bytes_done || 0)}${
+                  st.mbps ? ` · ${st.mbps.toFixed(1)} MB/s` : ''
+                }${st.eta != null ? ` · quedan ~${formatDuracion(st.eta)}` : ''}`
+              : 'Comprobando qué falta por subir…'}
           </span>
         </div>
+      </div>
+    )
+  }
+
+  // ------------------------------------------------------------ sistema
+  // Apagar/reiniciar la Pi desde la propia pantalla: es el unico control
+  // fisico que hay (no hay teclado ni boton de encendido accesible). Dos
+  // toques SIEMPRE: el panel resistivo produce toques fantasma y un apagado
+  // accidental a mitad de una subida es caro.
+  if (accion === 'sistema') {
+    const pedir = (modo) => setConfirmarApagado(modo)
+    return (
+      <div className="kiosk kiosk-sistema">
+        <div className="kiosk-header kiosk-header-paso">
+          <BotonToque
+            className="kiosk-atras"
+            tactil={tactil}
+            onActivar={() => { setConfirmarApagado(null); setAccion(null) }}
+          >
+            ← Atrás
+          </BotonToque>
+          <span className="kiosk-titulo">Sistema</span>
+        </div>
+        {confirmarApagado ? (
+          <div className="kiosk-sistema-confirmar" data-testid="kiosk-sistema-confirmar">
+            <span className="kiosk-sistema-pregunta">
+              {confirmarApagado === 'poweroff' ? '¿Apagar el equipo?' : '¿Reiniciar el equipo?'}
+            </span>
+            {busy && <span className="kiosk-sistema-aviso">Hay trabajo en curso.</span>}
+            <div className="kiosk-sistema-botones">
+              <BotonToque
+                className="btn kiosk-btn"
+                tactil={tactil}
+                data-testid="kiosk-sistema-si"
+                onActivar={async () => {
+                  setApagando(true)
+                  const r = await api.sistemaApagar(confirmarApagado).catch((e) => ({ ok: false, error: String(e) }))
+                  if (!r || r.ok === false) {
+                    setApagando(false)
+                    setConfirmarApagado(null)
+                    setErrorSistema(r?.error || 'No se pudo ejecutar.')
+                  }
+                }}
+              >
+                {apagando ? 'Enviando…' : 'Sí'}
+              </BotonToque>
+              <BotonToque
+                className="btn-ghost kiosk-btn"
+                tactil={tactil}
+                data-testid="kiosk-sistema-cancelar"
+                onActivar={() => setConfirmarApagado(null)}
+              >
+                Cancelar
+              </BotonToque>
+            </div>
+          </div>
+        ) : (
+          <div className="kiosk-sistema-botones">
+            <BotonToque
+              className="btn kiosk-btn"
+              tactil={tactil}
+              data-testid="kiosk-sistema-apagar"
+              onActivar={() => pedir('poweroff')}
+            >
+              Apagar
+            </BotonToque>
+            <BotonToque
+              className="btn-ghost kiosk-btn"
+              tactil={tactil}
+              data-testid="kiosk-sistema-reiniciar"
+              onActivar={() => pedir('reboot')}
+            >
+              Reiniciar
+            </BotonToque>
+          </div>
+        )}
+        {errorSistema && (
+          <p className="kiosk-sistema-error" data-testid="kiosk-sistema-error">{errorSistema}</p>
+        )}
       </div>
     )
   }
@@ -284,29 +462,20 @@ export default function KioskScreen({
   }
 
   // ---------------------------------------------------------------- paso 1
+  // Menu tipo launcher: rejilla de apps paginada (`apps/registry.js`). Cada
+  // entrada del registro abre una `accion` con el mismo id, asi que anadir una
+  // app es anadir una entrada al registro y su pantalla aqui abajo.
   if (!accion) {
     return (
       <div className="kiosk">
         <div className="kiosk-header">{avatar}</div>
         {barraProgreso}
-        <div className="kiosk-menu">
-          <BotonToque
-            className="kiosk-menu-btn kiosk-menu-organizar"
-            tactil={tactil}
-            onActivar={() => setAccion('organizar')}
-            disabled={busy}
-          >
-            Organizar
-          </BotonToque>
-          <BotonToque
-            className="kiosk-menu-btn kiosk-menu-subir"
-            tactil={tactil}
-            onActivar={() => setAccion('subir')}
-            disabled={busy}
-          >
-            Subir en crudo
-          </BotonToque>
-        </div>
+        <MenuApps
+          apps={APPS}
+          tactil={tactil}
+          disabled={busy}
+          onAbrir={(id) => setAccion(id)}
+        />
       </div>
     )
   }
