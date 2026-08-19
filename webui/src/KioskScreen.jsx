@@ -76,6 +76,17 @@ export default function KioskScreen({
     el.scrollTop = a.top0 - dy
   }
   const alSoltarInsp = () => { arrastreInsp.current.activo = false }
+
+  // El arrastre no siempre prende en el panel resistivo (Cas: «el scroll no
+  // está funcionando»), así que la lista se pagina también con dos botones:
+  // cada pulsación salta una pantalla menos un solape de una fila, para no
+  // perder de vista dónde estabas.
+  const paginarInsp = (signo) => {
+    const el = inspRef.current
+    if (!el) return
+    const salto = Math.max(el.clientHeight - pxDeRem(3), pxDeRem(6))
+    el.scrollTop += signo * salto
+  }
   // Si hubo arrastre, el toque era scroll, no selección: se descarta el click
   // sintetizado antes de que llegue al botón de la inspección.
   const alHacerClickInsp = (e) => {
@@ -221,7 +232,7 @@ export default function KioskScreen({
           {avatar}
         </div>
 
-        <div className="kiosk-inspeccion kiosk-inspeccion-full">
+        <div className="kiosk-inspeccion kiosk-inspeccion-full kiosk-insp-paginado">
           <div
             className="kiosk-insp-scroll"
             ref={inspRef}
@@ -252,6 +263,32 @@ export default function KioskScreen({
               // siempre: sin texto, sin fase activa, sin terminadas).
               soloLista
             />
+          </div>
+          <div className="kiosk-insp-nav">
+            <BotonToque
+              className="kiosk-insp-nav-btn"
+              tactil={tactil}
+              onActivar={() => paginarInsp(-1)}
+              disabled={busy}
+              aria-label="Subir en la lista"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+                   strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M6 15l6-6 6 6" />
+              </svg>
+            </BotonToque>
+            <BotonToque
+              className="kiosk-insp-nav-btn"
+              tactil={tactil}
+              onActivar={() => paginarInsp(1)}
+              disabled={busy}
+              aria-label="Bajar en la lista"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+                   strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" />
+              </svg>
+            </BotonToque>
           </div>
         </div>
       </div>
