@@ -1303,8 +1303,13 @@ select.glass-input option {
 .kiosk-insp-nav {
   display: flex;
   flex-direction: column;
-  gap: var(--u);
+  align-items: stretch;
+  gap: calc(var(--u) / 2);
   flex: 0 0 auto;
+  padding: calc(var(--u) / 2);
+  border-radius: calc(var(--u) * 2);
+  background: rgba(255, 255, 255, 0.04);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.08);
 }
 .kiosk-insp-nav-btn {
   flex: 1;
@@ -1314,12 +1319,53 @@ select.glass-input option {
   align-items: center;
   justify-content: center;
   padding: 0;
-  border-radius: var(--u);
-  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.06);
+  border-radius: calc(var(--u) * 1.5);
+  border: 0.0625rem solid rgba(238, 117, 58, 0.35);
+  background: rgba(238, 117, 58, 0.16);
+  color: var(--orange);
+  transition: background 0.15s ease, opacity 0.15s ease, transform 0.1s ease;
+}
+.kiosk-insp-nav-btn:active:not(:disabled) {
+  background: rgba(238, 117, 58, 0.34);
+  transform: scale(0.96);
+}
+/* En los extremos el botón no desaparece (la columna bailaría): se apaga, que
+   además dice «ya no hay más por aquí». */
+.kiosk-insp-nav-btn:disabled {
+  opacity: 0.25;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
   color: var(--text);
 }
 .kiosk-insp-nav-btn svg { width: 1.5rem; height: 1.5rem; }
+/* Indicador «página actual / total», en vertical porque la columna es
+   estrecha: número grande arriba, total pequeño debajo. */
+.kiosk-insp-pagina {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.125rem;
+  font-size: 0.75rem;
+  line-height: 1;
+  color: var(--muted);
+  padding: calc(var(--u) / 2) 0;
+}
+.kiosk-insp-pagina strong {
+  font-size: 1rem;
+  color: var(--orange);
+}
+.kiosk-insp-pagina-sep {
+  width: 1rem;
+  height: 0.0625rem;
+  background: rgba(255, 255, 255, 0.2);
+}
+/* Desvanecido arriba/abajo: insinúa que la lista sigue más allá del borde sin
+   robar alto con una sombra o una barra. */
+.kiosk-insp-paginado .kiosk-insp-scroll {
+  scroll-behavior: smooth;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 1rem, #000 calc(100% - 1rem), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 1rem, #000 calc(100% - 1rem), transparent 100%);
+}
 /* Contenedor de scroll manual (drag = `scrollTop`, ver KioskScreen.jsx): el
    panel resistivo entrega el dedo como ratón absoluto, así que el scroll
    nativo por arrastre no existe y hay que emularlo, igual que en

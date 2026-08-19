@@ -11,7 +11,7 @@
 // El panel de la Pi es resistivo (ADS7846): menos preciso que uno capacitivo,
 // así que el paso 1 son dos botones que ocupan media pantalla cada uno y en el
 // paso 2 nada táctil baja de `--toque-min`.
-import { useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, isServerMode } from './bridge.js'
 import BotonToque, { pxDeRem, UMBRAL_REM } from './pulsacion.jsx'
 import PairScreen from './PairScreen.jsx'
@@ -78,14 +78,58 @@ export default function KioskScreen({
   const alSoltarInsp = () => { arrastreInsp.current.activo = false }
 
   // El arrastre no siempre prende en el panel resistivo (Cas: «el scroll no
-  // está funcionando»), así que la lista se pagina también con dos botones:
-  // cada pulsación salta una pantalla menos un solape de una fila, para no
+  // está funcionando»), así que la lista se pagina también con dos botones,
+  // con indicador de página y desplazamiento animado para que se vea HACIA
+  // DÓNDE se ha movido (un salto seco desorienta: parece otra lista).
+  //
+  // Una "página" = el alto visible menos un solape de una fila, para no
   // perder de vista dónde estabas.
+  const [pagina, setPagina] = useState(0)
+  const [paginas, setPaginas] = useState(1)
+  const saltoInsp = (el) => Math.max(el.clientHeight - pxDeRem(3), pxDeRem(6))
+
+  const recalcularPaginas = useCallback(() => {
+    const el = inspRef.current
+    if (!el) return
+    const sobrante = Math.max(el.scrollHeight - el.clientHeight, 0)
+    const salto = saltoInsp(el)
+    const total = sobrante > 1 ? Math.ceil(sobrante / salto) + 1 : 1
+    setPaginas(total)
+    setPagina(Math.min(Math.round(el.scrollTop / salto), total - 1))
+  }, [])
+
+  // Al montar la pantalla y cada vez que cambia el catálogo: el número de
+  // páginas depende del alto real ya pintado, no se puede saber antes.
+  useLayoutEffect(recalcularPaginas, [recalcularPaginas, accion, inspecciones])
+  useEffect(() => {
+    const el = inspRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return undefined
+    const ro = new ResizeObserver(recalcularPaginas)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [recalcularPaginas, accion])
+
   const paginarInsp = (signo) => {
     const el = inspRef.current
     if (!el) return
-    const salto = Math.max(el.clientHeight - pxDeRem(3), pxDeRem(6))
-    el.scrollTop += signo * salto
+    const salto = saltoInsp(el)
+    const destino = Math.max(
+      0,
+      Math.min((pagina + signo) * salto, el.scrollHeight - el.clientHeight),
+    )
+    // `scrollTo` con `smooth` no existe en jsdom (tests) ni en navegadores
+    // viejos: se cae a la asignación directa, que hace lo mismo sin animar.
+    if (typeof el.scrollTo === 'function') el.scrollTo({ top: destino, behavior: 'smooth' })
+    else el.scrollTop = destino
+    setPagina(Math.max(0, Math.min(pagina + signo, paginas - 1)))
+  }
+
+  // El arrastre también mueve la lista, así que la página mostrada se
+  // reconcilia con la posición real en cada scroll (venga de donde venga).
+  const alScrollInsp = () => {
+    const el = inspRef.current
+    if (!el) return
+    setPagina(Math.min(Math.round(el.scrollTop / saltoInsp(el)), Math.max(paginas - 1, 0)))
   }
   // Si hubo arrastre, el toque era scroll, no selección: se descarta el click
   // sintetizado antes de que llegue al botón de la inspección.
@@ -236,6 +280,7 @@ export default function KioskScreen({
           <div
             className="kiosk-insp-scroll"
             ref={inspRef}
+            onScroll={alScrollInsp}
             {...(tactil ? {
               onPointerDown: alPulsarInsp,
               onPointerMove: alMoverInsp,
@@ -269,7 +314,7 @@ export default function KioskScreen({
               className="kiosk-insp-nav-btn"
               tactil={tactil}
               onActivar={() => paginarInsp(-1)}
-              disabled={busy}
+              disabled={busy || pagina <= 0}
               aria-label="Subir en la lista"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
@@ -277,11 +322,16 @@ export default function KioskScreen({
                 <path d="M6 15l6-6 6 6" />
               </svg>
             </BotonToque>
+            <span className="kiosk-insp-pagina" aria-live="polite">
+              <strong>{Math.min(pagina + 1, paginas)}</strong>
+              <span className="kiosk-insp-pagina-sep" />
+              {paginas}
+            </span>
             <BotonToque
               className="kiosk-insp-nav-btn"
               tactil={tactil}
               onActivar={() => paginarInsp(1)}
-              disabled={busy}
+              disabled={busy || pagina >= paginas - 1}
               aria-label="Bajar en la lista"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
