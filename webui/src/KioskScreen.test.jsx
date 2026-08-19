@@ -97,13 +97,23 @@ describe('derivarDestino', () => {
 describe('KioskScreen — paso 1 (menú)', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('muestra los botones "Organizar" y "Subir en crudo", sin campos del paso 2', () => {
+  it('muestra el launcher con las apps del registry, sin campos del paso 2', () => {
     render(<KioskScreen {...baseProps()} />)
-    expect(screen.getByRole('button', { name: /^organizar$/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /subir en crudo/i })).toBeInTheDocument()
+    expect(screen.getByTestId('kiosk-app-organizer')).toBeInTheDocument()
+    expect(screen.getByTestId('kiosk-app-tareas')).toBeInTheDocument()
+    expect(screen.getByTestId('kiosk-app-ajustes')).toBeInTheDocument()
+    expect(screen.getByTestId('kiosk-app-sistema')).toBeInTheDocument()
     expect(screen.queryByText(/elegir carpeta/i)).not.toBeInTheDocument()
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
     expect(screen.queryByText(/estadillo/i)).not.toBeInTheDocument()
+  })
+
+  it('pulsar "Organizer" lleva al submenú con "Organizar" y "Subir en crudo"', async () => {
+    render(<KioskScreen {...baseProps()} />)
+    await userEvent.click(screen.getByTestId('kiosk-app-organizer'))
+    expect(screen.getByRole('button', { name: /^organizar$/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /subir en crudo/i })).toBeInTheDocument()
+    expect(screen.queryByText(/elegir carpeta/i)).not.toBeInTheDocument()
   })
 
   it('muestra "Sin sesión" cuando status es null', () => {
@@ -135,7 +145,7 @@ describe('KioskScreen — paso 1 (menú)', () => {
     expect(screen.getByRole('button', { name: /cerrar sesión/i })).toBeInTheDocument()
     // Sigue sin haber puerta a la UI de escritorio: solo se vuelve al kiosco.
     await userEvent.click(screen.getByRole('button', { name: /atrás/i }))
-    expect(screen.getByRole('button', { name: /^organizar$/i })).toBeInTheDocument()
+    expect(screen.getByTestId('kiosk-app-organizer')).toBeInTheDocument()
   })
 
   it('sin sesión, el avatar lleva al emparejamiento por QR', async () => {
@@ -145,8 +155,8 @@ describe('KioskScreen — paso 1 (menú)', () => {
     expect(screen.queryByRole('button', { name: /cerrar sesión/i })).not.toBeInTheDocument()
   })
 
-  it('con busy=true, los dos botones del menú están deshabilitados', () => {
-    render(<KioskScreen {...baseProps({ busy: true })} />)
+  it('con busy=true, los dos botones del submenú de Organizer están deshabilitados', () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizer', busy: true })} />)
     expect(screen.getByRole('button', { name: /^organizar$/i })).toBeDisabled()
     expect(screen.getByRole('button', { name: /subir en crudo/i })).toBeDisabled()
   })
@@ -163,7 +173,7 @@ describe('KioskScreen — paso 1 (menú)', () => {
   })
 
   it('pulsar "Organizar" lleva al paso 2 de organizar (sin selector de inspección)', async () => {
-    render(<KioskScreen {...baseProps()} />)
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizer' })} />)
     await userEvent.click(screen.getByRole('button', { name: /^organizar$/i }))
     expect(screen.getByText(/elegir carpeta/i)).toBeInTheDocument()
     expect(screen.getByText(/estadillo \(opcional\)/i)).toBeInTheDocument()
@@ -172,7 +182,7 @@ describe('KioskScreen — paso 1 (menú)', () => {
   })
 
   it('pulsar "Subir en crudo" lleva al sub-paso A: solo la lista de inspecciones, nada de carpeta', async () => {
-    render(<KioskScreen {...baseProps()} />)
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizer' })} />)
     await userEvent.click(screen.getByRole('button', { name: /subir en crudo/i }))
     // Sub-paso A: se elige inspección antes que carpeta; sin bloque de
     // carpeta, sin buscador de texto (no cabe con la lista en 480x320).

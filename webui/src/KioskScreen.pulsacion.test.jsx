@@ -38,7 +38,7 @@ describe('KioskScreen — activacion por toque en modo servidor', () => {
   })
 
   it('en modo servidor, "Organizar" se activa al soltar, sin esperas', () => {
-    render(<KioskScreen {...baseProps()} />)
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizer' })} />)
     const boton = screen.getByRole('button', { name: /^organizar$/i })
 
     fireEvent.pointerDown(boton, { clientY: 100 })
@@ -52,7 +52,7 @@ describe('KioskScreen — activacion por toque en modo servidor', () => {
   })
 
   it('en modo servidor, mover el dedo NO cancela en los botones del kiosco', () => {
-    render(<KioskScreen {...baseProps()} />)
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizer' })} />)
     const boton = screen.getByRole('button', { name: /^organizar$/i })
 
     fireEvent.pointerDown(boton, { clientY: 100 })
@@ -66,7 +66,7 @@ describe('KioskScreen — activacion por toque en modo servidor', () => {
 
   it('en escritorio, un click normal sobre "Organizar" dispara la accion de inmediato', async () => {
     isServerModeMock.mockReturnValue(false)
-    render(<KioskScreen {...baseProps()} />)
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizer' })} />)
     await userEvent.click(screen.getByRole('button', { name: /^organizar$/i }))
     expect(screen.getByText(/elegir carpeta/i)).toBeInTheDocument()
   })

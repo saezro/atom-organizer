@@ -49,8 +49,8 @@ describe('MenuApps', () => {
   it('pulsar una app llama a onAbrir con su id', async () => {
     const onAbrir = vi.fn()
     render(<MenuApps apps={APPS} tactil={false} disabled={false} onAbrir={onAbrir} />)
-    await userEvent.click(screen.getByTestId('kiosk-app-organizar'))
-    expect(onAbrir).toHaveBeenCalledWith('organizar')
+    await userEvent.click(screen.getByTestId('kiosk-app-organizer'))
+    expect(onAbrir).toHaveBeenCalledWith('organizer')
   })
 
   it('con disabled los botones de app quedan deshabilitados', () => {

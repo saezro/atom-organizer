@@ -539,6 +539,7 @@ function App() {
             progreso={kioskProgreso}
             resultado={kioskResultado}
             onCerrarResultado={() => setKioskResultado(null)}
+            onRunTask={(task, params) => run(task, params, null)}
           />
         ) : section === 'organizar' ? (
           <OrganizarScreen ready={ready} running={running} onRun={run} />

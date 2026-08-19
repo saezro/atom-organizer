@@ -19,7 +19,9 @@ import InspeccionSelector, { COLOR_FASE, COLOR_FASE_DEFECTO, ORDEN_FASES, chip }
 import EstadilloField from './EstadilloField.jsx'
 import { formatBytes, formatDuracion } from './formato.js'
 import MenuApps from './MenuApps.jsx'
-import { APPS } from './apps/registry.js'
+import KioskTareas from './KioskTareas.jsx'
+import KioskAjustes from './KioskAjustes.jsx'
+import { APPS, ACCIONES_ORGANIZER } from './apps/registry.js'
 
 // Deriva la ruta de destino a partir de la carpeta de origen, añadiendo el
 // sufijo "_ORGANIZADO". Función pura: sin efectos, sin acceso a props/estado.
@@ -50,6 +52,9 @@ export default function KioskScreen({
   // elapsed, fallidos, cancelada}. Mientras exista se pinta su pantalla.
   resultado,
   onCerrarResultado,
+  // Lanza una tarea suelta del catálogo (`schema.js`) por el mismo camino que
+  // el escritorio; sin ella la app «Tareas» no puede ejecutar nada.
+  onRunTask,
   // Solo para pruebas: permite montar el componente directamente en un paso.
   accionInicial = null,
 }) {
@@ -461,6 +466,48 @@ export default function KioskScreen({
     )
   }
 
+  // ------------------------------------------------------------- organizer
+  // La app «Organizer» es el flujo de fotos de siempre; dentro elige entre sus
+  // dos acciones. Antes eran dos entradas del launcher, pero son un mismo
+  // trabajo en dos pasos, no dos apps.
+  if (accion === 'organizer') {
+    return (
+      <div className="kiosk kiosk-organizer">
+        <div className="kiosk-header kiosk-header-paso">
+          <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setAccion(null)} disabled={busy}>
+            ← Atrás
+          </BotonToque>
+          <span className="kiosk-titulo">Organizer</span>
+          {avatar}
+        </div>
+        {barraProgreso}
+        <MenuApps
+          apps={ACCIONES_ORGANIZER}
+          tactil={tactil}
+          disabled={busy}
+          onAbrir={(id) => setAccion(id)}
+        />
+      </div>
+    )
+  }
+
+  // ---------------------------------------------------------------- tareas
+  if (accion === 'tareas') {
+    return (
+      <KioskTareas
+        tactil={tactil}
+        busy={busy}
+        onEjecutar={(task, params) => onRunTask?.(task, params)}
+        onVolver={() => setAccion(null)}
+      />
+    )
+  }
+
+  // --------------------------------------------------------------- ajustes
+  if (accion === 'ajustes') {
+    return <KioskAjustes tactil={tactil} onVolver={() => setAccion(null)} />
+  }
+
   // ---------------------------------------------------------------- paso 1
   // Menu tipo launcher: rejilla de apps paginada (`apps/registry.js`). Cada
   // entrada del registro abre una `accion` con el mismo id, asi que anadir una
@@ -577,7 +624,7 @@ export default function KioskScreen({
     return (
       <div className="kiosk">
         <div className="kiosk-header kiosk-header-paso">
-          <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setAccion(null)} disabled={busy}>
+          <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setAccion('organizer')} disabled={busy}>
             ← Atrás
           </BotonToque>
           <span className="kiosk-titulo">Subir en crudo</span>
@@ -780,7 +827,7 @@ export default function KioskScreen({
   return (
     <div className="kiosk">
       <div className="kiosk-header kiosk-header-paso">
-        <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setAccion(null)} disabled={busy}>
+        <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setAccion('organizer')} disabled={busy}>
           ← Atrás
         </BotonToque>
         <span className="kiosk-titulo">{esOrganizar ? 'Organizar' : 'Subir en crudo'}</span>
