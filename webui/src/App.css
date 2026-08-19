@@ -675,6 +675,23 @@ select.glass-input option {
 .estad-add {
   align-self: flex-start;
 }
+/* Paginación de `.estad-list` en kiosco (`tactil`): solo se pinta cuando hay
+   más estadillos que `ESTADILLOS_POR_PAGINA`, mismo estilo que
+   `.kiosk-tareas-nav`/`.kiosk-ajustes-nav`. */
+.estad-nav { display: flex; gap: 0.5rem; align-items: center; justify-content: center; }
+.estad-nav-btn {
+  width: 2.75rem;
+  height: 1.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.375rem;
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+.estad-nav-btn:disabled { opacity: 0.3; }
+.estad-pagina { font-size: 0.8rem; color: var(--muted); }
 .pf-estad-source {
   color: var(--muted);
   font-size: 0.8rem;
@@ -2016,8 +2033,11 @@ html[data-cursor] .picker-card { cursor: pointer; }
 .kiosk-sistema-error { color: var(--orange); font-size: var(--fs-sm); text-align: center; }
 
 /* Pantalla «Ajustes» del kiosco (`KioskAjustes.jsx`): ruta del ThermoViewer y
-   tabla modelo->% de recorte. En 480x320 no cabe una tabla de verdad: cada
-   modelo es una fila de una linea y la lista scrollea. */
+   tabla modelo->% de recorte. En 480x320 no cabe una tabla de verdad ni hay
+   scroll de página (`.kiosk` es `overflow:hidden`): la lista se PAGINA
+   (`MODELOS_POR_PAGINA`, mismo patrón ▲/▼ que `.kiosk-tareas-nav`) en vez de
+   crecer con `max-height`+scroll, así el botón Guardar de abajo queda
+   siempre a una altura fija sea cual sea el número de modelos guardados. */
 .kiosk-ajustes { display: flex; flex-direction: column; gap: var(--u); }
 .kiosk-ajustes-seccion {
   display: flex;
@@ -2038,8 +2058,6 @@ html[data-cursor] .picker-card { cursor: pointer; }
   display: flex;
   flex-direction: column;
   gap: calc(var(--u) / 3);
-  overflow-y: auto;
-  max-height: 9rem;
 }
 .kiosk-ajustes-item { display: flex; align-items: center; gap: calc(var(--u) / 2); }
 .kiosk-ajustes-modelo { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2049,6 +2067,21 @@ html[data-cursor] .picker-card { cursor: pointer; }
 .kiosk-ajustes-cargando { color: var(--muted); font-size: var(--fs-sm); }
 .kiosk-ajustes-ok { color: var(--ok, #6ee7a8); font-size: var(--fs-sm); }
 .kiosk-ajustes-error { color: var(--orange); font-size: var(--fs-sm); }
+.kiosk-ajustes-nav { display: flex; gap: var(--u); align-items: center; justify-content: center; }
+.kiosk-ajustes-nav-btn {
+  width: var(--toque-min);
+  height: calc(var(--toque-min) * 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radio);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+.kiosk-ajustes-nav-btn:disabled { opacity: 0.3; }
+.kiosk-ajustes-nav-btn svg { width: 1.25rem; height: 1.25rem; }
+.kiosk-ajustes-pagina { font-size: var(--fs-sm); color: var(--muted); }
 
 /* Índice de secciones de Ajustes (`KioskAjustes.jsx`): lista de entradas
    grandes, mismo espíritu que `.kiosk-menu-btn` (dedo sobre panel

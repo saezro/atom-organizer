@@ -882,7 +882,7 @@ export default function KioskScreen({
 
       {esOrganizar && (
         <div className="kiosk-estadillo">
-          <EstadilloField value={estadillo} onChange={onEstadillo} disabled={busy} />
+          <EstadilloField value={estadillo} onChange={onEstadillo} disabled={busy} tactil={tactil} />
         </div>
       )}
 

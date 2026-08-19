@@ -51,6 +51,30 @@ function IconoFlecha() {
   )
 }
 
+// Mismos iconos ▲/▼ que `KioskTareas`/`MenuApps` para la paginación de modelos.
+function IconoArriba() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 15l6-6 6 6" />
+    </svg>
+  )
+}
+function IconoAbajo() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  )
+}
+
+// Cuántos modelos caben por página en la sección «General» sin empujar el
+// botón Guardar fuera de los 320px de la Pi (mismo problema que resuelve la
+// paginación de `KioskTareas`/`MenuApps`: en un panel resistivo no hay
+// scroll de página, así que la lista se pagina en vez de crecer sin límite).
+const MODELOS_POR_PAGINA = 2
+
 // Catálogo de secciones de Ajustes: mismo patrón que `apps/registry.js`
 // (id + nombre + icono), solo que aquí «abrir» es un estado local en vez de
 // una `accion` de KioskScreen.
@@ -117,6 +141,7 @@ function SeccionGeneral({ tactil, onVolver }) {
   const [guardando, setGuardando] = useState(false)
   const [ok, setOk] = useState(false)
   const [error, setError] = useState('')
+  const [paginaModelos, setPaginaModelos] = useState(0)
 
   // Carga inicial de la config persistente, igual que ConfigScreen.
   useEffect(() => {
@@ -187,6 +212,14 @@ function SeccionGeneral({ tactil, onVolver }) {
     }
   }
 
+  // Página segura: si se quita un modelo y la página actual queda fuera de
+  // rango, se recalcula aquí mismo en vez de con un efecto aparte.
+  const totalPaginasModelos = Math.max(1, Math.ceil(models.length / MODELOS_POR_PAGINA))
+  const paginaSegura = Math.min(paginaModelos, totalPaginasModelos - 1)
+  const inicioModelos = paginaSegura * MODELOS_POR_PAGINA
+  const modelosVisibles = models.slice(inicioModelos, inicioModelos + MODELOS_POR_PAGINA)
+  const conPaginacionModelos = models.length > MODELOS_POR_PAGINA
+
   return (
     <div className="kiosk kiosk-ajustes">
       <div className="kiosk-header kiosk-header-paso">
@@ -216,22 +249,51 @@ function SeccionGeneral({ tactil, onVolver }) {
           <div className="kiosk-ajustes-seccion">
             <span className="kiosk-ajustes-label">% de recorte por dron</span>
             {models.length > 0 ? (
-              <ul className="kiosk-ajustes-lista">
-                {models.map((m) => (
-                  <li key={m.model} className="kiosk-ajustes-item">
-                    <span className="kiosk-ajustes-modelo">{m.model}</span>
-                    <span className="kiosk-ajustes-pct">{m.pct}%</span>
+              <>
+                <ul className="kiosk-ajustes-lista">
+                  {modelosVisibles.map((m) => (
+                    <li key={m.model} className="kiosk-ajustes-item">
+                      <span className="kiosk-ajustes-modelo">{m.model}</span>
+                      <span className="kiosk-ajustes-pct">{m.pct}%</span>
+                      <BotonToque
+                        className="btn-ghost kiosk-btn"
+                        tactil={tactil}
+                        data-testid={`kiosk-ajustes-quitar-${m.model}`}
+                        onActivar={() => quitarModelo(m.model)}
+                      >
+                        Quitar
+                      </BotonToque>
+                    </li>
+                  ))}
+                </ul>
+                {conPaginacionModelos && (
+                  <div className="kiosk-ajustes-nav">
                     <BotonToque
-                      className="btn-ghost kiosk-btn"
+                      className="kiosk-ajustes-nav-btn"
                       tactil={tactil}
-                      data-testid={`kiosk-ajustes-quitar-${m.model}`}
-                      onActivar={() => quitarModelo(m.model)}
+                      disabled={paginaSegura <= 0}
+                      onActivar={() => setPaginaModelos((p) => Math.max(0, p - 1))}
+                      data-testid="kiosk-ajustes-modelos-arriba"
+                      aria-label="Página anterior de modelos"
                     >
-                      Quitar
+                      <IconoArriba />
                     </BotonToque>
-                  </li>
-                ))}
-              </ul>
+                    <span className="kiosk-ajustes-pagina" data-testid="kiosk-ajustes-modelos-pagina">
+                      {paginaSegura + 1}/{totalPaginasModelos}
+                    </span>
+                    <BotonToque
+                      className="kiosk-ajustes-nav-btn"
+                      tactil={tactil}
+                      disabled={paginaSegura >= totalPaginasModelos - 1}
+                      onActivar={() => setPaginaModelos((p) => Math.min(totalPaginasModelos - 1, p + 1))}
+                      data-testid="kiosk-ajustes-modelos-abajo"
+                      aria-label="Página siguiente de modelos"
+                    >
+                      <IconoAbajo />
+                    </BotonToque>
+                  </div>
+                )}
+              </>
             ) : (
               <span className="kiosk-ajustes-vacio">No hay modelos configurados todavía.</span>
             )}
