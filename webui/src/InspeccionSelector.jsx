@@ -5,7 +5,7 @@ import { useState } from 'react'
 // Terminado/Cancelada — que además se ocultan por defecto (ver `mostrarTerminadas`
 // más abajo). Una fase que no está en esta lista (o viene vacía) se coloca justo
 // antes de Terminado/Cancelada: ni se esconde ni compite con las prioritarias.
-const ORDEN_FASES = [
+export const ORDEN_FASES = [
   'Vuelo',
   'Preparacion',
   'Confirmada',
@@ -38,7 +38,7 @@ const MAX_RESULTADOS = 50
 // violeta→fucsia→amarillo→lima→esmeralda, para que la Pi y la web hablen el
 // mismo idioma visual. Se aceptan las variantes con acento porque la fase
 // llega tal cual de la BD.
-const COLOR_FASE = {
+export const COLOR_FASE = {
   Por_confirmar: '#64748b',
   'Por confirmar': '#64748b',
   Confirmada: '#38bdf8',
@@ -54,7 +54,7 @@ const COLOR_FASE = {
   Terminada: '#10b981',
   Cancelada: '#ef4444',
 }
-const COLOR_FASE_DEFECTO = '#64748b'
+export const COLOR_FASE_DEFECTO = '#64748b'
 
 // Color por tipo de inspección. Deliberadamente en tonos que NO están en la
 // progresión de fases, para no confundir un chip con el otro de un vistazo.
@@ -68,7 +68,7 @@ const COLOR_TIPO_DEFECTO = '#94a3b8'
 
 // Chip de color translúcido: fondo al 18%, borde al 40%, texto al color pleno
 // (mismo patrón que PHASE_BADGE de la Suite, pero sin Tailwind).
-function chip(hex) {
+export function chip(hex) {
   return { background: `${hex}2e`, borderColor: `${hex}66`, color: hex }
 }
 
@@ -91,6 +91,11 @@ export default function InspeccionSelector({
   // cambia, solo se deja de pintar sus controles. Por defecto en `false` para
   // no tocar el comportamiento de escritorio (BucketScreen).
   soloLista = false,
+  // Filtro de fase controlado desde fuera (kiosco): cuando llega un array, se
+  // usa en lugar del estado interno y los chips no se pintan — quien manda es
+  // la pantalla de fases del kiosco, que sí cabe en 480x320. `null` = el
+  // componente se gestiona solo, como en escritorio.
+  fasesControladas = null,
 }) {
   const [texto, setTexto] = useState('')
   const [fasesActivas, setFasesActivas] = useState([])
@@ -132,12 +137,16 @@ export default function InspeccionSelector({
   // filtrando desde la sombra: la lista saldría vacía, sin chip visible que
   // desmarcar y sin explicación. Se conserva en el estado, así que si la fase
   // reaparece el chip vuelve activo.
-  const fasesEfectivas = fasesActivas.filter((f) => f in conteoFases)
+  const fasesElegidas = fasesControladas ?? fasesActivas
+  const fasesEfectivas = fasesElegidas.filter((f) => f in conteoFases)
   const casaFase = (i) => !fasesEfectivas.length || fasesEfectivas.includes(i.fase || '')
   const esOcultable = (i) => FASES_OCULTABLES.includes(i.fase)
 
   const candidatas = porTexto.filter(casaFase)
-  const visibles = mostrarTerminadas ? candidatas : candidatas.filter((i) => !esOcultable(i))
+  // Si el filtro pide explícitamente una fase ocultable (Terminado/Cancelada),
+  // enseñarla: ocultarla entonces dejaría la lista vacía sin explicación.
+  const verTerminadas = mostrarTerminadas || fasesEfectivas.some((f) => FASES_OCULTABLES.includes(f))
+  const visibles = verTerminadas ? candidatas : candidatas.filter((i) => !esOcultable(i))
   const ocultasPorTerminadas = candidatas.length - visibles.length
 
   // Orden final: fase (según ORDEN_FASES) y, a igualdad, etiqueta alfabética.

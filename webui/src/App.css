@@ -1538,17 +1538,30 @@ html[data-cursor] .picker-card { cursor: pointer; }
   border: 0;
   margin-top: 0;
 }
+/* Nombre a la izquierda, chips de tipo/fase alineados a la derecha: en una
+   lista se escanean mucho mejor en columna propia que colgando bajo cada
+   nombre. */
 .insp-item-chips {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: calc(var(--u) / 2);
+  flex-direction: row;
+  align-items: center;
+  gap: var(--u);
 }
-.insp-item-chips .insp-nombre { font-weight: 600; }
+.insp-item-chips .insp-nombre {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .insp-chips-item {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
   gap: calc(var(--u) / 2);
+  flex: 0 0 auto;
 }
 .insp-chip-dato {
   padding: 0.125rem 0.5rem;
@@ -1557,4 +1570,56 @@ html[data-cursor] .picker-card { cursor: pointer; }
   font-size: 0.8125rem;
   line-height: 1.4;
   white-space: nowrap;
+}
+
+
+/* ---- Pantalla de fases del kiosco (filtro del selector de inspección) ---- */
+.kiosk-fases {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) / 2);
+  padding: calc(var(--u) / 2) 0;
+}
+.kiosk-fase-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--u);
+  min-height: var(--toque-min);
+  padding: 0 var(--u);
+  border-radius: var(--radio);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  text-align: left;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.kiosk-fase-btn.activa { font-weight: 600; }
+.kiosk-fase-punto {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.kiosk-fase-nombre { flex: 1; }
+.kiosk-fase-num { color: var(--muted); font-size: var(--fs-sm); }
+.kiosk-fase-todas { justify-content: center; color: var(--orange); }
+
+/* Contador de fases activas sobre el botón de filtro de la cabecera. */
+.kiosk-filtro-insp { position: relative; }
+.kiosk-filtro-num {
+  position: absolute;
+  top: -0.125rem;
+  right: -0.125rem;
+  min-width: 1.125rem;
+  height: 1.125rem;
+  border-radius: 999rem;
+  background: var(--orange);
+  color: #0a0a0a;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1.125rem;
+  text-align: center;
 }
