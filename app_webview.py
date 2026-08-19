@@ -399,6 +399,24 @@ class Api:
         except Exception as exc:  # noqa: BLE001 — se reenvía al front
             return {"error": f"{type(exc).__name__}: {exc}"}
 
+    def estadillos_detectar(self, carpeta: str) -> dict:
+        """Escanea `carpeta` buscando estadillos sin que el operario tenga que
+        elegirlos a mano: base de "detectados N estadillos, M días de vuelo..."
+        antes de subir. Sincrónico, como `read_estadillo_info` (mismo módulo,
+        no arrastra gui/PySide).
+
+        No encontrar ninguno NO es un error (el operario aún puede elegir a
+        mano): `{"rutas": [], "n_estadillos": 0, "info": None, "error": None}`.
+        """
+        try:
+            from atom_core.estadillo import detectar_estadillos, read_estadillo_info
+            detectado = detectar_estadillos(carpeta)
+            rutas = detectado["rutas"]
+            info = read_estadillo_info(rutas) if rutas else None
+            return {"rutas": rutas, "n_estadillos": len(rutas), "info": info, "error": None}
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
     # ---- autodetección del sufijo de separación ---------------------------
     def detect_suffixes(self, origen: str) -> dict:
         """Recomienda el sufijo térmico/RGB escaneando los nombres de la carpeta

@@ -1100,6 +1100,45 @@ select.glass-input option {
   min-height: 2.75rem;
 }
 
+/* Fila recien tocada: destello no basta (dura --onda, y listDir sobre USB en
+   la Pi puede tardar mas que eso), asi que la fila queda marcada en naranja
+   con un spinner hasta que `cargar()` resuelve. Solo tactil. */
+.picker-fila-cargando {
+  background: rgba(238, 117, 58, 0.22);
+  border-color: rgba(238, 117, 58, 0.5);
+}
+.picker-spin {
+  margin-left: auto;
+  flex: 0 0 auto;
+  animation: picker-girar 0.7s linear infinite;
+}
+@keyframes picker-girar {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .picker-spin { animation: none; }
+}
+/* Ficheros listados en modo carpeta (tactil): visibles para que se sepa que
+   hay algo mas ademas de las subcarpetas, pero no son objetivo de toque. */
+.picker-file-solo {
+  opacity: 0.55;
+  cursor: default;
+  background: rgba(255, 255, 255, 0.02);
+}
+/* Paginado a botones junto a la lista, mismo patron que .kiosk-insp-paginado
+   (KioskScreen). Solo se monta este contenedor en tactil. */
+.picker-paginado {
+  display: flex;
+  flex-direction: row;
+  gap: var(--u);
+  flex: 1;
+  min-height: 0;
+}
+.picker-paginado .picker-lista {
+  flex: 1;
+  min-width: 0;
+}
+
 /* En 480 de ancho no caben cinco etiquetas: solo se lee la de la pestana
    activa, el resto quedan como iconos. */
 @media (max-width: 34rem) {
@@ -1137,6 +1176,7 @@ select.glass-input option {
   }
   /* Lo que crece y scrollea dentro de la caja, en vez de desbordarla. */
   .picker-lista { flex: 1; max-height: none; }
+  .picker-paginado { max-height: none; }
   .pm-log { max-height: 30vh; }
   .pf-flights { max-height: 40vh; }
   .up-notes { max-height: 20vh; }

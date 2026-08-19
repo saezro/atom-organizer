@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, isServerMode } from './bridge.js'
 import BotonToque, { pxDeRem, UMBRAL_REM } from './pulsacion.jsx'
 
@@ -32,11 +32,28 @@ function Ico({ tipo }) {
   return <svg {...comun}><path d="M2 12.5v-9a1 1 0 0 1 1-1h3l1.5 2H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" /></svg>
 }
 
+// Giro en CSS (.picker-spin), no en JS: mas barato en la Pi. Solo aparece en
+// la fila que se acaba de tocar, mientras `cargar()` sigue en vuelo.
+function IconoCargando() {
+  return (
+    <svg className="picker-spin" width="1em" height="1em" viewBox="0 0 16 16" fill="none"
+         stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+      <path d="M14 8A6 6 0 1 1 8 2" />
+    </svg>
+  )
+}
+
 export default function FolderPicker({ mode = 'folder', startPath = null, onPick, onCancel }) {
   const [estado, setEstado] = useState({ cargando: true, datos: null, error: null })
   const listaRef = useRef(null)
   const arrastre = useRef({ activo: false, y0: 0, top0: 0, umbral: pxDeRem(UMBRAL_REM), movido: false })
   const tactil = isServerMode()
+  // En el kiosco el panel resistivo no tiene hover ni el destello de
+  // BotonToque dice nada de "se esta cargando" (dura solo --onda). Esta ruta
+  // pendiente marca la FILA pulsada al instante, en el mismo frame del toque,
+  // sin esperar la respuesta HTTP de listDir. Solo tactil: en escritorio el
+  // "Cargando..." de siempre (pm-status) sigue siendo la unica senal.
+  const [rutaPendiente, setRutaPendiente] = useState(null)
 
   const cargar = useCallback(async (ruta) => {
     setEstado((s) => ({ ...s, cargando: true, error: null }))
@@ -49,6 +66,8 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
       setEstado({ cargando: false, datos, error: null })
     } catch (e) {
       setEstado({ cargando: false, datos: null, error: String(e.message || e) })
+    } finally {
+      setRutaPendiente(null)
     }
   }, [])
 
@@ -115,7 +134,76 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
     e.stopPropagation()
   }
 
+  // Envuelve `cargar` para dar feedback en el MISMO frame del toque: la fila
+  // pulsada queda marcada antes de que llegue la respuesta de listDir (que en
+  // la Pi, sobre USB, puede tardar). Solo en tactil; en escritorio `cargar`
+  // se llama tal cual, sin marcar nada.
+  const irA = (ruta) => {
+    if (tactil) setRutaPendiente(ruta)
+    cargar(ruta)
+  }
+
+  // Paginado a botones ▲/▼, mismo patron que KioskScreen (InspeccionSelector):
+  // el arrastre no siempre prende en el panel resistivo. Una "pagina" es el
+  // alto visible menos un solape de una fila, igual que alli.
+  const [pagina, setPagina] = useState(0)
+  const [paginas, setPaginas] = useState(1)
+  const saltoLista = (el) => Math.max(el.clientHeight - pxDeRem(3), pxDeRem(6))
+
+  const recalcularPaginas = useCallback(() => {
+    const el = listaRef.current
+    if (!el) return
+    const sobrante = Math.max(el.scrollHeight - el.clientHeight, 0)
+    const salto = saltoLista(el)
+    const total = sobrante > 1 ? Math.ceil(sobrante / salto) + 1 : 1
+    setPaginas(total)
+    setPagina(Math.min(Math.round(el.scrollTop / salto), total - 1))
+  }, [])
+
+  useLayoutEffect(() => {
+    if (!tactil) return
+    recalcularPaginas()
+  }, [recalcularPaginas, tactil, estado])
+  useEffect(() => {
+    if (!tactil) return undefined
+    const el = listaRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return undefined
+    const ro = new ResizeObserver(recalcularPaginas)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [recalcularPaginas, tactil])
+
+  // Igual que en KioskScreen: mientras dura el scroll animado se ignoran los
+  // `onScroll` intermedios, que si no hacen parpadear el indicador.
+  const animando = useRef(null)
+  useEffect(() => () => { if (animando.current) clearTimeout(animando.current) }, [])
+  const paginar = (signo) => {
+    const el = listaRef.current
+    if (!el) return
+    const salto = saltoLista(el)
+    const siguiente = Math.max(0, Math.min(pagina + signo, paginas - 1))
+    const destino = Math.max(0, Math.min(siguiente * salto, el.scrollHeight - el.clientHeight))
+    setPagina(siguiente)
+    if (typeof el.scrollTo === 'function') {
+      if (animando.current) clearTimeout(animando.current)
+      animando.current = setTimeout(() => { animando.current = null }, 450)
+      el.scrollTo({ top: destino, behavior: 'smooth' })
+    } else {
+      el.scrollTop = destino
+    }
+  }
+  const alScrollLista = () => {
+    const el = listaRef.current
+    if (!el || animando.current) return
+    const siguiente = Math.min(Math.round(el.scrollTop / saltoLista(el)), Math.max(paginas - 1, 0))
+    setPagina((prev) => (prev === siguiente ? prev : siguiente))
+  }
+
   const { cargando, datos, error } = estado
+  // En tactil, folder tambien enseña los ficheros (atenuados, no elegibles):
+  // que la persona vea que hay ademas del PDF que va a escoger. En escritorio
+  // no cambia nada: solo se listan en mode="file", como siempre.
+  const ficherosVisibles = mode === 'file' || (tactil && mode === 'folder')
 
   return (
     <div className="pm-overlay" role="dialog" aria-modal="true">
@@ -127,46 +215,96 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
 
         {error && <p className="pm-status err">{error}</p>}
 
-        <ul
-          className="picker-lista"
-          ref={listaRef}
-          {...(tactil ? {
-            onPointerDown: alPulsar,
-            onPointerMove: alMover,
-            onPointerUp: alSoltar,
-            onPointerCancel: alSoltar,
-            onPointerLeave: alSoltar,
-            onClickCapture: alHacerClick,
-          } : {})}
-        >
-          {cargando && !datos && (
-            <li className="picker-cargando">Cargando…</li>
-          )}
-          {datos?.parent && (
-            <li>
-              <BotonToque className="picker-fila" tactil={tactil} cancelarAlMover onActivar={() => cargar(datos.parent)}>
-                <Ico tipo="subir" /> <span className="picker-txt">.. subir</span>
-              </BotonToque>
-            </li>
-          )}
-          {datos?.dirs.map((d) => (
-            <li key={d.path}>
-              <BotonToque className="picker-fila picker-dir" tactil={tactil} cancelarAlMover onActivar={() => cargar(d.path)}>
-                <Ico tipo="carpeta" /> <span className="picker-txt">{d.name}</span>
-              </BotonToque>
-            </li>
-          ))}
-          {mode === 'file' && datos?.files.map((f) => (
-            <li key={f.path}>
-              <BotonToque className="picker-fila picker-file" tactil={tactil} cancelarAlMover onActivar={() => onPick(f.path)}>
+        <div className={tactil ? 'picker-paginado' : undefined}>
+          <ul
+            className="picker-lista"
+            ref={listaRef}
+            {...(tactil ? {
+              onScroll: alScrollLista,
+              onPointerDown: alPulsar,
+              onPointerMove: alMover,
+              onPointerUp: alSoltar,
+              onPointerCancel: alSoltar,
+              onPointerLeave: alSoltar,
+              onClickCapture: alHacerClick,
+            } : {})}
+          >
+            {cargando && !datos && (
+              <li className="picker-cargando">Cargando…</li>
+            )}
+            {datos?.parent && (
+              <li>
+                <BotonToque
+                  className={rutaPendiente === datos.parent ? 'picker-fila picker-fila-cargando' : 'picker-fila'}
+                  tactil={tactil} cancelarAlMover onActivar={() => irA(datos.parent)}
+                >
+                  <Ico tipo="subir" /> <span className="picker-txt">.. subir</span>
+                  {tactil && rutaPendiente === datos.parent && <IconoCargando />}
+                </BotonToque>
+              </li>
+            )}
+            {datos?.dirs.map((d) => (
+              <li key={d.path}>
+                <BotonToque
+                  className={rutaPendiente === d.path ? 'picker-fila picker-dir picker-fila-cargando' : 'picker-fila picker-dir'}
+                  tactil={tactil} cancelarAlMover onActivar={() => irA(d.path)}
+                >
+                  <Ico tipo="carpeta" /> <span className="picker-txt">{d.name}</span>
+                  {tactil && rutaPendiente === d.path && <IconoCargando />}
+                </BotonToque>
+              </li>
+            ))}
+            {mode === 'file' && datos?.files.map((f) => (
+              <li key={f.path}>
+                <BotonToque className="picker-fila picker-file" tactil={tactil} cancelarAlMover onActivar={() => onPick(f.path)}>
+                  <Ico tipo="fichero" /> <span className="picker-txt">{f.name}</span>
+                </BotonToque>
+              </li>
+            ))}
+            {tactil && mode === 'folder' && datos?.files.map((f) => (
+              <li key={f.path} className="picker-fila picker-file picker-file-solo" aria-disabled="true">
                 <Ico tipo="fichero" /> <span className="picker-txt">{f.name}</span>
+              </li>
+            ))}
+            {datos && datos.dirs.length === 0 && !(ficherosVisibles && datos.files.length > 0) && (
+              <li className="picker-vacio">Carpeta vacía.</li>
+            )}
+          </ul>
+
+          {tactil && (
+            <div className="picker-nav kiosk-insp-nav">
+              <BotonToque
+                className="kiosk-insp-nav-btn"
+                tactil={tactil}
+                onActivar={() => paginar(-1)}
+                disabled={pagina <= 0}
+                aria-label="Subir en la lista"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+                     strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M6 15l6-6 6 6" />
+                </svg>
               </BotonToque>
-            </li>
-          ))}
-          {datos && datos.dirs.length === 0 && !(mode === 'file' && datos.files.length > 0) && (
-            <li className="picker-vacio">Carpeta vacía.</li>
+              <span className="kiosk-insp-pagina" aria-live="polite">
+                <strong>{Math.min(pagina + 1, paginas)}</strong>
+                <span className="kiosk-insp-pagina-sep" />
+                {paginas}
+              </span>
+              <BotonToque
+                className="kiosk-insp-nav-btn"
+                tactil={tactil}
+                onActivar={() => paginar(1)}
+                disabled={pagina >= paginas - 1}
+                aria-label="Bajar en la lista"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+                     strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </BotonToque>
+            </div>
           )}
-        </ul>
+        </div>
 
         {cargando && <p className="pm-status">Cargando…</p>}
 

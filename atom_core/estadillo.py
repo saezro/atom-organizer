@@ -95,6 +95,71 @@ def _read_dataframe(path: str) -> pd.DataFrame:
     return pd.read_csv(path, sep=";")
 
 
+# Extensiones candidatas a estadillo. El resto (fotos, logs, PDFs sueltos en
+# la misma carpeta) ni se intenta leer.
+_EXTENSIONES_CANDIDATAS = (".csv", ".xlsx", ".xls")
+
+
+def detectar_estadillos(carpeta: str, max_profundidad: int = 2) -> dict:
+    """Escanea `carpeta` (recursivo, hasta `max_profundidad` niveles por
+    debajo de `carpeta`) buscando ficheros que PARECEN estadillos, para que
+    la UI pueda ofrecer "detectados N estadillos" antes de que el operario
+    elija nada a mano.
+
+    Candidato = fichero `.csv`/`.xlsx`/`.xls`, ni oculto ni dentro de una
+    carpeta oculta, que no sea un temporal de Office (`~$...`). De esos, se
+    intenta leer con `_read_dataframe` (mismo mirror del pipeline que usa el
+    resto del módulo) y se exige que traiga las columnas ESENCIALES
+    (`_COLUMNAS_ESENCIALES`, vía el mismo mapeo ES/EN de
+    `Utils.get_nombres_columnas` que usa `combinar_estadillos`); si falla la
+    lectura o falta alguna columna, el fichero se descarta EN SILENCIO (no es
+    un estadillo, no es un error) y el escaneo sigue con el resto.
+
+    Devuelve `{"rutas": [...], "descartados": [...]}`, ambas listas de rutas
+    absolutas ordenadas alfabéticamente. `max_profundidad=0` limita el
+    escaneo a la propia `carpeta` (sin bajar a subcarpetas); `1` añade un
+    nivel de subcarpetas, etc.
+    """
+    vacio = {"rutas": [], "descartados": []}
+    if not carpeta or not os.path.isdir(carpeta):
+        return vacio
+
+    raiz_normalizada = os.path.normpath(carpeta)
+    profundidad_raiz = raiz_normalizada.count(os.sep)
+
+    candidatos: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(raiz_normalizada):
+        # No bajar a carpetas ocultas, y no bajar más allá de max_profundidad
+        # niveles por debajo de la raíz (se poda in-place la lista que os.walk
+        # usa para seguir recorriendo).
+        profundidad_actual = os.path.normpath(dirpath).count(os.sep) - profundidad_raiz
+        if profundidad_actual >= max_profundidad:
+            dirnames[:] = []
+        else:
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+
+        for nombre in filenames:
+            if nombre.startswith(".") or nombre.startswith("~$"):
+                continue
+            ext = os.path.splitext(nombre)[1].lower()
+            if ext not in _EXTENSIONES_CANDIDATAS:
+                continue
+            candidatos.append(os.path.join(dirpath, nombre))
+
+    rutas: list[str] = []
+    descartados: list[str] = []
+    for ruta in candidatos:
+        try:
+            df = _read_dataframe(ruta)
+            _validar_columnas_esenciales(df, ruta)
+        except Exception:  # noqa: BLE001 — cualquier fallo por fichero = "no es un estadillo"
+            descartados.append(os.path.abspath(ruta))
+            continue
+        rutas.append(os.path.abspath(ruta))
+
+    return {"rutas": sorted(rutas), "descartados": sorted(descartados)}
+
+
 def empaquetar_rutas(paths: list[str]) -> str:
     """N rutas -> un único string, para colar varios estadillos por el hueco
     de siempre (`--estadillo`, `GenStructFolderConfig.estad`). Con 1 sola
