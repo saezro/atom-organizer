@@ -21,6 +21,7 @@ import { formatBytes, formatDuracion } from './formato.js'
 import MenuApps from './MenuApps.jsx'
 import KioskTareas from './KioskTareas.jsx'
 import KioskAjustes from './KioskAjustes.jsx'
+import KioskRed from './KioskRed.jsx'
 import { APPS } from './apps/registry.js'
 
 // Deriva la ruta de destino a partir de la carpeta de origen, añadiendo el
@@ -518,6 +519,11 @@ export default function KioskScreen({
   // --------------------------------------------------------------- ajustes
   if (accion === 'ajustes') {
     return <KioskAjustes tactil={tactil} onVolver={() => setAccion(null)} />
+  }
+
+  // ------------------------------------------------------------------- red
+  if (accion === 'red') {
+    return <KioskRed tactil={tactil} onVolver={() => setAccion(null)} />
   }
 
   // ---------------------------------------------------------------- paso 1

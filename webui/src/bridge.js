@@ -234,6 +234,12 @@ export const api = {
   // Apaga o reinicia el EQUIPO (la Pi), no la app. `modo` in {poweroff,
   // reboot}; el backend valida y no necesita sudo (polkit).
   sistemaApagar: (modo) => call('sistema_apagar', modo),
+  // App «Red» del kiosco (KioskRed.jsx): escaneo y conexión WiFi.
+  // redListar devuelve {ok, actual: string|null, redes:[{ssid, senal:0-100,
+  // segura, activa}]} | {ok:false, error}. redConectar {ok:true} | {ok:false,
+  // error}; `password` va a null en redes abiertas (sin segura).
+  redListar: () => call('red_listar'),
+  redConectar: (ssid, password) => call('red_conectar', ssid, password ?? null),
 }
 
 // Python empuja progreso del pipeline con:
