@@ -158,3 +158,24 @@ def test_pair_persiste_modo_broker_y_session_store_lo_devuelve(auth):
     otra = ga.GoogleAuth("", "", broker_only=True, store_path=auth.store_path)
     assert otra.is_logged_in()
     assert otra._modo == ga.MODO_BROKER
+
+
+def test_pair_propaga_picture_a_la_identidad_y_sobrevive_a_reabrir(auth):
+    identidad = auth.pair("device-token-abc", "piloto@aerotools.es",
+                          picture="https://lh3.googleusercontent.com/foo")
+
+    assert identidad.picture == "https://lh3.googleusercontent.com/foo"
+    assert auth.identity.picture == "https://lh3.googleusercontent.com/foo"
+
+    # Se persiste: reabrir la app (otra instancia contra el mismo store) debe
+    # devolver la misma foto sin que nadie vuelva a llamar a `pair()`.
+    otra = ga.GoogleAuth("", "", broker_only=True, store_path=auth.store_path)
+    assert otra.identity.picture == "https://lh3.googleusercontent.com/foo"
+
+
+def test_pair_sin_picture_degrada_a_vacio_sin_romper(auth):
+    """Una Suite vieja que no manda `picture` en el poll no debe reventar."""
+    identidad = auth.pair("device-token-abc", "piloto@aerotools.es")
+
+    assert identidad.picture == ""
+    assert auth.is_logged_in()

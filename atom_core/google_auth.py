@@ -252,11 +252,14 @@ class GoogleAuth:
         self._validada_en = sesion.validada_en
         self._modo = sesion.modo or MODO_GOOGLE
         if sesion.email:
-            # La sesión persistida solo guarda el email (`session_store.py`):
-            # una sesión creada antes de pedir el scope `profile` queda sin
-            # foto hasta el próximo login, y no pasa nada.
+            # `sesion.picture` puede venir vacía en sesiones guardadas antes de
+            # que `session_store.py` supiera de esta columna (default '' por
+            # la migración in-place): no pasa nada, se pierde la foto hasta el
+            # próximo login/emparejamiento y no hace falta que la UI lo trate
+            # como error.
             self._identity = Identity(email=sesion.email,
-                                      domain=sesion.email.rsplit("@", 1)[-1])
+                                      domain=sesion.email.rsplit("@", 1)[-1],
+                                      picture=sesion.picture or "")
 
     def _migrar_legacy(self) -> bool:
         """Importa el `google_auth.json` de versiones anteriores, si lo hay.
@@ -283,7 +286,8 @@ class GoogleAuth:
         if not self._refresh_token:
             return
         self._store.guardar(self._identity.email if self._identity else None,
-                            self._refresh_token, modo=self._modo)
+                            self._refresh_token, modo=self._modo,
+                            picture=self._identity.picture if self._identity else "")
 
     def _olvidar_local(self) -> None:
         """Tira la sesión de memoria y de disco. No habla con Google."""
@@ -443,7 +447,7 @@ class GoogleAuth:
                 pass
         return identidad
 
-    def pair(self, device_token: str, email: str) -> Identity:
+    def pair(self, device_token: str, email: str, picture: str = "") -> Identity:
         """Empareja este equipo con la Suite (modo broker, Raspberry Pi).
 
         No hay canje con Google aquí: el `device_token` lo emite la Suite tras
@@ -452,12 +456,17 @@ class GoogleAuth:
         es guardar ese token como si fuera la credencial de sesión — igual que
         `login()` guarda el `refresh_token` — pero marcando `modo='broker'`
         para que `access_token()` sepa que no debe ir a Google con él.
+
+        `picture` es opcional: la trae el endpoint `pair/poll` de la Suite
+        junto al `device_token`, pero una Suite más antigua puede no
+        mandarla todavía — degrada a cadena vacía sin romper el emparejamiento.
         """
         if not device_token:
             raise ValueError("device_token vacío")
         if not email:
             raise ValueError("email vacío")
-        identidad = Identity(email=email, domain=email.rsplit("@", 1)[-1])
+        identidad = Identity(email=email, domain=email.rsplit("@", 1)[-1],
+                             picture=picture or "")
         with self._lock:
             self._refresh_token = device_token
             self._identity = identidad

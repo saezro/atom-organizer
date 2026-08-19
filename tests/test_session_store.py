@@ -283,3 +283,58 @@ def test_una_bd_sin_columna_modo_se_migra_sola_sin_perder_la_sesion(tmp_path):
     columnas = {fila[1] for fila in
                 sqlite3.connect(db_path).execute("PRAGMA table_info(sesion)")}
     assert "modo" in columnas
+
+
+# --- migración de esquema: columna `picture` (llegó con el avatar del kiosco)
+
+def test_una_bd_sin_columna_picture_se_migra_sola_sin_perder_la_sesion(tmp_path):
+    """`picture` llegó después de `modo`: una BD del broker ya en uso (con
+    `modo` pero sin `picture`) tiene que seguir abriendo sin perder la sesión
+    y sin excepción, con la foto en blanco hasta el próximo emparejamiento."""
+    db_path = tmp_path / "session.db"
+    protector = KeyfileProtector(tmp_path / "session.key")
+    cifrado = protector.proteger(TOKEN.encode("utf-8"))
+
+    # El CREATE TABLE tal cual era con `modo` pero antes de `picture`.
+    con = sqlite3.connect(db_path)
+    con.execute("""
+        CREATE TABLE sesion (
+            id              INTEGER PRIMARY KEY CHECK (id = 1),
+            email           TEXT,
+            refresh_cifrado BLOB NOT NULL,
+            backend         TEXT NOT NULL,
+            creado_en       REAL NOT NULL,
+            actualizado_en  REAL NOT NULL,
+            validada_en     REAL,
+            modo            TEXT NOT NULL DEFAULT 'google'
+        )""")
+    con.execute(
+        "INSERT INTO sesion (id, email, refresh_cifrado, backend, creado_en, "
+        "actualizado_en, validada_en, modo) VALUES (1, ?, ?, ?, ?, ?, NULL, ?)",
+        ("piloto@aerotools.es", cifrado, protector.nombre, 1.0, 1.0, "broker"))
+    con.commit()
+    con.close()
+
+    store = SessionStore(db_path, protector=protector)
+    sesion = store.leer()
+
+    assert sesion is not None
+    assert sesion.refresh_token == TOKEN
+    assert sesion.email == "piloto@aerotools.es"
+    assert sesion.modo == "broker"
+    # Sin la columna nueva no hay foto que rescatar: cae a vacío, no a error.
+    assert sesion.picture == ""
+
+    columnas = {fila[1] for fila in
+                sqlite3.connect(db_path).execute("PRAGMA table_info(sesion)")}
+    assert "picture" in columnas
+
+
+def test_guardar_y_leer_una_picture_va_y_vuelve(store):
+    store.guardar("piloto@aerotools.es", TOKEN, modo="broker",
+                  picture="https://lh3.googleusercontent.com/foo")
+
+    sesion = store.leer()
+
+    assert sesion is not None
+    assert sesion.picture == "https://lh3.googleusercontent.com/foo"

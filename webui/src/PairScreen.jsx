@@ -32,10 +32,14 @@ function moduloPath(qr) {
 }
 
 function CodigoQr({ url }) {
-  // typeNumber 0 = que la libreria elija el tamano minimo que quepa la URL;
-  // nivel 'M' es el estandar razonable para un QR que se va a leer de cerca,
-  // desde un movil sujeto por el operador, no a distancia ni sucio.
-  const qr = qrcode(0, 'M')
+  // typeNumber 0 = que la libreria elija el tamano minimo que quepa la URL.
+  // Nivel 'L' (no 'M'): la URL de consentimiento de Google ronda los 300
+  // caracteres y en el panel de 480x320 cada modulo cae por debajo de 4 px,
+  // por debajo de lo que resuelve la camara de un movil a pulso. Bajar la
+  // correccion de errores quita dos versiones de rejilla y engorda cada
+  // modulo; el QR se lee de cerca y limpio, no impreso ni sucio, asi que la
+  // redundancia extra no aportaba nada aqui.
+  const qr = qrcode(0, 'L')
   qr.addData(url)
   qr.make()
   const { d, n } = moduloPath(qr)

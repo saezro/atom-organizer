@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, isServerMode, onCloud, onProgress, registerPicker, whenBridgeReady } from './bridge'
 import { SECTIONS, SPLIT_ADVANCED } from './schema'
 import TaskBlock, { Field, initialState, buildParams } from './TaskBlock'
@@ -199,7 +199,10 @@ function App() {
   // (`carpeta`) y `OrganizarScreen` (`destino`/`origen`): son pantallas
   // independientes y no deben compartir selección.
   const [kioskCarpeta, setKioskCarpeta] = useState('')
-  const [kioskEstadillo, setKioskEstadillo] = useState('')
+  // Igual que `estadRutas` en `BucketScreen`: lista ORDENADA de rutas, no un
+  // string suelto (así lo consume `EstadilloField`, que sustituye al input
+  // de texto plano que había aquí antes).
+  const [kioskEstadillo, setKioskEstadillo] = useState([])
   const [kioskInspeccion, setKioskInspeccion] = useState(null)
   // Estado de sesión cloud + catálogo de inspecciones para el kiosco. Se
   // replica aquí lo que ya hace `BucketScreen` (misma llamada, mismo shape)
@@ -212,14 +215,21 @@ function App() {
   const [kioskSubiendo, setKioskSubiendo] = useState(false)
   const [kioskCloudPct, setKioskCloudPct] = useState(null)
 
-  useEffect(() => {
-    if (!ready || !kiosco) return
-    api.cloudStatus().then(setKioskCloudStatus).catch(() => setKioskCloudStatus(null))
-    api
+  // Misma llamada que `BucketScreen.cargarInspecciones`: se extrae para
+  // poder invocarla también desde el botón «Actualizar lista» de
+  // `InspeccionSelector` dentro del kiosco.
+  const kioskCargarInspecciones = useCallback(() => {
+    return api
       .cloudInspecciones()
       .then((r) => setKioskInspecciones(r?.inspecciones || []))
       .catch(() => setKioskInspecciones([]))
-  }, [ready, kiosco])
+  }, [])
+
+  useEffect(() => {
+    if (!ready || !kiosco) return
+    api.cloudStatus().then(setKioskCloudStatus).catch(() => setKioskCloudStatus(null))
+    kioskCargarInspecciones()
+  }, [ready, kiosco, kioskCargarInspecciones])
 
   // Progreso de la subida «en crudo»: no hay suscripción a `atom:cloud` a
   // nivel de App (solo la tiene `BucketScreen`, montada aparte), así que se
@@ -389,7 +399,10 @@ function App() {
   // así que pasa por el mismo `run()` de arriba y abre el mismo modal previo
   // (si hay estadillo) y el mismo `ProgressModal`.
   function kioskOrganizar({ origen, destino, estadillo }) {
-    run('split_images', { origen, destino, estadillo: estadillo ? [estadillo] : [], rename: true }, null)
+    // `estadillo` ya llega como array (viene de `EstadilloField`); solo se
+    // filtran huecos, sin volver a empaquetar un string suelto.
+    const estadillos = Array.isArray(estadillo) ? estadillo.filter(Boolean) : []
+    run('split_images', { origen, destino, estadillo: estadillos, rename: true }, null)
   }
 
   async function kioskPickCarpeta() {
@@ -472,10 +485,14 @@ function App() {
             inspecciones={kioskInspecciones}
             inspeccion={kioskInspeccion}
             onSelectInspeccion={setKioskInspeccion}
+            onActualizarInspecciones={kioskCargarInspecciones}
             estadillo={kioskEstadillo}
             onEstadillo={setKioskEstadillo}
             onOrganizar={kioskOrganizar}
             onSubirCrudo={kioskSubirCrudo}
+            onRefreshStatus={() =>
+              api.cloudStatus().then(setKioskCloudStatus).catch(() => setKioskCloudStatus(null))
+            }
             busy={kioskBusy}
             progreso={kioskProgreso}
           />

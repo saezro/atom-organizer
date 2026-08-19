@@ -7,14 +7,40 @@ import userEvent from '@testing-library/user-event'
 // se cubre aparte en KioskScreen.pulsacion.test.jsx.
 vi.mock('./bridge.js', () => ({
   isServerMode: () => false,
-  api: {},
+  api: {
+    cloudLogout: () => Promise.resolve({}),
+    // PairScreen se monta dentro de la pantalla de cuenta cuando no hay
+    // sesión; aquí solo interesa que llegue a pintarse, no su flujo de QR
+    // (cubierto en PairScreen.test.jsx).
+    cloudPairStart: () => new Promise(() => {}),
+    cloudPairPoll: () => new Promise(() => {}),
+    // `EstadilloField` solo la usa al pulsar "Elegir…"; no se pulsa en esta
+    // suite, pero se deja resuelta (nunca colgada) por si algún test futuro
+    // la dispara.
+    pickFile: () => Promise.resolve(''),
+  },
+}))
+// `EstadilloField.jsx` importa `./bridge` (sin extensión); mismo módulo que
+// `./bridge.js` para el resolutor de vitest, pero hay que mockear ambas
+// rutas para que ambos imports vean el mismo mock.
+vi.mock('./bridge', () => ({
+  isServerMode: () => false,
+  api: {
+    cloudLogout: () => Promise.resolve({}),
+    cloudPairStart: () => new Promise(() => {}),
+    cloudPairPoll: () => new Promise(() => {}),
+    pickFile: () => Promise.resolve(''),
+  },
 }))
 
 import KioskScreen, { derivarDestino } from './KioskScreen.jsx'
 
+// Shape real de `api.cloudInspecciones()`: lo que consume `InspeccionSelector`
+// (prefijo/etiqueta/anio/fase), no el `{id, nombre}` simplificado que usaba
+// el `<select>` de antes.
 const inspecciones = [
-  { id: 1, nombre: 'ACME 2026' },
-  { id: 2, nombre: 'BETA 2025' },
+  { id: 1, prefijo: 'ACME--PLANTA1--2026--PV', etiqueta: 'ACME PLANTA1 2026', anio: 2026, fase: 'Vuelo' },
+  { id: 2, prefijo: 'BETA--PLANTA2--2025--PV', etiqueta: 'BETA PLANTA2 2025', anio: 2025, fase: 'Confirmada' },
 ]
 
 function baseProps(overrides = {}) {
@@ -25,7 +51,10 @@ function baseProps(overrides = {}) {
     inspecciones,
     inspeccion: null,
     onSelectInspeccion: vi.fn(),
-    estadillo: '',
+    onActualizarInspecciones: vi.fn(),
+    // El estadillo viaja como array por todo el kiosco (mismo contrato que
+    // en `BucketScreen`), no como string suelto.
+    estadillo: [],
     onEstadillo: vi.fn(),
     onOrganizar: vi.fn(),
     onSubirCrudo: vi.fn(),
@@ -98,13 +127,22 @@ describe('KioskScreen — paso 1 (menú)', () => {
     expect(screen.getByText('R')).toBeInTheDocument()
   })
 
-  it('el avatar es un callejón sin salida: pulsarlo no hace nada ni saca del kiosco', async () => {
-    render(<KioskScreen {...baseProps()} />)
+  it('el avatar abre la pantalla de cuenta, no la UI completa de escritorio', async () => {
+    render(<KioskScreen {...baseProps({ status: { logged_in: true, email: 'rebeca@aerotools.es' } })} />)
     await userEvent.click(screen.getByTestId('kiosk-avatar'))
-    // Sigue en el paso 1 del kiosco: no hay forma táctil de llegar a la UI
-    // completa desde aquí.
+    expect(screen.getByText('Cuenta')).toBeInTheDocument()
+    expect(screen.getByText('rebeca@aerotools.es')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /cerrar sesión/i })).toBeInTheDocument()
+    // Sigue sin haber puerta a la UI de escritorio: solo se vuelve al kiosco.
+    await userEvent.click(screen.getByRole('button', { name: /atrás/i }))
     expect(screen.getByRole('button', { name: /^organizar$/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /subir en crudo/i })).toBeInTheDocument()
+  })
+
+  it('sin sesión, el avatar lleva al emparejamiento por QR', async () => {
+    render(<KioskScreen {...baseProps({ status: { logged_in: false } })} />)
+    await userEvent.click(screen.getByTestId('kiosk-avatar'))
+    expect(screen.getByText('Cuenta')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /cerrar sesión/i })).not.toBeInTheDocument()
   })
 
   it('con busy=true, los dos botones del menú están deshabilitados', () => {
@@ -133,11 +171,11 @@ describe('KioskScreen — paso 1 (menú)', () => {
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
   })
 
-  it('pulsar "Subir en crudo" lleva al paso 2 de subir (sin estadillo)', async () => {
+  it('pulsar "Subir en crudo" lleva al paso 2 de subir (sin estadillo, con buscador de inspección)', async () => {
     render(<KioskScreen {...baseProps()} />)
     await userEvent.click(screen.getByRole('button', { name: /subir en crudo/i }))
     expect(screen.getByText(/elegir carpeta/i)).toBeInTheDocument()
-    expect(screen.getByRole('combobox')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/escribe para buscar/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /← atrás/i })).toBeInTheDocument()
     expect(screen.queryByText(/estadillo/i)).not.toBeInTheDocument()
   })
@@ -157,14 +195,14 @@ describe('KioskScreen — paso 2 (organizar)', () => {
     expect(screen.getByRole('button', { name: /^organizar$/i })).toBeDisabled()
   })
 
-  it('botón "Organizar" llama a onOrganizar con origen/destino/estadillo', async () => {
+  it('botón "Organizar" llama a onOrganizar con origen/destino/estadillo (array)', async () => {
     const onOrganizar = vi.fn()
     render(
       <KioskScreen
         {...baseProps({
           accionInicial: 'organizar',
           carpeta: '/home/pi/vuelo/PLANTA',
-          estadillo: '/home/pi/estadillo.xlsx',
+          estadillo: ['/home/pi/estadillo.xlsx'],
           onOrganizar,
         })}
       />
@@ -174,14 +212,24 @@ describe('KioskScreen — paso 2 (organizar)', () => {
     expect(onOrganizar).toHaveBeenCalledWith({
       origen: '/home/pi/vuelo/PLANTA',
       destino: '/home/pi/vuelo/PLANTA_ORGANIZADO',
-      estadillo: '/home/pi/estadillo.xlsx',
+      estadillo: ['/home/pi/estadillo.xlsx'],
     })
   })
 
-  it('el campo de estadillo empieza vacío y no deshabilita "Organizar"', () => {
-    render(<KioskScreen {...baseProps({ accionInicial: 'organizar', estadillo: '' })} />)
-    expect(screen.getByPlaceholderText(/ruta del estadillo/i)).toHaveValue('')
+  it('el campo de estadillo empieza vacío (array vacío) y no deshabilita "Organizar"', () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizar', estadillo: [] })} />)
+    expect(screen.getByPlaceholderText(/si se indica, organiza por planta/i)).toHaveValue('')
     expect(screen.getByRole('button', { name: /^organizar$/i })).not.toBeDisabled()
+  })
+
+  it('EstadilloField llama a onEstadillo con el array nuevo al escribir una ruta', async () => {
+    const onEstadillo = vi.fn()
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizar', estadillo: [], onEstadillo })} />)
+    const input = screen.getByPlaceholderText(/si se indica, organiza por planta/i)
+    await userEvent.type(input, 'x')
+    // `onChange` se dispara una vez por tecla; basta comprobar que llegó
+    // como array (no string suelto).
+    expect(onEstadillo).toHaveBeenCalledWith(['x'])
   })
 
   it('con busy=true, "Elegir carpeta…" y "Organizar" están deshabilitados', () => {
@@ -243,5 +291,45 @@ describe('KioskScreen — paso 2 (subir en crudo)', () => {
     )
     expect(screen.getByRole('button', { name: /elegir carpeta/i })).toBeDisabled()
     expect(screen.getByRole('button', { name: /^subir$/i })).toBeDisabled()
+  })
+
+  it('sin inspección elegida muestra el buscador InspeccionSelector, no un <select>', () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'subir', inspeccion: null })} />)
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/escribe para buscar/i)).toBeInTheDocument()
+    expect(screen.getByText('ACME PLANTA1 2026')).toBeInTheDocument()
+    expect(screen.getByText('BETA PLANTA2 2025')).toBeInTheDocument()
+  })
+
+  it('elegir una inspección del buscador llama a onSelectInspeccion con el objeto completo', async () => {
+    const onSelectInspeccion = vi.fn()
+    render(
+      <KioskScreen {...baseProps({ accionInicial: 'subir', inspeccion: null, onSelectInspeccion })} />
+    )
+    await userEvent.click(screen.getByText('ACME PLANTA1 2026'))
+    expect(onSelectInspeccion).toHaveBeenCalledTimes(1)
+    expect(onSelectInspeccion).toHaveBeenCalledWith(inspecciones[0])
+  })
+
+  it('con inspección ya elegida se muestra su etiqueta y "Cambiar" en vez del buscador', () => {
+    render(
+      <KioskScreen
+        {...baseProps({ accionInicial: 'subir', inspeccion: inspecciones[0] })}
+      />
+    )
+    expect(screen.getByDisplayValue('ACME PLANTA1 2026')).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText(/escribe para buscar/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /cambiar/i })).toBeInTheDocument()
+  })
+
+  it('"Cambiar" limpia la inspección elegida (onSelectInspeccion con null)', async () => {
+    const onSelectInspeccion = vi.fn()
+    render(
+      <KioskScreen
+        {...baseProps({ accionInicial: 'subir', inspeccion: inspecciones[0], onSelectInspeccion })}
+      />
+    )
+    await userEvent.click(screen.getByRole('button', { name: /cambiar/i }))
+    expect(onSelectInspeccion).toHaveBeenCalledWith(null)
   })
 })

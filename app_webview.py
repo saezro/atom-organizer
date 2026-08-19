@@ -701,7 +701,11 @@ class Api:
 
                 return {"ok": False, "error": cloud_config.missing_client_help()}
             try:
-                ident = auth.pair(datos["device_token"], datos.get("email", ""))
+                ident = auth.pair(
+                    datos["device_token"],
+                    datos.get("email", ""),
+                    datos.get("picture", ""),
+                )
             except Exception as exc:  # noqa: BLE001
                 return {"ok": False, "error": str(exc)}
             # Mismo evento que `cloud_login`: la UI no necesita saber si el

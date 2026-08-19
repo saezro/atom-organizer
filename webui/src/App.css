@@ -1183,7 +1183,14 @@ select.glass-input option {
 .kiosk input, .kiosk select { user-select: text; -webkit-user-select: text; }
 
 .kiosk-header { display: flex; justify-content: flex-end; align-items: center; }
-.kiosk-header-paso { justify-content: space-between; gap: calc(var(--u) / 2); }
+.kiosk-header-paso { justify-content: flex-start; gap: calc(var(--u) / 2); }
+/* En cabeceras con atras+titulo el avatar se empuja al borde derecho. */
+.kiosk-header-paso .kiosk-avatar { margin-left: auto; }
+.kiosk-cuenta-datos {
+  display: flex; flex-direction: column; align-items: center;
+  gap: var(--u); padding: var(--u);
+}
+.kiosk-cuenta-email { color: var(--text); font-size: var(--fs-lg); word-break: break-all; text-align: center; }
 .kiosk-atras {
   min-height: var(--toque-min);
   padding: 0 var(--u);
@@ -1239,8 +1246,42 @@ select.glass-input option {
 .kiosk-carpeta-actual { color: var(--muted); }
 .kiosk-destino { color: var(--text); }
 
-.kiosk-estadillo summary { color: var(--muted); font-size: var(--fs-sm); }
-.kiosk-inspeccion select { width: 100%; min-height: var(--toque-min); }
+/* `EstadilloField` y `InspeccionSelector` son componentes compartidos con
+   escritorio: aquí solo se adaptan al tacto DENTRO de `.kiosk`, sin tocar su
+   aspecto fuera de este contenedor. */
+.kiosk-estadillo .glass-input,
+.kiosk-estadillo button,
+.kiosk-inspeccion .glass-input,
+.kiosk-inspeccion button {
+  min-height: var(--toque-min);
+}
+.kiosk-estadillo .field-row,
+.kiosk-inspeccion .field-row {
+  gap: calc(var(--u) / 2);
+}
+.kiosk-inspeccion {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Contenedor de scroll manual (drag = `scrollTop`, ver KioskScreen.jsx): el
+   panel resistivo entrega el dedo como ratón absoluto, así que el scroll
+   nativo por arrastre no existe y hay que emularlo, igual que en
+   `.picker-lista` de FolderPicker. */
+.kiosk-insp-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) / 2);
+}
+.kiosk-insp-scroll .insp-list { flex: 1; min-height: 0; }
+.kiosk-insp-scroll .insp-item { min-height: var(--toque-min); }
+.kiosk-insp-chips .insp-chip,
+.kiosk-insp-scroll .insp-chip { min-height: var(--toque-min); }
 
 .kiosk-progreso {
   display: flex;
@@ -1296,15 +1337,19 @@ select.glass-input option {
 /* La barra de scroll se engorda solo en la pantalla pequena, para que el dedo
    pueda arrastrarla como alternativa al deslizamiento. */
 @media (max-height: 26rem) {
-  .picker-lista { scrollbar-width: auto; }
-  .picker-lista::-webkit-scrollbar { width: 2.5rem; }
-  .picker-lista::-webkit-scrollbar-thumb {
+  .picker-lista,
+  .kiosk-insp-scroll { scrollbar-width: auto; }
+  .picker-lista::-webkit-scrollbar,
+  .kiosk-insp-scroll::-webkit-scrollbar { width: 2.5rem; }
+  .picker-lista::-webkit-scrollbar-thumb,
+  .kiosk-insp-scroll::-webkit-scrollbar-thumb {
     background: rgba(238, 117, 58, 0.55);
     border-radius: var(--radio);
     border: 0.375rem solid transparent;
     background-clip: content-box;
   }
-  .picker-lista::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.04); }
+  .picker-lista::-webkit-scrollbar-track,
+  .kiosk-insp-scroll::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.04); }
 }
 
 /* Modo de prueba desde un navegador de escritorio: `?cursor` en la URL repone
@@ -1370,8 +1415,15 @@ html[data-cursor] .picker-card { cursor: pointer; }
 .pair-texto.pair-warn { color: #f0b866; }
 .pair-reintentar { min-height: var(--toque-min); padding: 0 calc(var(--u) * 2); }
 
-/* Pantalla pequeña de la Pi (480x320): QR y textos mas compactos. */
+/* Pantalla pequeña de la Pi (480x320): el QR se lee con el movil a pulso y a
+   veces con reflejos, asi que manda el tamaño: ocupa casi todo el alto util
+   (el lado corto es el alto) y los textos se aprietan alrededor. */
 @media (max-width: 34rem), (max-height: 26rem) {
-  .pair-qr { width: 6.5rem; height: 6.5rem; }
+  .pair-qr {
+    width: min(74vh, 74vw);
+    height: min(74vh, 74vw);
+    padding: calc(var(--u) / 2);
+  }
   .pair-texto { font-size: 0.7rem; }
+  .pair { gap: calc(var(--u) / 2); }
 }
