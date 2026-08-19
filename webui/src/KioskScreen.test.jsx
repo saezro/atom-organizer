@@ -101,11 +101,10 @@ describe('KioskScreen — paso 1 (menú)', () => {
     render(<KioskScreen {...baseProps()} />)
     expect(screen.getByTestId('kiosk-app-organizer')).toBeInTheDocument()
     expect(screen.getByTestId('kiosk-app-tareas')).toBeInTheDocument()
-    expect(screen.getByTestId('kiosk-app-red')).toBeInTheDocument()
     expect(screen.getByTestId('kiosk-app-ajustes')).toBeInTheDocument()
-    // «Sistema» es la 5ª app: con 4 por página cae en la segunda.
-    await userEvent.click(screen.getByTestId('kiosk-apps-abajo'))
+    // Son 4 apps: caben en una sola página, sin paginación.
     expect(screen.getByTestId('kiosk-app-sistema')).toBeInTheDocument()
+    expect(screen.queryByTestId('kiosk-apps-abajo')).not.toBeInTheDocument()
     expect(screen.queryByText(/elegir carpeta/i)).not.toBeInTheDocument()
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
     expect(screen.queryByText(/estadillo/i)).not.toBeInTheDocument()

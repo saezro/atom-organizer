@@ -1962,8 +1962,8 @@ html[data-cursor] .picker-card { cursor: pointer; }
   color: var(--text);
 }
 .kiosk-app:disabled { opacity: 0.4; }
-.kiosk-app svg { width: 1.75rem; height: 1.75rem; color: var(--orange); }
-.kiosk-app-nombre { font-size: var(--fs-sm); text-align: center; }
+.kiosk-app svg { width: 2.75rem; height: 2.75rem; color: var(--orange); }
+.kiosk-app-nombre { font-size: 1.05rem; font-weight: 500; text-align: center; }
 
 .kiosk-apps-nav {
   display: flex;
@@ -2049,6 +2049,29 @@ html[data-cursor] .picker-card { cursor: pointer; }
 .kiosk-ajustes-cargando { color: var(--muted); font-size: var(--fs-sm); }
 .kiosk-ajustes-ok { color: var(--ok, #6ee7a8); font-size: var(--fs-sm); }
 .kiosk-ajustes-error { color: var(--orange); font-size: var(--fs-sm); }
+
+/* Índice de secciones de Ajustes (`KioskAjustes.jsx`): lista de entradas
+   grandes, mismo espíritu que `.kiosk-menu-btn` (dedo sobre panel
+   resistivo, nada por debajo de `--toque-min`). */
+.kiosk-ajustes-indice { display: flex; flex-direction: column; gap: var(--u); }
+.kiosk-ajustes-indice-lista { display: flex; flex-direction: column; gap: var(--u); }
+.kiosk-ajustes-indice-item {
+  display: flex;
+  align-items: center;
+  gap: var(--u);
+  min-height: var(--toque-min);
+  padding: 0 var(--u);
+  font: inherit;
+  font-size: 1.1rem;
+  font-weight: 700;
+  border-radius: var(--radio);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+.kiosk-ajustes-indice-item svg:first-child { color: var(--orange); flex-shrink: 0; }
+.kiosk-ajustes-indice-nombre { flex: 1; text-align: left; }
+.kiosk-ajustes-indice-item svg:last-child { color: var(--muted); flex-shrink: 0; }
 
 /* Pantalla «Tareas» del kiosco (`KioskTareas.jsx`): catalogo completo de
    `schema.js` en lista paginada (el arrastre no prende en el panel resistivo)

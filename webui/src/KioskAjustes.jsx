@@ -1,12 +1,114 @@
 import { useEffect, useState } from 'react'
 import BotonToque from './pulsacion.jsx'
 import { api } from './bridge.js'
+import KioskRed from './KioskRed.jsx'
 
-// Version kiosco de `ConfigScreen` (App.jsx): misma config persistente
-// (ruta de ThermoViewer + % de recorte RGB por modelo de dron), pero en el
-// patron de pantalla aislada del kiosco (header con "Atras" + titulo, botones
-// grandes tocables) en vez de un formulario de escritorio con raton.
+const PROPS_SVG = {
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: '2',
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+  width: '1.1em',
+  height: '1.1em',
+  'aria-hidden': 'true',
+}
+
+// Icono heredado de la app «Red» del launcher (apps/registry.js): dejó de
+// ser una app suelta y pasó a ser una sección de Ajustes, así que el icono
+// se mueve con ella en vez de duplicarse.
+function IconoRed() {
+  return (
+    <svg {...PROPS_SVG}>
+      <path d="M4.5 10a11 11 0 0115 0" />
+      <path d="M7.5 13.2a7 7 0 019 0" />
+      <path d="M10.5 16.4a3 3 0 013 0" />
+      <circle cx="12" cy="19" r="0.75" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}
+
+function IconoGeneral() {
+  return (
+    <svg {...PROPS_SVG}>
+      <path d="M4 6h10" />
+      <circle cx="17" cy="6" r="2.5" />
+      <path d="M20 12H10" />
+      <circle cx="7" cy="12" r="2.5" />
+      <path d="M4 18h10" />
+      <circle cx="17" cy="18" r="2.5" />
+    </svg>
+  )
+}
+
+function IconoFlecha() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+         strokeLinecap="round" strokeLinejoin="round" width="1.1em" height="1.1em" aria-hidden="true">
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  )
+}
+
+// Catálogo de secciones de Ajustes: mismo patrón que `apps/registry.js`
+// (id + nombre + icono), solo que aquí «abrir» es un estado local en vez de
+// una `accion` de KioskScreen.
+const SECCIONES = [
+  { id: 'red', nombre: 'Red (WiFi)', Icono: IconoRed },
+  { id: 'general', nombre: 'General', Icono: IconoGeneral },
+]
+
+// Pantalla «Ajustes» del kiosco: es un ÍNDICE de secciones (mismo patrón que
+// `KioskScreen` con `accion`: estado local `seccion`, null = índice). La
+// sección «Red (WiFi)» reutiliza `KioskRed` tal cual, embebida con su propio
+// «← Atrás» que vuelve al índice en vez de al launcher. «General» es lo que
+// esta pantalla ya hacía antes de tener secciones (ruta de ThermoViewer + %
+// de recorte por modelo de dron), calcado de `ConfigScreen` (App.jsx).
 export default function KioskAjustes({ tactil, onVolver }) {
+  const [seccion, setSeccion] = useState(null)
+
+  if (seccion === 'red') {
+    return <KioskRed tactil={tactil} onVolver={() => setSeccion(null)} />
+  }
+
+  if (seccion === 'general') {
+    return <SeccionGeneral tactil={tactil} onVolver={() => setSeccion(null)} />
+  }
+
+  return (
+    <div className="kiosk kiosk-ajustes kiosk-ajustes-indice">
+      <div className="kiosk-header kiosk-header-paso">
+        <BotonToque className="kiosk-atras" tactil={tactil} onActivar={onVolver}>
+          ← Atrás
+        </BotonToque>
+        <span className="kiosk-titulo">Ajustes</span>
+      </div>
+      <div className="kiosk-ajustes-indice-lista">
+        {SECCIONES.map((s) => (
+          <BotonToque
+            key={s.id}
+            className="kiosk-ajustes-indice-item"
+            tactil={tactil}
+            data-testid={`kiosk-ajustes-seccion-${s.id}`}
+            onActivar={() => setSeccion(s.id)}
+          >
+            <s.Icono />
+            <span className="kiosk-ajustes-indice-nombre">{s.nombre}</span>
+            <IconoFlecha />
+          </BotonToque>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// Sección «General»: version kiosco de `ConfigScreen` (App.jsx): misma
+// config persistente (ruta de ThermoViewer + % de recorte RGB por modelo de
+// dron), pero en el patron de pantalla aislada del kiosco (header con
+// "Atras" + titulo, botones grandes tocables) en vez de un formulario de
+// escritorio con raton.
+function SeccionGeneral({ tactil, onVolver }) {
   const [cargando, setCargando] = useState(true)
   const [ruta, setRuta] = useState('')
   const [models, setModels] = useState([]) // [{model, pct}]
@@ -91,7 +193,7 @@ export default function KioskAjustes({ tactil, onVolver }) {
         <BotonToque className="kiosk-atras" tactil={tactil} onActivar={onVolver}>
           ← Atrás
         </BotonToque>
-        <span className="kiosk-titulo">Ajustes</span>
+        <span className="kiosk-titulo">General</span>
       </div>
 
       {cargando ? (
