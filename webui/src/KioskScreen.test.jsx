@@ -31,7 +31,6 @@ function baseProps(overrides = {}) {
     onSubirCrudo: vi.fn(),
     busy: false,
     progreso: null,
-    onAbrirCompleta: vi.fn(),
     ...overrides,
   }
 }
@@ -99,11 +98,13 @@ describe('KioskScreen — paso 1 (menú)', () => {
     expect(screen.getByText('R')).toBeInTheDocument()
   })
 
-  it('pulsar el avatar llama a onAbrirCompleta', async () => {
-    const onAbrirCompleta = vi.fn()
-    render(<KioskScreen {...baseProps({ onAbrirCompleta })} />)
+  it('el avatar es un callejón sin salida: pulsarlo no hace nada ni saca del kiosco', async () => {
+    render(<KioskScreen {...baseProps()} />)
     await userEvent.click(screen.getByTestId('kiosk-avatar'))
-    expect(onAbrirCompleta).toHaveBeenCalled()
+    // Sigue en el paso 1 del kiosco: no hay forma táctil de llegar a la UI
+    // completa desde aquí.
+    expect(screen.getByRole('button', { name: /^organizar$/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /subir en crudo/i })).toBeInTheDocument()
   })
 
   it('con busy=true, los dos botones del menú están deshabilitados', () => {

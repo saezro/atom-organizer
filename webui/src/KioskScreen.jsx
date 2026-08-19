@@ -37,7 +37,6 @@ export default function KioskScreen({
   onSubirCrudo,
   busy,
   progreso,
-  onAbrirCompleta,
   // Solo para pruebas: permite montar el componente directamente en un paso.
   accionInicial = null,
 }) {
@@ -47,8 +46,12 @@ export default function KioskScreen({
   const inicial = email ? email[0].toUpperCase() : ''
   const tactil = isServerMode()
 
+  // El kiosco es un callejón sin salida táctil: el avatar ya no abre la UI
+  // completa (era la única vía para colarse en una interfaz inusable con el
+  // dedo en un panel de 480x320 sin ratón/teclado), así que ya no es un
+  // BotonToque, solo un contenedor visual.
   const avatar = (
-    <BotonToque className="kiosk-avatar" data-testid="kiosk-avatar" tactil={tactil} onActivar={onAbrirCompleta}>
+    <div className="kiosk-avatar" data-testid="kiosk-avatar">
       {status ? (
         status.picture ? (
           <img src={status.picture} alt={`Avatar de ${email}`} className="kiosk-avatar-img" />
@@ -58,7 +61,7 @@ export default function KioskScreen({
       ) : (
         <span className="kiosk-sin-sesion">Sin sesión</span>
       )}
-    </BotonToque>
+    </div>
   )
 
   const barraProgreso = progreso && (
