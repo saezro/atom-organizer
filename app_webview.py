@@ -128,7 +128,7 @@ public static class ModernFolder {
 class Api:
     """Objeto puente expuesto a JS como `window.pywebview.api`."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, broker: bool = False) -> None:
         self._window = None
         self._sink = None
         self._running = False
@@ -138,6 +138,11 @@ class Api:
         # arranque tendría que leer el fichero de credenciales aunque nadie vaya
         # a subir nada en toda la sesión.
         self._auth = None
+        # `broker`: modo Raspberry Pi (`main()`, rama `--server`). Sin cliente
+        # OAuth propio, `_get_auth` construye un `GoogleAuth` broker_only en
+        # vez de devolver `None`. El escritorio (Windows) nunca pasa esto:
+        # `broker=False` por defecto deja el comportamiento intacto.
+        self._broker = bool(broker)
         self._logging_in = False
         self._verifying = False
         self._uploading = False
@@ -528,7 +533,18 @@ class Api:
 
         client = cloud_config.load_client(ROOT)
         if client is None:
-            return None
+            if not self._broker:
+                # Escritorio sin `google_client.json`: comportamiento de
+                # siempre, la UI ofrece el mensaje de "falta el cliente OAuth".
+                return None
+            # Raspberry Pi: nunca va a tener `google_client.json` (ese es
+            # justo el punto del broker), así que la ausencia de cliente aquí
+            # no es un error, es el caso normal. Se construye sin credenciales
+            # propias; `login()` en esta instancia falla explicando que hay
+            # que emparejar por QR.
+            self._auth = GoogleAuth("", "", broker_only=True,
+                                    hosted_domain=cloud_config.HOSTED_DOMAIN)
+            return self._auth
         self._auth = GoogleAuth(client.client_id, client.client_secret,
                                 hosted_domain=cloud_config.HOSTED_DOMAIN)
         return self._auth
@@ -540,7 +556,8 @@ class Api:
         if auth is None:
             return {"ok": True, "configured": False, "logged_in": False,
                     "bucket": cloud_config.BUCKET_DATOS,
-                    "help": cloud_config.missing_client_help()}
+                    "help": cloud_config.missing_client_help(),
+                    "pairing": False}
         ident = auth.identity
         return {"ok": True, "configured": True,
                 "logged_in": auth.is_logged_in(),
@@ -552,7 +569,11 @@ class Api:
                 "validada_en": auth.validada_en,
                 "aviso": auth.aviso_store,
                 "bucket": cloud_config.BUCKET_DATOS,
-                "uploading": self._uploading}
+                "uploading": self._uploading,
+                # Le dice a la UI que enseñe la pantalla de QR en vez del botón
+                # "Iniciar sesión con Google": este equipo no tiene cliente
+                # OAuth propio (ver `_get_auth`), solo puede emparejarse.
+                "pairing": bool(getattr(auth, "broker_only", False))}
 
     def cloud_verify(self) -> dict:
         """Comprueba contra Google que la sesión guardada sigue sirviendo.
@@ -592,6 +613,12 @@ class Api:
             from atom_core import cloud_config
 
             return {"started": False, "reason": cloud_config.missing_client_help()}
+        if getattr(auth, "broker_only", False):
+            # Aquí no hay navegador de sistema que sirva de nada (kiosco sin
+            # teclado): el único camino es `cloud_pair_start`/`cloud_pair_poll`.
+            return {"ok": False,
+                    "error": "Este equipo se empareja por QR desde ATOM Suite, "
+                             "no con «Iniciar sesión con Google»."}
         if self._logging_in:
             return {"started": False, "reason": "Ya hay un login en curso."}
         self._logging_in = True
@@ -618,6 +645,70 @@ class Api:
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
         return {"ok": True}
+
+    # ---- emparejamiento por QR (modo broker, Raspberry Pi) -----------------
+    # La Pi no puede abrir el navegador del sistema en su propia pantalla como
+    # hace `cloud_login` (o sí puede, pero no tiene sentido: es un kiosco sin
+    # teclado). En vez de eso, Rodrigo escanea un QR con el móvil y consiente
+    # ahí; la Pi solo pregunta a la Suite si ya terminó (`cloud_pair_poll`).
+    def cloud_pair_start(self) -> dict:
+        """Pide a la Suite un `pair_id` nuevo y la URL para el QR.
+
+        Síncrono: es una sola petición HTTP rápida, no hay progreso que
+        empujar por eventos (a diferencia de `cloud_login`, que espera minutos
+        el consentimiento en el navegador)."""
+        from atom_core.google_auth import SUITE_URL
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(
+            f"{SUITE_URL}/api/organizer/pair/start", method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode() or "{}")
+        except urllib.error.HTTPError as exc:
+            return {"ok": False, "error": f"La Suite devolvió {exc.code}."}
+        except Exception as exc:  # noqa: BLE001 - se enseña, no se traga
+            return {"ok": False, "error": str(exc)}
+
+    def cloud_pair_poll(self, pair_id: str) -> dict:
+        """Pregunta a la Suite si `pair_id` ya se emparejó.
+
+        La UI repite esta llamada mientras enseña el QR (por eso es síncrono y
+        no un hilo con evento). En cuanto la Suite dice "listo" con un
+        `device_token`, se completa la sesión local vía `auth.pair()` y se
+        emite el mismo evento que `cloud_login` para que el resto de la UI
+        reaccione igual sin distinguir de dónde vino el login."""
+        from atom_core.google_auth import SUITE_URL
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        url = f"{SUITE_URL}/api/organizer/pair/poll?" + urllib.parse.urlencode(
+            {"pair_id": pair_id})
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                datos = json.loads(resp.read().decode() or "{}")
+        except urllib.error.HTTPError as exc:
+            return {"ok": False, "error": f"La Suite devolvió {exc.code}."}
+        except Exception as exc:  # noqa: BLE001 - se enseña, no se traga
+            return {"ok": False, "error": str(exc)}
+
+        if datos.get("estado") == "listo" and datos.get("device_token"):
+            auth = self._get_auth()
+            if auth is None:
+                from atom_core import cloud_config
+
+                return {"ok": False, "error": cloud_config.missing_client_help()}
+            try:
+                ident = auth.pair(datos["device_token"], datos.get("email", ""))
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": str(exc)}
+            # Mismo evento que `cloud_login`: la UI no necesita saber si el
+            # login vino del navegador de escritorio o de un QR emparejado.
+            self._push_cloud({"kind": "login", "ok": True,
+                              "email": ident.email if ident else None})
+        return datos
 
     def cloud_inspecciones(self) -> dict:
         """Catálogo de inspecciones para el desplegable.
@@ -1207,7 +1298,7 @@ def main() -> None:
         from atom_core.event_sink import QueueSink
         from atom_core.webserver import servir
 
-        api = Api()
+        api = Api(broker=True)
         sink = QueueSink()
         api.bind_sink(sink)
         servir(api, str(DIST_INDEX.parent), args.host, args.port, sink)
