@@ -33,6 +33,45 @@ const normaliza = (s) =>
 
 const MAX_RESULTADOS = 50
 
+// Color por fase: copia literal de PHASE_HEX de la Suite
+// (`src/constants/phaseColors.js`) — misma progresión gris→azul→índigo→
+// violeta→fucsia→amarillo→lima→esmeralda, para que la Pi y la web hablen el
+// mismo idioma visual. Se aceptan las variantes con acento porque la fase
+// llega tal cual de la BD.
+const COLOR_FASE = {
+  Por_confirmar: '#64748b',
+  'Por confirmar': '#64748b',
+  Confirmada: '#38bdf8',
+  Preparacion: '#6366f1',
+  'Preparación': '#6366f1',
+  Vuelo: '#8b5cf6',
+  Analisis: '#d946ef',
+  'Análisis': '#d946ef',
+  Informes: '#facc15',
+  Revision: '#84cc16',
+  'Revisión': '#84cc16',
+  Terminado: '#10b981',
+  Terminada: '#10b981',
+  Cancelada: '#ef4444',
+}
+const COLOR_FASE_DEFECTO = '#64748b'
+
+// Color por tipo de inspección. Deliberadamente en tonos que NO están en la
+// progresión de fases, para no confundir un chip con el otro de un vistazo.
+const COLOR_TIPO = {
+  T_Modulos: '#ee763c',
+  T_Cajas: '#14b8a6',
+  T_LAT: '#f43f5e',
+  RGB_HD: '#94a3b8',
+}
+const COLOR_TIPO_DEFECTO = '#94a3b8'
+
+// Chip de color translúcido: fondo al 18%, borde al 40%, texto al color pleno
+// (mismo patrón que PHASE_BADGE de la Suite, pero sin Tailwind).
+function chip(hex) {
+  return { background: `${hex}2e`, borderColor: `${hex}66`, color: hex }
+}
+
 // Selector de inspección para «Subir al bucket»: buscador + chips de fase +
 // toggle de terminadas + lista agrupada por año (desc) y ordenada por fase
 // dentro de cada año. Deliberadamente sin portal ni posicionamiento absoluto:
@@ -180,7 +219,10 @@ export default function InspeccionSelector({
         </label>
       )}
 
-      <ul className="insp-list">
+      {/* El scroll del kiosco lo lleva el contenedor de KioskScreen (arrastre +
+          botones ▲/▼); si el <ul> se queda con su propio `max-height` +
+          `overflow` no se mueve ninguno de los dos. */}
+      <ul className={soloLista ? 'insp-list insp-list-plana' : 'insp-list'}>
         {grupos.map(([anio, items]) => (
           <li key={anio} className="insp-grupo-anio">
             <span className="insp-anio">{anio}</span>
@@ -189,11 +231,40 @@ export default function InspeccionSelector({
                 <li key={i.prefijo}>
                   <button
                     type="button"
-                    className="insp-item"
+                    className={soloLista ? 'insp-item insp-item-chips' : 'insp-item'}
                     onClick={() => onElegir(i.prefijo)}
                     disabled={ocupado}
                   >
-                    {i.etiqueta}
+                    {soloLista ? (
+                      <>
+                        {/* En el kiosco la etiqueta plana obligaba a leerla
+                            entera para distinguir tipo y fase; separadas en
+                            chips de color se reconocen sin leer. */}
+                        <span className="insp-nombre">
+                          {[i.empresa, i.planta].filter(Boolean).join(' · ') || i.etiqueta}
+                        </span>
+                        <span className="insp-chips-item">
+                          {i.tipo && (
+                            <span
+                              className="insp-chip-dato"
+                              style={chip(COLOR_TIPO[i.tipo] || COLOR_TIPO_DEFECTO)}
+                            >
+                              {i.tipo}
+                            </span>
+                          )}
+                          {i.fase && (
+                            <span
+                              className="insp-chip-dato"
+                              style={chip(COLOR_FASE[i.fase] || COLOR_FASE_DEFECTO)}
+                            >
+                              {i.fase}
+                            </span>
+                          )}
+                        </span>
+                      </>
+                    ) : (
+                      i.etiqueta
+                    )}
                   </button>
                 </li>
               ))}

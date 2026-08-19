@@ -1290,6 +1290,36 @@ select.glass-input option {
   flex: 1;
   min-height: 0;
 }
+/* Paginado a botones: el arrastre del panel resistivo no siempre prende, así
+   que la lista lleva al lado una columna con ▲/▼ que saltan una pantalla. */
+.kiosk-insp-paginado {
+  flex-direction: row;
+  gap: var(--u);
+}
+.kiosk-insp-paginado .kiosk-insp-scroll {
+  flex: 1;
+  min-width: 0;
+}
+.kiosk-insp-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--u);
+  flex: 0 0 auto;
+}
+.kiosk-insp-nav-btn {
+  flex: 1;
+  width: var(--toque-min);
+  min-height: var(--toque-min);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: var(--u);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+.kiosk-insp-nav-btn svg { width: 1.5rem; height: 1.5rem; }
 /* Contenedor de scroll manual (drag = `scrollTop`, ver KioskScreen.jsx): el
    panel resistivo entrega el dedo como ratón absoluto, así que el scroll
    nativo por arrastre no existe y hay que emularlo, igual que en
@@ -1451,4 +1481,34 @@ html[data-cursor] .picker-card { cursor: pointer; }
   }
   .pair-texto { font-size: 0.7rem; }
   .pair { gap: calc(var(--u) / 2); }
+}
+
+
+/* ---- Lista de inspecciones en modo kiosco (`soloLista`) ---- */
+/* Sin scroll propio: lo lleva `.kiosk-insp-scroll` de fuera. */
+.insp-list-plana {
+  max-height: none;
+  overflow: visible;
+  border: 0;
+  margin-top: 0;
+}
+.insp-item-chips {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: calc(var(--u) / 2);
+}
+.insp-item-chips .insp-nombre { font-weight: 600; }
+.insp-chips-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(var(--u) / 2);
+}
+.insp-chip-dato {
+  padding: 0.125rem 0.5rem;
+  border-radius: 999rem;
+  border: 0.0625rem solid;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  white-space: nowrap;
 }
