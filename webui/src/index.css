@@ -27,6 +27,9 @@
   --u: 0.5rem;
   --fs-base: 1rem;
   --fs-sm: 0.875rem;
+  /* Titulillo/etiqueta destacada: unifica los 1.05/1.0625/1.1rem sueltos que
+     habian ido apareciendo por el kiosco. */
+  --fs-md: 1.0625rem;
   --fs-lg: 1.125rem;
   --radio: 0.75rem;
   --toque-min: 2.75rem;       /* target tactil minimo */
@@ -44,6 +47,7 @@
     --u: 0.3125rem;
     --fs-base: 0.8125rem;
     --fs-sm: 0.6875rem;
+    --fs-md: 0.875rem;
     --fs-lg: 0.9375rem;
     --radio: 0.5rem;
   }
