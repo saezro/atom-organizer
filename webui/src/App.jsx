@@ -424,6 +424,36 @@ function App() {
     if (path) setKioskCarpeta(path)
   }
 
+  // En cuanto el kiosco tiene carpeta E inspección elegidas, se lanza el
+  // listado del bucket EN BACKGROUND (fire-and-forget): así, cuando el
+  // operario llegue a «Antes de subir» (`kioskComprobarSubida`), el
+  // inventario ya está calculado o casi, en vez de arrancar de cero en ese
+  // momento. El resultado se ignora aquí a propósito: quien pinta el resumen
+  // es `kioskComprobarSubida`, que vuelve a preguntar.
+  const kioskPrefijo = kioskInspeccion?.prefijo
+  useEffect(() => {
+    if (!kioskCarpeta || !kioskPrefijo) return
+    api.cloudPrepare(kioskCarpeta, kioskPrefijo).catch(() => {})
+  }, [kioskCarpeta, kioskPrefijo])
+
+  // Espera al evento `atom:cloud` (`kind:'inventario'`) del prefijo dado.
+  // Con timeout: un bucket enorme o un fallo de red no puede dejar al
+  // operario colgado en «Antes de subir» sin poder continuar.
+  function esperarInventario(prefijo) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        off()
+        resolve(false)
+      }, 30000)
+      const off = onCloud((d) => {
+        if (d.kind !== 'inventario' || d.prefix !== prefijo) return
+        clearTimeout(timer)
+        off()
+        resolve(Boolean(d.ok))
+      })
+    })
+  }
+
   // Comprobación EN SECO previa a subir: `cloudPrepare` dice cuántos ficheros
   // hay pendientes de verdad y `estadillosDetectar` qué se ha volado (días,
   // vuelos, pilotos, drones). No sube nada; el kiosco pinta el resultado como
@@ -431,11 +461,20 @@ function App() {
   async function kioskComprobarSubida({ carpeta, inspeccion }) {
     const prefijo = inspeccion?.prefijo
     if (!carpeta || !prefijo) return null
-    const [prepare, estadillos] = await Promise.all([
+    let [prepare, estadillos] = await Promise.all([
       api.cloudPrepare(carpeta, prefijo).catch((e) => ({ ok: false, error: String(e) })),
       // Que falle la detección de estadillos NO impide subir: es informativa.
       api.estadillosDetectar(carpeta).catch((e) => ({ n_estadillos: 0, info: null, error: String(e) })),
     ])
+    // Si el listado (precalentado arriba, o recién lanzado por este mismo
+    // `cloudPrepare` si no había caché) aún no ha terminado, se espera al
+    // evento y se repregunta UNA vez para traer los pendientes reales. Si
+    // llega `ok:false` o hay timeout, se sigue con el `prepare` a secas: la
+    // subida no puede quedar bloqueada por no saber el número exacto.
+    if (prepare?.inventario === 'calculando') {
+      const ok = await esperarInventario(prefijo)
+      if (ok) prepare = await api.cloudPrepare(carpeta, prefijo).catch(() => prepare)
+    }
     return { prepare, estadillos }
   }
 
@@ -990,6 +1029,20 @@ function BucketScreen({ ready }) {
           case 'log':
             if (d.text) setLines((l) => [...l, d.text])
             break
+          case 'inventario': {
+            // El listado del bucket que se lanzó al elegir carpeta ya está.
+            // Se vuelve a pedir `cloudPrepare`, que ahora lo lee de la caché
+            // del bridge y responde al instante con los pendientes reales.
+            // Se comprueba el prefijo porque el operario puede haber cambiado
+            // de inspección mientras se listaba: ese inventario ya no vale.
+            const ctx = prepararRef.current
+            if (!ctx || !d.ok || d.prefix !== ctx.prefijo || !ctx.carpeta) break
+            // Si ya está subiendo, el inventario llega tarde: repreguntar
+            // pisaría el plan que se está mostrando con el progreso real.
+            if (ctx.uploading) break
+            ctx.preparar(ctx.carpeta, ctx.prefijo)
+            break
+          }
           case 'done':
             setUploading(false)
             setResult(d)
@@ -1050,6 +1103,11 @@ function BucketScreen({ ready }) {
     // auto-marcado si procede.
     setOmitirEstadillo(false)
   }
+
+  // El handler de `onCloud` se monta una sola vez y no ve los estados nuevos
+  // por closure; este ref le da siempre los vigentes.
+  const prepararRef = useRef(null)
+  prepararRef.current = { carpeta, prefijo, preparar, uploading }
 
   async function preparar(path, pref) {
     if (!pref) return

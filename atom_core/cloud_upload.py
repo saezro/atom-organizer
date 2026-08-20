@@ -61,7 +61,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
@@ -75,6 +75,7 @@ __all__ = [
     "UrlProvider",
     "GcsOAuthProvider",
     "SignedUrlProvider",
+    "YaExiste",
     "build_plan",
     "upload_plan",
     "objetos_en_prefijo",
@@ -114,6 +115,21 @@ FLIGHT_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".dng", ".mp4",
 IGNORED_NAMES = {"thumbs.db", "desktop.ini", ".ds_store"}
 
 
+class YaExiste(Exception):
+    """El objeto ya estaba en el bucket y la subida se abortó sin gastar bytes.
+
+    La lanza `upload_file` cuando GCS contesta 412 a la precondición
+    `ifGenerationMatch=0` (ver `GcsOAuthProvider.upload_url`). No es un fallo:
+    significa que el listado previo no llegó a ver ese objeto (tope de páginas,
+    o subido por otra sesión mientras tanto) y que la red de seguridad ha hecho
+    su trabajo. Se cuenta como saltado, no se reintenta.
+    """
+
+    def __init__(self, remote: str) -> None:
+        super().__init__(f"{remote} ya existe en el bucket")
+        self.remote = remote
+
+
 # --------------------------------------------------------------------------
 # Plan
 # --------------------------------------------------------------------------
@@ -126,6 +142,15 @@ class UploadItem:
     # Ruta dentro del bucket, con `/` siempre (aunque el cliente sea Windows).
     remote: str
     size: int
+    # Si hay que subir SIN la precondición `ifGenerationMatch=0` (ver
+    # `GcsOAuthProvider.upload_url`). Por defecto False: la precondición actúa
+    # de red de seguridad para lo que `listar_objetos_remotos` no llegó a ver
+    # (tope de 50 páginas). Se pone a True para los items que `reconciliar`
+    # decide resubir a propósito PORQUE el objeto ya existe en el bucket (con
+    # otro tamaño, otro MD5, o porque el local cambió desde que se subió): en
+    # esos casos el objeto SÍ existe, y con la precondición puesta GCS
+    # rechazaría con 412 justo lo que se quiere sobreescribir.
+    sobrescribir: bool = False
 
     @property
     def key(self) -> str:
@@ -328,17 +353,21 @@ def reconciliar(plan: UploadPlan, remotos: dict[str, RemoteObject],
         if remoto is None:
             pendientes.append(item)
             continue
+        # En los tres casos de abajo el objeto YA existe en el bucket (solo que
+        # no es el que se quiere tener ahí), así que se marca `sobrescribir`:
+        # sin eso, `upload_file` mandaría la precondición `ifGenerationMatch=0`
+        # y GCS respondería 412 justo a la resubida que se está forzando aquí.
         if remoto.size != item.size:
             _log.debug("resubo %s: tamaño distinto (local %d, bucket %d)",
                        item.remote, item.size, remoto.size)
-            pendientes.append(item)
+            pendientes.append(replace(item, sobrescribir=True))
             continue
 
         conocido = manifest is not None and manifest.md5_de(item) != ""
         if conocido and not manifest.is_done(item):
             _log.info("resubo %s: el fichero local ha cambiado desde que se "
                       "subió", item.remote)
-            pendientes.append(item)
+            pendientes.append(replace(item, sobrescribir=True))
             continue
 
         md5_local = manifest.md5_de(item) if manifest is not None else ""
@@ -346,7 +375,7 @@ def reconciliar(plan: UploadPlan, remotos: dict[str, RemoteObject],
             _log.warning("resubo %s: el MD5 del bucket no coincide con el del "
                          "manifiesto (bucket %s, manifiesto %s)",
                          item.remote, remoto.md5, md5_local)
-            pendientes.append(item)
+            pendientes.append(replace(item, sobrescribir=True))
             continue
 
         hechos.append(item)
@@ -369,8 +398,14 @@ class UrlProvider:
       control (puede imponer rutas o cuotas), a cambio de mantenerlo.
     """
 
-    def upload_url(self, remote: str, size: int) -> str:  # pragma: no cover
-        """URL a la que abrir la sesión resumable."""
+    def upload_url(self, remote: str, size: int, *,
+                   sobrescribir: bool = False) -> str:  # pragma: no cover
+        """URL a la que abrir la sesión resumable.
+
+        `sobrescribir=True` pide la URL SIN protección: para el resto de casos
+        (ver `GcsOAuthProvider`) el proveedor debe evitar pisar un objeto que
+        ya exista en el destino.
+        """
         raise NotImplementedError
 
     def headers(self) -> dict[str, str]:
@@ -422,9 +457,18 @@ class GcsOAuthProvider(UrlProvider):
         self.auth = auth
         self.base = (base or self.BASE).rstrip("/")
 
-    def upload_url(self, remote: str, size: int) -> str:
+    def upload_url(self, remote: str, size: int, *,
+                   sobrescribir: bool = False) -> str:
         objeto = urllib.parse.quote(remote.lstrip("/"), safe="/")
-        return f"{self.base}/{self.bucket}/{objeto}"
+        url = f"{self.base}/{self.bucket}/{objeto}"
+        if not sobrescribir:
+            # `ifGenerationMatch=0` solo deja crear el objeto si NO existe
+            # ninguna generación previa. Es la red de seguridad para lo que
+            # `listar_objetos_remotos` no llegó a ver (tope de 50 páginas): si
+            # el objeto ya está en el bucket, GCS corta con 412 sin aceptar ni
+            # un byte, en vez de sobreescribirlo en silencio.
+            url += "?" + urllib.parse.urlencode({"ifGenerationMatch": 0})
+        return url
 
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.auth.access_token()}"}
@@ -454,7 +498,11 @@ class SignedUrlProvider(UrlProvider):
         self.token = token
         self.timeout = timeout
 
-    def upload_url(self, remote: str, size: int) -> str:
+    def upload_url(self, remote: str, size: int, *,
+                   sobrescribir: bool = False) -> str:
+        # `sobrescribir` no viaja en el payload: quien decide si protege o no
+        # el objeto es el backend que firma, no este cliente. El parámetro
+        # existe solo para cumplir el contrato de `UrlProvider`.
         payload = json.dumps({"object": remote, "size": size}).encode()
         req = urllib.request.Request(
             self.endpoint,
@@ -719,6 +767,9 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
     `on_retry` se avisa en cada reintento para poder contarlos: son la señal de
     que la red va mal, y sin contarlos un «tardó tres horas» no se distingue de
     un «tardó tres horas porque hubo 400 microcortes».
+
+    Lanza `YaExiste` si el objeto ya estaba en el bucket (y el item no venía
+    marcado para sobreescribir): eso no es un fallo, es un saltado tardío.
     """
     total = item.size
     session_uri: str | None = None
@@ -728,8 +779,17 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
     for attempt in range(MAX_RETRIES):
         try:
             if session_uri is None:
-                session_uri = _open_session(provider.upload_url(item.remote, total),
-                                            provider.headers())
+                url = provider.upload_url(item.remote, total,
+                                          sobrescribir=item.sobrescribir)
+                try:
+                    session_uri = _open_session(url, provider.headers())
+                except urllib.error.HTTPError as exc:
+                    # 412: la precondición `ifGenerationMatch=0` ha cortado
+                    # porque el objeto ya está ahí. GCS no ha aceptado ni un
+                    # byte, así que no hay nada que reintentar ni que limpiar.
+                    if exc.code == 412:
+                        raise YaExiste(item.remote) from exc
+                    raise
                 offset = 0
             else:
                 offset = _committed_offset(session_uri, total, provider.headers())
@@ -763,7 +823,7 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
                        f", {attempt} reintento(s)" if attempt else "")
             return _file_md5_b64(item.local)
 
-        except InterruptedError:
+        except (InterruptedError, YaExiste):
             raise
         except Exception as exc:  # noqa: BLE001 - se reclasifica justo debajo
             if attempt == MAX_RETRIES - 1 or not _is_retryable(exc):
@@ -816,6 +876,10 @@ class UploadResult:
     # Cuántos de los `skipped` se descartaron por estar ya en el bucket (frente
     # a los que ya constaban en el manifiesto local).
     skipped_remoto: int = 0
+    # Saltados ya en pleno vuelo, porque GCS rechazó con 412 la precondición
+    # `ifGenerationMatch=0` (ver `YaExiste`). Es la medida de lo que el listado
+    # previo NO llegó a ver: si crece, el inventario se está quedando corto.
+    skipped_precondicion: int = 0
     # Si se pudo consultar el bucket. False = se subió a ciegas, fiándose solo
     # del manifiesto local, y por tanto el `skipped` puede quedarse corto.
     reconciliado: bool = False
@@ -850,12 +914,13 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
     interfaz se pasaría el rato repintando en vez de subiendo. El detalle fino
     (fichero a fichero, reintentos, cortes) va al log, no a la UI.
 
-    `remotos` permite inyectar un inventario ya consultado, sobre todo para
-    poder probar la reconciliación sin red. La pantalla previa NO lo reutiliza:
-    `cloud_prepare` y `cloud_upload` son dos llamadas independientes del bridge
-    y entre una y otra el operador puede tardar lo que quiera, así que el
-    inventario se vuelve a pedir al empezar de verdad — dos segundos a cambio
-    de no decidir sobre una foto caducada del bucket.
+    `remotos` permite inyectar un inventario ya consultado. La pantalla previa
+    SÍ lo reutiliza (`app_webview._inventario_cacheado`): en un prefijo con
+    decenas de miles de objetos el listado tarda ~20 s, y pedirlo dos veces
+    dejaba al operario esperando delante de una barra parada. Que la foto del
+    bucket sea de hace unos minutos ya no es un riesgo: si algo se coló entre
+    medias, la precondición `ifGenerationMatch=0` lo corta con un 412 (ver
+    `YaExiste`) sin llegar a sobreescribir ni a gastar ancho de banda.
     """
     upload_log.get_logger()  # asegura que hay fichero donde escribir
     result = UploadResult()
@@ -967,21 +1032,31 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
         with sent_lock:
             counter["retries"] += 1
 
-    def _one(item: UploadItem) -> tuple[UploadItem, str | None, str | None]:
+    def _one(item: UploadItem) -> tuple[UploadItem, str | None, str | None, bool]:
         try:
             md5 = upload_file(item, provider, on_bytes=_bump,
                               should_stop=should_stop, on_retry=_retry)
-            return item, md5, None
+            return item, md5, None, False
         except InterruptedError:
-            return item, None, "cancelado"
+            return item, None, "cancelado", False
+        except YaExiste:
+            # Ya estaba en el destino: ni error ni subida. No se toca el
+            # manifiesto porque no se ha visto el MD5 del objeto remoto, y
+            # apuntar el local haría pasar por verificado algo que no lo está;
+            # la próxima corrida lo verá en el listado y lo hidratará bien.
+            _log.info("%s ya estaba en el bucket (412), lo salto", item.remote)
+            return item, None, None, True
         except Exception as exc:  # noqa: BLE001 - se reporta, no se traga
-            return item, None, f"{type(exc).__name__}: {exc}"
+            return item, None, f"{type(exc).__name__}: {exc}", False
 
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
         futures = [pool.submit(_one, item) for item in pending]
         for fut in as_completed(futures):
-            item, md5, err = fut.result()
-            if err is None and md5 is not None:
+            item, md5, err, ya_estaba = fut.result()
+            if ya_estaba:
+                result.skipped += 1
+                result.skipped_precondicion += 1
+            elif err is None and md5 is not None:
                 manifest.mark(item, md5)
                 result.uploaded += 1
             else:
@@ -1003,9 +1078,10 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
     result.elapsed = time.monotonic() - started
     result.retries = counter["retries"]
 
-    _log.info("FIN · %d subidos · %d omitidos · %.2f GB en %.0fs (%.0f Mbps) · "
-              "%d reintentos · %d fallos",
-              result.uploaded, result.skipped, result.bytes_sent / 1024 ** 3,
+    _log.info("FIN · %d subidos · %d omitidos (%d por precondición) · %.2f GB "
+              "en %.0fs (%.0f Mbps) · %d reintentos · %d fallos",
+              result.uploaded, result.skipped, result.skipped_precondicion,
+              result.bytes_sent / 1024 ** 3,
               result.elapsed, result.mbps, result.retries, len(result.failed))
     for objeto, motivo in result.failed:
         _log.error("FALLÓ %s → %s", objeto, motivo)

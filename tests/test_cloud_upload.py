@@ -155,9 +155,14 @@ class StaticProvider(cu.UrlProvider):
 
     def __init__(self):
         self.calls: list[tuple[str, int]] = []
+        # Qué items pidieron URL sin protección `ifGenerationMatch=0`.
+        self.sobrescritos: list[str] = []
 
-    def upload_url(self, remote: str, size: int) -> str:
+    def upload_url(self, remote: str, size: int, *,
+                   sobrescribir: bool = False) -> str:
         self.calls.append((remote, size))
+        if sobrescribir:
+            self.sobrescritos.append(remote)
         return f"https://fake/upload/{remote.replace('/', '_')}?sig=x"
 
 
@@ -789,3 +794,65 @@ def test_el_listado_avisa_si_se_queda_corto(tmp_path, monkeypatch):
 
     assert out  # devuelve lo que pudo ver
     assert avisos and "más de" in avisos[0]
+
+
+# --------------------------------------------------------------------------
+# 412: el objeto ya estaba en el bucket
+# --------------------------------------------------------------------------
+
+def test_upload_file_412_lanza_ya_existe_sin_reintentar(tmp_path, monkeypatch):
+    """GCS corta con 412 al abrir sesión: no hay nada que reintentar."""
+    intentos = {"n": 0}
+
+    def _abre_412(req, timeout=None):
+        intentos["n"] += 1
+        raise _http_error(412)
+
+    monkeypatch.setattr(cu.urllib.request, "urlopen", _abre_412)
+    monkeypatch.setattr(cu.time, "sleep", lambda _s: None)
+
+    root = _vuelo(tmp_path, {"a.jpg": b"z" * 100})
+    item = cu.build_plan(root).items[0]
+
+    with pytest.raises(cu.YaExiste):
+        cu.upload_file(item, StaticProvider())
+    assert intentos["n"] == 1
+
+
+def test_upload_plan_cuenta_el_412_como_precondicion_no_como_fallo(tmp_path, monkeypatch):
+    """Un fichero que GCS ya tenía no debe tumbar el plan ni contarse como error."""
+    server = FakeGCS()
+    original = server.urlopen
+
+    def _con_412_en_malo(req, timeout=None):
+        if req.get_method() == "POST" and "malo" in req.full_url:
+            raise _http_error(412)
+        return original(req, timeout=timeout)
+
+    monkeypatch.setattr(cu.urllib.request, "urlopen", _con_412_en_malo)
+    monkeypatch.setattr(cu.time, "sleep", lambda _s: None)
+
+    root = _vuelo(tmp_path, {"bueno.jpg": b"z" * 10, "malo.jpg": b"z" * 10})
+    res = cu.upload_plan(cu.build_plan(root), StaticProvider(), concurrency=2)
+
+    assert res.ok
+    assert res.failed == []
+    assert res.skipped_precondicion == 1
+    assert res.uploaded == 1
+    assert server.objects["bueno.jpg"] == b"z" * 10
+
+
+def test_reconciliar_pide_url_con_sobrescribir_solo_para_los_que_resube(tmp_path, gcs):
+    """`reconciliar` marca `sobrescribir=True` cuando el objeto YA existe (con
+    otro tamaño); un fichero nuevo debe seguir pidiendo la URL protegida."""
+    root = _vuelo(tmp_path, {"cambiado.jpg": b"a" * 500, "nuevo.jpg": b"b" * 300})
+    plan = cu.build_plan(root, prefix="v")
+    # "cambiado.jpg" ya está en el bucket con otro tamaño -> se fuerza resubida.
+    remotos = {plan.items[0].remote: cu.RemoteObject(plan.items[0].remote, 999)}
+    provider = ListingProvider(remotos)
+
+    res = cu.upload_plan(plan, provider)
+
+    assert res.uploaded == 2
+    assert plan.items[0].remote in provider.sobrescritos
+    assert plan.items[1].remote not in provider.sobrescritos

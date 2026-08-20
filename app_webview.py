@@ -158,6 +158,18 @@ class Api:
         self._push_buf: list[dict] = []
         self._push_lock = threading.Lock()
         self._push_last = 0.0
+        # Inventario del prefijo destino, calculado en background (ver
+        # `_inventario_precalentar`). Listar 50.000 objetos son ~20 s: pedirlo
+        # síncrono dejaba la pantalla previa bloqueada justo después de elegir
+        # carpeta. Se calcula mientras el operario lee el estadillo y elige
+        # inspección, y la subida lo reutiliza si sigue siendo del mismo
+        # prefijo y no ha caducado.
+        # Va por prefijo: si el operario cambia de inspección deprisa quedan
+        # dos listados vivos, y con un solo hueco el que tardara más (el de la
+        # inspección que ya abandonó) pisaba al recién calculado.
+        self._inv: dict[str, dict] = {}    # prefix -> {remotos, t}
+        self._inv_lock = threading.Lock()
+        self._inv_hilos: set[str] = set()  # prefijos que se están calculando ya
         # Hotspot de configuración wifi (red_ap_*): token efímero (nunca a
         # disco) y timer de autoapagado para no dejar la Pi sin red si nadie
         # completa el flujo desde el móvil.
@@ -781,14 +793,84 @@ class Api:
                               "válido dentro del bucket.")
         return root, limpio, ""
 
+    # ---- inventario del destino, en background ---------------------------
+    # Cuánto vale un inventario ya calculado. Diez minutos son de sobra para
+    # que el operario lea el estadillo y elija inspección, y lo que se cuele en
+    # el bucket mientras tanto no rompe nada: `upload_file` manda la
+    # precondición `ifGenerationMatch=0` y GCS corta con 412 sin gastar bytes
+    # (ver `cloud_upload.YaExiste`). Esa red de seguridad es lo que permite
+    # fiarse de una foto del bucket ligeramente vieja.
+    INV_TTL = 600.0
+
+    def _inventario_cacheado(self, prefix: str) -> dict | None:
+        """El inventario de `prefix` si lo hay y sigue fresco."""
+        with self._inv_lock:
+            inv = self._inv.get(prefix)
+        if inv is None:
+            return None
+        if time.monotonic() - inv["t"] > self.INV_TTL:
+            return None
+        return inv["remotos"]
+
+    def _inventario_precalentar(self, prefix: str) -> None:
+        """Lanza (si no está ya) el listado del prefijo en un hilo.
+
+        No devuelve nada: cuando termina empuja `kind: "inventario"` por
+        `atom:cloud` para que la UI pinte los pendientes cuando los tenga, en
+        vez de hacerla esperar antes de enseñar nada.
+        """
+        from atom_core import cloud_config, cloud_upload
+
+        auth = self._get_auth()
+        if auth is None or not auth.is_logged_in():
+            return
+        with self._inv_lock:
+            if prefix in self._inv_hilos:
+                return  # ya hay un hilo con este mismo prefijo
+            inv = self._inv.get(prefix)
+            if inv is not None and time.monotonic() - inv["t"] <= self.INV_TTL:
+                return  # ya está calculado y fresco
+            self._inv_hilos.add(prefix)
+
+        def worker() -> None:
+            try:
+                t0 = time.monotonic()
+                remotos = cloud_upload.listar_objetos_remotos(
+                    cloud_config.BUCKET_DATOS, prefix, auth)
+            except Exception as exc:  # noqa: BLE001 - informativo, no bloquea
+                self._log_subida("inventario de %s: no se pudo listar (%s)",
+                                 prefix, exc)
+                with self._inv_lock:
+                    self._inv_hilos.discard(prefix)
+                self._push_cloud({"kind": "inventario", "prefix": prefix,
+                                  "ok": False})
+                return
+            ahora = time.monotonic()
+            with self._inv_lock:
+                # Poda de caducados: si no, cada inspección del día deja su
+                # listado (decenas de miles de rutas) retenido en memoria.
+                self._inv = {p: v for p, v in self._inv.items()
+                             if ahora - v["t"] <= self.INV_TTL}
+                self._inv[prefix] = {"remotos": remotos, "t": ahora}
+                self._inv_hilos.discard(prefix)
+            self._push_cloud({"kind": "inventario", "prefix": prefix,
+                              "ok": True, "existing": len(remotos),
+                              "elapsed": round(time.monotonic() - t0, 1)})
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def cloud_prepare(self, folder: str, prefix: str | None = None) -> dict:
         """Qué se subiría de verdad: total, lo que ya está y lo que falta.
 
-        Lista el prefijo destino y lo cruza con la carpeta, así que lo que
-        enseña es el trabajo REAL pendiente, no el tamaño de la carpeta. Sobre
-        una inspección ya subida esto responde «0 pendientes» en un par de
-        segundos, que es justo lo que el usuario necesita saber antes de darle
-        a subir.
+        Cruza la carpeta con lo que ya hay en el destino, así que lo que
+        enseña es el trabajo REAL pendiente, no el tamaño de la carpeta.
+
+        NUNCA lista el bucket aquí: un prefijo con decenas de miles de objetos
+        tarda ~20 s y esto se llama justo al elegir carpeta, con la pantalla
+        esperando. El listado se lanza en background (`_inventario_precalentar`)
+        y esta llamada devuelve al instante con `inventario: "calculando"`; la
+        UI recibe `kind: "inventario"` por `atom:cloud` cuando esté y vuelve a
+        preguntar, y entonces sí salen los pendientes de la caché.
         """
         from atom_core import cloud_config, cloud_upload
 
@@ -810,14 +892,15 @@ class Api:
             out["ok"] = False
             return out
 
+        out["inventario"] = "no"
         auth = self._get_auth()
         if auth is not None and auth.is_logged_in():
-            try:
-                remotos = cloud_upload.listar_objetos_remotos(
-                    cloud_config.BUCKET_DATOS, prefix, auth)
-            except Exception:  # noqa: BLE001 - informativo; no bloquea el paso previo
-                pass
+            remotos = self._inventario_cacheado(prefix)
+            if remotos is None:
+                out["inventario"] = "calculando"
+                self._inventario_precalentar(prefix)
             else:
+                out["inventario"] = "listo"
                 pendientes, hechos = cloud_upload.reconciliar(plan, remotos)
                 out["existing"] = len(remotos)
                 out["ya_subidos"] = len(hechos)
@@ -878,16 +961,23 @@ class Api:
                 # descarta (`reconciliar`), en vez de bloquear la subida entera
                 # y pedirle al operador que confirme a ciegas. Subir dos veces
                 # la misma carpeta es ahora una operación segura y barata.
+                # Se reutiliza el inventario que se calculó al elegir carpeta
+                # si sigue fresco: volver a listar aquí son otros ~20 s con el
+                # operario mirando una barra parada. Lo que se haya colado en
+                # el bucket desde entonces lo para la precondición
+                # `ifGenerationMatch=0` con un 412, sin gastar bytes.
                 res = cloud_upload.upload_plan(
                     plan, provider,
                     on_progress=lambda t: self._push_cloud({"kind": "log", "text": t}),
                     on_stats=lambda s: self._push_cloud({"kind": "stats", **s}),
                     should_stop=lambda: self._cancel_upload,
+                    remotos=self._inventario_cacheado(prefix),
                 )
                 self._push_cloud({
                     "kind": "done", "ok": res.ok,
                     "uploaded": res.uploaded, "skipped": res.skipped,
                     "skipped_remoto": res.skipped_remoto,
+                    "skipped_precondicion": res.skipped_precondicion,
                     "reconciliado": res.reconciliado,
                     "bytes": res.bytes_sent, "elapsed": res.elapsed,
                     "mbps": round(res.mbps, 1), "retries": res.retries,

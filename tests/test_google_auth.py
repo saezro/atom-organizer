@@ -468,13 +468,15 @@ def test_el_provider_pone_el_bearer_en_cada_peticion():
     prov = cu.GcsOAuthProvider("aerotools-vuelos", _AuthFalso(["tok-1"]))
     assert prov.headers() == {"Authorization": "Bearer tok-1"}
     assert prov.upload_url("vuelos/a/DJI_0001_T.JPG", 10) == (
-        "https://storage.googleapis.com/aerotools-vuelos/vuelos/a/DJI_0001_T.JPG")
+        "https://storage.googleapis.com/aerotools-vuelos/vuelos/a/DJI_0001_T.JPG"
+        "?ifGenerationMatch=0")
 
 
 def test_el_provider_escapa_nombres_con_espacios():
     prov = cu.GcsOAuthProvider("b", _AuthFalso(["t"]))
     assert prov.upload_url("vuelos/mi vuelo/a b.jpg", 1) == (
-        "https://storage.googleapis.com/b/vuelos/mi%20vuelo/a%20b.jpg")
+        "https://storage.googleapis.com/b/vuelos/mi%20vuelo/a%20b.jpg"
+        "?ifGenerationMatch=0")
 
 
 def test_el_provider_exige_bucket():
