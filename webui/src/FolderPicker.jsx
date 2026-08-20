@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, isServerMode } from './bridge.js'
 import BotonToque, { pxDeRem, UMBRAL_REM } from './pulsacion.jsx'
+import Paginador from './Paginador.jsx'
 
 // Sustituye al dialogo nativo de ficheros, que solo existia via Qt/pywebview.
 // Aparte de no estar disponible en modo servidor (Raspberry Pi), un dialogo
@@ -272,37 +273,14 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
           </ul>
 
           {tactil && (
-            <div className="picker-nav kiosk-insp-nav">
-              <BotonToque
-                className="kiosk-insp-nav-btn"
-                tactil={tactil}
-                onActivar={() => paginar(-1)}
-                disabled={pagina <= 0}
-                aria-label="Subir en la lista"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-                     strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M6 15l6-6 6 6" />
-                </svg>
-              </BotonToque>
-              <span className="kiosk-insp-pagina" aria-live="polite">
-                <strong>{Math.min(pagina + 1, paginas)}</strong>
-                <span className="kiosk-insp-pagina-sep" />
-                {paginas}
-              </span>
-              <BotonToque
-                className="kiosk-insp-nav-btn"
-                tactil={tactil}
-                onActivar={() => paginar(1)}
-                disabled={pagina >= paginas - 1}
-                aria-label="Bajar en la lista"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-                     strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M6 9l6 6 6-6" />
-                </svg>
-              </BotonToque>
-            </div>
+            <Paginador
+              pagina={pagina}
+              totalPaginas={paginas}
+              onPagina={(n) => paginar(n - pagina)}
+              tactil={tactil}
+              testidPrefijo="picker-"
+              contexto="la lista"
+            />
           )}
         </div>
 

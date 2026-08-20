@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import BotonToque from './pulsacion.jsx'
 import BotonAtras from './BotonAtras.jsx'
+import Paginador from './Paginador.jsx'
 import CodigoQr from './CodigoQr.jsx'
 import { api, esRemoto } from './bridge.js'
 
@@ -524,7 +525,6 @@ export default function KioskRed({ tactil, onVolver }) {
   const paginaSegura = Math.min(pagina, totalPaginas - 1)
   const inicio = paginaSegura * POR_PAGINA
   const visibles = redes.slice(inicio, inicio + POR_PAGINA)
-  const conPaginacion = redes.length > POR_PAGINA
 
   return (
     <div className="kiosk kiosk-red">
@@ -555,67 +555,44 @@ export default function KioskRed({ tactil, onVolver }) {
         <span className="kiosk-red-vacio" data-testid="kiosk-red-vacio">No se han encontrado redes.</span>
       ) : (
         <>
-          <div className="kiosk-red-lista">
-            {visibles.map((red) => (
-              <BotonToque
-                key={red.ssid}
-                className={'kiosk-red-item' + (red.activa ? ' activa' : '')}
-                tactil={tactil}
-                disabled={conectando}
-                onActivar={() => elegirRed(red)}
-                data-testid={`kiosk-red-${red.ssid}`}
-              >
-                <span className="kiosk-red-nombre">{red.ssid}</span>
-                <span className="kiosk-red-senal">
-                  <IconoSenal senal={red.senal} />
-                  {red.senal}%
-                </span>
-                {red.segura && (
-                  <span className="kiosk-red-candado" data-testid={`kiosk-red-candado-${red.ssid}`}>
-                    <IconoCandado />
+          <div className="kiosk-pag-wrap">
+            <div className="kiosk-red-lista">
+              {visibles.map((red) => (
+                <BotonToque
+                  key={red.ssid}
+                  className={'kiosk-red-item' + (red.activa ? ' activa' : '')}
+                  tactil={tactil}
+                  disabled={conectando}
+                  onActivar={() => elegirRed(red)}
+                  data-testid={`kiosk-red-${red.ssid}`}
+                >
+                  <span className="kiosk-red-nombre">{red.ssid}</span>
+                  <span className="kiosk-red-senal">
+                    <IconoSenal senal={red.senal} />
+                    {red.senal}%
                   </span>
-                )}
-                {red.activa && (
-                  <span className="kiosk-red-activa" data-testid={`kiosk-red-activa-${red.ssid}`}>
-                    <IconoCheck /> Conectada
-                  </span>
-                )}
-              </BotonToque>
-            ))}
-          </div>
-          {conPaginacion && (
-            <div className="kiosk-red-nav">
-              <BotonToque
-                className="kiosk-red-nav-btn"
-                tactil={tactil}
-                disabled={paginaSegura <= 0}
-                onActivar={() => setPagina((p) => Math.max(0, p - 1))}
-                data-testid="kiosk-red-arriba"
-                aria-label="Página anterior de redes"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-                     strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M6 15l6-6 6 6" />
-                </svg>
-              </BotonToque>
-              <span className="kiosk-red-pagina" data-testid="kiosk-red-pagina">
-                {paginaSegura + 1}/{totalPaginas}
-              </span>
-              <BotonToque
-                className="kiosk-red-nav-btn"
-                tactil={tactil}
-                disabled={paginaSegura >= totalPaginas - 1}
-                onActivar={() => setPagina((p) => Math.min(totalPaginas - 1, p + 1))}
-                data-testid="kiosk-red-abajo"
-                aria-label="Página siguiente de redes"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-                     strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M6 9l6 6 6-6" />
-                </svg>
-              </BotonToque>
+                  {red.segura && (
+                    <span className="kiosk-red-candado" data-testid={`kiosk-red-candado-${red.ssid}`}>
+                      <IconoCandado />
+                    </span>
+                  )}
+                  {red.activa && (
+                    <span className="kiosk-red-activa" data-testid={`kiosk-red-activa-${red.ssid}`}>
+                      <IconoCheck /> Conectada
+                    </span>
+                  )}
+                </BotonToque>
+              ))}
             </div>
-          )}
+            <Paginador
+              pagina={paginaSegura}
+              totalPaginas={totalPaginas}
+              onPagina={setPagina}
+              tactil={tactil}
+              testidPrefijo="kiosk-red-"
+              contexto="redes"
+            />
+          </div>
         </>
       )}
 

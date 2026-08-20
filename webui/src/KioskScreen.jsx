@@ -20,6 +20,7 @@ import EstadilloField from './EstadilloField.jsx'
 import { formatBytes, formatDuracion } from './formato.js'
 import MenuApps from './MenuApps.jsx'
 import BotonAtras from './BotonAtras.jsx'
+import Paginador from './Paginador.jsx'
 import KioskTareas from './KioskTareas.jsx'
 import KioskAjustes from './KioskAjustes.jsx'
 import EstadoRed from './EstadoRed.jsx'
@@ -482,7 +483,6 @@ export default function KioskScreen({
         <div className="kiosk-header kiosk-header-paso">
           <BotonAtras tactil={tactil} onActivar={() => setAccion(null)} disabled={busy} />
           <span className="kiosk-titulo">Organizer</span>
-          {avatar}
         </div>
         {barraProgreso}
         <div className="kiosk-menu">
@@ -598,7 +598,6 @@ export default function KioskScreen({
         <div className="kiosk-header kiosk-header-paso">
           <BotonAtras tactil={tactil} onActivar={() => setEligiendoFases(false)} disabled={busy} etiqueta="Listo" />
           <span className="kiosk-titulo">Fases</span>
-          {avatar}
         </div>
         <div className="kiosk-fases">
           {fasesDisponibles.map((fase) => {
@@ -669,7 +668,6 @@ export default function KioskScreen({
               <path d="M18 3v4h-4M6 21v-4h4" />
             </svg>
           </BotonToque>
-          {avatar}
         </div>
 
         <div className="kiosk-inspeccion kiosk-inspeccion-full kiosk-insp-paginado">
@@ -706,37 +704,15 @@ export default function KioskScreen({
               fasesControladas={fasesKiosco}
             />
           </div>
-          <div className="kiosk-insp-nav">
-            <BotonToque
-              className="kiosk-insp-nav-btn"
-              tactil={tactil}
-              onActivar={() => paginarInsp(-1)}
-              disabled={busy || pagina <= 0}
-              aria-label="Subir en la lista"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-                   strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M6 15l6-6 6 6" />
-              </svg>
-            </BotonToque>
-            <span className="kiosk-insp-pagina" aria-live="polite">
-              <strong>{Math.min(pagina + 1, paginas)}</strong>
-              <span className="kiosk-insp-pagina-sep" />
-              {paginas}
-            </span>
-            <BotonToque
-              className="kiosk-insp-nav-btn"
-              tactil={tactil}
-              onActivar={() => paginarInsp(1)}
-              disabled={busy || pagina >= paginas - 1}
-              aria-label="Bajar en la lista"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-                   strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M6 9l6 6 6-6" />
-              </svg>
-            </BotonToque>
-          </div>
+          <Paginador
+            pagina={pagina}
+            totalPaginas={paginas}
+            onPagina={(n) => paginarInsp(n - pagina)}
+            tactil={tactil}
+            disabled={busy}
+            testidPrefijo="kiosk-insp-"
+            contexto="la lista"
+          />
         </div>
       </div>
     )
@@ -769,7 +745,6 @@ export default function KioskScreen({
         <div className="kiosk-header kiosk-header-paso">
           <BotonAtras tactil={tactil} onActivar={() => setResumen(null)} disabled={busy} />
           <span className="kiosk-titulo">Antes de subir</span>
-          {avatar}
         </div>
 
         <div className="kiosk-resumen" data-testid="kiosk-resumen">
@@ -839,7 +814,6 @@ export default function KioskScreen({
       <div className="kiosk-header kiosk-header-paso">
         <BotonAtras tactil={tactil} onActivar={() => setAccion('organizer')} disabled={busy} />
         <span className="kiosk-titulo">{esOrganizar ? 'Organizar' : 'Subir en crudo'}</span>
-        {avatar}
       </div>
 
       {!esOrganizar && (

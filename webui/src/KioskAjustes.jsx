@@ -4,6 +4,7 @@ import BotonAtras from './BotonAtras.jsx'
 import { api } from './bridge.js'
 import KioskRed from './KioskRed.jsx'
 import MenuApps from './MenuApps.jsx'
+import Paginador from './Paginador.jsx'
 
 const PROPS_SVG = {
   viewBox: '0 0 24 24',
@@ -40,24 +41,6 @@ function IconoGeneral() {
       <circle cx="7" cy="12" r="2.5" />
       <path d="M4 18h10" />
       <circle cx="17" cy="18" r="2.5" />
-    </svg>
-  )
-}
-
-// Mismos iconos ▲/▼ que `KioskTareas`/`MenuApps` para la paginación de modelos.
-function IconoArriba() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M6 15l6-6 6 6" />
-    </svg>
-  )
-}
-function IconoAbajo() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M6 9l6 6 6-6" />
     </svg>
   )
 }
@@ -202,7 +185,6 @@ function SeccionGeneral({ tactil, onVolver }) {
   const paginaSegura = Math.min(paginaModelos, totalPaginasModelos - 1)
   const inicioModelos = paginaSegura * MODELOS_POR_PAGINA
   const modelosVisibles = models.slice(inicioModelos, inicioModelos + MODELOS_POR_PAGINA)
-  const conPaginacionModelos = models.length > MODELOS_POR_PAGINA
 
   return (
     <div className="kiosk kiosk-ajustes">
@@ -232,49 +214,32 @@ function SeccionGeneral({ tactil, onVolver }) {
             <span className="kiosk-ajustes-label">% de recorte por dron</span>
             {models.length > 0 ? (
               <>
-                <ul className="kiosk-ajustes-lista">
-                  {modelosVisibles.map((m) => (
-                    <li key={m.model} className="kiosk-ajustes-item">
-                      <span className="kiosk-ajustes-modelo">{m.model}</span>
-                      <span className="kiosk-ajustes-pct">{m.pct}%</span>
-                      <BotonToque
-                        className="btn-ghost kiosk-btn"
-                        tactil={tactil}
-                        data-testid={`kiosk-ajustes-quitar-${m.model}`}
-                        onActivar={() => quitarModelo(m.model)}
-                      >
-                        Quitar
-                      </BotonToque>
-                    </li>
-                  ))}
-                </ul>
-                {conPaginacionModelos && (
-                  <div className="kiosk-ajustes-nav">
-                    <BotonToque
-                      className="kiosk-ajustes-nav-btn"
-                      tactil={tactil}
-                      disabled={paginaSegura <= 0}
-                      onActivar={() => setPaginaModelos((p) => Math.max(0, p - 1))}
-                      data-testid="kiosk-ajustes-modelos-arriba"
-                      aria-label="Página anterior de modelos"
-                    >
-                      <IconoArriba />
-                    </BotonToque>
-                    <span className="kiosk-ajustes-pagina" data-testid="kiosk-ajustes-modelos-pagina">
-                      {paginaSegura + 1}/{totalPaginasModelos}
-                    </span>
-                    <BotonToque
-                      className="kiosk-ajustes-nav-btn"
-                      tactil={tactil}
-                      disabled={paginaSegura >= totalPaginasModelos - 1}
-                      onActivar={() => setPaginaModelos((p) => Math.min(totalPaginasModelos - 1, p + 1))}
-                      data-testid="kiosk-ajustes-modelos-abajo"
-                      aria-label="Página siguiente de modelos"
-                    >
-                      <IconoAbajo />
-                    </BotonToque>
-                  </div>
-                )}
+                <div className="kiosk-pag-wrap">
+                  <ul className="kiosk-ajustes-lista">
+                    {modelosVisibles.map((m) => (
+                      <li key={m.model} className="kiosk-ajustes-item">
+                        <span className="kiosk-ajustes-modelo">{m.model}</span>
+                        <span className="kiosk-ajustes-pct">{m.pct}%</span>
+                        <BotonToque
+                          className="btn-ghost kiosk-btn"
+                          tactil={tactil}
+                          data-testid={`kiosk-ajustes-quitar-${m.model}`}
+                          onActivar={() => quitarModelo(m.model)}
+                        >
+                          Quitar
+                        </BotonToque>
+                      </li>
+                    ))}
+                  </ul>
+                  <Paginador
+                    pagina={paginaSegura}
+                    totalPaginas={totalPaginasModelos}
+                    onPagina={setPaginaModelos}
+                    tactil={tactil}
+                    testidPrefijo="kiosk-ajustes-modelos-"
+                    contexto="modelos"
+                  />
+                </div>
               </>
             ) : (
               <span className="kiosk-ajustes-vacio">No hay modelos configurados todavía.</span>

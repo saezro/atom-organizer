@@ -161,8 +161,8 @@ describe('FolderPicker', () => {
   it('la lista lleva botones de paginado en tactil', async () => {
     render(<FolderPicker mode="folder" startPath={null} onPick={() => {}} onCancel={() => {}} />)
     await screen.findByText('VUELOS')
-    expect(screen.getByLabelText('Subir en la lista')).toBeInTheDocument()
-    expect(screen.getByLabelText('Bajar en la lista')).toBeInTheDocument()
+    expect(screen.getByTestId('picker-arriba')).toBeInTheDocument()
+    expect(screen.getByTestId('picker-abajo')).toBeInTheDocument()
   })
 
   it('en modo servidor arranca en el disco USB si hay uno (api.defaultDir)', async () => {
