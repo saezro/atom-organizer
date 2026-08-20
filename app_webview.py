@@ -945,6 +945,7 @@ class Api:
 
         def worker() -> None:
             plan = None
+            reporter = None
             try:
                 plan = cloud_upload.build_plan(root, prefix)
                 if not plan.items:
@@ -955,6 +956,33 @@ class Api:
 
                 self._push_cloud({"kind": "start", "files": len(plan.items),
                                   "bytes": plan.total_bytes, "prefix": prefix})
+
+                # Telemetria EN VIVO hacia `/organizer`. Sin esto la Suite solo
+                # se enteraba al terminar (`_reportar_subida`), asi que una
+                # subida de horas era invisible desde la web: nadie podia saber
+                # que una planta se estaba subiendo ni por donde iba.
+                # Es un ciclo aparte del de `subida()`: este alimenta
+                # `organizer_runs` (progreso), aquel `organizer_subidas`
+                # (histórico y panel de "sin organizar"). Los dos hacen falta.
+                reporter = self._reporter_actual()
+                if reporter is not None:
+                    # `inspeccion_id` solo si lo hay: con prefijo escrito a mano
+                    # no existe, y mandar None lo grabaria como NULL igualmente
+                    # pero ensuciando el body. El run se pinta por `inspeccion`
+                    # (el prefijo), el id es lo que deja enlazarlo con la ficha.
+                    extra = ({} if inspeccion_id is None
+                             else {"inspeccion_id": inspeccion_id})
+                    reporter.iniciar(inspeccion=prefix, etapa="subida",
+                                     items_total=len(plan.items),
+                                     bytes_total=plan.total_bytes, **extra)
+                    # `iniciar` es fail-open: si la Suite no contesto, el run no
+                    # existe y todo lo demas seria no-op. Soltarlo aqui es la
+                    # diferencia entre "no hay run" y "no sabemos que no lo hay".
+                    if not reporter.activo:
+                        reporter = None
+                        self._log_subida(
+                            "cloud_upload: la Suite no acepto el alta del run; "
+                            "la subida sigue, pero sin progreso en /organizer")
 
                 # Ya no hay guarda anti-pisado ni «continuar subida»: lo que
                 # ya está en el destino se identifica objeto a objeto y se
@@ -969,7 +997,7 @@ class Api:
                 res = cloud_upload.upload_plan(
                     plan, provider,
                     on_progress=lambda t: self._push_cloud({"kind": "log", "text": t}),
-                    on_stats=lambda s: self._push_cloud({"kind": "stats", **s}),
+                    on_stats=lambda s: self._on_stats_subida(reporter, s),
                     should_stop=lambda: self._cancel_upload,
                     remotos=self._inventario_cacheado(prefix),
                 )
@@ -998,16 +1026,20 @@ class Api:
                 # datos incompletos.
                 try:
                     if self._cancel_upload:
+                        motivo = "Subida cancelada por el operador"
                         self._reportar_subida(inspeccion_id, plan, estado="error",
-                                              error="Subida cancelada por el operador")
+                                              error=motivo)
+                        self._cerrar_run(reporter, ok=False, error=motivo)
                     elif res.ok:
                         self._reportar_subida(inspeccion_id, plan, estado="ok")
+                        self._cerrar_run(reporter, ok=True)
                     else:
                         primeros = "; ".join(
                             f"{o}: {e}" for o, e in res.failed[:5])
+                        motivo = f"{len(res.failed)} objetos fallaron: {primeros}"
                         self._reportar_subida(
-                            inspeccion_id, plan, estado="error",
-                            error=f"{len(res.failed)} objetos fallaron: {primeros}")
+                            inspeccion_id, plan, estado="error", error=motivo)
+                        self._cerrar_run(reporter, ok=False, error=motivo)
                 except Exception as exc_rep:  # noqa: BLE001 - fail-open
                     self._log_subida(
                         "cloud_upload: fallo reportando a la Suite (%s)", exc_rep)
@@ -1016,6 +1048,7 @@ class Api:
                 try:
                     self._reportar_subida(inspeccion_id, plan, estado="error",
                                           error=str(exc))
+                    self._cerrar_run(reporter, ok=False, error=str(exc))
                 except Exception as exc_rep:  # noqa: BLE001 - fail-open
                     self._log_subida(
                         "cloud_upload: fallo reportando a la Suite (%s)", exc_rep)
@@ -1197,6 +1230,30 @@ class Api:
             logging.getLogger(upload_log.LOGGER_NAME).info(msg, *args)
         except Exception:  # noqa: BLE001 - fail-open
             pass
+
+    def _on_stats_subida(self, reporter, s: dict) -> None:
+        """`on_stats` de la subida: repinta el kiosco y late hacia la Suite.
+
+        Corre en los hilos de subida, por eso el repintado local va PRIMERO:
+        es lo que ve el operario y no puede quedar detras de una llamada de
+        red. `RunReporter.progreso` ya trae throttle propio y manda el PATCH
+        en un hilo aparte, asi que llamarlo en cada snapshot no frena nada.
+        """
+        self._push_cloud({"kind": "stats", **s})
+        if reporter is not None:
+            reporter.progreso(s)
+
+    def _cerrar_run(self, reporter, *, ok: bool, error: str | None = None) -> None:
+        """Cierra el run de progreso, si lo hubo. Sin `reporter` es no-op.
+
+        Separado de `_reportar_subida` porque son dos destinos distintos
+        (`organizer_runs` vs `organizer_subidas`) y uno puede existir sin el
+        otro: hay run sin `inspeccion_id`, y hay reporte de subida aunque la
+        Suite rechazara el alta del run.
+        """
+        if reporter is None:
+            return
+        reporter.fin(ok=ok, error=error)
 
     def _reportar_subida(self, inspeccion_id: int | None, plan, *,
                           estado: str, error: str | None = None) -> None:
