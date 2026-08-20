@@ -8,39 +8,74 @@
 // reimplementar la construcción de params — es la MISMA lógica que ya valida
 // el escritorio, y duplicarla habría sido una segunda fuente de bugs.
 //
+// El índice de tareas usa la MISMA `MenuApps` que el índice de secciones de
+// Ajustes (rejilla 3x3, cards idénticas): sin separadores de sección, porque
+// una rejilla no admite un "hueco" a mitad de fila y con separadores algunas
+// páginas dejaban la sección OTROS casi vacía. Las 11 tareas se distinguen
+// por icono (AEROTOOLS / OTROS) en vez de por epígrafe.
+//
 // Dos vistas locales (lista / formulario) porque en 480x320 no cabe una
 // lista de 11 tareas + su formulario en la misma pantalla, y el panel es
-// resistivo: nada de <select> nativo (intocable con el dedo) ni de scroll
-// largo (el arrastre no es fiable), así que la lista se pagina igual que
-// `MenuApps.jsx`.
+// resistivo: nada de <select> nativo (intocable con el dedo).
 import { useState } from 'react'
 import { api } from './bridge.js'
 import BotonToque from './pulsacion.jsx'
 import BotonAtras from './BotonAtras.jsx'
-import Paginador from './Paginador.jsx'
+import MenuApps from './MenuApps.jsx'
 import { SECTIONS } from './schema.js'
 import { initialState, buildParams } from './TaskBlock.jsx'
 
-const POR_PAGINA = 4
+const PROPS_SVG = {
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: '2',
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+  width: '1.1em',
+  height: '1.1em',
+  'aria-hidden': 'true',
+}
 
-// Aplana SECTIONS en una lista de filas paginables: separadores de sección
-// intercalados con las tareas. Así la paginación no tiene que saber nada de
-// la forma del schema, solo recorrer un array plano.
-function filasDeSecciones() {
-  const filas = []
+// Icono para las tareas de la sección AEROTOOLS (pipeline térmica/RGB propio).
+function IconoAerotools() {
+  return (
+    <svg {...PROPS_SVG}>
+      <path d="M4 17l6-10 4 6 3-4 3 8" />
+      <circle cx="10" cy="7" r="1.2" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}
+
+// Icono para las tareas de OTROS EQUIPOS (utilidades genéricas de imagen).
+function IconoOtros() {
+  return (
+    <svg {...PROPS_SVG}>
+      <rect x="4" y="4" width="7" height="7" rx="1" />
+      <rect x="13" y="4" width="7" height="7" rx="1" />
+      <rect x="4" y="13" width="7" height="7" rx="1" />
+      <rect x="13" y="13" width="7" height="7" rx="1" />
+    </svg>
+  )
+}
+
+// Aplana SECTIONS en una única lista de apps para `MenuApps`: cada tarea
+// lleva el icono de su sección de origen, pero sin separador ni epígrafe (la
+// rejilla 3x3 no tiene sitio para un hueco a mitad de fila).
+function appsDeSecciones() {
+  const apps = []
   for (const clave of Object.keys(SECTIONS)) {
     const seccion = SECTIONS[clave]
-    filas.push({ tipo: 'separador', key: `sep-${clave}`, label: seccion.label })
+    const Icono = clave === 'aerotools' ? IconoAerotools : IconoOtros
     for (const block of seccion.blocks) {
-      filas.push({ tipo: 'tarea', key: block.task, block })
+      apps.push({ id: block.task, nombre: block.title, Icono, block })
     }
   }
-  return filas
+  return apps
 }
 
 export default function KioskTareas({ tactil, busy, onEjecutar, onVolver }) {
   const [tareaElegida, setTareaElegida] = useState(null)
-  const [pagina, setPagina] = useState(0)
 
   if (tareaElegida) {
     return (
@@ -54,10 +89,12 @@ export default function KioskTareas({ tactil, busy, onEjecutar, onVolver }) {
     )
   }
 
-  const filas = filasDeSecciones()
-  const totalPaginas = Math.max(1, Math.ceil(filas.length / POR_PAGINA))
-  const inicio = pagina * POR_PAGINA
-  const visibles = filas.slice(inicio, inicio + POR_PAGINA)
+  const apps = appsDeSecciones()
+
+  function abrir(id) {
+    const app = apps.find((a) => a.id === id)
+    if (app) setTareaElegida(app.block)
+  }
 
   return (
     <div className="kiosk kiosk-tareas">
@@ -65,35 +102,15 @@ export default function KioskTareas({ tactil, busy, onEjecutar, onVolver }) {
         <BotonAtras tactil={tactil} onActivar={onVolver} />
         <span className="kiosk-titulo">Tareas</span>
       </div>
-      <div className="kiosk-pag-wrap">
-        <div className="kiosk-tareas-lista">
-          {visibles.map((fila) =>
-            fila.tipo === 'separador' ? (
-              <span key={fila.key} className="kiosk-tareas-separador">
-                {fila.label}
-              </span>
-            ) : (
-              <BotonToque
-                key={fila.key}
-                className="btn kiosk-btn kiosk-tareas-item"
-                tactil={tactil}
-                data-testid={`kiosk-tarea-${fila.block.task}`}
-                onActivar={() => setTareaElegida(fila.block)}
-              >
-                {fila.block.title}
-              </BotonToque>
-            )
-          )}
-        </div>
-        <Paginador
-          pagina={pagina}
-          totalPaginas={totalPaginas}
-          onPagina={setPagina}
-          tactil={tactil}
-          testidPrefijo="kiosk-tareas-"
-          contexto="tareas"
-        />
-      </div>
+      <MenuApps
+        apps={apps}
+        tactil={tactil}
+        disabled={busy}
+        onAbrir={abrir}
+        porPagina={9}
+        compacta
+        testidPrefijo="kiosk-tarea-"
+      />
     </div>
   )
 }
