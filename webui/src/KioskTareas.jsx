@@ -17,6 +17,7 @@ import { useState } from 'react'
 import { api } from './bridge.js'
 import BotonToque from './pulsacion.jsx'
 import BotonAtras from './BotonAtras.jsx'
+import Paginador from './Paginador.jsx'
 import { SECTIONS } from './schema.js'
 import { initialState, buildParams } from './TaskBlock.jsx'
 
@@ -57,7 +58,6 @@ export default function KioskTareas({ tactil, busy, onEjecutar, onVolver }) {
   const totalPaginas = Math.max(1, Math.ceil(filas.length / POR_PAGINA))
   const inicio = pagina * POR_PAGINA
   const visibles = filas.slice(inicio, inicio + POR_PAGINA)
-  const conPaginacion = filas.length > POR_PAGINA
 
   return (
     <div className="kiosk kiosk-tareas">
@@ -65,58 +65,35 @@ export default function KioskTareas({ tactil, busy, onEjecutar, onVolver }) {
         <BotonAtras tactil={tactil} onActivar={onVolver} />
         <span className="kiosk-titulo">Tareas</span>
       </div>
-      <div className="kiosk-tareas-lista">
-        {visibles.map((fila) =>
-          fila.tipo === 'separador' ? (
-            <span key={fila.key} className="kiosk-tareas-separador">
-              {fila.label}
-            </span>
-          ) : (
-            <BotonToque
-              key={fila.key}
-              className="btn kiosk-btn kiosk-tareas-item"
-              tactil={tactil}
-              data-testid={`kiosk-tarea-${fila.block.task}`}
-              onActivar={() => setTareaElegida(fila.block)}
-            >
-              {fila.block.title}
-            </BotonToque>
-          )
-        )}
-      </div>
-      {conPaginacion && (
-        <div className="kiosk-tareas-nav">
-          <BotonToque
-            className="kiosk-tareas-nav-btn"
-            tactil={tactil}
-            disabled={pagina <= 0}
-            onActivar={() => setPagina((p) => Math.max(0, p - 1))}
-            data-testid="kiosk-tareas-arriba"
-            aria-label="Página anterior de tareas"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-                 strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M6 15l6-6 6 6" />
-            </svg>
-          </BotonToque>
-          <span className="kiosk-tareas-pagina" data-testid="kiosk-tareas-pagina">
-            {pagina + 1}/{totalPaginas}
-          </span>
-          <BotonToque
-            className="kiosk-tareas-nav-btn"
-            tactil={tactil}
-            disabled={pagina >= totalPaginas - 1}
-            onActivar={() => setPagina((p) => Math.min(totalPaginas - 1, p + 1))}
-            data-testid="kiosk-tareas-abajo"
-            aria-label="Página siguiente de tareas"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-                 strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" />
-            </svg>
-          </BotonToque>
+      <div className="kiosk-pag-wrap">
+        <div className="kiosk-tareas-lista">
+          {visibles.map((fila) =>
+            fila.tipo === 'separador' ? (
+              <span key={fila.key} className="kiosk-tareas-separador">
+                {fila.label}
+              </span>
+            ) : (
+              <BotonToque
+                key={fila.key}
+                className="btn kiosk-btn kiosk-tareas-item"
+                tactil={tactil}
+                data-testid={`kiosk-tarea-${fila.block.task}`}
+                onActivar={() => setTareaElegida(fila.block)}
+              >
+                {fila.block.title}
+              </BotonToque>
+            )
+          )}
         </div>
-      )}
+        <Paginador
+          pagina={pagina}
+          totalPaginas={totalPaginas}
+          onPagina={setPagina}
+          tactil={tactil}
+          testidPrefijo="kiosk-tareas-"
+          contexto="tareas"
+        />
+      </div>
     </div>
   )
 }

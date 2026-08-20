@@ -677,7 +677,7 @@ select.glass-input option {
 }
 /* Paginación de `.estad-list` en kiosco (`tactil`): solo se pinta cuando hay
    más estadillos que `ESTADILLOS_POR_PAGINA`, mismo estilo que
-   `.kiosk-tareas-nav`/`.kiosk-ajustes-nav`. */
+   `Paginador.jsx` (`.kiosk-pag`). */
 .estad-nav { display: flex; gap: 0.5rem; align-items: center; justify-content: center; }
 .estad-nav-btn {
   width: 2.75rem;
@@ -1240,7 +1240,9 @@ select.glass-input option {
 .kiosk input, .kiosk select { user-select: text; -webkit-user-select: text; }
 
 .kiosk-header { display: flex; justify-content: flex-end; align-items: center; }
-.kiosk-header-paso { justify-content: flex-start; gap: calc(var(--u) / 2); }
+/* El titulo respira separado de la flecha de atras (que ahora es un cuadrado
+   pequeño, no un boton ancho con texto). */
+.kiosk-header-paso { justify-content: flex-start; gap: calc(var(--u) * 2); }
 /* En cabeceras con atras+titulo el avatar se empuja al borde derecho. */
 .kiosk-header-paso .kiosk-avatar { margin-left: auto; }
 .kiosk-cuenta-datos {
@@ -1267,7 +1269,7 @@ select.glass-input option {
 }
 .kiosk-atras:disabled { opacity: 0.4; }
 .kiosk-atras svg { width: 1.5rem; height: 1.5rem; }
-.kiosk-titulo { font-weight: 700; color: var(--text); }
+.kiosk-titulo { font-weight: 700; color: var(--text); font-size: var(--fs-md); }
 /* Botón de "Actualizar lista" para el sub-paso A de "Subir en crudo": con
    `soloLista` el de InspeccionSelector no se pinta (no cabe encima de la
    lista), así que esta es la única vía para recargar el catálogo ahí. */
@@ -1366,65 +1368,6 @@ select.glass-input option {
 .kiosk-insp-paginado .kiosk-insp-scroll {
   flex: 1;
   min-width: 0;
-}
-.kiosk-insp-nav {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: calc(var(--u) / 2);
-  flex: 0 0 auto;
-  padding: calc(var(--u) / 2);
-  border-radius: calc(var(--u) * 2);
-  background: rgba(255, 255, 255, 0.04);
-  border: 0.0625rem solid rgba(255, 255, 255, 0.08);
-}
-.kiosk-insp-nav-btn {
-  flex: 1;
-  width: var(--toque-min);
-  min-height: var(--toque-min);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border-radius: calc(var(--u) * 1.5);
-  border: 0.0625rem solid rgba(238, 117, 58, 0.35);
-  background: rgba(238, 117, 58, 0.16);
-  color: var(--orange);
-  transition: background 0.15s ease, opacity 0.15s ease, transform 0.1s ease;
-}
-.kiosk-insp-nav-btn:active:not(:disabled) {
-  background: rgba(238, 117, 58, 0.34);
-  transform: scale(0.96);
-}
-/* En los extremos el botón no desaparece (la columna bailaría): se apaga, que
-   además dice «ya no hay más por aquí». */
-.kiosk-insp-nav-btn:disabled {
-  opacity: 0.25;
-  border-color: rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text);
-}
-.kiosk-insp-nav-btn svg { width: 1.5rem; height: 1.5rem; }
-/* Indicador «página actual / total», en vertical porque la columna es
-   estrecha: número grande arriba, total pequeño debajo. */
-.kiosk-insp-pagina {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.125rem;
-  font-size: 0.75rem;
-  line-height: 1;
-  color: var(--muted);
-  padding: calc(var(--u) / 2) 0;
-}
-.kiosk-insp-pagina strong {
-  font-size: 1rem;
-  color: var(--orange);
-}
-.kiosk-insp-pagina-sep {
-  width: 1rem;
-  height: 0.0625rem;
-  background: rgba(255, 255, 255, 0.2);
 }
 /* Desvanecido arriba/abajo: insinúa que la lista sigue más allá del borde sin
    robar alto con una sombra o una barra. */
@@ -1968,7 +1911,10 @@ html[data-cursor] .picker-card { cursor: pointer; }
    (480x320), con paginacion a la derecha cuando hay mas de 4. Cuadrados
    grandes en vez de lista, mismo motivo que .kiosk-menu-btn: dedo sobre
    panel resistivo, nada por debajo de --toque-min. */
-.kiosk-apps-wrap { flex: 1; display: flex; gap: var(--u); min-height: 0; }
+/* Contenido + paginador vertical a la derecha: lo usan el launcher, el indice
+   de Ajustes y todas las listas del kiosco (`Paginador.jsx`). */
+.kiosk-pag-wrap { flex: 1; display: flex; gap: var(--u); min-height: 0; }
+.kiosk-pag-wrap > :first-child { flex: 1; min-height: 0; }
 .kiosk-apps {
   flex: 1;
   display: grid;
@@ -2006,15 +1952,16 @@ html[data-cursor] .picker-card { cursor: pointer; }
 .kiosk-app svg { width: 2.75rem; height: 2.75rem; color: var(--orange); }
 .kiosk-app-nombre { font-size: var(--fs-md); font-weight: 500; text-align: center; }
 
-.kiosk-apps-nav {
+.kiosk-pag {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: calc(var(--u) / 2);
   width: var(--toque-min);
+  flex-shrink: 0;
 }
-.kiosk-apps-nav-btn {
+.kiosk-pag-btn {
   width: var(--toque-min);
   height: var(--toque-min);
   display: flex;
@@ -2025,9 +1972,10 @@ html[data-cursor] .picker-card { cursor: pointer; }
   background: rgba(255, 255, 255, 0.06);
   color: var(--text);
 }
-.kiosk-apps-nav-btn:disabled { opacity: 0.3; }
-.kiosk-apps-nav-btn svg { width: 1.25rem; height: 1.25rem; }
-.kiosk-apps-pagina { font-size: var(--fs-sm); color: var(--muted); }
+.kiosk-pag-btn:disabled { opacity: 0.3; }
+.kiosk-pag-btn:active:not(:disabled) { transform: scale(0.96); }
+.kiosk-pag-btn svg { width: 1.5rem; height: 1.5rem; }
+.kiosk-pag-num { font-size: var(--fs-sm); color: var(--muted); }
 
 /* Pantalla «Sistema» del kiosco: apagar/reiniciar la Pi con dos toques. */
 .kiosk-sistema {
@@ -2059,7 +2007,7 @@ html[data-cursor] .picker-card { cursor: pointer; }
 /* Pantalla «Ajustes» del kiosco (`KioskAjustes.jsx`): ruta del ThermoViewer y
    tabla modelo->% de recorte. En 480x320 no cabe una tabla de verdad ni hay
    scroll de página (`.kiosk` es `overflow:hidden`): la lista se PAGINA
-   (`MODELOS_POR_PAGINA`, mismo patrón ▲/▼ que `.kiosk-tareas-nav`) en vez de
+   (`MODELOS_POR_PAGINA`, mismo `Paginador` que el resto del kiosco) en vez de
    crecer con `max-height`+scroll, así el botón Guardar de abajo queda
    siempre a una altura fija sea cual sea el número de modelos guardados. */
 .kiosk-ajustes { display: flex; flex-direction: column; gap: var(--u); }
@@ -2091,21 +2039,6 @@ html[data-cursor] .picker-card { cursor: pointer; }
 .kiosk-ajustes-cargando { color: var(--muted); font-size: var(--fs-sm); }
 .kiosk-ajustes-ok { color: var(--ok, #6ee7a8); font-size: var(--fs-sm); }
 .kiosk-ajustes-error { color: var(--orange); font-size: var(--fs-sm); }
-.kiosk-ajustes-nav { display: flex; gap: var(--u); align-items: center; justify-content: center; }
-.kiosk-ajustes-nav-btn {
-  width: var(--toque-min);
-  height: calc(var(--toque-min) * 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radio);
-  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text);
-}
-.kiosk-ajustes-nav-btn:disabled { opacity: 0.3; }
-.kiosk-ajustes-nav-btn svg { width: 1.25rem; height: 1.25rem; }
-.kiosk-ajustes-pagina { font-size: var(--fs-sm); color: var(--muted); }
 
 /* Índice de secciones de Ajustes (`KioskAjustes.jsx`): rejilla compacta de
    cards, misma `MenuApps` que el launcher del home. */
@@ -2134,21 +2067,6 @@ html[data-cursor] .picker-card { cursor: pointer; }
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-.kiosk-tareas-nav { display: flex; gap: var(--u); align-items: center; justify-content: center; }
-.kiosk-tareas-nav-btn {
-  width: var(--toque-min);
-  height: calc(var(--toque-min) * 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radio);
-  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text);
-}
-.kiosk-tareas-nav-btn:disabled { opacity: 0.3; }
-.kiosk-tareas-nav-btn svg { width: 1.25rem; height: 1.25rem; }
-.kiosk-tareas-pagina { font-size: var(--fs-sm); color: var(--muted); }
 .kiosk-tareas-form {
   flex: 1;
   display: flex;
@@ -2225,21 +2143,6 @@ html[data-cursor] .picker-card { cursor: pointer; }
   color: var(--ok, #6ee7a8);
   font-size: var(--fs-sm);
 }
-.kiosk-red-nav { display: flex; gap: var(--u); align-items: center; justify-content: center; }
-.kiosk-red-nav-btn {
-  width: var(--toque-min);
-  height: calc(var(--toque-min) * 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radio);
-  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text);
-}
-.kiosk-red-nav-btn:disabled { opacity: 0.3; }
-.kiosk-red-nav-btn svg { width: 1.25rem; height: 1.25rem; }
-.kiosk-red-pagina { font-size: var(--fs-sm); color: var(--muted); }
 .kiosk-red-banner {
   display: flex;
   align-items: center;

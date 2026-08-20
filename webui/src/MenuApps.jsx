@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import BotonToque from './pulsacion.jsx'
+import Paginador from './Paginador.jsx'
 
 // Rejilla de cards del kiosco: la usan el launcher del home (2x2, apps) y el
 // índice de Ajustes (`compacta`, 3x2). Tamaño pensado para dedo en un panel
@@ -25,7 +26,7 @@ export default function MenuApps({
   const visibles = apps.slice(inicio, inicio + porPagina)
 
   return (
-    <div className="kiosk-apps-wrap">
+    <div className="kiosk-pag-wrap">
       <div className={'kiosk-apps' + (compacta ? ' kiosk-apps-compacta' : '')}>
         {visibles.map((app) => (
           <BotonToque
@@ -41,37 +42,14 @@ export default function MenuApps({
           </BotonToque>
         ))}
       </div>
-      <div className="kiosk-apps-nav">
-        <BotonToque
-          className="kiosk-apps-nav-btn"
-          tactil={tactil}
-          disabled={disabled || pagina <= 0}
-          onActivar={() => setPagina((p) => Math.max(0, p - 1))}
-          data-testid="kiosk-apps-arriba"
-          aria-label="Página anterior"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-               strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M6 15l6-6 6 6" />
-          </svg>
-        </BotonToque>
-        <span className="kiosk-apps-pagina" data-testid="kiosk-apps-pagina">
-          {pagina + 1}/{totalPaginas}
-        </span>
-        <BotonToque
-          className="kiosk-apps-nav-btn"
-          tactil={tactil}
-          disabled={disabled || pagina >= totalPaginas - 1}
-          onActivar={() => setPagina((p) => Math.min(totalPaginas - 1, p + 1))}
-          data-testid="kiosk-apps-abajo"
-          aria-label="Página siguiente"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-               strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M6 9l6 6-6 6" />
-          </svg>
-        </BotonToque>
-      </div>
+      <Paginador
+        pagina={pagina}
+        totalPaginas={totalPaginas}
+        onPagina={setPagina}
+        tactil={tactil}
+        disabled={disabled}
+        testidPrefijo="kiosk-apps-"
+      />
     </div>
   )
 }
