@@ -181,7 +181,7 @@ describe('KioskScreen — paso 1 (menú)', () => {
     await userEvent.click(screen.getByRole('button', { name: /^organizar$/i }))
     expect(screen.getByText(/elegir carpeta/i)).toBeInTheDocument()
     expect(screen.getByText(/estadillo \(opcional\)/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /← atrás/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /atrás/i })).toBeInTheDocument()
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
   })
 
@@ -193,7 +193,7 @@ describe('KioskScreen — paso 1 (menú)', () => {
     expect(screen.queryByText(/elegir carpeta/i)).not.toBeInTheDocument()
     expect(screen.queryByPlaceholderText(/escribe para buscar/i)).not.toBeInTheDocument()
     expect(screen.getByText('ACME PLANTA1 2026')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /← atrás/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /atrás/i })).toBeInTheDocument()
     expect(screen.queryByText(/estadillo/i)).not.toBeInTheDocument()
   })
 })
@@ -255,9 +255,9 @@ describe('KioskScreen — paso 2 (organizar)', () => {
     expect(screen.getByRole('button', { name: /^organizar$/i })).toBeDisabled()
   })
 
-  it('"← Atrás" vuelve al paso 1 y muestra de nuevo el menú', async () => {
+  it('"Atrás" vuelve al paso 1 y muestra de nuevo el menú', async () => {
     render(<KioskScreen {...baseProps({ accionInicial: 'organizar' })} />)
-    await userEvent.click(screen.getByRole('button', { name: /← atrás/i }))
+    await userEvent.click(screen.getByRole('button', { name: /atrás/i }))
     expect(screen.getByRole('button', { name: /^organizar$/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /subir en crudo/i })).toBeInTheDocument()
     expect(screen.queryByText(/elegir carpeta/i)).not.toBeInTheDocument()
