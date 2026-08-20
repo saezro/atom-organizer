@@ -6,54 +6,15 @@
 // pocos segundos → exito (sesion ya activa por dentro) o caducidad, con
 // reintento manual.
 import { useEffect, useRef, useState } from 'react'
-import qrcode from 'qrcode-generator'
 import { api, isServerMode } from './bridge.js'
 import BotonToque from './pulsacion.jsx'
+import CodigoQr from './CodigoQr.jsx'
 
 // Cada cuanto se pregunta al backend si el movil ya completo el vinculo. 2 s
 // es suficientemente vivo para no sentirse colgado y suficientemente
 // espaciado para no machacar el backend en un panel que puede quedarse
 // minutos en esta pantalla.
 const INTERVALO_POLL_MS = 2000
-
-// Dibuja el QR como <path> de un solo SVG (un modulo oscuro = un cuadrado de
-// 1x1 en el viewBox de la matriz). Nada de <img>/canvas: en el panel
-// resistivo de 480x320 el vector sale nitido a cualquier escala, y a
-// diferencia de canvas es testeable en jsdom sin dependencias extra.
-function moduloPath(qr) {
-  const n = qr.getModuleCount()
-  let d = ''
-  for (let fila = 0; fila < n; fila++) {
-    for (let col = 0; col < n; col++) {
-      if (qr.isDark(fila, col)) d += `M${col},${fila}h1v1h-1z`
-    }
-  }
-  return { d, n }
-}
-
-function CodigoQr({ url }) {
-  // typeNumber 0 = que la libreria elija el tamano minimo que quepa la URL.
-  // Nivel 'L' (no 'M'): la URL de consentimiento de Google ronda los 300
-  // caracteres y en el panel de 480x320 cada modulo cae por debajo de 4 px,
-  // por debajo de lo que resuelve la camara de un movil a pulso. Bajar la
-  // correccion de errores quita dos versiones de rejilla y engorda cada
-  // modulo; el QR se lee de cerca y limpio, no impreso ni sucio, asi que la
-  // redundancia extra no aportaba nada aqui.
-  const qr = qrcode(0, 'L')
-  qr.addData(url)
-  qr.make()
-  const { d, n } = moduloPath(qr)
-  return (
-    <svg
-      className="pair-qr-svg"
-      viewBox={`0 0 ${n} ${n}`}
-      role="img"
-      aria-label="Codigo QR para vincular este equipo"
-    >
-      <path d={d} fill="#0a0a0a" />
-    </svg>
-  )
-}
 
 export default function PairScreen({ onPaired }) {
   // 'cargando' | 'pendiente' | 'listo' | 'expirado' | 'error'
