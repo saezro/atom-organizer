@@ -3,6 +3,7 @@ import BotonToque from './pulsacion.jsx'
 import BotonAtras from './BotonAtras.jsx'
 import Paginador from './Paginador.jsx'
 import CodigoQr from './CodigoQr.jsx'
+import TecladoPantalla from './TecladoPantalla.jsx'
 import { api, esRemoto } from './bridge.js'
 
 // App «Red» del kiosco: escanear WiFi y conectar. La Pi no tiene teclado
@@ -72,34 +73,6 @@ function IconoOjoTachado() {
   )
 }
 
-function IconoMayus() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="1.1em" height="1.1em" aria-hidden="true">
-      <path d="M12 4l7 7h-4v7H9v-7H5z" />
-    </svg>
-  )
-}
-
-function IconoBorrar() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="1.1em" height="1.1em" aria-hidden="true">
-      <path d="M9 5h9a2 2 0 012 2v10a2 2 0 01-2 2H9l-6-7z" />
-      <path d="M13 10l4 4M17 10l-4 4" />
-    </svg>
-  )
-}
-
-const FILAS_LETRAS = [
-  ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
-  ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'],
-  ['z', 'x', 'c', 'v', 'b', 'n', 'm'],
-]
-const FILAS_NUMEROS = [
-  ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
-  ['-', '/', ':', ';', '(', ')', '&', '@', '"'],
-  ['.', ',', '?', '!', "'"],
-]
-
 // Pantalla de contraseña: campo (oculto por defecto, con toggle «ver») +
 // teclado en pantalla (letras/números, mayúsculas) porque la Pi no tiene
 // teclado físico. `onConectar` recibe la contraseña ya escrita.
@@ -112,15 +85,7 @@ const FILAS_NUMEROS = [
 function PantallaPassword({ tactil, ssid, conectando, error, onVolver, onConectar }) {
   const [password, setPassword] = useState('')
   const [mostrar, setMostrar] = useState(false)
-  const [mayus, setMayus] = useState(false)
-  const [modo, setModo] = useState('letras')
   const remoto = esRemoto()
-
-  const filas = modo === 'letras' ? FILAS_LETRAS : FILAS_NUMEROS
-  const tecla = (c) => (modo === 'letras' && mayus ? c.toUpperCase() : c)
-  const escribir = (c) => setPassword((p) => p + tecla(c))
-  const borrar = () => setPassword((p) => p.slice(0, -1))
-  const espaciar = () => setPassword((p) => p + ' ')
 
   return (
     <div className="kiosk kiosk-red kiosk-red-password">
@@ -152,60 +117,7 @@ function PantallaPassword({ tactil, ssid, conectando, error, onVolver, onConecta
       </div>
 
       {!remoto && (
-        <div className="kiosk-red-teclado">
-          {filas.map((fila, i) => (
-            <div className="kiosk-red-fila" key={i}>
-              {fila.map((c) => (
-                <BotonToque
-                  key={c}
-                  className="kiosk-teclado-tecla"
-                  tactil={tactil}
-                  data-testid={`kiosk-tecla-${c}`}
-                  onActivar={() => escribir(c)}
-                >
-                  {tecla(c)}
-                </BotonToque>
-              ))}
-            </div>
-          ))}
-          <div className="kiosk-red-fila kiosk-red-fila-control">
-            <BotonToque
-              className={'kiosk-teclado-tecla kiosk-teclado-especial' + (mayus ? ' activa' : '')}
-              tactil={tactil}
-              onActivar={() => setMayus((m) => !m)}
-              disabled={modo !== 'letras'}
-              data-testid="kiosk-tecla-mayus"
-              aria-label="Mayúsculas"
-            >
-              <IconoMayus />
-            </BotonToque>
-            <BotonToque
-              className="kiosk-teclado-tecla kiosk-teclado-especial"
-              tactil={tactil}
-              onActivar={() => setModo((m) => (m === 'letras' ? 'numeros' : 'letras'))}
-              data-testid="kiosk-tecla-modo"
-            >
-              {modo === 'letras' ? '123' : 'ABC'}
-            </BotonToque>
-            <BotonToque
-              className="kiosk-teclado-tecla kiosk-teclado-espacio"
-              tactil={tactil}
-              onActivar={espaciar}
-              data-testid="kiosk-tecla-espacio"
-            >
-              Espacio
-            </BotonToque>
-            <BotonToque
-              className="kiosk-teclado-tecla kiosk-teclado-especial"
-              tactil={tactil}
-              onActivar={borrar}
-              data-testid="kiosk-tecla-borrar"
-              aria-label="Borrar"
-            >
-              <IconoBorrar />
-            </BotonToque>
-          </div>
-        </div>
+        <TecladoPantalla tactil={tactil} valor={password} onValor={setPassword} />
       )}
 
       {/* `.kiosk-acciones` es flex ROW: sin ella el `flex:1` de `.kiosk-btn`

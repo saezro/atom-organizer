@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import BotonToque from './pulsacion.jsx'
 import BotonMantener from './BotonMantener.jsx'
 import BotonAtras from './BotonAtras.jsx'
+import TecladoPantalla from './TecladoPantalla.jsx'
 import { api } from './bridge.js'
 import KioskRed from './KioskRed.jsx'
 import MenuApps from './MenuApps.jsx'
@@ -46,11 +47,59 @@ function IconoGeneral() {
   )
 }
 
-// Cuántos modelos caben por página en la sección «General» sin empujar el
-// botón Guardar fuera de los 320px de la Pi (mismo problema que resuelve la
-// paginación de `KioskTareas`/`MenuApps`: en un panel resistivo no hay
-// scroll de página, así que la lista se pagina en vez de crecer sin límite).
-const MODELOS_POR_PAGINA = 2
+// Recorte: un marco con la esquina tijereteada, para la entrada «% de recorte
+// por dron» del índice de General.
+function IconoRecorte() {
+  return (
+    <svg {...PROPS_SVG} width="1.6em" height="1.6em">
+      <path d="M7 3v14h14" />
+      <path d="M3 7h14v14" />
+    </svg>
+  )
+}
+
+function IconoCarpeta() {
+  return (
+    <svg {...PROPS_SVG} width="1.6em" height="1.6em">
+      <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+    </svg>
+  )
+}
+
+function IconoChevron() {
+  return (
+    <svg {...PROPS_SVG} width="1.3em" height="1.3em">
+      <path d="M9 5l7 7-7 7" />
+    </svg>
+  )
+}
+
+function IconoMas() {
+  return (
+    <svg {...PROPS_SVG} width="1.6em" height="1.6em">
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </svg>
+  )
+}
+
+function IconoMenos() {
+  return (
+    <svg {...PROPS_SVG} width="1.6em" height="1.6em">
+      <path d="M5 12h14" />
+    </svg>
+  )
+}
+
+// La lista de modelos ya no comparte pantalla con el formulario ni con la
+// ruta del ThermoViewer: tiene pantalla propia, así que caben más filas.
+const MODELOS_POR_PAGINA = 4
+
+// El % se ajusta a pasos de 5 con botones grandes en vez de teclearse: en el
+// panel resistivo un <input type=number> no se puede rellenar (la Pi no tiene
+// teclado físico) y el valor real siempre es redondo.
+const PCT_PASO = 5
+const PCT_DEFECTO = 20
 
 // Catálogo de secciones de Ajustes: mismo patrón que `apps/registry.js`
 // (id + nombre + icono), solo que aquí «abrir» es un estado local en vez de
@@ -95,17 +144,22 @@ export default function KioskAjustes({ tactil, onVolver }) {
   )
 }
 
-// Sección «General»: version kiosco de `ConfigScreen` (App.jsx): misma
-// config persistente (ruta de ThermoViewer + % de recorte RGB por modelo de
-// dron), pero en el patron de pantalla aislada del kiosco (header con
-// "Atras" + titulo, botones grandes tocables) en vez de un formulario de
-// escritorio con raton.
+// Sección «General»: versión kiosco de `ConfigScreen` (App.jsx): misma config
+// persistente (ruta de ThermoViewer + % de recorte RGB por modelo de dron).
+//
+// Es a su vez un ÍNDICE con sub-pantallas (estado `vista`) en vez de un único
+// formulario: metida entera en una pantalla, la lista de modelos sólo cabía de
+// dos en dos y los dos <input> de «añadir» eran directamente inútiles en la Pi
+// (sin teclado físico no hay forma de escribir en ellos). Ahora cada paso tiene
+// la pantalla para él: lista paginada, teclado en pantalla para el nombre y
+// botones -5/+5 para el porcentaje.
 function SeccionGeneral({ tactil, onVolver }) {
+  const [vista, setVista] = useState('indice')
   const [cargando, setCargando] = useState(true)
   const [ruta, setRuta] = useState('')
   const [models, setModels] = useState([]) // [{model, pct}]
-  const [mName, setMName] = useState('')
-  const [mPct, setMPct] = useState('')
+  const [nuevoModelo, setNuevoModelo] = useState('')
+  const [nuevoPct, setNuevoPct] = useState(PCT_DEFECTO)
   const [guardando, setGuardando] = useState(false)
   const [ok, setOk] = useState(false)
   const [error, setError] = useState('')
@@ -134,21 +188,22 @@ function SeccionGeneral({ tactil, onVolver }) {
 
   // Mismo formato que el Qt: modelo en MAYUSCULAS, actualiza si ya existe.
   function anadirModelo() {
-    const name = mName.trim().toUpperCase()
-    const pct = parseInt(mPct, 10)
-    if (!name || Number.isNaN(pct)) return
+    const name = nuevoModelo.trim().toUpperCase()
+    if (!name) return
     setModels((prev) => {
       const i = prev.findIndex((m) => m.model === name)
+      const entrada = { model: name, pct: String(nuevoPct) }
       if (i >= 0) {
         const next = [...prev]
-        next[i] = { model: name, pct: String(pct) }
+        next[i] = entrada
         return next
       }
-      return [...prev, { model: name, pct: String(pct) }]
+      return [...prev, entrada]
     })
-    setMName('')
-    setMPct('')
+    setNuevoModelo('')
+    setNuevoPct(PCT_DEFECTO)
     setOk(false)
+    setVista('modelos')
   }
 
   function quitarModelo(model) {
@@ -180,12 +235,191 @@ function SeccionGeneral({ tactil, onVolver }) {
     }
   }
 
+  // Guardar y el aviso de resultado son idénticos en todas las sub-pantallas:
+  // la config es una sola, se persista desde donde se persista.
+  const pieGuardar = (
+    <>
+      <div className="kiosk-acciones">
+        <BotonToque
+          className="btn kiosk-btn"
+          tactil={tactil}
+          data-testid="kiosk-ajustes-guardar"
+          onActivar={guardar}
+        >
+          {guardando ? 'Guardando…' : 'Guardar'}
+        </BotonToque>
+      </div>
+      {ok && <span className="kiosk-ajustes-ok" data-testid="kiosk-ajustes-ok">Guardado</span>}
+      {error && <span className="kiosk-ajustes-error" data-testid="kiosk-ajustes-error">{error}</span>}
+    </>
+  )
+
+  if (cargando) {
+    return (
+      <div className="kiosk kiosk-ajustes">
+        <div className="kiosk-header kiosk-header-paso">
+          <BotonAtras tactil={tactil} onActivar={onVolver} />
+          <span className="kiosk-titulo">General</span>
+        </div>
+        <span className="kiosk-ajustes-cargando">Cargando…</span>
+      </div>
+    )
+  }
+
+  // Paso 1 de «añadir»: nombre del modelo con el mismo teclado en pantalla que
+  // la contraseña del WiFi. Separado del % porque juntos no caben: el teclado
+  // se come casi toda la altura de los 320px.
+  if (vista === 'nuevo-modelo') {
+    return (
+      <div className="kiosk kiosk-ajustes">
+        <div className="kiosk-header kiosk-header-paso">
+          <BotonAtras tactil={tactil} onActivar={() => setVista('modelos')} />
+          <span className="kiosk-titulo">Modelo de dron</span>
+        </div>
+        <input
+          className="kiosk-input kiosk-ajustes-campo"
+          type="text"
+          value={nuevoModelo.toUpperCase()}
+          placeholder="p.ej. M4T"
+          data-testid="kiosk-ajustes-nombre"
+          readOnly
+        />
+        <TecladoPantalla tactil={tactil} valor={nuevoModelo} onValor={setNuevoModelo} />
+        <div className="kiosk-acciones">
+          <BotonToque
+            className="btn kiosk-btn"
+            tactil={tactil}
+            disabled={nuevoModelo.trim().length === 0}
+            data-testid="kiosk-ajustes-siguiente"
+            onActivar={() => setVista('nuevo-pct')}
+          >
+            Siguiente
+          </BotonToque>
+        </div>
+      </div>
+    )
+  }
+
+  // Paso 2 de «añadir»: el porcentaje, a pasos de 5 y con targets enormes.
+  if (vista === 'nuevo-pct') {
+    const mover = (d) => setNuevoPct((p) => Math.min(100, Math.max(0, p + d)))
+    return (
+      <div className="kiosk kiosk-ajustes">
+        <div className="kiosk-header kiosk-header-paso">
+          <BotonAtras tactil={tactil} onActivar={() => setVista('nuevo-modelo')} />
+          <span className="kiosk-titulo">{nuevoModelo.trim().toUpperCase()}</span>
+        </div>
+        <div className="kiosk-cuerpo kiosk-pct">
+          <BotonToque
+            className="kiosk-pct-btn"
+            tactil={tactil}
+            disabled={nuevoPct <= 0}
+            data-testid="kiosk-ajustes-pct-menos"
+            aria-label={`Bajar ${PCT_PASO} por ciento`}
+            onActivar={() => mover(-PCT_PASO)}
+          >
+            <IconoMenos />
+          </BotonToque>
+          <span className="kiosk-pct-valor" data-testid="kiosk-ajustes-pct-valor">{nuevoPct}%</span>
+          <BotonToque
+            className="kiosk-pct-btn"
+            tactil={tactil}
+            disabled={nuevoPct >= 100}
+            data-testid="kiosk-ajustes-pct-mas"
+            aria-label={`Subir ${PCT_PASO} por ciento`}
+            onActivar={() => mover(PCT_PASO)}
+          >
+            <IconoMas />
+          </BotonToque>
+        </div>
+        <div className="kiosk-acciones">
+          <BotonToque
+            className="btn kiosk-btn"
+            tactil={tactil}
+            data-testid="kiosk-ajustes-anadir"
+            onActivar={anadirModelo}
+          >
+            Añadir
+          </BotonToque>
+        </div>
+      </div>
+    )
+  }
+
   // Página segura: si se quita un modelo y la página actual queda fuera de
   // rango, se recalcula aquí mismo en vez de con un efecto aparte.
   const totalPaginasModelos = Math.max(1, Math.ceil(models.length / MODELOS_POR_PAGINA))
   const paginaSegura = Math.min(paginaModelos, totalPaginasModelos - 1)
   const inicioModelos = paginaSegura * MODELOS_POR_PAGINA
   const modelosVisibles = models.slice(inicioModelos, inicioModelos + MODELOS_POR_PAGINA)
+
+  if (vista === 'modelos') {
+    return (
+      <div className="kiosk kiosk-ajustes">
+        <div className="kiosk-header kiosk-header-paso">
+          <BotonAtras tactil={tactil} onActivar={() => setVista('indice')} />
+          <span className="kiosk-titulo">% de recorte</span>
+        </div>
+
+        {models.length > 0 ? (
+          <div className="kiosk-pag-wrap">
+            <ul className="kiosk-ajustes-lista">
+              {modelosVisibles.map((m) => (
+                <li key={m.model} className="kiosk-ajustes-item">
+                  <span className="kiosk-ajustes-modelo">{m.model}</span>
+                  <span className="kiosk-ajustes-pct">{m.pct}%</span>
+                  {/* Destructivo: borra el % configurado del modelo sin
+                      deshacer. Mantener pulsado (BotonMantener), no un
+                      toque — el panel resistivo da toques fantasma y
+                      ya se ha perdido un modelo asi por accidente. */}
+                  <BotonMantener
+                    className="btn-ghost kiosk-btn"
+                    tactil={tactil}
+                    data-testid={`kiosk-ajustes-quitar-${m.model}`}
+                    onActivar={() => quitarModelo(m.model)}
+                    aria-label={`Quitar ${m.model}`}
+                  >
+                    Quitar
+                  </BotonMantener>
+                </li>
+              ))}
+            </ul>
+            <Paginador
+              pagina={paginaSegura}
+              totalPaginas={totalPaginasModelos}
+              onPagina={setPaginaModelos}
+              tactil={tactil}
+              testidPrefijo="kiosk-ajustes-modelos-"
+              contexto="modelos"
+            />
+          </div>
+        ) : (
+          <span className="kiosk-ajustes-vacio">No hay modelos configurados todavía.</span>
+        )}
+
+        <div className="kiosk-acciones">
+          <BotonToque
+            className="btn-ghost kiosk-btn"
+            tactil={tactil}
+            data-testid="kiosk-ajustes-nuevo"
+            onActivar={() => setVista('nuevo-modelo')}
+          >
+            Añadir
+          </BotonToque>
+          <BotonToque
+            className="btn kiosk-btn"
+            tactil={tactil}
+            data-testid="kiosk-ajustes-guardar"
+            onActivar={guardar}
+          >
+            {guardando ? 'Guardando…' : 'Guardar'}
+          </BotonToque>
+        </div>
+        {ok && <span className="kiosk-ajustes-ok" data-testid="kiosk-ajustes-ok">Guardado</span>}
+        {error && <span className="kiosk-ajustes-error" data-testid="kiosk-ajustes-error">{error}</span>}
+      </div>
+    )
+  }
 
   return (
     <div className="kiosk kiosk-ajustes">
@@ -194,118 +428,44 @@ function SeccionGeneral({ tactil, onVolver }) {
         <span className="kiosk-titulo">General</span>
       </div>
 
-      {cargando ? (
-        <span className="kiosk-ajustes-cargando">Cargando…</span>
-      ) : (
-        <>
-          {/* Cuerpo con scroll propio (`.kiosk-cuerpo`, App.css): `.kiosk` es
-              overflow:hidden, así que sin esto el formulario+lista de modelos
-              tapaban el botón Guardar en vez de dejarle sitio fijo abajo. */}
-          <div className="kiosk-cuerpo">
-            <div className="kiosk-ajustes-seccion">
-              <span className="kiosk-ajustes-label">ThermoViewer</span>
-              <span className="kiosk-ajustes-ruta">{ruta || 'Sin definir'}</span>
-              <BotonToque
-                className="btn-ghost kiosk-btn"
-                tactil={tactil}
-                data-testid="kiosk-ajustes-thermo"
-                onActivar={elegirRuta}
-              >
-                Elegir…
-              </BotonToque>
-            </div>
-
-            <div className="kiosk-ajustes-seccion">
-              <span className="kiosk-ajustes-label">% de recorte por dron</span>
-              {models.length > 0 ? (
-                <>
-                  {/* Altura fija (no `flex:1`, ya lo da `.kiosk-ajustes-seccion`
-                      con `min-height:0`): dentro de un card de altura auto un
-                      `flex:1` sin límite se comía el resto de la sección. */}
-                  <div className="kiosk-pag-wrap kiosk-ajustes-pag-wrap">
-                    <ul className="kiosk-ajustes-lista">
-                      {modelosVisibles.map((m) => (
-                        <li key={m.model} className="kiosk-ajustes-item">
-                          <span className="kiosk-ajustes-modelo">{m.model}</span>
-                          <span className="kiosk-ajustes-pct">{m.pct}%</span>
-                          {/* Destructivo: borra el % configurado del modelo sin
-                              deshacer. Mantener pulsado (BotonMantener), no un
-                              toque — el panel resistivo da toques fantasma y
-                              ya se ha perdido un modelo asi por accidente. */}
-                          <BotonMantener
-                            className="btn-ghost kiosk-btn"
-                            tactil={tactil}
-                            data-testid={`kiosk-ajustes-quitar-${m.model}`}
-                            onActivar={() => quitarModelo(m.model)}
-                            aria-label={`Quitar ${m.model}`}
-                          >
-                            Quitar
-                          </BotonMantener>
-                        </li>
-                      ))}
-                    </ul>
-                    <Paginador
-                      pagina={paginaSegura}
-                      totalPaginas={totalPaginasModelos}
-                      onPagina={setPaginaModelos}
-                      tactil={tactil}
-                      testidPrefijo="kiosk-ajustes-modelos-"
-                      contexto="modelos"
-                    />
-                  </div>
-                </>
-              ) : (
-                <span className="kiosk-ajustes-vacio">No hay modelos configurados todavía.</span>
-              )}
-
-              <div className="kiosk-ajustes-nuevo">
-                <input
-                  className="glass-input"
-                  type="text"
-                  value={mName}
-                  placeholder="Modelo (p.ej. M4T)"
-                  onChange={(e) => setMName(e.target.value)}
-                />
-                <input
-                  className="glass-input"
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={mPct}
-                  placeholder="%"
-                  onChange={(e) => setMPct(e.target.value)}
-                />
-                <BotonToque
-                  className="btn-ghost kiosk-btn"
-                  tactil={tactil}
-                  data-testid="kiosk-ajustes-anadir"
-                  onActivar={anadirModelo}
-                >
-                  Añadir
-                </BotonToque>
-              </div>
-            </div>
-          </div>
-
-          {/* `.kiosk-acciones` es flex ROW (App.css): el `flex:1` de `.kiosk-btn`
-              da ancho aquí, no alto como pasaba colgando directo de `.kiosk`
-              (flex column), que es lo que hacía crecer el botón hasta comerse
-              la pantalla. */}
+      {/* Cuerpo con scroll propio (`.kiosk-cuerpo`, App.css): `.kiosk` es
+          overflow:hidden, así que sin esto el contenido tapaba el botón
+          Guardar en vez de dejarle sitio fijo abajo. */}
+      <div className="kiosk-cuerpo">
+        <div className="kiosk-ajustes-seccion">
+          <span className="kiosk-ajustes-label">ThermoViewer</span>
+          <span className="kiosk-ajustes-ruta">{ruta || 'Sin definir'}</span>
           <div className="kiosk-acciones">
             <BotonToque
-              className="btn kiosk-btn"
+              className="btn-ghost kiosk-btn"
               tactil={tactil}
-              data-testid="kiosk-ajustes-guardar"
-              onActivar={guardar}
+              data-testid="kiosk-ajustes-thermo"
+              onActivar={elegirRuta}
             >
-              {guardando ? 'Guardando…' : 'Guardar'}
+              <IconoCarpeta />
+              Elegir…
             </BotonToque>
           </div>
+        </div>
 
-          {ok && <span className="kiosk-ajustes-ok" data-testid="kiosk-ajustes-ok">Guardado</span>}
-          {error && <span className="kiosk-ajustes-error" data-testid="kiosk-ajustes-error">{error}</span>}
-        </>
-      )}
+        <BotonToque
+          className="kiosk-ajustes-entrada"
+          tactil={tactil}
+          data-testid="kiosk-ajustes-abrir-modelos"
+          onActivar={() => setVista('modelos')}
+        >
+          <IconoRecorte />
+          <span className="kiosk-ajustes-entrada-txt">
+            <span>% de recorte por dron</span>
+            <span className="kiosk-ajustes-label">
+              {models.length === 1 ? '1 modelo' : `${models.length} modelos`}
+            </span>
+          </span>
+          <IconoChevron />
+        </BotonToque>
+      </div>
+
+      {pieGuardar}
     </div>
   )
 }
