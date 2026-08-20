@@ -1076,9 +1076,21 @@ class Api:
                             len(plan.items))
                         self._subir_objeto_json(
                             f"{prefix_lote}/manifest.json", manifest)
-                        lotes.marcar_lote_completo(root, lote)
                     except Exception as exc_manifest:  # noqa: BLE001
                         res.failed.append(("manifest.json", str(exc_manifest)))
+                    else:
+                        # El manifest YA esta en el bucket: para la Suite el
+                        # lote esta completo, pase lo que pase aqui. Si no se
+                        # puede persistir el estado local (disco lleno,
+                        # permisos), NO es un fallo de subida: se avisa y se
+                        # sigue. Lo contrario dejaria el estado local en
+                        # "incompleto" y una siguiente subida reanudaria un
+                        # lote que la Suite ya puede estar organizando.
+                        try:
+                            lotes.marcar_lote_completo(root, lote)
+                        except Exception as exc_estado:  # noqa: BLE001
+                            print(f"[lotes] manifest subido pero no se pudo "
+                                  f"marcar {lote} como completo: {exc_estado}")
 
                 self._push_cloud({
                     "kind": "done", "ok": res.ok,
