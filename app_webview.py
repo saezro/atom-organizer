@@ -910,7 +910,8 @@ class Api:
 
     def cloud_upload(self, folder: str, force: bool = False,
                      prefix: str | None = None,
-                     inspeccion_id: int | None = None) -> dict:
+                     inspeccion_id: int | None = None,
+                     confirmar_subida_extra: bool = False) -> dict:
         """Sube la carpeta entera al bucket. El progreso va por `atom:cloud`.
 
         `force` se mantiene por compatibilidad con llamadas antiguas y se
@@ -923,6 +924,16 @@ class Api:
         panel "SUBIDAS SIN ORGANIZAR" o la enseñe en rojo. Si es `None`
         (prefijo escrito a mano, inspección no encontrada), no se reporta
         nada: solo queda en el log local.
+
+        `confirmar_subida_extra`: esta carpeta ya tiene un lote COMPLETO
+        registrado (su `manifest.json` se escribió) y el operario ha
+        confirmado dos veces en la UI que esto es una subida EXTRA con OTRO
+        estadillo, no un reintento. Sin esta confirmación, una carpeta con
+        lote completo no se sube: se devuelve `requiere_confirmacion` con el
+        lote anterior para que la UI pida las dos confirmaciones antes de
+        volver a llamar. Un lote INCOMPLETO (sin `manifest.json`, típico de
+        un corte de red) se reanuda directo, sin preguntar nada: eso es
+        "reintentar", no "subir otra vez" (ver `atom_core/lotes.py`).
         """
         if self._uploading:
             return {"started": False, "reason": "Ya hay una subida en curso."}
@@ -951,8 +962,31 @@ class Api:
                               "carpeta: sin estadillo el lote no se puede "
                               "organizar.")}
 
+        # El lote es por CARPETA local, no por pulsación de "Subir". Un lote
+        # INCOMPLETO (sin manifest.json: se cortó, se canceló) se reanuda
+        # directo. Uno COMPLETO exige confirmación explícita: sin ella no se
+        # sube nada, con ella se abre un lote NUEVO (otro estadillo sobre la
+        # misma carpeta) — ver atom_core/lotes.py.
         usuario = (self._cuenta_actual() or "").split("@")[0]
-        lote = lotes.nombre_lote(datetime.now(timezone.utc), usuario)
+        estado_previo = lotes.estado_lote_carpeta(root)
+        if estado_previo is not None and estado_previo["completo"]:
+            if not confirmar_subida_extra:
+                return {
+                    "started": False,
+                    "requiere_confirmacion": True,
+                    "lote_anterior": estado_previo["lote"],
+                    "reason": (
+                        "Esta carpeta ya se subió por completo (lote "
+                        f"{estado_previo['lote']}). Si es una subida EXTRA "
+                        "con otro estadillo, confírmalo."),
+                }
+            lote = lotes.nombre_lote(datetime.now(timezone.utc), usuario)
+            lotes.registrar_lote(root, lote)
+        elif estado_previo is not None:
+            lote = estado_previo["lote"]  # incompleto: reanudar sin preguntar
+        else:
+            lote = lotes.nombre_lote(datetime.now(timezone.utc), usuario)
+            lotes.registrar_lote(root, lote)
         prefix_lote = f"{prefix}/{lotes.CARPETA_SUBIDAS}/{lote}"
 
         self._uploading = True
@@ -1011,17 +1045,19 @@ class Api:
                 # operario mirando una barra parada. Lo que se haya colado en
                 # el bucket desde entonces lo para la precondición
                 # `ifGenerationMatch=0` con un 412, sin gastar bytes.
-                # Sin `remotos` cacheado aquí a propósito: `prefix_lote` es una
-                # carpeta nueva por construcción (sello de tiempo), así que el
-                # inventario relevante para reconciliar sería el de `prefix`
-                # (la inspección) y sus claves no casan con las de este lote.
-                # Listar `prefix_lote` en `upload_plan` es barato porque
-                # siempre está vacío.
+                # `prefix_lote` ahora SÍ puede ser un lote reanudado (ya no es
+                # siempre una carpeta nueva vacía), así que el inventario
+                # cacheado de ese prefijo vuelve a tener sentido pasarlo: si
+                # está fresco, ahorra el listado; si no (`None`, lo normal:
+                # nadie precalienta el prefijo del lote, solo el de la
+                # inspección), `upload_plan` lista `prefix_lote` él solo antes
+                # de subir nada.
                 res = cloud_upload.upload_plan(
                     plan, provider,
                     on_progress=lambda t: self._push_cloud({"kind": "log", "text": t}),
                     on_stats=lambda s: self._on_stats_subida(reporter, s),
                     should_stop=lambda: self._cancel_upload,
+                    remotos=self._inventario_cacheado(prefix_lote),
                 )
 
                 # `manifest.json` es el marcador de "lote completo": se sube
@@ -1029,7 +1065,10 @@ class Api:
                 # subida se canceló/falló a medias), NO se escribe: el lote
                 # queda invisible para la Suite a propósito (ver
                 # atom_core/lotes.py). Un fallo aquí se trata como un fallo
-                # más de la subida (entra en `res.failed`), no aparte.
+                # más de la subida (entra en `res.failed`), no aparte. Y solo
+                # si se escribe con éxito se marca el lote como completo en
+                # el estado local: así una siguiente subida de esta carpeta
+                # sabe que hace falta confirmación, no lo reanuda a ciegas.
                 if res.ok and not self._cancel_upload:
                     try:
                         manifest = lotes.manifest_lote(
@@ -1037,6 +1076,7 @@ class Api:
                             len(plan.items))
                         self._subir_objeto_json(
                             f"{prefix_lote}/manifest.json", manifest)
+                        lotes.marcar_lote_completo(root, lote)
                     except Exception as exc_manifest:  # noqa: BLE001
                         res.failed.append(("manifest.json", str(exc_manifest)))
 
