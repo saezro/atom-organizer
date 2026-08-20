@@ -2090,14 +2090,6 @@ html[data-cursor] .picker-card { cursor: pointer; }
   direction: rtl;
   text-align: left;
 }
-/* `.kiosk-pag-wrap` hereda `flex: 1` (pensado para pantallas de altura fija
-   tipo `.kiosk-menu`); dentro de un card de altura auto eso lo deja sin techo
-   y se solapa con lo de debajo. Aquí la altura es predecible por construcción:
-   `MODELOS_POR_PAGINA` items de `--toque-min` + su gap, ni una fila más. */
-.kiosk-ajustes-pag-wrap {
-  flex: 0 0 auto;
-  height: calc(var(--toque-min) * 2 + var(--u) / 3);
-}
 .kiosk-ajustes-lista {
   display: flex;
   flex-direction: column;
@@ -2106,15 +2098,53 @@ html[data-cursor] .picker-card { cursor: pointer; }
 .kiosk-ajustes-item { display: flex; align-items: center; gap: calc(var(--u) / 2); min-height: var(--toque-min); }
 .kiosk-ajustes-modelo { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kiosk-ajustes-pct { color: var(--muted); }
-.kiosk-ajustes-nuevo { display: flex; gap: calc(var(--u) / 2); align-items: center; }
-/* Explícito aquí (no solo confiando en la media query genérica de 480x320):
-   sin altura mínima el input nativo queda por debajo de --toque-min y no es
-   pulsable con el dedo. */
-.kiosk-ajustes-nuevo .glass-input { min-height: var(--toque-min); }
 .kiosk-ajustes-vacio,
 .kiosk-ajustes-cargando { color: var(--muted); font-size: var(--fs-sm); }
 .kiosk-ajustes-ok { color: var(--ok, #6ee7a8); font-size: var(--fs-sm); }
 .kiosk-ajustes-error { color: var(--orange); font-size: var(--fs-sm); }
+
+/* Entrada del índice de General que abre una sub-pantalla («% de recorte por
+   dron»): card pulsable con icono grande a la izquierda y chevron a la
+   derecha, para que se lea como «esto lleva a otro sitio» y no como un campo
+   más del formulario. */
+.kiosk-ajustes-entrada {
+  display: flex;
+  align-items: center;
+  gap: var(--u);
+  width: 100%;
+  text-align: left;
+  flex-shrink: 0;
+  min-height: var(--toque-min);
+  padding: var(--u);
+  border-radius: var(--radio);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+.kiosk-ajustes-entrada-txt { flex: 1; display: flex; flex-direction: column; gap: calc(var(--u) / 4); min-width: 0; }
+
+/* Campo de solo lectura del paso «modelo de dron»: lo rellena el teclado en
+   pantalla, nunca el foco del input (en la Pi no hay teclado físico). */
+.kiosk-ajustes-campo { flex-shrink: 0; text-transform: uppercase; }
+
+/* Paso del porcentaje: dos targets enormes y el valor en el centro. Es la
+   alternativa al <input type=number>, que en el panel resistivo no se podía
+   rellenar de ninguna manera. */
+.kiosk-pct { flex-direction: row; align-items: center; justify-content: center; gap: var(--u); overflow: hidden; }
+.kiosk-pct-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: calc(var(--toque-min) * 1.6);
+  height: calc(var(--toque-min) * 1.6);
+  border-radius: 50%;
+  border: 0.0625rem solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+.kiosk-pct-btn:disabled { opacity: 0.3; }
+.kiosk-pct-valor { flex: 1; text-align: center; font-size: calc(var(--fs-lg) * 2.2); font-variant-numeric: tabular-nums; color: var(--orange); }
 
 /* Índice de secciones de Ajustes (`KioskAjustes.jsx`): rejilla compacta de
    cards, misma `MenuApps` que el launcher del home. */
@@ -2227,7 +2257,7 @@ html[data-cursor] .picker-card { cursor: pointer; }
   align-items: center;
   justify-content: center;
 }
-.kiosk-red-teclado {
+.kiosk-teclado {
   /* Ocupa TODO el alto que sobra: en la pantalla de 480x320 las teclas de
      altura fija salian minusculas y no habia forma de acertar con el dedo.
      `flex: 1` + filas `flex: 1` reparten el hueco real entre las 4 filas. */
@@ -2237,7 +2267,7 @@ html[data-cursor] .picker-card { cursor: pointer; }
   flex-direction: column;
   gap: calc(var(--u) / 4);
 }
-.kiosk-red-fila {
+.kiosk-teclado-fila {
   flex: 1;
   min-height: 0;
   display: flex;
