@@ -306,14 +306,19 @@ export default function KioskScreen({
                   : `⚠ Quedan ${verificacion.pendientes} archivos sin subir`}
           </span>
         )}
-        <BotonToque
-          className="btn kiosk-btn"
-          tactil={tactil}
-          onActivar={() => { setVerificacion(null); onCerrarResultado?.() }}
-          data-testid="kiosk-resultado-aceptar"
-        >
-          Aceptar
-        </BotonToque>
+        {/* `.kiosk-acciones` es flex ROW: `kiosk-resultado` ES el `.kiosk`
+            (flex COLUMN, alto fijo a viewport), así que sin envolver el botón
+            su `flex:1` se comía todo el hueco que dejan icono/textos. */}
+        <div className="kiosk-acciones">
+          <BotonToque
+            className="btn kiosk-btn"
+            tactil={tactil}
+            onActivar={() => { setVerificacion(null); onCerrarResultado?.() }}
+            data-testid="kiosk-resultado-aceptar"
+          >
+            Aceptar
+          </BotonToque>
+        </div>
       </div>
     )
   }
@@ -642,19 +647,24 @@ export default function KioskScreen({
           {/* Con `soloLista` el botón "Actualizar lista" de InspeccionSelector
               no se pinta (no cabe encima de la lista en 480x320): esta es la
               única vía para recargar el catálogo en este sub-paso. */}
-          <BotonToque
-            className="kiosk-actualizar-insp kiosk-filtro-insp"
-            tactil={tactil}
-            onActivar={() => setEligiendoFases(true)}
-            disabled={busy}
-            aria-label="Filtrar por fase"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                 strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M3 5h18l-7 8v6l-4 2v-8z" />
-            </svg>
+          {/* El contador va FUERA del boton: `.pulsable` recorta con
+              `overflow:hidden` para contener la onda del toque, y dentro del
+              boton circular el numero salia cortado por el borde del circulo. */}
+          <span className="kiosk-filtro-wrap">
+            <BotonToque
+              className="kiosk-actualizar-insp kiosk-filtro-insp"
+              tactil={tactil}
+              onActivar={() => setEligiendoFases(true)}
+              disabled={busy}
+              aria-label="Filtrar por fase"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                   strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 5h18l-7 8v6l-4 2v-8z" />
+              </svg>
+            </BotonToque>
             {fasesKiosco.length > 0 && <span className="kiosk-filtro-num">{fasesKiosco.length}</span>}
-          </BotonToque>
+          </span>
           <BotonToque
             className="kiosk-actualizar-insp"
             tactil={tactil}

@@ -1079,6 +1079,38 @@ select.glass-input option {
     opacity: 0.4;
   }
 }
+/* Confirmacion de acciones DESTRUCTIVAS del kiosco (BotonMantener.jsx): un
+   relleno que avanza de izquierda a derecha mientras se mantiene pulsado, con
+   el mismo naranja de marca que la onda de `.pulsable`. A diferencia de esta,
+   AQUI si mide tiempo real (--mantener): es la propia barra de progreso lo
+   que confirma al operador que falta para disparar la accion, no un acuse de
+   recibo posterior. */
+.mantenible {
+  position: relative;
+  overflow: hidden; /* el relleno no se sale del borde/radio del boton */
+  border-radius: inherit;
+}
+.mantenible > * {
+  position: relative;
+  z-index: 1;
+}
+.mantenible::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: rgba(238, 117, 58, 0.55);
+  transform: scaleX(0);
+  transform-origin: left;
+  pointer-events: none;
+  /* Revierte rapido (no de golpe) al soltar/cancelar antes de completar. La
+     regla de abajo (.manteniendo) sobreescribe la duracion mientras crece. */
+  transition: transform 150ms ease-out;
+}
+.mantenible.manteniendo::before {
+  transform: scaleX(1);
+  transition: transform var(--mantener) linear;
+}
 .picker-txt {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1799,12 +1831,23 @@ html[data-cursor] .picker-card { cursor: pointer; }
 .kiosk-fase-num { color: var(--muted); font-size: var(--fs-sm); }
 .kiosk-fase-todas { justify-content: center; color: var(--orange); }
 
-/* Contador de fases activas sobre el botón de filtro de la cabecera. */
-.kiosk-filtro-insp { position: relative; }
+/* Contador de fases activas sobre el botón de filtro de la cabecera. El
+   ancla es el WRAP, no el botón: el botón es `.pulsable` (overflow:hidden
+   para contener la onda) y además circular, así que un hijo absoluto en la
+   esquina salía recortado por el borde del círculo. */
+.kiosk-filtro-wrap {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+.kiosk-filtro-wrap .kiosk-actualizar-insp { margin-left: 0; }
 .kiosk-filtro-num {
   position: absolute;
-  top: -0.125rem;
-  right: -0.125rem;
+  top: -0.25rem;
+  right: -0.25rem;
+  /* El badge es decorativo: nunca debe robarle el toque al botón. */
+  pointer-events: none;
   min-width: 1.125rem;
   height: 1.125rem;
   border-radius: 999rem;

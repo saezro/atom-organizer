@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import BotonToque from './pulsacion.jsx'
+import BotonMantener from './BotonMantener.jsx'
 import BotonAtras from './BotonAtras.jsx'
 import { api } from './bridge.js'
 import KioskRed from './KioskRed.jsx'
@@ -227,14 +228,19 @@ function SeccionGeneral({ tactil, onVolver }) {
                         <li key={m.model} className="kiosk-ajustes-item">
                           <span className="kiosk-ajustes-modelo">{m.model}</span>
                           <span className="kiosk-ajustes-pct">{m.pct}%</span>
-                          <BotonToque
+                          {/* Destructivo: borra el % configurado del modelo sin
+                              deshacer. Mantener pulsado (BotonMantener), no un
+                              toque — el panel resistivo da toques fantasma y
+                              ya se ha perdido un modelo asi por accidente. */}
+                          <BotonMantener
                             className="btn-ghost kiosk-btn"
                             tactil={tactil}
                             data-testid={`kiosk-ajustes-quitar-${m.model}`}
                             onActivar={() => quitarModelo(m.model)}
+                            aria-label={`Quitar ${m.model}`}
                           >
                             Quitar
-                          </BotonToque>
+                          </BotonMantener>
                         </li>
                       ))}
                     </ul>

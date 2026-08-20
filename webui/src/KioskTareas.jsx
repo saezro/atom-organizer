@@ -37,37 +37,162 @@ const PROPS_SVG = {
   'aria-hidden': 'true',
 }
 
-// Icono para las tareas de la sección AEROTOOLS (pipeline térmica/RGB propio).
-function IconoAerotools() {
+// Icono genérico: fallback si algún día se añade un `task` al schema sin
+// entrada en `ICONOS_TAREA` (nunca debe quedar una card sin icono).
+function IconoGenerica() {
   return (
     <svg {...PROPS_SVG}>
-      <path d="M4 17l6-10 4 6 3-4 3 8" />
-      <circle cx="10" cy="7" r="1.2" fill="currentColor" stroke="none" />
+      <rect x="4" y="4" width="16" height="16" rx="2" />
     </svg>
   )
 }
 
-// Icono para las tareas de OTROS EQUIPOS (utilidades genéricas de imagen).
-function IconoOtros() {
+// Térmica · extracción (do_extraction): saca temperaturas de las imágenes
+// térmicas del vuelo — termómetro con escala.
+function IconoExtraccion() {
   return (
     <svg {...PROPS_SVG}>
-      <rect x="4" y="4" width="7" height="7" rx="1" />
-      <rect x="13" y="4" width="7" height="7" rx="1" />
-      <rect x="4" y="13" width="7" height="7" rx="1" />
-      <rect x="13" y="13" width="7" height="7" rx="1" />
+      <path d="M12 14.5V5a2 2 0 10-4 0v9.5a4 4 0 104 0z" />
+      <path d="M10 8h1M10 11h1" />
     </svg>
   )
+}
+
+// Procesamiento RGB (rgb_aerotools): compresión + renombrado + geotag de las
+// fotos en color del vuelo — cámara.
+function IconoRgb() {
+  return (
+    <svg {...PROPS_SVG}>
+      <path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1V9a1 1 0 011-1z" />
+      <circle cx="12" cy="13" r="3.5" />
+    </svg>
+  )
+}
+
+// Rotación (gen_thumbnails_aerotools / gen_thumbnails): endereza las
+// imágenes según el yaw del vuelo — flecha circular.
+function IconoRotacion() {
+  return (
+    <svg {...PROPS_SVG}>
+      <path d="M4 12a8 8 0 0113.66-5.66L20 8" />
+      <path d="M20 4v4h-4" />
+    </svg>
+  )
+}
+
+// Geoetiquetado manual (manual_geotagging): asigna coordenadas a mano a
+// partir del log — pin de mapa.
+function IconoGeoetiquetado() {
+  return (
+    <svg {...PROPS_SVG}>
+      <path d="M12 21s7-6.3 7-11.5A7 7 0 105 9.5C5 14.7 12 21 12 21z" />
+      <circle cx="12" cy="9.5" r="2.2" />
+    </svg>
+  )
+}
+
+// Comprimir imágenes (compress_image): reduce el peso del archivo — flechas
+// hacia dentro.
+function IconoComprimir() {
+  return (
+    <svg {...PROPS_SVG}>
+      <path d="M4 4l6 6M4 4v4M4 4h4" />
+      <path d="M20 20l-6-6M20 20v-4M20 20h-4" />
+    </svg>
+  )
+}
+
+// Generar meta y location (gen_meta_location): rellena metadatos EXIF/GPS —
+// etiqueta con marca de posición.
+function IconoMeta() {
+  return (
+    <svg {...PROPS_SVG}>
+      <path d="M3 12l8-8h8v8l-8 8z" />
+      <circle cx="15" cy="9" r="1.2" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}
+
+// Estructura de carpetas · organizar (gen_struct): coloca cada imagen en su
+// carpeta según el estadillo — carpeta.
+function IconoEstructura() {
+  return (
+    <svg {...PROPS_SVG}>
+      <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+    </svg>
+  )
+}
+
+// Renombrado de imágenes (rename_images): cambia el nombre de archivo por
+// lote — etiqueta "Aa".
+function IconoRenombrar() {
+  return (
+    <svg {...PROPS_SVG}>
+      <path d="M4 7h16M4 12h10M4 17h7" />
+      <path d="M18 15l3 3-3 3" />
+    </svg>
+  )
+}
+
+// Convertir DJI → TIF (convert_to_tif): decodifica la térmica cruda del dron
+// a TIF radiométrico — imagen con flecha de intercambio.
+function IconoConvertirTif() {
+  return (
+    <svg {...PROPS_SVG}>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="M8 15l3-3 2 2 3-4" />
+      <path d="M15 5v3M13 6.5h4" />
+    </svg>
+  )
+}
+
+// Recorte RGB (rgb_cropping): recorta el marco de las fotos RGB — esquinas
+// de recorte.
+function IconoRecorte() {
+  return (
+    <svg {...PROPS_SVG}>
+      <path d="M6 3v14a2 2 0 002 2h14" />
+      <path d="M18 21V7a2 2 0 00-2-2H2" />
+    </svg>
+  )
+}
+
+// Girar imágenes TIF (tif_rotating): rota un ángulo fijo (90/-90/180) las
+// TIF ya convertidas — flecha de giro cerrada.
+function IconoGiroTif() {
+  return (
+    <svg {...PROPS_SVG}>
+      <rect x="5" y="5" width="14" height="14" rx="2" />
+      <path d="M9 9l6 6M15 9l-6 6" />
+    </svg>
+  )
+}
+
+// Mapa `block.task` → icono, uno distinto por tarea real del schema (nunca
+// compartido por sección, a diferencia del icono único por grupo de antes).
+const ICONOS_TAREA = {
+  do_extraction: IconoExtraccion,
+  rgb_aerotools: IconoRgb,
+  gen_thumbnails_aerotools: IconoRotacion,
+  manual_geotagging: IconoGeoetiquetado,
+  compress_image: IconoComprimir,
+  gen_meta_location: IconoMeta,
+  gen_struct: IconoEstructura,
+  gen_thumbnails: IconoRotacion,
+  rename_images: IconoRenombrar,
+  convert_to_tif: IconoConvertirTif,
+  rgb_cropping: IconoRecorte,
+  tif_rotating: IconoGiroTif,
 }
 
 // Aplana SECTIONS en una única lista de apps para `MenuApps`: cada tarea
-// lleva el icono de su sección de origen, pero sin separador ni epígrafe (la
-// rejilla 3x3 no tiene sitio para un hueco a mitad de fila).
+// lleva SU icono propio (`ICONOS_TAREA`), no el de su sección de origen.
 function appsDeSecciones() {
   const apps = []
   for (const clave of Object.keys(SECTIONS)) {
     const seccion = SECTIONS[clave]
-    const Icono = clave === 'aerotools' ? IconoAerotools : IconoOtros
     for (const block of seccion.blocks) {
+      const Icono = ICONOS_TAREA[block.task] || IconoGenerica
       apps.push({ id: block.task, nombre: block.title, Icono, block })
     }
   }
@@ -147,15 +272,20 @@ function FormularioTarea({ tactil, busy, block, onEjecutar, onVolver }) {
           />
         ))}
       </div>
-      <BotonToque
-        className="btn kiosk-btn kiosk-tareas-ejecutar"
-        tactil={tactil}
-        disabled={busy}
-        data-testid="kiosk-tarea-ejecutar"
-        onActivar={() => onEjecutar(block.task, buildParams(block.fields, state))}
-      >
-        {busy ? 'Procesando…' : 'Ejecutar'}
-      </BotonToque>
+      {/* `.kiosk-acciones` es flex ROW: sin ella el `flex:1` de `.kiosk-btn`
+          cuelga directo de `.kiosk-tareas` (flex COLUMN) y crece en ALTO
+          hasta comerse la pantalla (causa diagnosticada en App.css). */}
+      <div className="kiosk-acciones">
+        <BotonToque
+          className="btn kiosk-btn kiosk-tareas-ejecutar"
+          tactil={tactil}
+          disabled={busy}
+          data-testid="kiosk-tarea-ejecutar"
+          onActivar={() => onEjecutar(block.task, buildParams(block.fields, state))}
+        >
+          {busy ? 'Procesando…' : 'Ejecutar'}
+        </BotonToque>
+      </div>
     </div>
   )
 }
