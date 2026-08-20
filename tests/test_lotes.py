@@ -7,7 +7,15 @@ lib/organizer-lotes.test.mjs tiene que cambiar igual.
 """
 from datetime import datetime, timezone
 
-from atom_core.lotes import nombre_lote, manifest_lote
+import pytest
+
+from atom_core.lotes import (
+    estado_lote_carpeta,
+    manifest_lote,
+    marcar_lote_completo,
+    nombre_lote,
+    registrar_lote,
+)
 
 
 def test_nombre_lote_igual_que_la_suite():
@@ -50,3 +58,61 @@ def test_manifest_lote_v2():
 def test_manifest_lote_sin_usuario_es_null():
     m = manifest_lote("L", "", ["ESTADILLOS/e.csv"], 1)
     assert m["subido_por"] is None
+
+
+# ---------------------------------------------------------------------------
+# Estado local por carpeta: `registrar_lote`/`marcar_lote_completo`/
+# `estado_lote_carpeta`. Aísla `user_data_dir` a `tmp_path` para no tocar el
+# `~/.config/atom-organizer` real de quien corre los tests.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _user_data_dir_aislado(monkeypatch, tmp_path):
+    from atom_core import google_auth
+
+    destino = tmp_path / "config-atom-organizer"
+    monkeypatch.setattr(google_auth, "user_data_dir", lambda: destino)
+
+
+def test_carpeta_sin_estado_previo_no_tiene_lote(tmp_path):
+    carpeta = tmp_path / "vuelo"
+    carpeta.mkdir()
+    assert estado_lote_carpeta(carpeta) is None
+
+
+def test_registrar_lote_queda_incompleto(tmp_path):
+    carpeta = tmp_path / "vuelo"
+    carpeta.mkdir()
+    registrar_lote(carpeta, "L1")
+    assert estado_lote_carpeta(carpeta) == {"lote": "L1", "completo": False}
+
+
+def test_marcar_lote_completo_lo_pasa_a_completo(tmp_path):
+    carpeta = tmp_path / "vuelo"
+    carpeta.mkdir()
+    registrar_lote(carpeta, "L1")
+    marcar_lote_completo(carpeta, "L1")
+    assert estado_lote_carpeta(carpeta) == {"lote": "L1", "completo": True}
+
+
+def test_marcar_lote_completo_no_toca_si_el_lote_no_coincide(tmp_path):
+    """Se registró un lote distinto entre medias: `marcar_lote_completo` de un
+    lote antiguo no debe pisar el nuevo (carrera improbable, pero el efecto de
+    marcar el equivocado sería peor que no marcar nada)."""
+    carpeta = tmp_path / "vuelo"
+    carpeta.mkdir()
+    registrar_lote(carpeta, "L1")
+    registrar_lote(carpeta, "L2")  # otro lote nuevo pisa al primero
+    marcar_lote_completo(carpeta, "L1")  # el viejo, ya no vigente
+    assert estado_lote_carpeta(carpeta) == {"lote": "L2", "completo": False}
+
+
+def test_dos_carpetas_distintas_tienen_lotes_independientes(tmp_path):
+    a = tmp_path / "vuelo_a"
+    b = tmp_path / "vuelo_b"
+    a.mkdir()
+    b.mkdir()
+    registrar_lote(a, "LA")
+    registrar_lote(b, "LB")
+    assert estado_lote_carpeta(a) == {"lote": "LA", "completo": False}
+    assert estado_lote_carpeta(b) == {"lote": "LB", "completo": False}

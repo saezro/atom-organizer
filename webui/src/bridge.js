@@ -242,8 +242,9 @@ export const api = {
   cloudPairPoll: (pairId) => call('cloud_pair_poll', pairId),
   cloudInspecciones: () => call('cloud_inspecciones'),
   cloudPrepare: (folder, prefix) => call('cloud_prepare', folder, prefix ?? null),
-  cloudUpload: (folder, force, prefix, inspeccionId) =>
-    call('cloud_upload', folder, force ?? false, prefix ?? null, inspeccionId ?? null),
+  cloudUpload: (folder, force, prefix, inspeccionId, confirmarSubidaExtra) =>
+    call('cloud_upload', folder, force ?? false, prefix ?? null, inspeccionId ?? null,
+        confirmarSubidaExtra ?? false),
   cloudCancel: () => call('cloud_cancel'),
   // Ubicación canónica del estadillo en el bucket (independiente de organizar
   // y de la subida de jornada). estadilloValidar es síncrono y no sube nada:
