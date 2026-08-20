@@ -208,15 +208,20 @@ function PantallaPassword({ tactil, ssid, conectando, error, onVolver, onConecta
         </div>
       )}
 
-      <BotonToque
-        className="btn kiosk-btn kiosk-red-conectar"
-        tactil={tactil}
-        disabled={conectando || password.length === 0}
-        data-testid="kiosk-red-conectar"
-        onActivar={() => onConectar(password)}
-      >
-        {conectando ? 'Conectando…' : 'Conectar'}
-      </BotonToque>
+      {/* `.kiosk-acciones` es flex ROW: sin ella el `flex:1` de `.kiosk-btn`
+          cuelga directo de `.kiosk` (flex COLUMN, alto fijo) y crece en alto
+          comiéndose parte del hueco reservado al teclado en pantalla. */}
+      <div className="kiosk-acciones">
+        <BotonToque
+          className="btn kiosk-btn kiosk-red-conectar"
+          tactil={tactil}
+          disabled={conectando || password.length === 0}
+          data-testid="kiosk-red-conectar"
+          onActivar={() => onConectar(password)}
+        >
+          {conectando ? 'Conectando…' : 'Conectar'}
+        </BotonToque>
+      </div>
 
       {error && <span className="kiosk-red-error" data-testid="kiosk-red-password-error">{error}</span>}
     </div>
@@ -460,14 +465,19 @@ export default function KioskRed({ tactil, onVolver }) {
             <span className="kiosk-red-ap-datos">
               {apInfo.ssid} · {apInfo.password}
             </span>
-            <BotonToque
-              className="btn kiosk-btn"
-              tactil={tactil}
-              onActivar={() => setPaso('url')}
-              data-testid="kiosk-red-ap-siguiente"
-            >
-              Ya estoy conectado →
-            </BotonToque>
+            {/* `.kiosk-acciones` es flex ROW: `.kiosk-red-ap-paso` ya es flex
+                COLUMN con `flex:1`, así que sin envolver el botón su propio
+                `flex:1` se comía todo ese hueco (crecía en alto). */}
+            <div className="kiosk-acciones">
+              <BotonToque
+                className="btn kiosk-btn"
+                tactil={tactil}
+                onActivar={() => setPaso('url')}
+                data-testid="kiosk-red-ap-siguiente"
+              >
+                Ya estoy conectado →
+              </BotonToque>
+            </div>
           </div>
         ) : apInfo && paso === 'url' ? (
           <div className="kiosk-red-ap-paso">
@@ -480,14 +490,17 @@ export default function KioskRed({ tactil, onVolver }) {
             <span className="kiosk-red-ap-datos">
               http://{apInfo.ip}:8765/?t={apInfo.token}
             </span>
-            <BotonToque
-              className="btn-ghost kiosk-btn"
-              tactil={tactil}
-              onActivar={() => setPaso('wifi')}
-              data-testid="kiosk-red-ap-volver"
-            >
-              ← Volver
-            </BotonToque>
+            {/* Mismo motivo que el botón «Ya estoy conectado» de arriba. */}
+            <div className="kiosk-acciones">
+              <BotonToque
+                className="btn-ghost kiosk-btn"
+                tactil={tactil}
+                onActivar={() => setPaso('wifi')}
+                data-testid="kiosk-red-ap-volver"
+              >
+                ← Volver
+              </BotonToque>
+            </div>
           </div>
         ) : null}
 

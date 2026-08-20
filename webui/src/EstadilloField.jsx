@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api } from './bridge'
 import BotonToque from './pulsacion.jsx'
+import BotonMantener from './BotonMantener.jsx'
 
 // Cuántos estadillos caben por página cuando se usa en el kiosco (`tactil`):
 // el panel resistivo de la Pi no tiene scroll de página (`.kiosk-estadillo`
@@ -159,15 +160,20 @@ export default function EstadilloField({ value, onChange, disabled, tactil }) {
                 ▼
               </button>
             </span>
-            <button
-              type="button"
+            {/* Destructivo: quita el estadillo de la lista sin deshacer. En
+                kiosco exige mantener pulsado (BotonMantener); en escritorio
+                (tactil falsy) sigue siendo un click normal, como antes. */}
+            <BotonMantener
               className="config-del"
+              tactil={tactil}
               title="Quitar este estadillo"
+              aria-label="Quitar este estadillo"
+              data-testid={`estad-quitar-${i}`}
               disabled={disabled}
-              onClick={() => quitar(i)}
+              onActivar={() => quitar(i)}
             >
               ✕
-            </button>
+            </BotonMantener>
           </li>
         ))}
       </ul>

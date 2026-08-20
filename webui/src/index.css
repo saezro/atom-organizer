@@ -15,6 +15,10 @@
      animacion termine. No cronometra la activacion: el boton se activa al
      soltar, esto es solo el acuse de recibo visual. */
   --onda: 200ms;
+  /* Mantener pulsado que exigen las acciones destructivas del kiosco
+     (BotonMantener.jsx) antes de disparar `onActivar`. Vive aqui para que
+     JS y la animacion de relleno en CSS lean el mismo numero. */
+  --mantener: 1000ms;
   --bg: #0a0a0a;
   --text: #f1f5f9;
   --muted: #6b7280;
