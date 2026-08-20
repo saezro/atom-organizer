@@ -74,6 +74,21 @@ function IconoChevron() {
   )
 }
 
+// Papelera para «quitar modelo»: con texto, el boton se comia media fila y
+// quedaba pegado a los controles de pagina (que estan justo al lado, no
+// debajo: `.kiosk-pag-wrap` es flex ROW).
+function IconoPapelera() {
+  return (
+    <svg {...PROPS_SVG} width="1.3em" height="1.3em">
+      <path d="M4 7h16" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M6 7l1 12a2 2 0 002 2h6a2 2 0 002-2l1-12" />
+      <path d="M9 7V5a2 2 0 012-2h2a2 2 0 012 2v2" />
+    </svg>
+  )
+}
+
 function IconoMas() {
   return (
     <svg {...PROPS_SVG} width="1.6em" height="1.6em">
@@ -164,6 +179,10 @@ function SeccionGeneral({ tactil, onVolver }) {
   const [ok, setOk] = useState(false)
   const [error, setError] = useState('')
   const [paginaModelos, setPaginaModelos] = useState(0)
+  // La lista de modelos es de solo lectura hasta pulsar «Editar»: las
+  // papeleras quedaban al lado del paginador y en el panel resistivo se
+  // borraba un modelo al cambiar de pagina. Añadir tambien vive aqui.
+  const [editando, setEditando] = useState(false)
 
   // Carga inicial de la config persistente, igual que ConfigScreen.
   useEffect(() => {
@@ -203,6 +222,7 @@ function SeccionGeneral({ tactil, onVolver }) {
     setNuevoModelo('')
     setNuevoPct(PCT_DEFECTO)
     setOk(false)
+    setEditando(true)
     setVista('modelos')
   }
 
@@ -357,7 +377,7 @@ function SeccionGeneral({ tactil, onVolver }) {
     return (
       <div className="kiosk kiosk-ajustes">
         <div className="kiosk-header kiosk-header-paso">
-          <BotonAtras tactil={tactil} onActivar={() => setVista('indice')} />
+          <BotonAtras tactil={tactil} onActivar={() => { setEditando(false); setVista('indice') }} />
           <span className="kiosk-titulo">% de recorte</span>
         </div>
 
@@ -372,15 +392,16 @@ function SeccionGeneral({ tactil, onVolver }) {
                       deshacer. Mantener pulsado (BotonMantener), no un
                       toque — el panel resistivo da toques fantasma y
                       ya se ha perdido un modelo asi por accidente. */}
-                  <BotonMantener
-                    className="btn-ghost kiosk-btn"
+                  {editando && <BotonMantener
+                    className="kiosk-ajustes-quitar"
                     tactil={tactil}
                     data-testid={`kiosk-ajustes-quitar-${m.model}`}
                     onActivar={() => quitarModelo(m.model)}
                     aria-label={`Quitar ${m.model}`}
+                    etiquetaConfirmar={<IconoPapelera />}
                   >
-                    Quitar
-                  </BotonMantener>
+                    <IconoPapelera />
+                  </BotonMantener>}
                 </li>
               ))}
             </ul>
@@ -398,22 +419,44 @@ function SeccionGeneral({ tactil, onVolver }) {
         )}
 
         <div className="kiosk-acciones">
-          <BotonToque
-            className="btn-ghost kiosk-btn"
-            tactil={tactil}
-            data-testid="kiosk-ajustes-nuevo"
-            onActivar={() => setVista('nuevo-modelo')}
-          >
-            Añadir
-          </BotonToque>
-          <BotonToque
-            className="btn kiosk-btn"
-            tactil={tactil}
-            data-testid="kiosk-ajustes-guardar"
-            onActivar={guardar}
-          >
-            {guardando ? 'Guardando…' : 'Guardar'}
-          </BotonToque>
+          {editando || models.length === 0 ? (
+            <BotonToque
+              className="btn-ghost kiosk-btn"
+              tactil={tactil}
+              data-testid="kiosk-ajustes-nuevo"
+              onActivar={() => setVista('nuevo-modelo')}
+            >
+              Añadir
+            </BotonToque>
+          ) : (
+            <BotonToque
+              className="btn-ghost kiosk-btn"
+              tactil={tactil}
+              data-testid="kiosk-ajustes-editar"
+              onActivar={() => setEditando(true)}
+            >
+              Editar
+            </BotonToque>
+          )}
+          {editando ? (
+            <BotonToque
+              className="btn kiosk-btn"
+              tactil={tactil}
+              data-testid="kiosk-ajustes-listo"
+              onActivar={() => setEditando(false)}
+            >
+              Listo
+            </BotonToque>
+          ) : (
+            <BotonToque
+              className="btn kiosk-btn"
+              tactil={tactil}
+              data-testid="kiosk-ajustes-guardar"
+              onActivar={guardar}
+            >
+              {guardando ? 'Guardando…' : 'Guardar'}
+            </BotonToque>
+          )}
         </div>
         {ok && <span className="kiosk-ajustes-ok" data-testid="kiosk-ajustes-ok">Guardado</span>}
         {error && <span className="kiosk-ajustes-error" data-testid="kiosk-ajustes-error">{error}</span>}

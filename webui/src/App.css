@@ -2098,6 +2098,27 @@ html[data-cursor] .picker-card { cursor: pointer; }
 .kiosk-ajustes-item { display: flex; align-items: center; gap: calc(var(--u) / 2); min-height: var(--toque-min); }
 .kiosk-ajustes-modelo { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kiosk-ajustes-pct { color: var(--muted); }
+/* Compacto y redondo, NO `.kiosk-btn`: esa clase lleva `flex: 1` y aqui, en
+   un `li` flex ROW, el boton crecia a lo ancho hasta rozar los controles de
+   pagina que van al lado. El aviso de «mantener pulsado» lo da el relleno de
+   `.mantenible`, no el ancho. */
+.kiosk-ajustes-quitar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--toque-min);
+  height: var(--toque-min);
+  border-radius: 50%;
+  /* Rojo: solo aparece en modo edicion y es la unica accion destructiva de
+     la pantalla; en gris se confundia con un boton desactivado. */
+  border: 0.0625rem solid rgba(229, 72, 77, 0.55);
+  background: rgba(229, 72, 77, 0.15);
+  color: var(--peligro, #e5484d);
+}
+/* Separacion extra lista<->paginador: son dos zonas pulsables distintas y
+   equivocarse aqui borra un modelo. */
+.kiosk-ajustes .kiosk-pag-wrap { gap: calc(var(--u) * 2); }
 .kiosk-ajustes-vacio,
 .kiosk-ajustes-cargando { color: var(--muted); font-size: var(--fs-sm); }
 .kiosk-ajustes-ok { color: var(--ok, #6ee7a8); font-size: var(--fs-sm); }

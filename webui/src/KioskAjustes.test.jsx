@@ -110,6 +110,8 @@ describe('KioskAjustes', () => {
 
     // Paso 1: nombre con el teclado en pantalla (con cambio a modo números
     // para el "3", como en un teclado real de la Pi).
+    // Añadir vive dentro del modo edicion: la lista es de solo lectura.
+    await user.click(screen.getByTestId('kiosk-ajustes-editar'))
     await user.click(screen.getByTestId('kiosk-ajustes-nuevo'))
     await user.click(screen.getByTestId('kiosk-tecla-m'))
     await user.click(screen.getByTestId('kiosk-tecla-modo'))
@@ -130,6 +132,7 @@ describe('KioskAjustes', () => {
     expect(await screen.findByText('M3T')).toBeInTheDocument()
     expect(screen.getByText('30%')).toBeInTheDocument()
 
+    await user.click(screen.getByTestId('kiosk-ajustes-listo'))
     await user.click(screen.getByTestId('kiosk-ajustes-guardar'))
 
     await waitFor(() => expect(writeConfig).toHaveBeenCalledTimes(1))
@@ -151,6 +154,10 @@ describe('KioskAjustes', () => {
       await flush()
       expect(screen.getByText('M4T')).toBeInTheDocument()
 
+      // La papelera solo existe en modo edicion.
+      expect(screen.queryByTestId('kiosk-ajustes-quitar-M4T')).toBeNull()
+      tocar(screen.getByTestId('kiosk-ajustes-editar'))
+      await flush()
       const boton = screen.getByTestId('kiosk-ajustes-quitar-M4T')
 
       // Soltar antes de completar el segundo NO lo quita.
