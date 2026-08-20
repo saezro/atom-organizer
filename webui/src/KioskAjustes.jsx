@@ -197,90 +197,104 @@ function SeccionGeneral({ tactil, onVolver }) {
         <span className="kiosk-ajustes-cargando">Cargando…</span>
       ) : (
         <>
-          <div className="kiosk-ajustes-seccion">
-            <span className="kiosk-ajustes-label">ThermoViewer</span>
-            <span className="kiosk-ajustes-ruta">{ruta || 'Sin definir'}</span>
-            <BotonToque
-              className="btn-ghost kiosk-btn"
-              tactil={tactil}
-              data-testid="kiosk-ajustes-thermo"
-              onActivar={elegirRuta}
-            >
-              Elegir…
-            </BotonToque>
-          </div>
-
-          <div className="kiosk-ajustes-seccion">
-            <span className="kiosk-ajustes-label">% de recorte por dron</span>
-            {models.length > 0 ? (
-              <>
-                <div className="kiosk-pag-wrap">
-                  <ul className="kiosk-ajustes-lista">
-                    {modelosVisibles.map((m) => (
-                      <li key={m.model} className="kiosk-ajustes-item">
-                        <span className="kiosk-ajustes-modelo">{m.model}</span>
-                        <span className="kiosk-ajustes-pct">{m.pct}%</span>
-                        <BotonToque
-                          className="btn-ghost kiosk-btn"
-                          tactil={tactil}
-                          data-testid={`kiosk-ajustes-quitar-${m.model}`}
-                          onActivar={() => quitarModelo(m.model)}
-                        >
-                          Quitar
-                        </BotonToque>
-                      </li>
-                    ))}
-                  </ul>
-                  <Paginador
-                    pagina={paginaSegura}
-                    totalPaginas={totalPaginasModelos}
-                    onPagina={setPaginaModelos}
-                    tactil={tactil}
-                    testidPrefijo="kiosk-ajustes-modelos-"
-                    contexto="modelos"
-                  />
-                </div>
-              </>
-            ) : (
-              <span className="kiosk-ajustes-vacio">No hay modelos configurados todavía.</span>
-            )}
-
-            <div className="kiosk-ajustes-nuevo">
-              <input
-                className="glass-input"
-                type="text"
-                value={mName}
-                placeholder="Modelo (p.ej. M4T)"
-                onChange={(e) => setMName(e.target.value)}
-              />
-              <input
-                className="glass-input"
-                type="number"
-                min="0"
-                max="100"
-                value={mPct}
-                placeholder="%"
-                onChange={(e) => setMPct(e.target.value)}
-              />
+          {/* Cuerpo con scroll propio (`.kiosk-cuerpo`, App.css): `.kiosk` es
+              overflow:hidden, así que sin esto el formulario+lista de modelos
+              tapaban el botón Guardar en vez de dejarle sitio fijo abajo. */}
+          <div className="kiosk-cuerpo">
+            <div className="kiosk-ajustes-seccion">
+              <span className="kiosk-ajustes-label">ThermoViewer</span>
+              <span className="kiosk-ajustes-ruta">{ruta || 'Sin definir'}</span>
               <BotonToque
                 className="btn-ghost kiosk-btn"
                 tactil={tactil}
-                data-testid="kiosk-ajustes-anadir"
-                onActivar={anadirModelo}
+                data-testid="kiosk-ajustes-thermo"
+                onActivar={elegirRuta}
               >
-                Añadir
+                Elegir…
               </BotonToque>
+            </div>
+
+            <div className="kiosk-ajustes-seccion">
+              <span className="kiosk-ajustes-label">% de recorte por dron</span>
+              {models.length > 0 ? (
+                <>
+                  {/* Altura fija (no `flex:1`, ya lo da `.kiosk-ajustes-seccion`
+                      con `min-height:0`): dentro de un card de altura auto un
+                      `flex:1` sin límite se comía el resto de la sección. */}
+                  <div className="kiosk-pag-wrap kiosk-ajustes-pag-wrap">
+                    <ul className="kiosk-ajustes-lista">
+                      {modelosVisibles.map((m) => (
+                        <li key={m.model} className="kiosk-ajustes-item">
+                          <span className="kiosk-ajustes-modelo">{m.model}</span>
+                          <span className="kiosk-ajustes-pct">{m.pct}%</span>
+                          <BotonToque
+                            className="btn-ghost kiosk-btn"
+                            tactil={tactil}
+                            data-testid={`kiosk-ajustes-quitar-${m.model}`}
+                            onActivar={() => quitarModelo(m.model)}
+                          >
+                            Quitar
+                          </BotonToque>
+                        </li>
+                      ))}
+                    </ul>
+                    <Paginador
+                      pagina={paginaSegura}
+                      totalPaginas={totalPaginasModelos}
+                      onPagina={setPaginaModelos}
+                      tactil={tactil}
+                      testidPrefijo="kiosk-ajustes-modelos-"
+                      contexto="modelos"
+                    />
+                  </div>
+                </>
+              ) : (
+                <span className="kiosk-ajustes-vacio">No hay modelos configurados todavía.</span>
+              )}
+
+              <div className="kiosk-ajustes-nuevo">
+                <input
+                  className="glass-input"
+                  type="text"
+                  value={mName}
+                  placeholder="Modelo (p.ej. M4T)"
+                  onChange={(e) => setMName(e.target.value)}
+                />
+                <input
+                  className="glass-input"
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={mPct}
+                  placeholder="%"
+                  onChange={(e) => setMPct(e.target.value)}
+                />
+                <BotonToque
+                  className="btn-ghost kiosk-btn"
+                  tactil={tactil}
+                  data-testid="kiosk-ajustes-anadir"
+                  onActivar={anadirModelo}
+                >
+                  Añadir
+                </BotonToque>
+              </div>
             </div>
           </div>
 
-          <BotonToque
-            className="btn kiosk-btn"
-            tactil={tactil}
-            data-testid="kiosk-ajustes-guardar"
-            onActivar={guardar}
-          >
-            {guardando ? 'Guardando…' : 'Guardar'}
-          </BotonToque>
+          {/* `.kiosk-acciones` es flex ROW (App.css): el `flex:1` de `.kiosk-btn`
+              da ancho aquí, no alto como pasaba colgando directo de `.kiosk`
+              (flex column), que es lo que hacía crecer el botón hasta comerse
+              la pantalla. */}
+          <div className="kiosk-acciones">
+            <BotonToque
+              className="btn kiosk-btn"
+              tactil={tactil}
+              data-testid="kiosk-ajustes-guardar"
+              onActivar={guardar}
+            >
+              {guardando ? 'Guardando…' : 'Guardar'}
+            </BotonToque>
+          </div>
 
           {ok && <span className="kiosk-ajustes-ok" data-testid="kiosk-ajustes-ok">Guardado</span>}
           {error && <span className="kiosk-ajustes-error" data-testid="kiosk-ajustes-error">{error}</span>}

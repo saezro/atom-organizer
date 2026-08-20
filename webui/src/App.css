@@ -1219,6 +1219,18 @@ select.glass-input option {
   cursor: none;
 }
 .kiosk * { cursor: none; }
+/* Cuerpo con scroll propio, genérico para cualquier pantalla del kiosco cuyo
+   contenido pueda crecer más que la altura fija de `.kiosk` (overflow:hidden):
+   el scroll vive aquí, no en `.kiosk`, para que header y pie (botón Guardar,
+   mensajes ok/error) queden siempre fijos. */
+.kiosk-cuerpo {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--u);
+  min-height: 0;
+  overflow-y: auto;
+}
 /* Los modales (selector de carpetas incluido) se montan en .pm-overlay, FUERA
    de .kiosk: sin esto el cursor reaparecia justo al abrir el selector. */
 @media (max-height: 26rem) {
@@ -1560,7 +1572,7 @@ select.glass-input option {
   color: var(--text);
 }
 
-.kiosk-acciones { margin-top: auto; display: flex; gap: var(--u); }
+.kiosk-acciones { margin-top: auto; display: flex; gap: var(--u); flex-shrink: 0; }
 
 .kiosk-btn {
   flex: 1;
@@ -2011,11 +2023,20 @@ html[data-cursor] .picker-card { cursor: pointer; }
    crecer con `max-height`+scroll, así el botón Guardar de abajo queda
    siempre a una altura fija sea cual sea el número de modelos guardados. */
 .kiosk-ajustes { display: flex; flex-direction: column; gap: var(--u); }
+/* Card, mismo lenguaje visual que `.kiosk-app`: sin esto la sección era un
+   bloque suelto que se confundía con el fondo y no delimitaba su contenido,
+   agravando el solape con el resto de la pantalla. `flex-shrink: 0` para que
+   `.kiosk-cuerpo` no la comprima al hacer scroll. */
 .kiosk-ajustes-seccion {
   display: flex;
   flex-direction: column;
   gap: calc(var(--u) / 2);
   min-height: 0;
+  flex-shrink: 0;
+  padding: var(--u);
+  border-radius: var(--radio);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
 }
 .kiosk-ajustes-label { font-size: var(--fs-sm); color: var(--muted); }
 .kiosk-ajustes-ruta {
@@ -2026,15 +2047,27 @@ html[data-cursor] .picker-card { cursor: pointer; }
   direction: rtl;
   text-align: left;
 }
+/* `.kiosk-pag-wrap` hereda `flex: 1` (pensado para pantallas de altura fija
+   tipo `.kiosk-menu`); dentro de un card de altura auto eso lo deja sin techo
+   y se solapa con lo de debajo. Aquí la altura es predecible por construcción:
+   `MODELOS_POR_PAGINA` items de `--toque-min` + su gap, ni una fila más. */
+.kiosk-ajustes-pag-wrap {
+  flex: 0 0 auto;
+  height: calc(var(--toque-min) * 2 + var(--u) / 3);
+}
 .kiosk-ajustes-lista {
   display: flex;
   flex-direction: column;
   gap: calc(var(--u) / 3);
 }
-.kiosk-ajustes-item { display: flex; align-items: center; gap: calc(var(--u) / 2); }
+.kiosk-ajustes-item { display: flex; align-items: center; gap: calc(var(--u) / 2); min-height: var(--toque-min); }
 .kiosk-ajustes-modelo { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kiosk-ajustes-pct { color: var(--muted); }
 .kiosk-ajustes-nuevo { display: flex; gap: calc(var(--u) / 2); align-items: center; }
+/* Explícito aquí (no solo confiando en la media query genérica de 480x320):
+   sin altura mínima el input nativo queda por debajo de --toque-min y no es
+   pulsable con el dedo. */
+.kiosk-ajustes-nuevo .glass-input { min-height: var(--toque-min); }
 .kiosk-ajustes-vacio,
 .kiosk-ajustes-cargando { color: var(--muted); font-size: var(--fs-sm); }
 .kiosk-ajustes-ok { color: var(--ok, #6ee7a8); font-size: var(--fs-sm); }
@@ -2048,25 +2081,9 @@ html[data-cursor] .picker-card { cursor: pointer; }
    `schema.js` en lista paginada (el arrastre no prende en el panel resistivo)
    y, al elegir una, su formulario de campos. */
 .kiosk-tareas { display: flex; flex-direction: column; gap: calc(var(--u) / 2); }
-.kiosk-tareas-lista {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: calc(var(--u) / 3);
-  overflow: hidden;
-  min-height: 0;
-}
-.kiosk-tareas-item {
-  min-height: var(--toque-min);
-  justify-content: flex-start;
-  text-align: left;
-}
-.kiosk-tareas-separador {
-  font-size: var(--fs-sm);
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
+/* El índice de tareas ya no pinta su propia rejilla: reusa `MenuApps`
+   (mismas `.kiosk-app`/`.kiosk-apps-compacta` que el índice de Ajustes), así
+   que aquí solo quedan las clases del formulario de una tarea elegida. */
 .kiosk-tareas-form {
   flex: 1;
   display: flex;
