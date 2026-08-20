@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import BotonToque from './pulsacion.jsx'
+import BotonAtras from './BotonAtras.jsx'
 import CodigoQr from './CodigoQr.jsx'
 import { api, esRemoto } from './bridge.js'
 
@@ -123,9 +124,7 @@ function PantallaPassword({ tactil, ssid, conectando, error, onVolver, onConecta
   return (
     <div className="kiosk kiosk-red kiosk-red-password">
       <div className="kiosk-header kiosk-header-paso">
-        <BotonToque className="kiosk-atras" tactil={tactil} onActivar={onVolver} disabled={conectando}>
-          ← Atrás
-        </BotonToque>
+        <BotonAtras tactil={tactil} onActivar={onVolver} disabled={conectando} />
         <span className="kiosk-titulo">{ssid}</span>
       </div>
 
@@ -439,9 +438,7 @@ export default function KioskRed({ tactil, onVolver }) {
     return (
       <div className="kiosk kiosk-red kiosk-red-ap">
         <div className="kiosk-header kiosk-header-paso">
-          <BotonToque className="kiosk-atras" tactil={tactil} onActivar={cerrarAp}>
-            ← Atrás
-          </BotonToque>
+          <BotonAtras tactil={tactil} onActivar={cerrarAp} />
           <span className="kiosk-titulo">Conectar desde el móvil</span>
         </div>
 
@@ -532,9 +529,7 @@ export default function KioskRed({ tactil, onVolver }) {
   return (
     <div className="kiosk kiosk-red">
       <div className="kiosk-header kiosk-header-paso">
-        <BotonToque className="kiosk-atras" tactil={tactil} onActivar={onVolver}>
-          ← Atrás
-        </BotonToque>
+        <BotonAtras tactil={tactil} onActivar={onVolver} />
         <span className="kiosk-titulo">Red</span>
         <BotonToque
           className="kiosk-actualizar-insp"

@@ -58,7 +58,7 @@ describe('KioskTareas — lista', () => {
     const user = userEvent.setup()
     const onVolver = vi.fn()
     render(<KioskTareas {...baseProps({ onVolver })} />)
-    await user.click(screen.getByText('← Atrás'))
+    await user.click(screen.getByLabelText('Atrás'))
     expect(onVolver).toHaveBeenCalled()
   })
 })
@@ -85,7 +85,7 @@ describe('KioskTareas — formulario', () => {
     render(<KioskTareas {...baseProps({ onVolver })} />)
     const block = SECTIONS.aerotools.blocks[0]
     await user.click(screen.getByTestId(`kiosk-tarea-${block.task}`))
-    await user.click(screen.getByText('← Atrás'))
+    await user.click(screen.getByLabelText('Atrás'))
 
     expect(onVolver).not.toHaveBeenCalled()
     expect(screen.getByText('Tareas')).toBeInTheDocument()

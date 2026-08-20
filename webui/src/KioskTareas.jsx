@@ -16,6 +16,7 @@
 import { useState } from 'react'
 import { api } from './bridge.js'
 import BotonToque from './pulsacion.jsx'
+import BotonAtras from './BotonAtras.jsx'
 import { SECTIONS } from './schema.js'
 import { initialState, buildParams } from './TaskBlock.jsx'
 
@@ -61,9 +62,7 @@ export default function KioskTareas({ tactil, busy, onEjecutar, onVolver }) {
   return (
     <div className="kiosk kiosk-tareas">
       <div className="kiosk-header kiosk-header-paso">
-        <BotonToque className="kiosk-atras" tactil={tactil} onActivar={onVolver}>
-          ← Atrás
-        </BotonToque>
+        <BotonAtras tactil={tactil} onActivar={onVolver} />
         <span className="kiosk-titulo">Tareas</span>
       </div>
       <div className="kiosk-tareas-lista">
@@ -139,9 +138,7 @@ function FormularioTarea({ tactil, busy, block, onEjecutar, onVolver }) {
   return (
     <div className="kiosk kiosk-tareas">
       <div className="kiosk-header kiosk-header-paso">
-        <BotonToque className="kiosk-atras" tactil={tactil} onActivar={onVolver}>
-          ← Atrás
-        </BotonToque>
+        <BotonAtras tactil={tactil} onActivar={onVolver} />
         <span className="kiosk-titulo">{block.title}</span>
       </div>
       <div className="kiosk-tareas-form">

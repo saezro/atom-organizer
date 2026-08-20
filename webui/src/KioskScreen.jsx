@@ -19,6 +19,7 @@ import InspeccionSelector, { COLOR_FASE, COLOR_FASE_DEFECTO, ORDEN_FASES, chip }
 import EstadilloField from './EstadilloField.jsx'
 import { formatBytes, formatDuracion } from './formato.js'
 import MenuApps from './MenuApps.jsx'
+import BotonAtras from './BotonAtras.jsx'
 import KioskTareas from './KioskTareas.jsx'
 import KioskAjustes from './KioskAjustes.jsx'
 import EstadoRed from './EstadoRed.jsx'
@@ -374,13 +375,9 @@ export default function KioskScreen({
     return (
       <div className="kiosk kiosk-sistema">
         <div className="kiosk-header kiosk-header-paso">
-          <BotonToque
-            className="kiosk-atras"
+          <BotonAtras
             tactil={tactil}
-            onActivar={() => { setConfirmarApagado(null); setAccion(null) }}
-          >
-            ← Atrás
-          </BotonToque>
+            onActivar={() => { setConfirmarApagado(null); setAccion(null) }} />
           <span className="kiosk-titulo">Sistema</span>
         </div>
         {confirmarApagado ? (
@@ -451,9 +448,7 @@ export default function KioskScreen({
     return (
       <div className="kiosk kiosk-cuenta">
         <div className="kiosk-header kiosk-header-paso">
-          <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setAccion(null)}>
-            ← Atrás
-          </BotonToque>
+          <BotonAtras tactil={tactil} onActivar={() => setAccion(null)} />
           <span className="kiosk-titulo">Cuenta</span>
         </div>
         {logueado ? (
@@ -485,9 +480,7 @@ export default function KioskScreen({
     return (
       <div className="kiosk kiosk-organizer">
         <div className="kiosk-header kiosk-header-paso">
-          <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setAccion(null)} disabled={busy}>
-            ← Atrás
-          </BotonToque>
+          <BotonAtras tactil={tactil} onActivar={() => setAccion(null)} disabled={busy} />
           <span className="kiosk-titulo">Organizer</span>
           {avatar}
         </div>
@@ -603,9 +596,7 @@ export default function KioskScreen({
     return (
       <div className="kiosk">
         <div className="kiosk-header kiosk-header-paso">
-          <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setEligiendoFases(false)} disabled={busy}>
-            ← Listo
-          </BotonToque>
+          <BotonAtras tactil={tactil} onActivar={() => setEligiendoFases(false)} disabled={busy} etiqueta="Listo" />
           <span className="kiosk-titulo">Fases</span>
           {avatar}
         </div>
@@ -647,9 +638,7 @@ export default function KioskScreen({
     return (
       <div className="kiosk">
         <div className="kiosk-header kiosk-header-paso">
-          <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setAccion('organizer')} disabled={busy}>
-            ← Atrás
-          </BotonToque>
+          <BotonAtras tactil={tactil} onActivar={() => setAccion('organizer')} disabled={busy} />
           <span className="kiosk-titulo">Subir en crudo</span>
           {/* Con `soloLista` el botón "Actualizar lista" de InspeccionSelector
               no se pinta (no cabe encima de la lista en 480x320): esta es la
@@ -778,9 +767,7 @@ export default function KioskScreen({
     return (
       <div className="kiosk">
         <div className="kiosk-header kiosk-header-paso">
-          <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setResumen(null)} disabled={busy}>
-            ← Atrás
-          </BotonToque>
+          <BotonAtras tactil={tactil} onActivar={() => setResumen(null)} disabled={busy} />
           <span className="kiosk-titulo">Antes de subir</span>
           {avatar}
         </div>
@@ -850,9 +837,7 @@ export default function KioskScreen({
   return (
     <div className="kiosk">
       <div className="kiosk-header kiosk-header-paso">
-        <BotonToque className="kiosk-atras" tactil={tactil} onActivar={() => setAccion('organizer')} disabled={busy}>
-          ← Atrás
-        </BotonToque>
+        <BotonAtras tactil={tactil} onActivar={() => setAccion('organizer')} disabled={busy} />
         <span className="kiosk-titulo">{esOrganizar ? 'Organizar' : 'Subir en crudo'}</span>
         {avatar}
       </div>

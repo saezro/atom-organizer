@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import BotonToque from './pulsacion.jsx'
+import BotonAtras from './BotonAtras.jsx'
 import { api } from './bridge.js'
 import KioskRed from './KioskRed.jsx'
 import MenuApps from './MenuApps.jsx'
@@ -95,16 +96,14 @@ export default function KioskAjustes({ tactil, onVolver }) {
   return (
     <div className="kiosk kiosk-ajustes kiosk-ajustes-indice">
       <div className="kiosk-header kiosk-header-paso">
-        <BotonToque className="kiosk-atras" tactil={tactil} onActivar={onVolver}>
-          ← Atrás
-        </BotonToque>
+        <BotonAtras tactil={tactil} onActivar={onVolver} />
         <span className="kiosk-titulo">Ajustes</span>
       </div>
       <MenuApps
         apps={SECCIONES}
         tactil={tactil}
         onAbrir={setSeccion}
-        porPagina={6}
+        porPagina={9}
         compacta
         testidPrefijo="kiosk-ajustes-seccion-"
       />
@@ -208,9 +207,7 @@ function SeccionGeneral({ tactil, onVolver }) {
   return (
     <div className="kiosk kiosk-ajustes">
       <div className="kiosk-header kiosk-header-paso">
-        <BotonToque className="kiosk-atras" tactil={tactil} onActivar={onVolver}>
-          ← Atrás
-        </BotonToque>
+        <BotonAtras tactil={tactil} onActivar={onVolver} />
         <span className="kiosk-titulo">General</span>
       </div>
 
