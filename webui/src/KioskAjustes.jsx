@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import BotonToque from './pulsacion.jsx'
 import { api } from './bridge.js'
 import KioskRed from './KioskRed.jsx'
+import MenuApps from './MenuApps.jsx'
 
 const PROPS_SVG = {
   viewBox: '0 0 24 24',
@@ -38,15 +39,6 @@ function IconoGeneral() {
       <circle cx="7" cy="12" r="2.5" />
       <path d="M4 18h10" />
       <circle cx="17" cy="18" r="2.5" />
-    </svg>
-  )
-}
-
-function IconoFlecha() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-         strokeLinecap="round" strokeLinejoin="round" width="1.1em" height="1.1em" aria-hidden="true">
-      <path d="M9 6l6 6-6 6" />
     </svg>
   )
 }
@@ -108,21 +100,14 @@ export default function KioskAjustes({ tactil, onVolver }) {
         </BotonToque>
         <span className="kiosk-titulo">Ajustes</span>
       </div>
-      <div className="kiosk-ajustes-indice-lista">
-        {SECCIONES.map((s) => (
-          <BotonToque
-            key={s.id}
-            className="kiosk-ajustes-indice-item"
-            tactil={tactil}
-            data-testid={`kiosk-ajustes-seccion-${s.id}`}
-            onActivar={() => setSeccion(s.id)}
-          >
-            <s.Icono />
-            <span className="kiosk-ajustes-indice-nombre">{s.nombre}</span>
-            <IconoFlecha />
-          </BotonToque>
-        ))}
-      </div>
+      <MenuApps
+        apps={SECCIONES}
+        tactil={tactil}
+        onAbrir={setSeccion}
+        porPagina={6}
+        compacta
+        testidPrefijo="kiosk-ajustes-seccion-"
+      />
     </div>
   )
 }

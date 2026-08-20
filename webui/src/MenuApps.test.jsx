@@ -26,14 +26,17 @@ describe('MenuApps', () => {
     for (const app of APPS.slice(0, 4)) {
       expect(screen.getByTestId(`kiosk-app-${app.id}`)).toBeInTheDocument()
     }
+    // La paginación se pinta siempre; con una sola página marca 1/1 y ▼ queda
+    // deshabilitado.
+    expect(screen.getByTestId('kiosk-apps-pagina')).toBeInTheDocument()
     if (APPS.length > 4) {
-      expect(screen.getByTestId('kiosk-apps-pagina')).toBeInTheDocument()
       await userEvent.click(screen.getByTestId('kiosk-apps-abajo'))
       for (const app of APPS.slice(4)) {
         expect(screen.getByTestId(`kiosk-app-${app.id}`)).toBeInTheDocument()
       }
     } else {
-      expect(screen.queryByTestId('kiosk-apps-pagina')).not.toBeInTheDocument()
+      expect(screen.getByTestId('kiosk-apps-pagina')).toHaveTextContent('1/1')
+      expect(screen.getByTestId('kiosk-apps-abajo')).toBeDisabled()
     }
   })
 
@@ -64,8 +67,7 @@ describe('MenuApps', () => {
     for (const app of APPS.slice(0, 4)) {
       expect(screen.getByTestId(`kiosk-app-${app.id}`)).toBeDisabled()
     }
-    if (APPS.length > 4) {
-      expect(screen.getByTestId('kiosk-apps-abajo')).toBeDisabled()
-    }
+    expect(screen.getByTestId('kiosk-apps-abajo')).toBeDisabled()
+    expect(screen.getByTestId('kiosk-apps-arriba')).toBeDisabled()
   })
 })

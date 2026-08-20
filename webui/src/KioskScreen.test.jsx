@@ -102,9 +102,11 @@ describe('KioskScreen — paso 1 (menú)', () => {
     expect(screen.getByTestId('kiosk-app-organizer')).toBeInTheDocument()
     expect(screen.getByTestId('kiosk-app-tareas')).toBeInTheDocument()
     expect(screen.getByTestId('kiosk-app-ajustes')).toBeInTheDocument()
-    // Son 4 apps: caben en una sola página, sin paginación.
+    // Son 4 apps: caben en una sola página, así que la columna de paginación
+    // está (siempre lo está, para que la rejilla no cambie de ancho) pero
+    // deshabilitada.
     expect(screen.getByTestId('kiosk-app-sistema')).toBeInTheDocument()
-    expect(screen.queryByTestId('kiosk-apps-abajo')).not.toBeInTheDocument()
+    expect(screen.getByTestId('kiosk-apps-abajo')).toBeDisabled()
     expect(screen.queryByText(/elegir carpeta/i)).not.toBeInTheDocument()
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
     expect(screen.queryByText(/estadillo/i)).not.toBeInTheDocument()
