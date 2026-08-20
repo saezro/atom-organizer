@@ -11,6 +11,21 @@
 const ESPERA_PYWEBVIEW_MS = 1500
 let modoServidor = null
 
+// Token de acceso remoto (movil por el hotspot de la Pi). El backend
+// (`atom_core/webserver.py`) exige `X-Atom-Token`/`?t=` a los clientes NO
+// loopback; lo leemos una vez al cargar el modulo desde el query string.
+// Defensivo con try/catch: en `file://` (pywebview) puede no haber `search`.
+let tokenRemotoActual = ''
+try {
+  tokenRemotoActual = new URLSearchParams(window.location.search).get('t') || ''
+} catch {
+  tokenRemotoActual = ''
+}
+
+export function tokenRemoto() {
+  return tokenRemotoActual
+}
+
 // Bajo pywebview la pagina se carga por `file://` (`resolve_target` devuelve la
 // ruta del index, app_webview.py). El modo `--server` siempre sirve por HTTP.
 // El protocolo es, por tanto, una senal POSITIVA y sincrona del shell, a
@@ -32,6 +47,17 @@ function modoServidorActual() {
 
 export function isServerMode() {
   return modoServidorActual()
+}
+
+// Senal de que esto se ve desde el movil (por el hotspot de la Pi), no desde
+// la pantalla propia de la Pi: modo servidor Y el host no es loopback. En
+// `file://` (pywebview) `window.location.hostname` es '' y ya cae fuera de
+// la lista, pero exigimos ademas `modoServidorActual()` para no dar falsos
+// positivos en escritorio.
+export function esRemoto() {
+  if (!modoServidorActual()) return false
+  const host = window.location.hostname
+  return host !== '127.0.0.1' && host !== 'localhost' && host !== '::1'
 }
 
 // El puente queda "ready" cuando pywebview inyecta `window.pywebview.api`.
@@ -87,7 +113,12 @@ let fuenteEventos = null
 
 function conectarEventos() {
   if (fuenteEventos) return
-  fuenteEventos = new EventSource('/events')
+  // EventSource no admite cabeceras propias, asi que no puede llevar
+  // `X-Atom-Token` como el fetch de `call()`: si hay token remoto (movil por
+  // el hotspot) hay que colarlo por query, que es lo unico que el backend
+  // acepta como alternativa para clientes no loopback.
+  const url = tokenRemotoActual ? `/events?t=${encodeURIComponent(tokenRemotoActual)}` : '/events'
+  fuenteEventos = new EventSource(url)
   for (const canal of ['atom:progress', 'atom:update', 'atom:cloud']) {
     fuenteEventos.addEventListener(canal, (e) => {
       window.dispatchEvent(new CustomEvent(canal, { detail: JSON.parse(e.data) }))
@@ -106,9 +137,11 @@ function conectarEventos() {
 async function call(method, ...args) {
   await whenBridgeReady()
   if (modoServidor) {
+    const headers = { 'Content-Type': 'application/json' }
+    if (tokenRemotoActual) headers['X-Atom-Token'] = tokenRemotoActual
     const r = await fetch(`/api/${method}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ args }),
     })
     const cuerpo = await r.json()
@@ -240,6 +273,18 @@ export const api = {
   // error}; `password` va a null en redes abiertas (sin segura).
   redListar: () => call('red_listar'),
   redConectar: (ssid, password) => call('red_conectar', ssid, password ?? null),
+  // Hotspot ATOM-Organizer para que el movil entre a la webui sin router
+  // (pantalla del kiosco). redApEstado devuelve {ok, activo, ssid, password,
+  // ip, token} | {ok:false, error}. redApActivar levanta el AP y programa su
+  // autoapagado a los 600 s: {ok, ssid, password, ip:'10.42.0.1', token} |
+  // {ok:false, error}. redApDesactivar lo apaga y restaura la wifi previa:
+  // {ok:true} | {ok:false, error}.
+  redApEstado: () => call('red_ap_estado'),
+  // redConexion devuelve {ok, tipo: 'wifi'|'cable'|'ninguna', ssid, senal:
+  // 0-100|null, ip} | {ok:false, error}. Consumido por `EstadoRed.jsx`.
+  redConexion: () => call('red_conexion'),
+  redApActivar: () => call('red_ap_activar'),
+  redApDesactivar: () => call('red_ap_desactivar'),
 }
 
 // Python empuja progreso del pipeline con:

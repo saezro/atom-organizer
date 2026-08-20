@@ -2260,15 +2260,27 @@ html[data-cursor] .picker-card { cursor: pointer; }
   justify-content: center;
 }
 .kiosk-red-teclado {
+  /* Ocupa TODO el alto que sobra: en la pantalla de 480x320 las teclas de
+     altura fija salian minusculas y no habia forma de acertar con el dedo.
+     `flex: 1` + filas `flex: 1` reparten el hueco real entre las 4 filas. */
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: calc(var(--u) / 4);
 }
-.kiosk-red-fila { display: flex; gap: calc(var(--u) / 4); justify-content: center; }
+.kiosk-red-fila {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: calc(var(--u) / 4);
+  justify-content: center;
+}
 .kiosk-teclado-tecla {
   flex: 1;
   min-width: 0;
-  min-height: 2rem;
+  min-height: 1.5rem;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2276,7 +2288,7 @@ html[data-cursor] .picker-card { cursor: pointer; }
   border: 0.0625rem solid rgba(255, 255, 255, 0.15);
   background: rgba(255, 255, 255, 0.06);
   color: var(--text);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-base);
   text-transform: none;
   padding: 0;
 }
@@ -2287,8 +2299,63 @@ html[data-cursor] .picker-card { cursor: pointer; }
 .kiosk-red-conectar { min-height: var(--toque-min); }
 
 @media (max-height: 26rem) {
-  .kiosk-teclado-tecla { min-height: 1.75rem; }
+  /* En la Pi el teclado manda: el hueco lo reparte flex, asi que aqui solo se
+     baja el suelo para que 4 filas quepan sin desbordar. */
+  .kiosk-teclado-tecla { min-height: 1.25rem; }
+  .kiosk-red-password { gap: calc(var(--u) / 3); }
+  /* El boton Conectar no necesita el target tactil completo: es un solo toque
+     y cada rem que suelta se lo queda el teclado, que si es de precision. */
+  .kiosk-red-conectar { min-height: 1.875rem; }
 }
+
+/* Boton para entrar en el flujo de AP+QR (lista de redes) y pantalla del
+   punto de acceso (`vista === 'ap'`): un QR a la vez, la pantalla de 480x320
+   no da para dos, asi que el paso wifi/url es una alternancia, no un scroll. */
+.kiosk-red-ap-abrir { min-height: var(--toque-min); flex: 0 0 auto; }
+.kiosk-red-ap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--u) / 2);
+}
+.kiosk-red-ap-paso {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) / 3);
+  text-align: center;
+}
+.kiosk-red-ap-titulo { font-size: var(--fs-base); color: var(--text); }
+.kiosk-red-ap-qr {
+  /* Alto acotado a vh: en el panel de 320px de alto un QR "natural" del SVG
+     (que escala a lo que le deje el contenedor) se comeria el resto de la
+     pantalla si no se le pone techo. */
+  max-height: 40vh;
+  display: flex;
+  justify-content: center;
+}
+/* Igual que .pair-qr: el path del QR es #0a0a0a y el kiosco tambien, asi que
+   sin recuadro blanco el codigo es literalmente invisible (y la camara del
+   movil no lo lee). El blanco va en el hijo, no en el contenedor flex, para
+   que el recuadro se ajuste al QR y no ocupe todo el ancho. */
+.kiosk-red-ap-qr-marco {
+  background: #ffffff;
+  border-radius: var(--radio);
+  padding: calc(var(--u) / 2);
+  display: flex;
+  box-sizing: border-box;
+}
+.kiosk-red-ap-qr svg { width: 34vh; height: 34vh; display: block; }
+.kiosk-red-ap-datos {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  word-break: break-all;
+}
+.kiosk-red-ap-cerrar { min-height: var(--toque-min); flex: 0 0 auto; }
 
 /* En el kiosco no hay raton: el puntero solo estorba (y en el panel resistivo
    se queda clavado donde tocaste). `xsetroot -cursor_name none` lo quita del
@@ -2300,3 +2367,185 @@ html.kiosk-modo body,
 html.kiosk-modo body * {
   cursor: none;
 }
+
+/* ── UI del MOVIL (hotspot de la Pi) ────────────────────────────────────────
+   Vista aparte del kiosco (MovilRed.jsx): scroll nativo, teclado nativo y
+   targets de dedo real. Todo en rem/vh, nunca px. */
+.movil {
+  min-height: 100vh;
+  min-height: 100dvh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--u);
+  width: 100%;
+  max-width: 30rem;
+  margin: 0 auto;
+  padding: calc(var(--u) * 2) calc(var(--u) * 2) calc(var(--u) * 4);
+  padding-top: max(calc(var(--u) * 2), env(safe-area-inset-top));
+  padding-bottom: max(calc(var(--u) * 4), env(safe-area-inset-bottom));
+  background: var(--bg);
+  color: var(--text);
+  font-size: 1rem;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.movil-head { display: flex; flex-direction: column; gap: calc(var(--u) / 4); margin-bottom: var(--u); }
+.movil-marca {
+  margin: 0;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  font-size: 1.25rem;
+  line-height: 1.2;
+}
+.movil-marca .atom { color: var(--orange); }
+.movil-marca .org { color: var(--text); }
+.movil-sub {
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  font-size: 0.9375rem;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.movil-estado {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) / 4);
+  padding: var(--u) calc(var(--u) * 1.5);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radio);
+  background: rgba(255, 255, 255, 0.04);
+}
+.movil-estado-label { font-size: 0.8125rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.movil-estado-valor { font-size: 1.0625rem; font-weight: 600; color: var(--muted); }
+.movil-estado-valor.ok { color: var(--text); }
+
+.movil-seccion { display: flex; align-items: center; justify-content: space-between; margin-top: var(--u); }
+.movil-seccion-titulo { font-size: 0.8125rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.movil-refrescar {
+  display: flex; align-items: center; justify-content: center;
+  width: 2.5rem; height: 2.5rem;
+  border: 0.0625rem solid rgba(255, 255, 255, 0.12);
+  border-radius: 999rem;
+  background: transparent;
+  color: var(--text);
+}
+.movil-refrescar:disabled { opacity: 0.35; }
+
+.movil-lista { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: calc(var(--u) / 1.5); }
+.movil-item {
+  display: flex; align-items: center; gap: var(--u);
+  width: 100%;
+  min-height: 3.5rem;
+  padding: calc(var(--u) * 1.25) calc(var(--u) * 1.5);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radio);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  text-align: left;
+  font-size: 1rem;
+}
+.movil-item:active { background: rgba(255, 255, 255, 0.08); }
+.movil-item:disabled { opacity: 0.45; }
+.movil-item.activa { border-color: rgba(238, 117, 58, 0.5); background: rgba(238, 117, 58, 0.1); }
+.movil-item-senal { display: flex; color: var(--text); flex: 0 0 auto; }
+.movil-item-texto { display: flex; flex-direction: column; gap: 0.125rem; min-width: 0; flex: 1; }
+.movil-item-nombre { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.movil-item-meta { font-size: 0.8125rem; color: var(--muted); }
+.movil-item-candado, .movil-item-check { display: flex; flex: 0 0 auto; color: var(--muted); }
+.movil-item-check { color: var(--orange); }
+
+.movil-nota { font-size: 0.9375rem; color: var(--muted); }
+.movil-error { font-size: 0.9375rem; color: var(--orange); }
+
+.movil-form { display: flex; flex-direction: column; gap: var(--u); }
+.movil-label { font-size: 0.8125rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.movil-campo { display: flex; align-items: center; gap: calc(var(--u) / 2); }
+.movil-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 3.25rem;
+  padding: 0 calc(var(--u) * 1.5);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radio);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  font-size: 1.0625rem;
+}
+.movil-input:focus { outline: none; border-color: var(--orange); }
+.movil-ver {
+  display: flex; align-items: center; justify-content: center;
+  width: 3.25rem; height: 3.25rem;
+  border: 0.0625rem solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radio);
+  background: transparent;
+  color: var(--text);
+}
+
+.movil-btn {
+  min-height: 3.25rem;
+  padding: 0 calc(var(--u) * 2);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radio);
+  background: transparent;
+  color: var(--text);
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+.movil-btn:disabled { opacity: 0.4; }
+.movil-btn-primario { background: var(--orange); border-color: transparent; color: #fff; }
+
+.movil-listo { display: flex; flex-direction: column; align-items: center; gap: var(--u); margin-top: calc(var(--u) * 4); text-align: center; }
+.movil-listo-icono {
+  display: flex; align-items: center; justify-content: center;
+  width: 4rem; height: 4rem;
+  border-radius: 999rem;
+  background: rgba(238, 117, 58, 0.15);
+  color: var(--orange);
+  font-size: 1.75rem;
+}
+.movil-listo-titulo {
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  font-size: 1.375rem; font-weight: 700; letter-spacing: 0.04em;
+}
+.movil-listo-texto { margin: 0; font-size: 1rem; line-height: 1.5; color: var(--muted); }
+.movil-listo-texto strong { color: var(--text); font-weight: 600; }
+
+.kiosk-red-ap-listo { justify-content: center; }
+.kiosk-red-ap-ok { display: flex; flex-direction: column; align-items: center; gap: calc(var(--u) / 2); flex: 1; justify-content: center; text-align: center; }
+.kiosk-red-ap-ok-icono {
+  display: flex; align-items: center; justify-content: center;
+  width: 4.5rem; height: 4.5rem; border-radius: 999rem;
+  background: rgba(238, 117, 58, 0.18); color: var(--orange); font-size: 2.5rem;
+}
+/* Se lee de pie y a un metro de la Pi: es el unico feedback del flujo. */
+.kiosk-red-ap-ok-titulo {
+  font-size: 2.1rem; line-height: 1.1; font-weight: 700; color: var(--text);
+  letter-spacing: -0.01em; max-width: 92%;
+}
+.kiosk-red-ap-ok-sub { font-size: 1rem; color: var(--muted); }
+.kiosk-red-ap-ok-girando { animation: kiosk-girar 1.1s linear infinite; }
+@keyframes kiosk-girar { to { transform: rotate(360deg); } }
+
+/* Indicador de red del home: esquina superior izquierda, fuera del flujo del
+   `.kiosk-header` (que empuja su contenido a la derecha) porque `.kiosk` ya
+   es el contenedor posicionado (`position: fixed`) de toda la pantalla. */
+.kiosk-estado-red {
+  position: absolute;
+  top: var(--u);
+  left: var(--u);
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) / 2);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  max-width: 55%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.kiosk-estado-red-sin { color: #f87171; }

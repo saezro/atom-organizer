@@ -21,6 +21,7 @@ import { formatBytes, formatDuracion } from './formato.js'
 import MenuApps from './MenuApps.jsx'
 import KioskTareas from './KioskTareas.jsx'
 import KioskAjustes from './KioskAjustes.jsx'
+import EstadoRed from './EstadoRed.jsx'
 import { APPS } from './apps/registry.js'
 
 // Deriva la ruta de destino a partir de la carpeta de origen, añadiendo el
@@ -537,7 +538,7 @@ export default function KioskScreen({
   if (!accion) {
     return (
       <div className="kiosk">
-        <div className="kiosk-header">{avatar}</div>
+        <div className="kiosk-header"><EstadoRed />{avatar}</div>
         {barraProgreso}
         <MenuApps
           apps={APPS}

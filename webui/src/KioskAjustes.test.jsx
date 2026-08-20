@@ -9,6 +9,9 @@ const redListar = vi.fn()
 const redConectar = vi.fn()
 
 vi.mock('./bridge.js', () => ({
+  // KioskAjustes monta KioskRed dentro de su sección "Red", que desde el
+  // AP+QR (KioskRed.jsx) necesita `esRemoto` del bridge.
+  esRemoto: () => false,
   api: {
     readConfig: (...args) => readConfig(...args),
     writeConfig: (...args) => writeConfig(...args),

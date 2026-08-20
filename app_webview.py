@@ -27,6 +27,10 @@ from pathlib import Path
 
 from atom_core.event_sink import WebviewSink
 
+# SSID del hotspot de configuracion de la Pi. Lo usan tanto el propio hotspot
+# como el listado de redes, que debe excluirlo de las redes conectables.
+_AP_SSID = "ATOM-Organizer"
+
 
 def _import_webview():
     """Importa pywebview solo cuando de verdad se va a abrir una ventana.
@@ -154,6 +158,12 @@ class Api:
         self._push_buf: list[dict] = []
         self._push_lock = threading.Lock()
         self._push_last = 0.0
+        # Hotspot de configuración wifi (red_ap_*): token efímero (nunca a
+        # disco) y timer de autoapagado para no dejar la Pi sin red si nadie
+        # completa el flujo desde el móvil.
+        self._ap_token: str = ""
+        self._ap_timer: threading.Timer | None = None
+        self._ap_conexion_previa: str = ""
 
     def bind_window(self, window) -> None:
         self._window = window
@@ -1305,9 +1315,95 @@ class Api:
             if proc.returncode != 0:
                 return {"ok": False, "error": proc.stderr.strip() or f"returncode={proc.returncode}"}
             redes, actual = _parse_nmcli_wifi(proc.stdout)
+            # `guardada` deja que el kiosco conecte de un toque a una red ya
+            # conocida en vez de abrir el teclado a pedir una clave que la Pi
+            # ya tiene. El hotspot propio no cuenta: no es una red a la que
+            # conectarse.
+            guardados = set(self._perfiles_wifi_por_ssid()) - {_AP_SSID}
+            for red in redes:
+                red["guardada"] = red.get("ssid") in guardados
             return {"ok": True, "actual": actual, "redes": redes}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    def red_conexion(self) -> dict:
+        """Como esta conectada la Pi ahora mismo (cable / wifi / nada).
+
+        Lo pinta el indicador del home del kiosco, que se refresca cada pocos
+        segundos: por eso NO puede provocar un escaneo wifi (`--rescan no`),
+        que tarda segundos y ademas tumba el throughput de la propia wifi.
+        El cable manda sobre la wifi si ambos estan arriba: es la ruta buena.
+        """
+        try:
+            proc = subprocess.run(
+                ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"],
+                check=False, capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode != 0:
+                return {"ok": False, "error": proc.stderr.strip() or f"returncode={proc.returncode}"}
+            cable = wifi = None
+            for linea in proc.stdout.splitlines():
+                campos = _split_nmcli_line(linea)
+                if len(campos) < 4 or campos[2] != "connected":
+                    continue
+                # El hotspot propio no es "estar conectado a una red".
+                if campos[3] == "atom-ap":
+                    continue
+                if campos[1] == "ethernet" and cable is None:
+                    cable = campos
+                elif campos[1] == "wifi" and wifi is None:
+                    wifi = campos
+            elegido = cable or wifi
+            if elegido is None:
+                return {"ok": True, "tipo": "ninguna", "ssid": "", "senal": None, "ip": ""}
+            tipo = "cable" if elegido is cable else "wifi"
+            # CONNECTION es el nombre del PERFIL (`netplan-wlan0-CASA`), no el
+            # SSID: para el indicador hace falta el SSID real del AP en uso.
+            ssid, senal = self._wifi_en_uso() if tipo == "wifi" else ("", None)
+            if tipo == "wifi" and not ssid:
+                ssid = elegido[3]
+            return {
+                "ok": True, "tipo": tipo, "ssid": ssid,
+                "senal": senal, "ip": self._ip_dispositivo(elegido[0]),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def _wifi_en_uso(self) -> tuple[str, int | None]:
+        """(ssid, senal 0-100) de la wifi en uso, sin forzar escaneo."""
+        try:
+            proc = subprocess.run(
+                ["nmcli", "-t", "-f", "IN-USE,SIGNAL,SSID", "device", "wifi", "list", "--rescan", "no"],
+                check=False, capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode != 0:
+                return "", None
+            for linea in proc.stdout.splitlines():
+                campos = _split_nmcli_line(linea)
+                if len(campos) >= 3 and campos[0].strip() == "*":
+                    try:
+                        return campos[2], int(campos[1])
+                    except ValueError:
+                        return campos[2], None
+        except Exception:
+            return "", None
+        return "", None
+
+    def _ip_dispositivo(self, dispositivo: str) -> str:
+        """IPv4 (sin prefijo) del dispositivo, o cadena vacia si no tiene."""
+        try:
+            proc = subprocess.run(
+                ["nmcli", "-t", "-f", "IP4.ADDRESS", "device", "show", dispositivo],
+                check=False, capture_output=True, text=True, timeout=10,
+            )
+            for linea in proc.stdout.splitlines():
+                if ":" in linea:
+                    valor = linea.split(":", 1)[1].strip()
+                    if valor:
+                        return valor.split("/")[0]
+        except Exception:
+            return ""
+        return ""
 
     def red_conectar(self, ssid: str, password: str | None = None) -> dict:
         """Conecta a una red wifi por SSID (modo servidor / Raspberry Pi).
@@ -1320,21 +1416,244 @@ class Api:
             cmd = ["nmcli", "device", "wifi", "connect", ssid, "password", password]
         else:
             cmd = ["nmcli", "device", "wifi", "connect", ssid]
+        # nmcli tarda varios segundos: dejar constancia del intento para que la
+        # pantalla de la Pi pueda mostrar "Conectando a X" mientras tanto.
+        self._ap_intento = ssid
         try:
             proc = subprocess.run(
                 cmd, check=False, capture_output=True, text=True, timeout=60,
             )
+            if proc.returncode != 0 and password and _falta_key_mgmt(proc.stderr):
+                # La Pi ya trae un perfil guardado de esa wifi (el que crea
+                # netplan) sin la seccion de seguridad: nmcli lo reutiliza y
+                # aborta con "key-mgmt: property is missing". Se completa el
+                # perfil en vez de borrarlo, porque el script de rescate de
+                # wifi depende de que ese perfil siga existiendo con su nombre.
+                if self._reparar_perfil_wifi(ssid, password):
+                    proc = subprocess.run(
+                        cmd, check=False, capture_output=True, text=True, timeout=60,
+                    )
             if proc.returncode == 0:
+                # Conexion wifi lograda: si el hotspot de configuracion seguia
+                # activo (usuario completo el flujo desde el movil), se apaga
+                # para devolver la Pi a la red normal sin esperar al timeout.
+                # El guard es `_ap_token` y no `red_ap_estado()` a proposito:
+                # solo lo levantamos nosotros lo apagamos nosotros, y asi la
+                # ruta normal (conectar desde la pantalla de la Pi) no paga un
+                # nmcli extra por cada conexion.
+                if getattr(self, "_ap_token", ""):
+                    self.red_ap_desactivar()
+                self._ap_intento = ""
                 return {"ok": True}
+            self._ap_intento = ""
             error = proc.stderr.strip() or f"returncode={proc.returncode}"
             if password:
                 error = error.replace(password, "***")
             return {"ok": False, "error": error}
         except Exception as exc:
+            self._ap_intento = ""
             error = str(exc)
             if password:
                 error = error.replace(password, "***")
             return {"ok": False, "error": error}
+
+    def _perfiles_wifi_por_ssid(self) -> dict[str, list[str]]:
+        """Mapa SSID -> perfiles NM guardados para el.
+
+        El nombre del perfil no tiene por que coincidir con el SSID (netplan
+        los llama `netplan-wlan0-<SSID>`), asi que hay que preguntarle a cada
+        uno por su SSID real. Se hace en una sola pasada porque lo consumen
+        tanto el listado de redes como la reparacion del perfil.
+        """
+        listado = subprocess.run(
+            ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"],
+            check=False, capture_output=True, text=True, timeout=15,
+        )
+        if listado.returncode != 0:
+            return {}
+        mapa: dict[str, list[str]] = {}
+        for linea in listado.stdout.splitlines():
+            nombre, _, tipo = linea.rpartition(":")
+            if tipo != "802-11-wireless" or not nombre:
+                continue
+            det = subprocess.run(
+                ["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", nombre],
+                check=False, capture_output=True, text=True, timeout=15,
+            )
+            ssid = det.stdout.strip() if det.returncode == 0 else ""
+            if ssid:
+                mapa.setdefault(ssid, []).append(nombre)
+        return mapa
+
+    def _perfiles_de_ssid(self, ssid: str) -> list[str]:
+        return self._perfiles_wifi_por_ssid().get(ssid, [])
+
+    def _reparar_perfil_wifi(self, ssid: str, password: str) -> bool:
+        """Completa `key-mgmt`/`psk` en los perfiles guardados de ese SSID.
+
+        Devuelve True si toco al menos uno, para que la llamada decida si
+        merece la pena reintentar la conexion.
+        """
+        reparado = False
+        for perfil in self._perfiles_de_ssid(ssid):
+            mod = subprocess.run(
+                ["nmcli", "connection", "modify", perfil,
+                 "802-11-wireless-security.key-mgmt", "wpa-psk",
+                 "802-11-wireless-security.psk", password],
+                check=False, capture_output=True, text=True, timeout=20,
+            )
+            reparado = reparado or mod.returncode == 0
+        return reparado
+
+    # ---- hotspot de configuracion (Raspberry Pi sin teclado) ---------------
+    def _ap_password(self) -> str:
+        """Password estable del hotspot: se genera una vez y se persiste en el
+        mismo Config.ini de usuario (seccion "paths", junto a ruta_thermoviewer)
+        para que el QR impreso/mostrado no cambie entre arranques."""
+        import configparser
+        import secrets
+        import string
+        from external_tools import _user_config_path
+
+        path = _user_config_path()
+        cfg = configparser.ConfigParser()
+        cfg.optionxform = str
+        if os.path.exists(path):
+            cfg.read(path)
+        pwd = cfg.get("paths", "ap_password", fallback="") if cfg.has_section("paths") else ""
+        if pwd:
+            return pwd
+        alfabeto = string.ascii_letters + string.digits
+        pwd = "".join(secrets.choice(alfabeto) for _ in range(10))
+        if not cfg.has_section("paths"):
+            cfg.add_section("paths")
+        cfg.set("paths", "ap_password", pwd)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            cfg.write(f)
+        return pwd
+
+    def red_ap_estado(self) -> dict:
+        """Estado del hotspot de configuracion (con-name fijo `atom-ap`)."""
+        try:
+            proc = subprocess.run(
+                ["nmcli", "-t", "-f", "NAME", "connection", "show", "--active"],
+                check=False, capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode != 0:
+                return {"ok": False, "error": proc.stderr.strip() or f"returncode={proc.returncode}"}
+            activo = "atom-ap" in proc.stdout.splitlines()
+            intento = getattr(self, "_ap_intento", "")
+            if not activo:
+                return {"ok": True, "activo": False, "ssid": "", "password": "",
+                        "ip": "", "token": "", "intento": intento}
+            return {
+                "ok": True, "activo": True, "ssid": _AP_SSID,
+                "password": self._ap_password(), "ip": "10.42.0.1",
+                "token": getattr(self, "_ap_token", ""), "intento": intento,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def red_ap_activar(self) -> dict:
+        """Levanta el hotspot para que el usuario configure la wifi desde el
+        movil (pantalla de la Pi es 480x320, inviable teclear ahi)."""
+        import secrets
+        try:
+            # Guarda la conexion wifi actual para poder restaurarla al apagar
+            # el hotspot (nmcli no la conserva automaticamente).
+            proc = subprocess.run(
+                ["nmcli", "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"],
+                check=False, capture_output=True, text=True, timeout=10,
+            )
+            previa = ""
+            if proc.returncode == 0:
+                for linea in proc.stdout.splitlines():
+                    campos = linea.split(":")
+                    if len(campos) >= 2 and campos[1] == "802-11-wireless":
+                        previa = campos[0]
+                        break
+            # Si el AP ya estaba levantado (segunda pulsacion, o reabrir la
+            # pantalla), la conexion wifi "activa" ES el propio hotspot: guardarla
+            # como previa haria que al cerrar el AP intentasemos restaurar
+            # `atom-ap` y la Pi se quedase SIN RED. Solo se apunta la previa la
+            # primera vez y nunca el propio hotspot.
+            if previa and previa != "atom-ap" and not getattr(self, "_ap_conexion_previa", ""):
+                self._ap_conexion_previa = previa
+
+            password = self._ap_password()
+            hotspot_cmd = [
+                "nmcli", "device", "wifi", "hotspot", "ifname", "wlan0",
+                "con-name", "atom-ap", "ssid", _AP_SSID, "password", password,
+            ]
+            proc = subprocess.run(hotspot_cmd, check=False, capture_output=True, text=True, timeout=30)
+            if proc.returncode != 0:
+                error = (proc.stderr.strip() or f"returncode={proc.returncode}").replace(password, "***")
+                return {"ok": False, "error": error}
+
+            # El hotspot NUNCA debe autoarrancar: si algo se tuerce, apagar y
+            # encender la Pi tiene que devolverla a la wifi de siempre. Es la
+            # unica salvaguarda que sigue valiendo aunque el proceso muera.
+            subprocess.run(
+                ["nmcli", "connection", "modify", "atom-ap", "connection.autoconnect", "no"],
+                check=False, capture_output=True, text=True, timeout=10,
+            )
+
+            if not getattr(self, "_ap_token", ""):
+                self._ap_token = secrets.token_urlsafe(8)
+
+            # Autoapagado a los 10 min: si nadie completa el flujo desde el
+            # movil, no queremos dejar la Pi sin red indefinidamente.
+            if self._ap_timer is not None:
+                self._ap_timer.cancel()
+            self._ap_timer = threading.Timer(600.0, self.red_ap_desactivar)
+            self._ap_timer.daemon = True
+            self._ap_timer.start()
+
+            return {
+                "ok": True, "ssid": _AP_SSID, "password": password,
+                "ip": "10.42.0.1", "token": self._ap_token,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def red_ap_desactivar(self) -> dict:
+        """Apaga el hotspot y restaura la wifi que hubiera antes, si la hay."""
+        try:
+            if self._ap_timer is not None:
+                self._ap_timer.cancel()
+                self._ap_timer = None
+            proc = subprocess.run(
+                ["nmcli", "connection", "down", "atom-ap"],
+                check=False, capture_output=True, text=True, timeout=20,
+            )
+            if proc.returncode != 0 and "not an active connection" not in (proc.stderr or "").lower():
+                self._ap_token = ""
+                return {"ok": False, "error": proc.stderr.strip() or f"returncode={proc.returncode}"}
+
+            previa = getattr(self, "_ap_conexion_previa", "")
+            self._ap_conexion_previa = ""
+            if previa:
+                subprocess.run(
+                    ["nmcli", "connection", "up", previa],
+                    check=False, capture_output=True, text=True, timeout=30,
+                )
+
+            self._ap_token = ""
+            return {"ok": True}
+        except Exception as exc:
+            self._ap_token = ""
+            return {"ok": False, "error": str(exc)}
+
+
+
+def _falta_key_mgmt(stderr: str) -> bool:
+    """True si nmcli fallo porque el perfil guardado no declara `key-mgmt`.
+
+    El texto exacto cambia entre versiones y locales de nmcli, asi que se
+    busca la propiedad, que es la parte estable del mensaje.
+    """
+    return "key-mgmt" in (stderr or "")
 
 
 def _parse_nmcli_wifi(salida: str) -> tuple[list[dict], str | None]:

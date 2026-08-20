@@ -31,19 +31,87 @@ def test_parse_nmcli_wifi_red_segura_vs_abierta():
 
 
 def test_red_listar_ok(monkeypatch):
+    """Casa esta visible y ademas tiene perfil guardado -> `guardada` True,
+    que es lo que deja al kiosco conectar sin abrir el teclado."""
     def _run_fake(cmd, **kw):
-        assert cmd == ["nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL,SECURITY", "device", "wifi", "list"]
-        return subprocess.CompletedProcess(
-            cmd, returncode=0, stdout="yes:Casa:80:WPA2\n", stderr="",
-        )
+        salidas = {
+            ("device", "wifi", "list"): "yes:Casa:80:WPA2\n",
+            ("connection", "show"): "netplan-wlan0-Casa:802-11-wireless\n",
+        }
+        for clave, salida in salidas.items():
+            if cmd[-len(clave):] == list(clave):
+                return subprocess.CompletedProcess(cmd, returncode=0, stdout=salida, stderr="")
+        if cmd[:2] == ["nmcli", "-g"]:
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="Casa\n", stderr="")
+        raise AssertionError(f"comando inesperado: {cmd}")
 
     monkeypatch.setattr(subprocess, "run", _run_fake)
     res = app_webview.Api().red_listar()
     assert res == {
         "ok": True,
         "actual": "Casa",
-        "redes": [{"ssid": "Casa", "senal": 80, "segura": True, "activa": True}],
+        "redes": [{
+            "ssid": "Casa", "senal": 80, "segura": True,
+            "activa": True, "guardada": True,
+        }],
     }
+
+
+def test_red_listar_marca_no_guardada_y_excluye_el_hotspot(monkeypatch):
+    """Una red sin perfil pide clave, y el hotspot propio nunca sale como
+    'guardada' aunque su conexion `atom-ap` exista."""
+    def _run_fake(cmd, **kw):
+        if cmd[-3:] == ["device", "wifi", "list"]:
+            salida = f"no:Vecino:60:WPA2\nno:{app_webview._AP_SSID}:99:WPA2\n"
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout=salida, stderr="")
+        if cmd[-2:] == ["connection", "show"]:
+            return subprocess.CompletedProcess(
+                cmd, returncode=0, stdout="atom-ap:802-11-wireless\n", stderr="")
+        if cmd[:2] == ["nmcli", "-g"]:
+            return subprocess.CompletedProcess(
+                cmd, returncode=0, stdout=f"{app_webview._AP_SSID}\n", stderr="")
+        raise AssertionError(f"comando inesperado: {cmd}")
+
+    monkeypatch.setattr(subprocess, "run", _run_fake)
+    redes = {r["ssid"]: r for r in app_webview.Api().red_listar()["redes"]}
+    assert redes["Vecino"]["guardada"] is False
+    assert redes[app_webview._AP_SSID]["guardada"] is False
+
+
+def test_red_conectar_repara_perfil_sin_key_mgmt(monkeypatch):
+    """El perfil que deja netplan no trae `key-mgmt`: nmcli aborta, se
+    completa el perfil y se reintenta, sin borrarlo (el rescate depende de el).
+    """
+    llamadas = []
+
+    def _run_fake(cmd, **kw):
+        llamadas.append(cmd)
+        if cmd[:4] == ["nmcli", "device", "wifi", "connect"]:
+            ya_reparado = any(c[:3] == ["nmcli", "connection", "modify"] for c in llamadas)
+            if ya_reparado:
+                return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                cmd, returncode=4, stdout="",
+                stderr="Error: 802-11-wireless-security.key-mgmt: property is missing.")
+        if cmd[-2:] == ["connection", "show"]:
+            return subprocess.CompletedProcess(
+                cmd, returncode=0, stdout="netplan-wlan0-Casa:802-11-wireless\n", stderr="")
+        if cmd[:2] == ["nmcli", "-g"]:
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="Casa\n", stderr="")
+        if cmd[:3] == ["nmcli", "connection", "modify"]:
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+        raise AssertionError(f"comando inesperado: {cmd}")
+
+    monkeypatch.setattr(subprocess, "run", _run_fake)
+    assert app_webview.Api().red_conectar("Casa", "secreta") == {"ok": True}
+
+    modify = [c for c in llamadas if c[:3] == ["nmcli", "connection", "modify"]]
+    assert modify == [[
+        "nmcli", "connection", "modify", "netplan-wlan0-Casa",
+        "802-11-wireless-security.key-mgmt", "wpa-psk",
+        "802-11-wireless-security.psk", "secreta",
+    ]]
+    assert not any(c[:3] == ["nmcli", "connection", "delete"] for c in llamadas)
 
 
 def test_red_listar_error_nmcli(monkeypatch):
