@@ -927,7 +927,9 @@ class Api:
         if self._uploading:
             return {"started": False, "reason": "Ya hay una subida en curso."}
 
-        from atom_core import cloud_config, cloud_upload, upload_log
+        from datetime import datetime, timezone
+
+        from atom_core import cloud_config, cloud_upload, estadillo as estadillo_mod, lotes, upload_log
 
         auth = self._get_auth()
         if auth is None:
@@ -940,6 +942,19 @@ class Api:
         if error:
             return {"started": False, "reason": error}
 
+        # Un lote sin estadillo no se puede organizar: se aborta ANTES de
+        # subir nada, no a mitad (ver atom_core/lotes.py).
+        rutas_estadillos = estadillo_mod.detectar_estadillos(folder)["rutas"]
+        if not rutas_estadillos:
+            return {"started": False,
+                    "reason": ("No se ha encontrado ningún estadillo en la "
+                              "carpeta: sin estadillo el lote no se puede "
+                              "organizar.")}
+
+        usuario = (self._cuenta_actual() or "").split("@")[0]
+        lote = lotes.nombre_lote(datetime.now(timezone.utc), usuario)
+        prefix_lote = f"{prefix}/{lotes.CARPETA_SUBIDAS}/{lote}"
+
         self._uploading = True
         self._cancel_upload = False
 
@@ -947,15 +962,17 @@ class Api:
             plan = None
             reporter = None
             try:
-                plan = cloud_upload.build_plan(root, prefix)
+                plan = cloud_upload.build_plan(root, prefix_lote)
                 if not plan.items:
                     raise RuntimeError("La carpeta no tiene ficheros subibles.")
+                estadillos_rel = cloud_upload.agregar_estadillos(
+                    plan, rutas_estadillos)
 
                 provider = cloud_upload.GcsOAuthProvider(
                     cloud_config.BUCKET_DATOS, auth)
 
                 self._push_cloud({"kind": "start", "files": len(plan.items),
-                                  "bytes": plan.total_bytes, "prefix": prefix})
+                                  "bytes": plan.total_bytes, "prefix": prefix_lote})
 
                 # Telemetria EN VIVO hacia `/organizer`. Sin esto la Suite solo
                 # se enteraba al terminar (`_reportar_subida`), asi que una
@@ -994,13 +1011,35 @@ class Api:
                 # operario mirando una barra parada. Lo que se haya colado en
                 # el bucket desde entonces lo para la precondición
                 # `ifGenerationMatch=0` con un 412, sin gastar bytes.
+                # Sin `remotos` cacheado aquí a propósito: `prefix_lote` es una
+                # carpeta nueva por construcción (sello de tiempo), así que el
+                # inventario relevante para reconciliar sería el de `prefix`
+                # (la inspección) y sus claves no casan con las de este lote.
+                # Listar `prefix_lote` en `upload_plan` es barato porque
+                # siempre está vacío.
                 res = cloud_upload.upload_plan(
                     plan, provider,
                     on_progress=lambda t: self._push_cloud({"kind": "log", "text": t}),
                     on_stats=lambda s: self._on_stats_subida(reporter, s),
                     should_stop=lambda: self._cancel_upload,
-                    remotos=self._inventario_cacheado(prefix),
                 )
+
+                # `manifest.json` es el marcador de "lote completo": se sube
+                # EL ÚLTIMO y SOLO si todo lo demás fue bien. Si falla (o la
+                # subida se canceló/falló a medias), NO se escribe: el lote
+                # queda invisible para la Suite a propósito (ver
+                # atom_core/lotes.py). Un fallo aquí se trata como un fallo
+                # más de la subida (entra en `res.failed`), no aparte.
+                if res.ok and not self._cancel_upload:
+                    try:
+                        manifest = lotes.manifest_lote(
+                            lote, self._cuenta_actual(), estadillos_rel,
+                            len(plan.items))
+                        self._subir_objeto_json(
+                            f"{prefix_lote}/manifest.json", manifest)
+                    except Exception as exc_manifest:  # noqa: BLE001
+                        res.failed.append(("manifest.json", str(exc_manifest)))
+
                 self._push_cloud({
                     "kind": "done", "ok": res.ok,
                     "uploaded": res.uploaded, "skipped": res.skipped,
