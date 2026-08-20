@@ -87,7 +87,14 @@ class RunReporter:
             # Bearer inválido responde 401 y NO cae al secreto, así que mandar
             # los dos headers a la vez convertiría un token caducado en un fallo
             # duro. Por eso es o uno o el otro, nunca ambos.
-            if self._auth is not None:
+            # En modo broker (Pi emparejada por QR) no hay id_token: la credencial
+            # es el device_token, en su propia cabecera (mismo desvio que
+            # `descargar_catalogo_api` en inspecciones.py). Sin el, `id_token()`
+            # lanza y el reporte a la Suite se perdia en silencio.
+            device_token = getattr(self._auth, "device_token", None) if self._auth is not None else None
+            if device_token:
+                req.add_header("X-Organizer-Device", device_token)
+            elif self._auth is not None:
                 req.add_header("Authorization", f"Bearer {self._auth.id_token()}")
             elif self._secreto:
                 req.add_header("x-organizer-secret", self._secreto)
