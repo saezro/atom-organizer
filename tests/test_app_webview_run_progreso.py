@@ -37,6 +37,8 @@ class _AuthFalso:
     identidad, para que `GcsOAuthProvider`/`RunReporter` no revienten al
     construirse (aquí siempre van sustituidos, pero por si acaso)."""
 
+    identity = None
+
     def is_logged_in(self) -> bool:
         return True
 
@@ -100,7 +102,17 @@ class _SinkFalso:
 @pytest.fixture
 def api(monkeypatch, tmp_path):
     """`Api(broker=True)` con auth falsa siempre logueada, sink capturado y
-    `GcsOAuthProvider`/`upload_file` fuera de juego (nunca se toca red)."""
+    `GcsOAuthProvider`/`upload_file` fuera de juego (nunca se toca red).
+
+    `detectar_estadillos` y `_subir_objeto_json` van fuera de juego también:
+    estos tests son de la telemetría del reporter (`RunReporter`), no del
+    contrato de lotes/estadillo (eso lo cubre `tests/test_lotes.py`), y sin
+    esto la gate "sin estadillo no se sube" y el intento real de subir
+    `manifest.json` con un provider falso los harían fallar por motivos
+    ajenos a lo que verifican.
+    """
+    from atom_core import estadillo as estadillo_mod
+
     a = aw.Api(broker=True)
     monkeypatch.setattr(a, "_get_auth", lambda: _AuthFalso())
     sink = _SinkFalso()
@@ -109,6 +121,12 @@ def api(monkeypatch, tmp_path):
                         lambda bucket, auth, **kw: object())
     root = tmp_path / "carpeta"
     root.mkdir()
+    estadillo_falso = root / "estadillo.csv"
+    estadillo_falso.write_text("id;planta\n")
+    monkeypatch.setattr(estadillo_mod, "detectar_estadillos",
+                        lambda carpeta, **kw: {"rutas": [str(estadillo_falso)],
+                                               "descartados": []})
+    monkeypatch.setattr(a, "_subir_objeto_json", lambda remoto, contenido: None)
     return a, sink, root
 
 

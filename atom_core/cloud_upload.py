@@ -211,6 +211,30 @@ def build_plan(root: Path, prefix: str = "", *,
     return UploadPlan(root=root, items=items, prefix=prefix)
 
 
+def agregar_estadillos(plan: UploadPlan, rutas: Iterable[str]) -> list[str]:
+    """Añade al plan, IN-PLACE, una entrada por cada estadillo detectado en la
+    carpeta, con destino `<prefix>/ESTADILLOS/<basename>` (ver `atom_core.lotes`
+    y `atom_core.estadillo.detectar_estadillos`).
+
+    Van fuera de `build_plan` porque no son parte del árbol del vuelo que se
+    escanea con `rglob`: `detectar_estadillos` ya sabe elegir cuáles cuentan
+    (columnas esenciales, no temporales de Office) y el árbol de un vuelo
+    podría tener más de un candidato en carpetas distintas.
+
+    Devuelve las rutas remotas RELATIVAS al lote (`ESTADILLOS/<basename>`), que
+    es justo lo que espera `atom_core.lotes.manifest_lote(..., estadillos=...)`.
+    """
+    relativas: list[str] = []
+    for ruta in rutas:
+        path = Path(ruta)
+        rel = f"ESTADILLOS/{path.name}"
+        remote = f"{plan.prefix}/{rel}" if plan.prefix else rel
+        plan.items.append(UploadItem(local=path, remote=remote,
+                                     size=path.stat().st_size))
+        relativas.append(rel)
+    return relativas
+
+
 def objetos_en_prefijo(bucket: str, prefix: str, auth, *,
                        base: str = "https://storage.googleapis.com",
                        timeout: int = TIMEOUT) -> int:
