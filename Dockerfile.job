@@ -40,8 +40,12 @@ COPY config/ ./config/
 # pipeline.py y exif.py son módulos sueltos en la raíz, no paquetes. gui.py y
 # qt_designer_files/ NO entran: las fases del pipeline salieron de la clase Qt a
 # atom_core/phases.py, así que la ruta headless no toca nada de la GUI.
+# `rjpeg_a_tiff.py` entra desde 3.4.50: pipeline.py importa de el
+# `resolucion_desde_raw` (deduce la resolucion termica del tamano del .raw en vez
+# de hardcodear 640x512). Sin este fichero la conversion a TIFF muere con
+# ModuleNotFoundError en la primera imagen.
 COPY organize_cli.py external_tools.py utils.py version.py dji_irp_linux.py \
-     pipeline.py exif.py ./
+     pipeline.py exif.py rjpeg_a_tiff.py ./
 
 # Solo la parte Linux del SDK DJI (.so). Los .exe y .dll son ~500 KB de peso
 # muerto en una imagen que nunca va a correr en Windows.

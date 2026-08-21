@@ -181,6 +181,39 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sin-tif", action="store_true",
                         help="Salta la conversión térmica a TIF. Útil para "
                              "medir solo la parte RGB.")
+    parser.add_argument("--sin-miniaturas-termica", dest="sin_miniaturas_termica",
+                        action="store_true",
+                        help="Salta la fase de miniaturas/rotacion de la TERMICA. "
+                             "Esa fase gira el JPG termico IN-PLACE antes de la "
+                             "conversion a TIF y eso DESTRUYE el payload "
+                             "radiometrico del R-JPEG (el giro bueno es el que va "
+                             "despues del TIF). Obligatorio cuando la entrada son "
+                             "R-JPEG originales de los que hay que sacar TIFF.")
+    parser.add_argument("--sin-rotacion", dest="sin_rotacion",
+                        action="store_true",
+                        help="Salta ENTERO el subproceso ROTACION (el switch "
+                             "maestro `gen_thumbnails`). Se anade en 3.4.49 "
+                             "porque `--sin-miniaturas-termica` NO basta: deja "
+                             "`carpetas_rot=[\"RGB\"]`, y si la entrada no tiene "
+                             "carpeta RGB el fallback de "
+                             "`pipeline.check_input_folder_and_iterate` rota la "
+                             "RAIZ entera -- o sea la TERMICA -- e ignorando "
+                             "`only_pb`, asi que las N tareas del Job se pisan "
+                             "el mismo vuelo. El 2026-08-21 eso destruyo la "
+                             "radiometria de 4.852 R-JPEG de CLARE.")
+    parser.add_argument("--giro-tiff", dest="giro_tiff",
+                        choices=("auto", "90", "-90", "ninguno"), default="auto",
+                        help="Giro del TIFF termico. `auto` (por defecto) lee el "
+                             "criterio de `CSVs/_criterio/<vuelo>_Videofiles.csv`, "
+                             "que lo escribe el subproceso ROTACION; con "
+                             "`--sin-rotacion` ese CSV NO existe y `auto` degrada "
+                             "en silencio a 0 grados (TIFF sin girar, 1280x1024). "
+                             "`-90` fuerza 270 (antihorario, lo normal en vuelos "
+                             "de inspeccion con la camara perpendicular: "
+                             "GimbalYawDegree ~ -90), `90` fuerza horario y "
+                             "`ninguno` fuerza sin giro. Los flags manuales mandan "
+                             "sobre el criterio automatico "
+                             "(`pipeline.degree_de_giro`).")
     parser.add_argument("--json", dest="como_json", action="store_true",
                         help="Resumen final en JSON en la última línea, para "
                              "que lo lea un script en vez de una persona.")
@@ -262,7 +295,33 @@ def main(argv: list[str] | None = None) -> int:
                     "etapa": args.etapa,
                     "modo_destino": args.modo_destino,
                     "shard_index": shard_index, "shard_count": shard_count}
-    avanzado = {"convert_to_tif": False} if args.sin_tif else None
+    avanzado: dict = {}
+    if args.sin_tif:
+        avanzado["convert_to_tif"] = False
+    if args.sin_miniaturas_termica:
+        avanzado["gen_thumbnails_termica"] = False
+    if args.sin_rotacion:
+        avanzado["gen_thumbnails"] = False
+    if args.giro_tiff != "auto":
+        # Import perezoso: `utils` arrastra pandas/PIL y este modulo evita a
+        # proposito los imports pesados fuera de la ruta de ejecucion real
+        # (mismo motivo por el que `atom_core.organize` se importa dentro de
+        # `main`). Aqui ya estamos en esa ruta.
+        import utils as _utils
+        # El sentinel es obligatorio: sin el, `resolve_tif_rotation_intent`
+        # descarta los tres bools por no poder distinguir "el usuario eligio
+        # sin giro" de "front viejo que los manda a false por defecto".
+        avanzado[_utils.TIF_ROTATION_INTENT_KEY] = args.giro_tiff
+        avanzado["convert_to_tiff_rotate_auto"] = False
+        avanzado["convert_to_tiff_rotate_90"] = args.giro_tiff == "90"
+        avanzado["convert_to_tiff_rotate_minus_90"] = args.giro_tiff == "-90"
+        # La task generica `convert_to_tif` usa otros tres campos con el mismo
+        # significado (phases.py:1190-1202); se fijan iguales para que la flag
+        # valga en las dos rutas.
+        avanzado["rotate_auto"] = False
+        avanzado["rotate_90"] = args.giro_tiff == "90"
+        avanzado["rotate_minus_90"] = args.giro_tiff == "-90"
+    avanzado = avanzado or None
 
     # Solo se reporta a la Suite si hay secreto: sin él (un dev corriendo el
     # CLI en local) `reporter` queda `None` y todo lo de abajo es no-op.
