@@ -801,7 +801,7 @@ class MetaLocation:
                     continue
 
                 try:
-                    images = self.utils_obj.get_images_from_dir(dirpath, ["_CROP"])
+                    images = self.utils_obj.get_images_from_dir(dirpath, ["_CROP"], solo_fuente=True)
                 except Exception as e:
                     self.organizer_logger.logger.error(f"Error al obtener imágenes de '{dirpath}': {e}")
                     continue
@@ -913,7 +913,7 @@ class MetaLocation:
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
         """
         image_theoretical_position = dict()
-        images = self.utils_obj.get_images_from_dir(input_folder, ["_CROP"])
+        images = self.utils_obj.get_images_from_dir(input_folder, ["_CROP"], solo_fuente=True)
         # se enviará 0 imágenes.
         if calculate_proyected_distance:
             nombresColumnas = ['Foto','Lat','Lon','GimbalYawDegree','GimbalPitchDegree','AlturaRelativa',"AlturaVuelo", 'CalculatedDistance','LatitudFoto', 'LongitudFoto']

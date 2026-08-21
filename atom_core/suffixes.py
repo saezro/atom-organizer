@@ -8,7 +8,7 @@ sufijo FINAL del nombre (`stem.endswith(sufijo)`, pipeline.py:1748/1755), así
 que basta mirar la terminación de cada nombre.
 
 `detect_suffixes(origen)` devuelve, con el MISMO criterio de imagen que
-`utils.get_images_from_dir` (jpg/png/JPG), el sufijo térmico y de RGB
+`utils.get_images_from_dir` (extensiones de imagen, `EXTS_IMAGEN`), el sufijo térmico y de RGB
 recomendados + el recuento de terminaciones encontradas. Sin Qt ni pipeline:
 solo `os`. Se llama on-demand desde el bridge al elegir la carpeta origen.
 """

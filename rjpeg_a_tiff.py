@@ -42,6 +42,13 @@ RESOLUCIONES = [
 
 EXTS_IMAGEN = {".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".tif", ".tiff", ".dng"}
 
+# Subconjunto de EXTS_IMAGEN que el pipeline considera FUENTE: lo que se convierte,
+# gira o comprime. Excluye .tif/.tiff/.dng porque son SALIDAS del propio pipeline y
+# conviven en la misma carpeta que sus JPG de origen (TERMICA/PBx/PBx_Vy): si un paso
+# re-invocado solo las volviera a coger, re-rotaría el TIFF (corrupción) o intentaría
+# convertirlo otra vez.
+EXTS_FUENTE = {".jpg", ".jpeg", ".jpe", ".jfif", ".png"}
+
 
 def localizar(nombre_win, nombre_nix, explicito, subcarpeta):
     """Devuelve la ruta de una herramienta externa: --flag > junto al script > PATH."""

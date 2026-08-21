@@ -504,7 +504,7 @@ class CompressImage:
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
         """
         # Aquí no estoy distinguiendo entre térmicas y RGBs, estoy comprimiendo todo a saco.
-        images = self.utils.get_images_from_dir(input_folder)
+        images = self.utils.get_images_from_dir(input_folder, solo_fuente=True)
         if len(images) > 0:
             self.organizer_logger.logger.debug("Directorio de entrada que contiene imágenes: " + input_folder)
             self.organizer_logger.logger.debug("Directorio de salida: " + output_folder)
@@ -1209,6 +1209,8 @@ class GenStructFolder:
           mientras se lista, así que el índice de una foto depende de cuándo mire
           cada tarea. Ver el porqué completo en `toca_imagen`.
         """
+        from rjpeg_a_tiff import EXTS_IMAGEN  # import local: evita ciclo con rjpeg_a_tiff, que hace `import pipeline`
+
         subcarpetas = ["TERMICA", "RGB"] + (["RGB_extra"] if extra_suffix else [])
         etiquetas = {"TERMICA": "Térmicas", "RGB": "RGB", "RGB_extra": "RGB Extra"}
 
@@ -1229,7 +1231,7 @@ class GenStructFolder:
                 continue
             por_destino: dict[str, int] = {}
             for imagen in sorted(os.listdir(carpeta)):
-                if not imagen.endswith(('jpg', 'JPG')):
+                if os.path.splitext(imagen)[1].lower() not in EXTS_IMAGEN:
                     continue
                 if not _es_mia(imagen):
                     continue
@@ -1372,12 +1374,14 @@ class GenStructFolder:
         que le tocan a esta tarea: precargar el de TODAS en las N tareas multiplica
         por N las lecturas contra GCS, que son lo caro de esta fase.
         """
+        from rjpeg_a_tiff import EXTS_IMAGEN  # import local: evita ciclo con rjpeg_a_tiff, que hace `import pipeline`
+
         rutas = []
         for carpeta in carpetas:
             if not carpeta or not os.path.isdir(carpeta):
                 continue
             for archivo in os.listdir(carpeta):
-                if archivo.endswith(('jpg', 'JPG')):
+                if os.path.splitext(archivo)[1].lower() in EXTS_IMAGEN:
                     if filtro is not None and not filtro(archivo):
                         continue
                     ruta = os.path.join(carpeta, archivo)
@@ -1743,7 +1747,7 @@ class GenStructFolder:
             nombresColumnas = ['New Name','Original Name','Degree']
             df_videofiles = pd.DataFrame(columns=nombresColumnas)  # Creamos un dataframe para crear posteriormente un csv
 
-            images = self.utils_obj.get_images_from_dir(input_folder, ["_CROP"])
+            images = self.utils_obj.get_images_from_dir(input_folder, ["_CROP"], solo_fuente=True)
             # se enviará 0 imágenes.
             rotate_90 = 0
             rotate_270 = 0
@@ -1878,7 +1882,7 @@ class GenStructFolder:
             nombresColumnas = ['New Name','Original Name','Degree']
             df_videofiles = pd.DataFrame(columns=nombresColumnas)  # Creamos un dataframe para crear posteriormente un csv
 
-            images = self.utils_obj.get_images_from_dir(input_folder, ["_CROP"])
+            images = self.utils_obj.get_images_from_dir(input_folder, ["_CROP"], solo_fuente=True)
             if len(images) != 0:
                 progress_callback.emit("\nProcesando {0} imágenes en el directorio {1}".format(len(images), input_folder) + "\n") # Se envía información al iniciar el procesado de un directorio solo si hay imágenes.
                 self.organizer_logger.logger.info("\nProcesando {0} imágenes en el directorio {1}".format(len(images), input_folder) + "\n")
@@ -2161,6 +2165,8 @@ class SplitImages:
             - "jpg_count": número de imágenes .JPG/.JPEG.
             - "match": True si ambos valores son iguales, False en caso contrario.
         """
+        from rjpeg_a_tiff import EXTS_IMAGEN  # import local: evita ciclo con rjpeg_a_tiff, que hace `import pipeline`
+
         results = {}
         errors = []
 
@@ -2219,7 +2225,8 @@ class SplitImages:
                 # que deban tener TIFF: contarlas daría un jpg_count del doble y un falso
                 # "no coinciden". Las versiones nuevas giran in-place y ya no las generan.
                 jpg_count = sum(1 for f in all_files
-                                if f.endswith(("JPG", "jpg", "JPEG", "jpeg"))
+                                if os.path.splitext(f)[1].lower() in EXTS_IMAGEN
+                                and os.path.splitext(f)[1].lower() not in (".tif", ".tiff")
                                 and utils.ROTATED_JPG_SUFFIX not in f)
                 match = tiff_count == jpg_count
 
@@ -2549,7 +2556,7 @@ class SplitImages:
         # de aquella versión, intentaría convertirlas (son JPG normales, ya sin payload
         # radiométrico -> fallo por imagen) y descuadraría `jpg_count == tiff_count`.
         # Desde 3.4.6 el giro es in-place y no se generan copias nuevas.
-        images = self.utils_obj.get_images_from_dir(input_folder, [utils.ROTATED_JPG_SUFFIX])
+        images = self.utils_obj.get_images_from_dir(input_folder, [utils.ROTATED_JPG_SUFFIX], solo_fuente=True)
         
         # print(f"Procesando {len(images)} imágenes")
 
@@ -2785,7 +2792,7 @@ class SplitImages:
             # La exclusión `_ROT` se mantiene por LEGADO: una carpeta procesada con
             # 3.4.5 tiene copias `_ROT` que no hay que volver a girar ni contar.
             # Las versiones nuevas ya no las generan.
-            images = self.utils_obj.get_images_from_dir(ruta, [utils.ROTATED_JPG_SUFFIX])
+            images = self.utils_obj.get_images_from_dir(ruta, [utils.ROTATED_JPG_SUFFIX], solo_fuente=True)
             if not images:
                 continue
 
@@ -3238,7 +3245,7 @@ class SplitImages:
 
         im = Image.fromarray(arr)
         # Buscar tiffinfo como parámetro para save.
-        im.save(os.path.join(output_folder, image_name.removesuffix(".JPG") + ".tiff"), format='TIFF')
+        im.save(os.path.join(output_folder, os.path.splitext(image_name)[0] + ".tiff"), format='TIFF')
         f.close()
         im.close()
         # os.remove(os.path.join(input_folder, image_name + ".raw"))
@@ -3246,7 +3253,7 @@ class SplitImages:
         # otro proceso aún mantiene el fichero abierto, así que reintentamos varias veces.
         self._safe_remove(os.path.join(input_folder, image_name + ".raw"), progress_callback)
         src_exif = os.path.join(input_folder, image_name)
-        dst_exif = os.path.join(output_folder, image_name.removesuffix(".JPG") + ".tiff")
+        dst_exif = os.path.join(output_folder, os.path.splitext(image_name)[0] + ".tiff")
         if defer_exif:
             return (src_exif, dst_exif)
         if _is_windows():
