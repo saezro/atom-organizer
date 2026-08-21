@@ -1542,10 +1542,18 @@ class GenStructFolder:
                         self.gen_thumbnails_and_rotate_manual(raiz, rgb_processing, rotation_value_90, progress_callback, progress_bar)
 
             else:
-                if rotation_mode_auto:
-                    self.gen_thumbnails_and_rotate(input_folder, rgb_processing, max_error, lim_max_270, lim_min_270, lim_max_90, lim_min_90, progress_callback, progress_bar)
+                if only_pb is None:
+                    raices_fallback = [input_folder]
                 else:
-                    self.gen_thumbnails_and_rotate_manual(input_folder, rgb_processing, rotation_value_90, progress_callback, progress_bar)
+                    raices_fallback = [
+                        sharding.ruta_de_relativo(input_folder, rel) for rel in only_pb
+                        if os.path.isdir(sharding.ruta_de_relativo(input_folder, rel))
+                    ]
+                for raiz in raices_fallback:
+                    if rotation_mode_auto:
+                        self.gen_thumbnails_and_rotate(raiz, rgb_processing, max_error, lim_max_270, lim_min_270, lim_max_90, lim_min_90, progress_callback, progress_bar)
+                    else:
+                        self.gen_thumbnails_and_rotate_manual(raiz, rgb_processing, rotation_value_90, progress_callback, progress_bar)
 
         return True
 
