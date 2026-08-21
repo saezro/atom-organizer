@@ -202,7 +202,12 @@ def main(argv: list[str] | None = None) -> int:
                              "RAIZ entera -- o sea la TERMICA -- e ignorando "
                              "`only_pb`, asi que las N tareas del Job se pisan "
                              "el mismo vuelo. El 2026-08-21 eso destruyo la "
-                             "radiometria de 4.852 R-JPEG de CLARE.")
+                             "radiometria de 4.852 R-JPEG de CLARE. Desde 3.4.53 "
+                             "frena ademas el giro IN-PLACE del JPG termico que "
+                             "corre al final del TIF (`rotate_thermal_jpgs_in_place`): "
+                             "tambien destruye el APP3/4/5 del R-JPEG y hasta "
+                             "entonces se ejecutaba pese al flag. Contrapartida: "
+                             "el JPG deja de casar visualmente con su TIFF.")
     parser.add_argument("--giro-tiff", dest="giro_tiff",
                         choices=("auto", "90", "-90", "ninguno"), default="auto",
                         help="Giro del TIFF termico. `auto` (por defecto) lee el "

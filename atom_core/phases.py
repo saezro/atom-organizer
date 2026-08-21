@@ -64,10 +64,15 @@ class PipelinePhasesMixin:
         muy pocas carpetas: ANTOLIN son 2.516 fotos en DOS `DJI_*`, y por carpeta
         un Job de 8 tareas dejaría seis paradas.
         """
-        carpetas = sharding.carpetas_con_imagenes(
-            input_folder, self.utils_obj.get_images_from_dir)
+        # `solo_fuente=True`: el origen puede traer `.tif/.tiff/.dng` (una carpeta
+        # ya convertida que se re-organiza, o una copia del destino). Son SALIDAS
+        # del pipeline, no fuentes: metidas en el lote, `split_one_image` revienta
+        # por imagen (`'TiffImageFile' object has no attribute '_getexif'`,
+        # `pipeline.split_images`) — 335 errores en la execution `ndl6q`.
+        listar_fuentes = lambda ruta: self.utils_obj.get_images_from_dir(ruta, solo_fuente=True)
+        carpetas = sharding.carpetas_con_imagenes(input_folder, listar_fuentes)
         reparto = sharding.repartir_imagenes(
-            carpetas, self.utils_obj.get_images_from_dir, shard_index, shard_count)
+            carpetas, listar_fuentes, shard_index, shard_count)
         mias = sum(len(v) for v in reparto.values())
         progress_callback.emit(
             f"\nReparto de la separación: {mias} imágenes de {len(carpetas)} carpeta(s) "
@@ -701,11 +706,26 @@ class PipelinePhasesMixin:
                 # de la conversión y de su verificación a propósito: girarlo destruye
                 # el payload radiométrico del R-JPEG, así que el conversor tiene que
                 # haber terminado ya con él.
-                for carpeta_rot in self._rutas_del_shard(cfg.output_folder, ["TERMICA"], mis_pbs):
-                    self.split_images_obj.rotate_thermal_jpgs_in_place(
-                        carpeta_rot, progress_callback, progress_bar,
-                        cfg.convert_to_tiff_rotate_90, cfg.convert_to_tiff_rotate_minus_90,
-                        cfg.convert_to_tiff_rotate_auto)
+                #
+                # Cuelga del switch maestro de ROTACION (`gen_thumbnails`, el que
+                # apaga `--sin-rotacion`): girar el R-JPEG es IRREVERSIBLE —se pierde
+                # el APP3/4/5 y con él la radiometría del original—, así que quien
+                # pide «sin rotación» no puede acabar con sus R-JPEG destruidos. Sin
+                # esta guarda, `--sin-rotacion` solo apagaba las miniaturas y esta
+                # tarea seguía corriendo (verificado en la execution `wpv52`,
+                # 2026-08-21: 6 R-JPEG de CLARE de 3,8 MB reducidos a 600 KB sin
+                # payload). El TIFF ya está escrito y girado a estas alturas, así que
+                # lo único que se pierde es que el JPG case visualmente con él.
+                if not cfg.gen_thumbnails:
+                    progress_callback.emit(
+                        "\nNo se giran los JPG térmicos en su sitio: el subproceso "
+                        "ROTACION está desactivado. Los R-JPEG quedan intactos.\n")
+                else:
+                    for carpeta_rot in self._rutas_del_shard(cfg.output_folder, ["TERMICA"], mis_pbs):
+                        self.split_images_obj.rotate_thermal_jpgs_in_place(
+                            carpeta_rot, progress_callback, progress_bar,
+                            cfg.convert_to_tiff_rotate_90, cfg.convert_to_tiff_rotate_minus_90,
+                            cfg.convert_to_tiff_rotate_auto)
 
                 summarize_dict = self.split_images_obj.get_summarize()
                 self.show_summarize(summarize_dict, progress_summarize)
