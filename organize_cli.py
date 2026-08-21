@@ -97,7 +97,9 @@ def _contar_imagenes(origen: Path) -> int:
     (permisos, ruta rara) devuelve 0 — sin conteo no hay ETA, pero el run
     sigue igual.
     """
-    exts = {".jpg", ".jpeg", ".dng", ".tif", ".tiff", ".png"}
+    from rjpeg_a_tiff import EXTS_IMAGEN  # import local: rjpeg_a_tiff carga numpy/PIL, pesado para el arranque del CLI
+
+    exts = EXTS_IMAGEN
     total = 0
     try:
         pendientes = [origen]

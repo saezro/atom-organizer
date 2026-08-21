@@ -45,6 +45,7 @@ from utils import (
     SplitImagesConfig,
     TifRotatingConfig,
 )
+from rjpeg_a_tiff import EXTS_IMAGEN
 
 
 class PipelinePhasesMixin:
@@ -1125,7 +1126,7 @@ class PipelinePhasesMixin:
 
         for root, _dirs, files in os.walk(termica_folder):
             for name in files:
-                if name.lower().endswith((".jpg", ".jpeg")):
+                if os.path.splitext(name)[1].lower() in EXTS_IMAGEN:
                     sample = os.path.join(root, name)
                     break
             if sample:

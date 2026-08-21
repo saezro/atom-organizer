@@ -20,6 +20,8 @@ from pathlib import Path
 import pipeline
 from natsort import natsorted
 
+from rjpeg_a_tiff import EXTS_FUENTE, EXTS_IMAGEN
+
 
 class OrganizerLogger:
     """
@@ -451,7 +453,7 @@ class Utils:
     def __init__(self, organizer_logger: OrganizerLogger) -> None:
         self.organizer_logger = organizer_logger
 
-    def get_images_from_dir(self, input_folder: str, exclude_patterns: list[str] = None) -> list[str]:
+    def get_images_from_dir(self, input_folder: str, exclude_patterns: list[str] = None, solo_fuente: bool = False) -> list[str]:
         """
         Función que obtiene las imágenes del directorio de entrada.
 
@@ -459,9 +461,11 @@ class Utils:
         ---------
         - input_folder - carpeta de entrada.
         - exclude_patterns - lista de strings que si están presentes en el nombre del archivo, lo excluyen del resultado.
+        - solo_fuente - si True, restringe a EXTS_FUENTE (excluye .tif/.tiff/.dng, que son salidas del pipeline, no fuentes a convertir/girar/comprimir).
         """
+        exts = EXTS_FUENTE if solo_fuente else EXTS_IMAGEN
         files = natsorted(os.listdir(input_folder))
-        images = [file for file in files if file.endswith(('jpg', 'png', 'JPG'))] # Si queremos obtener imágenes con diferentes extensiones, las cambiamos aquí.
+        images = [file for file in files if os.path.splitext(file)[1].lower() in exts] # Si queremos obtener imágenes con diferentes extensiones, las cambiamos aquí.
 
         if exclude_patterns:
             images = [img for img in images if not any(pattern in img for pattern in exclude_patterns)]
@@ -736,7 +740,7 @@ class Utils:
                     continue
                 if filtro_nombre is not None and not filtro_nombre(archivo):
                     continue
-                if not tmc and archivo.endswith(('jpg', 'png', 'JPG')):  # mismo predicado que get_images_from_dir (evita descuadre total/procesadas → falso "no correspondencia" en fase Separación)
+                if not tmc and os.path.splitext(archivo)[1].lower() in EXTS_IMAGEN:  # mismo predicado que get_images_from_dir (evita descuadre total/procesadas → falso "no correspondencia" en fase Separación)
                     contador += 1
                 elif tmc and archivo.endswith(('tmc', 'TMC')):
                     contador += 1
