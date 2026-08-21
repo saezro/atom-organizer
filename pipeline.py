@@ -3173,7 +3173,6 @@ class SplitImages:
 
         # self.organizer_logger.logger.info("The length of the data is {0}".format(len(data)))
 
-        # Hay imágenes térmicas de mayor tamaño, pero el sensor es igual de 640x512, por lo que el reshape tenemos que hacerlo del mismo modo. De hecho, podríamos usar siempre la línea "arr = arr.reshape(512, 640)", pero por ahora vamos a distinguir ambos casos.
         # El .raw que escribe el SDK (--measurefmt float32) es un array plano de float32
         # little-endian: np.frombuffer lo mapea sin recorrerlo. Antes esto era
         # `np.array(struct.unpack("<N>f", data))`, que materializaba una tupla de 327.680
@@ -3188,10 +3187,18 @@ class SplitImages:
         # escala de grises operaban en float64. Hace además el array escribible, que
         # np.frombuffer por sí solo no da (devuelve una vista de solo lectura).
         arr = np.frombuffer(data, dtype="<f4").astype(np.float64)
-        if size == (1280, 1024):
-            arr = arr.reshape(512, 640)
-        else:
-            arr = arr.reshape(size[1], size[0])
+        # 3.4.50: la forma se deduce del TAMANO REAL del .raw, no del tamano del JPG.
+        # El atajo anterior ("si el JPG es 1280x1024 el termico es 640x512") es cierto
+        # en la H20T (JPG reescalado) y FALSO en la H30T, que tiene termico real
+        # 1280x1024: ahi el SDK escribe 1.310.720 floats y el reshape a (512,640)
+        # reventaba imagen a imagen con "cannot reshape array of size 1310720 into
+        # shape (512,640)", dejando el vuelo entero sin TIFF (CLARE, 2026-08-21).
+        # Se reutiliza `resolucion_desde_raw` de rjpeg_a_tiff.py, que ya resolvia esto
+        # en el script standalone y tiene sus pruebas: JPG -> resoluciones DJI
+        # conocidas -> misma relacion de aspecto. No se duplica el criterio.
+        from rjpeg_a_tiff import resolucion_desde_raw
+        _ancho_t, _alto_t = resolucion_desde_raw(arr.size, size)
+        arr = arr.reshape(_alto_t, _ancho_t)
 
         # self.organizer_logger.logger.info("The size of the array is {0}".format(arr.size))
         # self.organizer_logger.logger.info("The shape of the array is {0}".format(arr.shape))
