@@ -81,9 +81,17 @@ class _UtilsFalso(_ObjetoQueApunta):
 
     imagenes_por_carpeta: dict = {}
 
-    def get_images_from_dir(self, input_folder, exclude_patterns=None):
+    solo_fuente_recibido: list = []
+
+    def get_images_from_dir(self, input_folder, exclude_patterns=None,
+                            solo_fuente=False):
         self._registro.append("utils_obj.get_images_from_dir")
-        return list(self.imagenes_por_carpeta.get(input_folder, []))
+        self.solo_fuente_recibido.append((input_folder, solo_fuente))
+        imagenes = list(self.imagenes_por_carpeta.get(input_folder, []))
+        if solo_fuente:
+            imagenes = [i for i in imagenes
+                        if not str(i).lower().endswith((".tif", ".tiff", ".dng"))]
+        return imagenes
 
     def logging_time(self, *args, **kwargs):
         return 0.0
@@ -449,3 +457,54 @@ def test_post_aborta_si_el_destino_no_esta_estructurado(monkeypatch, shard_index
 def test_el_guard_de_destino_no_afecta_a_las_demas_etapas(monkeypatch):
     """`split` crea el destino: exigirselo hecho seria un bloqueo circular."""
     assert "split_images_obj.iterate_folders" in _correr_sin_destino("split", monkeypatch)
+
+
+# --- el switch maestro de ROTACION frena también el giro in-place ------------
+#
+# `--sin-rotacion` pone `gen_thumbnails=False`. Hasta 3.4.52 eso solo apagaba las
+# miniaturas y `rotate_thermal_jpgs_in_place` seguía corriendo al final del TIF:
+# gira el `*_T.JPG` en su sitio y con ello DESTRUYE su payload radiométrico
+# (APP3/4/5), que es irreversible. Verificado en vivo el 2026-08-21 (execution
+# `wpv52`): 6 R-JPEG de CLARE de 3,8 MB quedaron en 600 KB sin payload pese al
+# flag. Quien pide «sin rotación» no puede acabar con sus originales rotos.
+
+def test_sin_rotacion_no_gira_los_jpg_termicos_en_su_sitio(monkeypatch):
+    llamadas = _correr("post", monkeypatch, cfg=_cfg(gen_thumbnails=False))
+    assert "split_images_obj.rotate_thermal_jpgs_in_place" not in llamadas
+
+
+def test_con_rotacion_si_gira_los_jpg_termicos_en_su_sitio(monkeypatch):
+    """La otra mitad del invariante: el default no cambia."""
+    llamadas = _correr("post", monkeypatch, cfg=_cfg(gen_thumbnails=True))
+    assert "split_images_obj.rotate_thermal_jpgs_in_place" in llamadas
+
+
+def test_sin_rotacion_sigue_convirtiendo_a_tif(monkeypatch):
+    """La guarda es solo del giro del JPG: el TIFF se sigue generando (y girado,
+    que eso lo manda `--giro-tiff`, no `--sin-rotacion`)."""
+    llamadas = _correr("post", monkeypatch, cfg=_cfg(gen_thumbnails=False))
+    assert "split_images_obj.iterate_folders_for_DJI" in llamadas
+
+
+# --- el reparto de la separación mira solo FUENTES ---------------------------
+#
+# Un origen puede traer `.tiff` (carpeta ya convertida que se re-organiza, copia
+# del destino). Son salidas del pipeline, no fuentes: si entran en el lote,
+# `split_one_image` revienta por imagen con
+# `'TiffImageFile' object has no attribute '_getexif'` — 335 errores en la
+# execution `ndl6q` (2026-08-21).
+
+def test_el_reparto_del_origen_excluye_las_tiff(monkeypatch):
+    host = _HostDePrueba(etapa="split")
+    _UtilsFalso.imagenes_por_carpeta = {
+        "/origen": ["DJI_0001_T.JPG", "DJI_0001_T.tiff", "DJI_0002_T.JPG"],
+    }
+    _UtilsFalso.solo_fuente_recibido = []
+    monkeypatch.setattr("atom_core.phases.sharding.carpetas_con_imagenes",
+                        lambda root, get_images: ["/origen"] if get_images("/origen") else [])
+    try:
+        reparto = host._imagenes_origen_del_shard("/origen", 0, 1, _SignalFalsa())
+    finally:
+        _UtilsFalso.imagenes_por_carpeta = {}
+    assert reparto == {"/origen": ["DJI_0001_T.JPG", "DJI_0002_T.JPG"]}
+    assert all(solo for _ruta, solo in _UtilsFalso.solo_fuente_recibido)
