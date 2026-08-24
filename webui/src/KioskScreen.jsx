@@ -49,6 +49,14 @@ export default function KioskScreen({
   onSubirCrudo,
   onComprobarSubida,
   onRefreshStatus,
+  // Sin sesión válida no hay lista de inspecciones (la sirve ATOM Suite):
+  // gating PARCIAL, solo bloquea elegir planta. Organizar y subir en crudo
+  // siguen habilitados a propósito.
+  credencialOk = true,
+  // Contador que llega desde `App.jsx` (el cartel `AvisoSesion`, montado
+  // fuera de este componente): cada incremento reabre el paso "cuenta"
+  // (PairScreen), reutilizando el mismo camino que el menú de cuenta.
+  abrirCuenta = 0,
   busy,
   progreso,
   // Resultado de la última subida: {ok, error?, subidos, omitidos, bytes,
@@ -72,6 +80,17 @@ export default function KioskScreen({
   }, [])
 
   const [accion, setAccion] = useState(accionInicial)
+  // `abrirCuenta` llega de fuera (el cartel `AvisoSesion` en `App.jsx`): cada
+  // vez que cambia (incluida la primera si arranca > 0) salta al paso
+  // "cuenta". Se compara contra el valor anterior, no contra 0, para no
+  // reabrirlo en cada render si el operario ya volvió atrás.
+  const abrirCuentaPrev = useRef(abrirCuenta)
+  useEffect(() => {
+    if (abrirCuenta !== abrirCuentaPrev.current) {
+      abrirCuentaPrev.current = abrirCuenta
+      setAccion('cuenta')
+    }
+  }, [abrirCuenta])
   // El catálogo trae cientos de inspecciones de todo el ciclo de vida, pero si
   // estás subiendo material la inspección está en vuelo: arrancar filtrado a esa
   // fase deja una lista corta. El resto sigue a un toque, en la pantalla de fases.
@@ -694,25 +713,34 @@ export default function KioskScreen({
               onClickCapture: alHacerClickInsp,
             } : {})}
           >
-            <InspeccionSelector
-              inspecciones={inspecciones}
-              onElegir={(prefijo) => {
-                const elegida = inspecciones.find((i) => i.prefijo === prefijo) || null
-                onSelectInspeccion(elegida)
-              }}
-              // El kiosco no crea inspecciones nuevas: requiere teclear
-              // Empresa--Planta--Año--Tipo, inviable con el panel táctil sin
-              // teclado. Esa vía sigue solo en la UI de escritorio.
-              onNueva={() => {}}
-              ocupado={busy}
-              onActualizar={onActualizarInspecciones}
-              // Sin teclado físico no hay dónde teclear ni sitio para chips o
-              // checkbox en 480x320: en el kiosco la lista va sola, a pantalla
-              // completa (el filtrado por defecto sigue siendo el mismo de
-              // siempre: sin texto, sin fase activa, sin terminadas).
-              soloLista
-              fasesControladas={fasesKiosco}
-            />
+            {credencialOk ? (
+              <InspeccionSelector
+                inspecciones={inspecciones}
+                onElegir={(prefijo) => {
+                  const elegida = inspecciones.find((i) => i.prefijo === prefijo) || null
+                  onSelectInspeccion(elegida)
+                }}
+                // El kiosco no crea inspecciones nuevas: requiere teclear
+                // Empresa--Planta--Año--Tipo, inviable con el panel táctil sin
+                // teclado. Esa vía sigue solo en la UI de escritorio.
+                onNueva={() => {}}
+                ocupado={busy}
+                onActualizar={onActualizarInspecciones}
+                // Sin teclado físico no hay dónde teclear ni sitio para chips o
+                // checkbox en 480x320: en el kiosco la lista va sola, a pantalla
+                // completa (el filtrado por defecto sigue siendo el mismo de
+                // siempre: sin texto, sin fase activa, sin terminadas).
+                soloLista
+                fasesControladas={fasesKiosco}
+              />
+            ) : (
+              // Gating PARCIAL: solo se bloquea elegir planta (la lista la
+              // sirve ATOM Suite). "Organizar" y "Subir en crudo" no se tocan.
+              <div className="kiosk-sistema-error" data-testid="kiosk-sin-credencial">
+                No se puede elegir planta sin sesión: la lista de inspecciones la sirve ATOM Suite.
+                Vuelve a emparejar el dispositivo con el QR.
+              </div>
+            )}
           </div>
           <Paginador
             pagina={pagina}

@@ -46,6 +46,9 @@ class _AuthFalso:
     def is_logged_in(self) -> bool:
         return True
 
+    def verificar(self):
+        return (True, "ok")
+
 
 class _SinkFalso:
     def __init__(self):

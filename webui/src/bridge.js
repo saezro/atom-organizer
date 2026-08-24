@@ -236,6 +236,9 @@ export const api = {
   // tiene que refrescar `cloudStatus`.
   cloudStatus: () => call('cloud_status'),
   cloudVerify: () => call('cloud_verify'),
+  cloudComprobar: () => call('cloud_comprobar'),
+  cloudPendientes: () => call('cloud_pendientes'),
+  cloudDrenar: () => call('cloud_drenar'),
   cloudLogin: () => call('cloud_login'),
   cloudLogout: () => call('cloud_logout'),
   cloudPairStart: () => call('cloud_pair_start'),

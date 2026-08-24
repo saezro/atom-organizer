@@ -653,6 +653,20 @@ class Api:
         except OSError as exc:
             # No se llegó a hablar con el backend: no acuses a la credencial.
             self._credencial.registrar(ESTADO_SIN_CONEXION, str(exc))
+        except Exception as exc:
+            # Organizar es local y NUNCA puede caerse por un fallo inesperado aquí.
+            self._credencial.registrar(ESTADO_SIN_CONEXION, str(exc))
+        return self._credencial.actual()
+
+    def cloud_asegurar_estado(self) -> dict:
+        """Estado de la credencial, recomprobando solo si toca.
+
+        Se llama antes de cada acción. La Pi está normalmente apagada, así que
+        en vez de sondear en bucle se comprueba al arrancar y, si sigue
+        encendida, como mucho una vez cada 6 h.
+        """
+        if self._credencial.necesita_comprobar():
+            return self.cloud_comprobar()
         return self._credencial.actual()
 
     def cloud_verify(self) -> dict:
@@ -975,6 +989,7 @@ class Api:
         un corte de red) se reanuda directo, sin preguntar nada: eso es
         "reintentar", no "subir otra vez" (ver `atom_core/lotes.py`).
         """
+        self.cloud_asegurar_estado()
         if self._uploading:
             return {"started": False, "reason": "Ya hay una subida en curso."}
 
@@ -1458,6 +1473,12 @@ class Api:
 
         Va de una en una: `cloud_upload` ya rechaza si hay otra subida en curso,
         y el resto de la cola sigue ahí para el siguiente intento.
+
+        Contrato: lanza COMO MUCHO 1 job por llamada (se corta en el primer
+        `started`), aunque haya varios pendientes. Quien quiera vaciar la cola
+        entera tiene que volver a llamar cuando esa subida termine; no
+        encadena drenajes automáticos, porque eso tocaría el camino crítico
+        de subida al bucket.
         """
         if self._credencial.actual()["estado"] != ESTADO_OK:
             return {"lanzados": 0, "reason": "Sin credencial válida."}
@@ -1492,6 +1513,9 @@ class Api:
     def run_task(self, task: str, params: dict, advanced: dict | None = None) -> dict:
         """Arranca un task del pipeline en un hilo aparte. Devuelve al instante;
         el progreso llega a React por eventos `atom:progress`."""
+        # Solo para refrescar el indicador de estado de la nube: organizar es
+        # 100 % local y debe funcionar siempre, con o sin credencial.
+        self.cloud_asegurar_estado()
         if self._running:
             return {"started": False, "reason": "Ya hay un proceso en curso."}
         self._running = True
@@ -2047,6 +2071,29 @@ def _app_version_for_title() -> str:
         return "?"
 
 
+def _comprobar_al_arrancar(api: Api) -> None:
+    """Lanza la primera comprobación de credencial en un hilo aparte.
+
+    Se llama justo después de tener el sink de eventos listo (`bind_sink` /
+    `bind_window`). No retrasa el pintado de la UI: `cloud_comprobar` hace red
+    y puede tardar. Si sale OK, aprovecha para drenar un job de la cola.
+    """
+    def worker() -> None:
+        try:
+            estado = api.cloud_comprobar()
+        except Exception as exc:
+            # El evento a la UI tiene que llegar siempre, o el aviso de
+            # credencial se queda colgado para siempre en el arranque.
+            estado = {"estado": ESTADO_SIN_CONEXION, "mensaje": str(exc)}
+        api._push_cloud({"kind": "session",
+                         "ok": estado["estado"] == ESTADO_OK,
+                         "estado": estado["estado"],
+                         "text": estado["mensaje"]})
+        if estado["estado"] == ESTADO_OK:
+            api.cloud_drenar()
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="ATOM Organizer (UI React/pywebview)")
     parser.add_argument(
@@ -2081,6 +2128,7 @@ def main() -> None:
         api = Api(broker=True)
         sink = QueueSink()
         api.bind_sink(sink)
+        _comprobar_al_arrancar(api)
         servir(api, str(DIST_INDEX.parent), args.host, args.port, sink)
         return
 
@@ -2105,6 +2153,7 @@ def main() -> None:
         background_color="#0a0a0a",
     )
     api.bind_window(window)
+    _comprobar_al_arrancar(api)
 
     # Comprobación de actualizaciones 3 s después del arranque. En modo --dev no
     # molesta (se corre desde fuente, la versión instalada no tiene sentido).

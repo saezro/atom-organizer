@@ -52,6 +52,20 @@ def test_sin_sesion_local_es_sin_credencial(monkeypatch):
     assert api.cloud_comprobar()["estado"] == ESTADO_SIN_CREDENCIAL
 
 
+def test_fallo_inesperado_de_verificar_no_propaga_y_queda_sin_conexion(monkeypatch):
+    # Cualquier excepción que no sea AuthError/OSError no puede tumbar
+    # run_task: organizar es local y nunca se bloquea por la nube.
+    api = _api(monkeypatch, AuthFalso(excepcion=RuntimeError("boom")))
+    assert api.cloud_comprobar()["estado"] == ESTADO_SIN_CONEXION
+
+
+def test_run_task_no_se_bloquea_si_verificar_falla_de_forma_inesperada(monkeypatch, tmp_path):
+    api = _api(monkeypatch, AuthFalso(excepcion=RuntimeError("boom")))
+    r = api.run_task("split_images", {"origen": str(tmp_path), "destino": str(tmp_path)})
+    assert r["started"] is True
+    assert api.cloud_status()["estado"] == ESTADO_SIN_CONEXION
+
+
 def test_subir_sin_credencial_encola_en_vez_de_rechazar(monkeypatch, tmp_path):
     from atom_core import cola_subidas
     ruta = tmp_path / "cola.json"
@@ -75,3 +89,53 @@ def test_status_reporta_cuantas_pendientes_hay(monkeypatch, tmp_path):
 
     api = _api(monkeypatch, AuthFalso(resultado=(True, "ok")))
     assert api.cloud_status()["pendientes"] == 1
+
+
+def test_asegurar_estado_no_recomprueba_dentro_del_latido(monkeypatch):
+    llamadas = {"n": 0}
+
+    class AuthContador(AuthFalso):
+        def verificar(self):
+            llamadas["n"] += 1
+            return (True, "ok")
+
+    api = _api(monkeypatch, AuthContador())
+    api.cloud_asegurar_estado()
+    api.cloud_asegurar_estado()
+    api.cloud_asegurar_estado()
+    assert llamadas["n"] == 1
+
+
+def test_asegurar_estado_recomprueba_tras_el_latido(monkeypatch):
+    from atom_core.credencial import EstadoCredencial
+    llamadas = {"n": 0}
+    ahora = {"t": 1000.0}
+
+    class AuthContador(AuthFalso):
+        def verificar(self):
+            llamadas["n"] += 1
+            return (True, "ok")
+
+    api = _api(monkeypatch, AuthContador())
+    api._credencial = EstadoCredencial(latido=10.0, reloj=lambda: ahora["t"])
+    api.cloud_asegurar_estado()
+    ahora["t"] = 1100.0
+    api.cloud_asegurar_estado()
+    assert llamadas["n"] == 2
+
+
+def test_drenar_lanza_solo_uno_por_llamada_con_varios_pendientes(monkeypatch, tmp_path):
+    from atom_core import cola_subidas
+    ruta = tmp_path / "cola.json"
+    monkeypatch.setattr(cola_subidas, "_ruta_cola", lambda: ruta)
+    cola_subidas.encolar("/datos/vuelo1", "PLANTA/2026/vuelo1", None, ruta=ruta)
+    cola_subidas.encolar("/datos/vuelo2", "PLANTA/2026/vuelo2", None, ruta=ruta)
+
+    api = _api(monkeypatch, AuthFalso(resultado=(True, "ok")))
+    api.cloud_comprobar()
+    monkeypatch.setattr(api, "cloud_upload", lambda *a, **k: {"started": True})
+
+    r = api.cloud_drenar()
+
+    assert r["lanzados"] == 1
+    assert len(cola_subidas.pendientes(ruta=ruta)) == 1
