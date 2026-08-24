@@ -16,6 +16,13 @@ import CodigoQr from './CodigoQr.jsx'
 // minutos en esta pantalla.
 const INTERVALO_POLL_MS = 2000
 
+// Fallos de red seguidos que se toleran antes de dar el vinculo por perdido.
+// El kiosco vive de wifi: un blip de un par de segundos no puede obligar a
+// reemparejar la Pi desde cero (implica volver al movil con el QR). Con 2 s de
+// intervalo esto son ~20 s de corte aguantados; a partir de ahi si es un fallo
+// de verdad y merece la pantalla de error.
+const FALLOS_POLL_TOLERADOS = 10
+
 export default function PairScreen({ onPaired }) {
   // 'cargando' | 'pendiente' | 'listo' | 'expirado' | 'error'
   const [estado, setEstado] = useState('cargando')
@@ -23,6 +30,7 @@ export default function PairScreen({ onPaired }) {
   const [email, setEmail] = useState('')
   const [error, setError] = useState('')
   const pollRef = useRef(null)
+  const fallosRef = useRef(0)
   const vivoRef = useRef(true)
   const tactil = isServerMode()
 
@@ -76,11 +84,13 @@ export default function PairScreen({ onPaired }) {
   // `estado`/`pair`, sin duplicar intervalos si el componente rerenderiza.
   useEffect(() => {
     if (estado !== 'pendiente' || !pair?.pair_id) return undefined
+    fallosRef.current = 0
     const id = setInterval(() => {
       api
         .cloudPairPoll(pair.pair_id)
         .then((r) => {
           if (!vivoRef.current) return
+          fallosRef.current = 0
           if (r?.estado === 'listo') {
             pararPoll()
             setEmail(r.email || '')
@@ -94,6 +104,11 @@ export default function PairScreen({ onPaired }) {
         })
         .catch((e) => {
           if (!vivoRef.current) return
+          // Un fallo aislado casi siempre es la wifi, no el vinculo: se
+          // reintenta en el siguiente tick y solo se rinde tras varios
+          // seguidos. El contador se resetea con cada respuesta buena.
+          fallosRef.current += 1
+          if (fallosRef.current < FALLOS_POLL_TOLERADOS) return
           pararPoll()
           setEstado('error')
           setError(String(e))

@@ -134,4 +134,38 @@ describe('PairScreen', () => {
     await vi.advanceTimersByTimeAsync(10000)
     expect(cloudPairPoll).not.toHaveBeenCalled()
   })
+
+  it('tolera hasta 9 fallos de red seguidos en el poll sin pasar a error', async () => {
+    cloudPairStart.mockResolvedValue({ ok: true, pair_id: 'p1', url: 'https://atom/pair/p1', expires_in: 300 })
+    cloudPairPoll.mockRejectedValue(new Error('network error'))
+
+    render(<PairScreen />)
+    await flush()
+
+    for (let i = 0; i < 3; i += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000)
+      })
+    }
+    expect(cloudPairPoll).toHaveBeenCalledTimes(3)
+    expect(screen.getByText(/escanea con el móvil/i)).toBeInTheDocument()
+    expect(screen.queryByText('Reintentar')).not.toBeInTheDocument()
+  })
+
+  it('se rinde y pasa a error tras 10 fallos de red seguidos en el poll', async () => {
+    cloudPairStart.mockResolvedValue({ ok: true, pair_id: 'p1', url: 'https://atom/pair/p1', expires_in: 300 })
+    cloudPairPoll.mockRejectedValue(new Error('network error'))
+
+    render(<PairScreen />)
+    await flush()
+
+    for (let i = 0; i < 10; i += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000)
+      })
+    }
+    expect(cloudPairPoll).toHaveBeenCalledTimes(10)
+    expect(screen.getByText('Reintentar')).toBeInTheDocument()
+    expect(screen.queryByText(/escanea con el móvil/i)).not.toBeInTheDocument()
+  })
 })
