@@ -371,6 +371,33 @@ class SessionStore:
         finally:
             con.close()
 
+    def meta_get(self, clave: str) -> str | None:
+        """Lee una clave suelta de la tabla `meta`. None si no existe."""
+        con = self._conectar()
+        try:
+            fila = con.execute(
+                "SELECT valor FROM meta WHERE clave = ?", (clave,)
+            ).fetchone()
+        finally:
+            con.close()
+        return fila[0] if fila else None
+
+    def meta_set(self, clave: str, valor: str | None) -> None:
+        """Escribe (o borra, con valor None) una clave suelta de `meta`."""
+        con = self._conectar()
+        try:
+            if valor is None:
+                con.execute("DELETE FROM meta WHERE clave = ?", (clave,))
+            else:
+                con.execute(
+                    "INSERT INTO meta (clave, valor) VALUES (?, ?) "
+                    "ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor",
+                    (clave, valor),
+                )
+            con.commit()
+        finally:
+            con.close()
+
     def marcar_validada(self, cuando: float | None = None) -> None:
         """Deja constancia de que la sesión se usó contra Google y funcionó."""
         con = self._conectar()
