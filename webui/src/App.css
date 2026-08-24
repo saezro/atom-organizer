@@ -2637,24 +2637,44 @@ html.kiosk-modo body * {
 .kiosk-red-ap-ok-girando { animation: kiosk-girar 1.1s linear infinite; }
 @keyframes kiosk-girar { to { transform: rotate(360deg); } }
 
-/* Indicador de red del home: esquina superior izquierda, fuera del flujo del
-   `.kiosk-header` (que empuja su contenido a la derecha) porque `.kiosk` ya
-   es el contenedor posicionado (`position: fixed`) de toda la pantalla. */
-.kiosk-estado-red {
+/* Barra de indicadores del home (red + disco): esquina superior izquierda,
+   fuera del flujo del `.kiosk-header` (que empuja su contenido a la
+   derecha) porque `.kiosk` ya es el contenedor posicionado (`position:
+   fixed`) de toda la pantalla. La compacta (pantalla de subida) usa el
+   mismo posicionamiento, solo con menos ancho al no llevar SSID. */
+.kiosk-barra-estado {
   position: absolute;
   top: var(--u);
   left: var(--u);
   display: flex;
   align-items: center;
+  gap: var(--u);
+  max-width: 55%;
+}
+.kiosk-barra-estado-compacta { max-width: none; }
+
+.kiosk-estado-red {
+  display: flex;
+  align-items: center;
   gap: calc(var(--u) / 2);
   font-size: var(--fs-sm);
   color: var(--muted);
-  max-width: 55%;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 .kiosk-estado-red-sin { color: #f87171; }
+
+/* Indicador de disco externo: solo icono, conectado en naranja Atom. */
+.kiosk-estado-disco {
+  display: flex;
+  align-items: center;
+  font-size: var(--fs-sm);
+  color: var(--orange);
+  flex-shrink: 0;
+}
+.kiosk-estado-disco-sin { color: var(--muted); opacity: 0.6; }
 
 /* Aviso de sesión — modal compacto sobre la pantalla actual (480x320). */
 .aviso-sesion {

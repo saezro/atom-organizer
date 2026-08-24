@@ -24,7 +24,7 @@ import Paginador from './Paginador.jsx'
 import KioskTareas from './KioskTareas.jsx'
 import KioskAjustes from './KioskAjustes.jsx'
 import KioskLock from './KioskLock.jsx'
-import EstadoRed from './EstadoRed.jsx'
+import BarraEstado from './BarraEstado.jsx'
 import { APPS } from './apps/registry.js'
 
 // Deriva la ruta de destino a partir de la carpeta de origen, añadiendo el
@@ -364,6 +364,7 @@ export default function KioskScreen({
     const CIRC = 2 * Math.PI * 46
     return (
       <div className="kiosk kiosk-subida" data-testid="kiosk-subida">
+        <BarraEstado compacto />
         <div className="kiosk-subida-escena">
           <div className="kiosk-subida-anillo">
             <svg viewBox="0 0 100 100" aria-hidden="true">
@@ -622,7 +623,7 @@ export default function KioskScreen({
   if (!accion) {
     return (
       <div className="kiosk">
-        <div className="kiosk-header"><EstadoRed />{avatar}</div>
+        <div className="kiosk-header"><BarraEstado />{avatar}</div>
         {barraProgreso}
         <MenuApps
           apps={APPS}
