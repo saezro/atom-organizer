@@ -1196,43 +1196,52 @@ git -c user.name=saez_ro -c user.email=ro.saezescobar@outlook.com commit -m "fea
 
 ### Task 8: Entrega — informe y despliegue
 
-No hay automatización de despliegue a la Pi y el túnel SSH está caído: esta task **no despliega nada**, prepara y documenta.
+Desplegado en la Pi el 2026-08-24 por rsync (la Pi no tiene `git`). Túnel inverso `localhost:2222` abierto desde el portátil de Rodrigo.
 
 **Files:**
 - Modify: `docs/superpowers/plans/2026-08-24-raspi-sesion-cerrada.md` (marcar los checkboxes completados)
 
-- [ ] **Step 1: Repasar el estado del repo**
+- [x] **Step 1: Repasar el estado del repo**
 
-Run: `git log --oneline -8 && git status -sb`
-Expected: un commit por task, nada sin commitear salvo lo que se decida dejar.
+Rama `raspi/modo-servidor`, HEAD `9090c1f`, pusheada a origin (`ea7d481..9090c1f`, 6 commits).
 
-- [ ] **Step 2: Suite completa de tests**
+- [x] **Step 2: Suite completa de tests**
 
-Run: `cd /home/rodrigo_saez/atom-organizer-work && python -m pytest tests/ -q`
-Run: `cd /home/rodrigo_saez/atom-organizer-work/webui && npm test`
-Expected: ambas verdes, o los fallos preexistentes identificados como tales.
+`./venv/bin/python -m pytest -q` → `1 failed, 900 passed` (el fallo `test_raw_truncado_no_tumba_el_lote` es PREEXISTENTE).
+`cd webui && npx vitest run --config vitest.config.js` → 19 ficheros / 156 tests verdes.
 
-- [ ] **Step 3: Confirmar que el cambio de la Suite sigue sin commitear**
+- [x] **Step 3: Cambio de la Suite**
 
-Run: `cd /home/rodrigo_saez/Atom-suite && git status -sb -- server.js`
-Expected: `server.js` modificado y **sin commitear**. El commit, el merge a `produccion` y el deploy los autoriza Rodrigo, no esta task.
+`c6b524f7` (fix foto Google) commiteado en `dev/saez`, mergeado a `produccion` en fast-forward y **desplegado en producción con OK de Rodrigo**: rebuild de `atom-suite-backend` + `atom-suite-frontend`, ambos healthy, `/api/ping` 204. Los ~250 renglones ajenos de otra sesión en `server.js` siguen sin commitear a propósito.
 
-- [ ] **Step 4: Redactar el informe de entrega para Rodrigo**
-
-Incluye, en pocas líneas: qué queda listo, qué falta por probar en hardware, y estos pasos manuales, que **nadie ejecuta sin él**:
+- [x] **Step 4: Despliegue en la Pi**
 
 ```
-1. Abrir el túnel inverso a la Pi desde el portátil (hoy: nada escuchando en localhost:2222).
-2. Llevar el build:  cd webui && npm run build   →  copiar webui/dist/ a la Pi  →  reiniciar el servidor del kiosco.
-3. Backend: commit de server.js en dev/saez, y deploy a producción solo con su OK.
-   Sin el endpoint en producción, la Pi cae al camino profundo (verificar()) y sigue funcionando.
-4. Probar en la Pi: arrancar sin emparejar (debe salir el cartel), pulsar "Subir en crudo"
-   (debe encolar), emparejar con el QR (la cola debe drenarse sola).
+rsync -av -e "ssh -p 2222" app_webview.py pipeline.py utils.py version.py exif.py \
+  external_tools.py organize_cli.py rjpeg_a_tiff.py atom_core pi@localhost:~/organizer/
+rsync -av --delete -e "ssh -p 2222" webui/dist/ pi@localhost:~/organizer/webui/dist/
+```
+Backup previo: `~/organizer.bak-2026-08-24` (80M). El servidor se relanzó a mano
+(`cd ~/organizer && setsid nohup ~/venv-test/bin/python app_webview.py --server --host 0.0.0.0 --port 8765`),
+escucha en `:8765`, `HTTP 200`, sirve `index-B9YX5vwg.js`.
+
+⚠️ `--delete` SOLO dentro de `webui/dist/`: la Pi tiene ficheros que dev no tiene (`pi_login.py`, `programas_externos/x86-runtime/`).
+⚠️ El kiosco NO está bajo systemd y su autostart no se localizó: si se mata el proceso, hay que relanzarlo a mano.
+
+Rollback: `ssh -p 2222 pi@localhost 'rm -rf ~/organizer && mv ~/organizer.bak-2026-08-24 ~/organizer'` + relanzar.
+
+- [ ] **Step 5: Prueba en hardware (la hace Rodrigo, requiere la pantalla)**
+
+```
+1. Arrancar sin emparejar   → debe salir el cartel de sesión.
+2. Pulsar "Subir en crudo"  → debe encolar.
+3. Emparejar con el QR      → la cola debe drenarse sola.
 ```
 
-- [ ] **Step 5: Documentar en el Atlas**
+- [ ] **Step 6: Documentar en el Atlas**
 
-Invoca la skill `documentar-sesion`. Nota canónica del kiosco + entrada en `30_Gestion/Proyectos/ATOM/Diario/2026-08-24.md`.
+Skill `documentar-sesion`: nota canónica del kiosco + `30_Gestion/Proyectos/ATOM/Diario/2026-08-24.md`.
+
 
 ---
 
