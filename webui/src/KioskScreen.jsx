@@ -49,9 +49,10 @@ export default function KioskScreen({
   onSubirCrudo,
   onComprobarSubida,
   onRefreshStatus,
-  // Sin sesión válida no hay lista de inspecciones (la sirve ATOM Suite):
-  // gating PARCIAL, solo bloquea elegir planta. Organizar y subir en crudo
-  // siguen habilitados a propósito.
+  // Sin sesión válida se bloquea elegir planta (la lista la sirve ATOM Suite)
+  // y también "Subir en crudo": subir sin dispositivo emparejado solo dejaba
+  // el lote en cola, y en un kiosco sin teclado eso se lee como que ha subido.
+  // "Organizar" sigue habilitado: es 100% local y no necesita sesión.
   credencialOk = true,
   // Contador que llega desde `App.jsx` (el cartel `AvisoSesion`, montado
   // fuera de este componente): cada incremento reabre el paso "cuenta"
@@ -522,7 +523,7 @@ export default function KioskScreen({
             className="kiosk-menu-btn kiosk-menu-subir"
             tactil={tactil}
             onActivar={() => setAccion('subir')}
-            disabled={busy}
+            disabled={busy || !credencialOk}
           >
             Subir en crudo
           </BotonToque>
