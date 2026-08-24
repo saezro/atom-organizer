@@ -1267,6 +1267,13 @@ select.glass-input option {
    de .kiosk: sin esto el cursor reaparecia justo al abrir el selector. */
 @media (max-height: 26rem) {
   .pm-overlay, .pm-overlay * { cursor: none; }
+  /* Los modales van por portal a body, fuera de `.app-kiosco`: sin esto el
+     dedo seguia seleccionando su texto. */
+  .pm-overlay, .pm-overlay * { user-select: none; -webkit-user-select: none; }
+  .pm-overlay input, .pm-overlay select, .pm-overlay textarea {
+    user-select: text;
+    -webkit-user-select: text;
+  }
 }
 /* Sin esto Chromium reserva cada toque ~300 ms por si es un doble-tap de zoom:
    en el panel resistivo eso se percibe como toques que no responden. */
@@ -1282,6 +1289,20 @@ select.glass-input option {
 }
 /* El campo de texto del estadillo es la unica excepcion: ahi se escribe. */
 .kiosk input, .kiosk select { user-select: text; -webkit-user-select: text; }
+/* Lo mismo pero desde la RAIZ del modo kiosco: `.kiosk *` no alcanzaba a
+   AvisoSesion ni a SplashInicio, que cuelgan de `.app` como hermanos del
+   kiosco. Arrastrar el dedo sobre el aviso de "sesion cerrada" dejaba el texto
+   seleccionado en azul. */
+.app-kiosco,
+.app-kiosco * {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+}
+.app-kiosco input, .app-kiosco select, .app-kiosco textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
 
 .kiosk-header { display: flex; justify-content: flex-end; align-items: center; }
 /* El titulo respira separado de la flecha de atras (que ahora es un cuadrado
@@ -1326,6 +1347,7 @@ select.glass-input option {
 .kiosk-perfil-foto { width: 100%; height: 100%; object-fit: cover; }
 .kiosk-perfil-inicial { font-size: 2.75rem; }
 .kiosk-perfil-email { font-size: var(--fs-sm); word-break: break-all; text-align: center; max-width: 9rem; }
+.kiosk-perfil-nombre { font-size: var(--fs-sm); text-align: center; max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kiosk-perfil-der {
   display: flex;
   flex-direction: column;

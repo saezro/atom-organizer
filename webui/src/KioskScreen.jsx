@@ -113,6 +113,7 @@ export default function KioskScreen({
   const [comprobando, setComprobando] = useState(false)
   const destino = derivarDestino(carpeta)
   const email = status?.email || ''
+  const nombre = status?.nombre || ''
   const inicial = email ? email[0].toUpperCase() : ''
   const tactil = isServerMode()
 
@@ -513,6 +514,9 @@ export default function KioskScreen({
                   <span className="kiosk-perfil-inicial">{inicial}</span>
                 )}
               </div>
+              {nombre && (
+                <span className="kiosk-perfil-nombre" data-testid="kiosk-perfil-nombre">{nombre}</span>
+              )}
               <span className="kiosk-perfil-email">{email}</span>
             </div>
             <div className="kiosk-perfil-der">

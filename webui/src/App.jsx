@@ -569,7 +569,10 @@ function App() {
       : null
 
   return (
-    <div className="app">
+    // `app-kiosco` marca el modo kiosco en la RAIZ, no en cada pantalla: asi la
+    // regla anti-seleccion de texto cubre tambien lo que se monta fuera de
+    // `.kiosk` (AvisoSesion, SplashInicio) y lo que se anada en el futuro.
+    <div className={kiosco ? 'app app-kiosco' : 'app'}>
       {splash && <SplashInicio onFin={() => setSplash(false)} />}
       {kiosco && !avisoCerrado && (
         <AvisoSesion
