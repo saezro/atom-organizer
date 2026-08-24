@@ -49,7 +49,7 @@ describe('AvisoSesion', () => {
   it('deja cerrar el aviso para seguir trabajando', () => {
     const onCerrar = vi.fn()
     render(<AvisoSesion estado="sin-credencial" onCerrar={onCerrar} />)
-    screen.getByRole('button', { name: /seguir/i }).click()
+    screen.getByRole('button', { name: /cerrar/i }).click()
     expect(onCerrar).toHaveBeenCalled()
   })
 
