@@ -1138,6 +1138,10 @@ function BucketScreen({ ready }) {
     setPlan(null)
     setSesion(null)
     refresh()
+    // `refresh()` solo toca `status` (escritorio). Sin esto, en el kiosco
+    // `kioskCloudStatus` se quedaba con el `ok` anterior: no salia el aviso
+    // y "Subir en crudo" seguia pulsable despues de cerrar sesion.
+    api.cloudStatus().then(setKioskCloudStatus).catch(() => setKioskCloudStatus(null))
   }
 
   async function pickCarpeta() {
