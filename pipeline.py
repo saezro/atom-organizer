@@ -2124,6 +2124,9 @@ class SplitImages:
         self.total_images_number = 0
         self.error_splitting_images = 0
         self.images_error_splitting_images = []
+        # TIFFs que ya existían de una pasada anterior sobre el mismo lote: se
+        # omite la conversión (ni error, ni reproceso) y se cuentan aparte.
+        self.tiff_already_converted = 0
         self.organizer_logger = organizer_logger
         # Nº de conversiones DJI->TIFF en paralelo. dji_irp.exe es un proceso
         # externo (libera el GIL), así que threads valen. El tope era un `min(8, ...)`
@@ -2163,6 +2166,7 @@ class SplitImages:
         self.exif_management_obj.error_exif_data = 0
         self.error_splitting_images = 0
         self.images_error_splitting_images.clear()
+        self.tiff_already_converted = 0
         self.compress_image_obj.images_error_compress.clear()
         self.exif_management_obj.images_error_exif_data.clear()
         # El criterio de giro se relee en la siguiente corrida: entre una y otra el
@@ -3077,10 +3081,27 @@ class SplitImages:
         - low_threshold_temperature - Todos los valores por debajo de esta temperatura tendrán el valor mínimo de temperatura de la imagen térmica.
         - rotate_90 - booleano que indica que la imagen TIFF se rotará 90 grados en sentido de las agujas del reloj.
         - rotate_minus_90 - booleano que indica que la imagen TIFF se rotará 90 grados en sentido contrario a las agujas del reloj.
-        """ 
-        
+        """
+
         # self.organizer_logger.logger.debug("Seleccion_ATOM: {0}".format(just_atom_selection))
         # self.organizer_logger.logger.debug("Girar auto: {0}".format(auto_rotate))
+
+        # Reejecutar esta fase sobre un lote ya procesado: si el .tiff de destino
+        # ya existe (y no está vacío) NO se invoca al SDK. El giro in-place de la
+        # térmica (`rotate_thermal_jpgs_in_place`) deja el `*_T.JPG` sin el payload
+        # radiométrico que el SDK necesita, así que en una segunda pasada lo
+        # rechaza (dji_rc != 0) y el FileNotFoundError posterior del .raw que
+        # nunca se escribió infla el contador de errores del resumen sin que haya
+        # nada roto: el TIFF bueno de la pasada anterior sigue intacto.
+        tiff_path = os.path.join(output_folder, os.path.splitext(image_name)[0] + ".tiff")
+        if os.path.exists(tiff_path) and os.path.getsize(tiff_path) > 0:
+            self.organizer_logger.logger.info(
+                f"{image_name}: el TIFF ya existe ({tiff_path}), se omite la conversión.")
+            progress_callback.emit(
+                "\n{0}: TIFF ya generado en una pasada anterior, se omite la conversión.\n".format(image_name))
+            with self._stats_lock:
+                self.tiff_already_converted += 1
+            return
 
         raw_path = os.path.join(input_folder, image_name + ".raw")
         # Resultado de la invocación al conversor. Se arrastra hasta el punto donde se
