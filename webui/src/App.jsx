@@ -12,6 +12,7 @@ import SplashInicio from './SplashInicio'
 import NavIcon from './NavIcon'
 import KioskScreen from './KioskScreen'
 import PairScreen from './PairScreen'
+import AvisoSesion from './AvisoSesion.jsx'
 import { formatBytes, formatDuracion } from './formato'
 import './App.css'
 
@@ -223,6 +224,15 @@ function App() {
   // porque esa pantalla no está montada cuando el kiosco es la vista activa.
   const [kioskCloudStatus, setKioskCloudStatus] = useState(null)
   const [kioskInspecciones, setKioskInspecciones] = useState([])
+  // Cartel a pantalla completa (Task 6) ante `sin-credencial`/`sin-conexion`.
+  // Descartable: el operario puede seguir organizando/subiendo sin sesión.
+  // Se reabre solo si el estado empeora (ver `onCloud` de más abajo).
+  const [avisoCerrado, setAvisoCerrado] = useState(false)
+  // Contador que dispara la pantalla "cuenta" (PairScreen) dentro de
+  // `KioskScreen` desde fuera de ese componente: no se puede llamar a su
+  // `setAccion` directamente, así que cada incremento reabre el paso de
+  // emparejamiento sin duplicar la lógica de pairing que ya vive allí.
+  const [kioskAbrirCuenta, setKioskAbrirCuenta] = useState(0)
   // Único job de subida «en crudo» propio del kiosco (no hay equivalente
   // reutilizable a nivel de App: la subida normal vive dentro de
   // `BucketScreen`, que no está montado en modo kiosco).
@@ -293,6 +303,18 @@ function App() {
             setKioskCloudPct(null)
             setKioskCloudStats(null)
             setKioskResultado({ ok: false, error: d.text || 'Error en la subida' })
+            break
+          case 'session':
+            // Cambio de sesión (login/logout/expiración): refresca el status
+            // del kiosco para recoger `estado`/`pendientes` y reabre el
+            // aviso si el estado ha empeorado (no lo abre si ya estaba ok).
+            api
+              .cloudStatus()
+              .then((s) => {
+                setKioskCloudStatus(s)
+                if (s?.estado && s.estado !== 'ok') setAvisoCerrado(false)
+              })
+              .catch(() => {})
             break
           default:
             break
@@ -544,6 +566,18 @@ function App() {
   return (
     <div className="app">
       {splash && <SplashInicio onFin={() => setSplash(false)} />}
+      {kiosco && !avisoCerrado && (
+        <AvisoSesion
+          estado={kioskCloudStatus?.estado}
+          mensaje={kioskCloudStatus?.estado_mensaje}
+          pendientes={kioskCloudStatus?.pendientes || 0}
+          onEmparejar={() => {
+            setAvisoCerrado(true)
+            setKioskAbrirCuenta((n) => n + 1)
+          }}
+          onCerrar={() => setAvisoCerrado(true)}
+        />
+      )}
       {!kiosco && (
         <header className="brand">
           <h1>
@@ -602,6 +636,8 @@ function App() {
             onRefreshStatus={() =>
               api.cloudStatus().then(setKioskCloudStatus).catch(() => setKioskCloudStatus(null))
             }
+            credencialOk={(kioskCloudStatus?.estado || 'ok') === 'ok'}
+            abrirCuenta={kioskAbrirCuenta}
             busy={kioskBusy}
             progreso={kioskProgreso}
             resultado={kioskResultado}

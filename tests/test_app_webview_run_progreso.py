@@ -42,6 +42,9 @@ class _AuthFalso:
     def is_logged_in(self) -> bool:
         return True
 
+    def verificar(self):
+        return (True, "ok")
+
 
 class _ReporterFalso:
     """Doble de `RunReporter`: registra las llamadas en vez de hablar con la

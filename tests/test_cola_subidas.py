@@ -1,3 +1,5 @@
+import time
+
 from atom_core import cola_subidas
 
 
@@ -61,3 +63,42 @@ def test_orden_de_llegada(tmp_path):
     cola_subidas.encolar("/a", "P/2026", None, ruta=ruta)
     cola_subidas.encolar("/b", "P/2026", None, ruta=ruta)
     assert [j["folder"] for j in cola_subidas.pendientes(ruta=ruta)] == ["/a", "/b"]
+
+
+def test_encolar_concurrente_no_pierde_jobs(tmp_path, monkeypatch):
+    """8 hilos encolando carpetas distintas a la vez sobre la misma cola:
+    al final deben estar los 8 jobs, no menos. Sin lock, el read-modify-write
+    de _escribir pisa jobs de otros hilos (lost update) y el test falla."""
+    import threading
+
+    ruta = tmp_path / "cola.json"
+    n_hilos = 8
+    barrera = threading.Barrier(n_hilos)
+
+    escribir_original = cola_subidas._escribir
+
+    def escribir_lento(ruta_arg, jobs):
+        # Ensancha la ventana de carrera entre leer y escribir de forma
+        # determinista, para no depender de la suerte del scheduler.
+        time.sleep(0.02)
+        escribir_original(ruta_arg, jobs)
+
+    monkeypatch.setattr(cola_subidas, "_escribir", escribir_lento)
+
+    errores = []
+
+    def trabajo(i):
+        try:
+            barrera.wait()
+            cola_subidas.encolar(f"/datos/vuelo{i}", "PLANTA/2026", i, ruta=ruta)
+        except Exception as exc:  # pragma: no cover - solo para diagnóstico
+            errores.append(exc)
+
+    hilos = [threading.Thread(target=trabajo, args=(i,)) for i in range(n_hilos)]
+    for h in hilos:
+        h.start()
+    for h in hilos:
+        h.join()
+
+    assert not errores
+    assert len(cola_subidas.pendientes(ruta=ruta)) == n_hilos
