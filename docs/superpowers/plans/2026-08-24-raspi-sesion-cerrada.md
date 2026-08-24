@@ -35,6 +35,10 @@ Latido: `21600` segundos (6 h).
 
 ### Task 1: Endpoint de estado del dispositivo (Atom-suite)
 
+**ELIMINADA** (ver ledger, ruling en Preflight — 2026-08-24): ningún task del plan
+consume `GET /api/organizer/device/status`; todas las comprobaciones usan
+`GoogleAuth.verificar()`. No se ejecuta ningún step de esta task.
+
 Repo: `/home/rodrigo_saez/Atom-suite`. Es el ping barato que la Pi usa antes de cada acción, sin quemar un refresh de Google.
 
 **Files:**
@@ -117,7 +121,7 @@ Repo: `/home/rodrigo_saez/atom-organizer-work`. Lógica pura y testable: clasifi
   - `class EstadoCredencial` con `__init__(self, *, latido: float = LATIDO_SEGUNDOS, reloj=time.time)`, `registrar(estado: str, mensaje: str = "") -> None`, `actual() -> dict`, `necesita_comprobar() -> bool`, `invalidar(mensaje: str = "") -> None`.
   - `actual()` devuelve `{"estado": str, "mensaje": str, "comprobado_en": float | None}`.
 
-- [ ] **Step 1: Escribir el test que falla**
+- [x] **Step 1: Escribir el test que falla**
 
 Crea `tests/test_credencial.py`:
 
@@ -186,12 +190,12 @@ def test_sin_conexion_no_pisa_un_ok_previo_como_sin_credencial():
     assert e.actual()["estado"] == ESTADO_SIN_CONEXION
 ```
 
-- [ ] **Step 2: Ejecutar el test y verificar que falla**
+- [x] **Step 2: Ejecutar el test y verificar que falla**
 
 Run: `python -m pytest tests/test_credencial.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'atom_core.credencial'`.
 
-- [ ] **Step 3: Implementación mínima**
+- [x] **Step 3: Implementación mínima**
 
 Crea `atom_core/credencial.py`:
 
@@ -270,17 +274,17 @@ class EstadoCredencial:
         return (float(self._reloj()) - self._comprobado_en) > self._latido
 ```
 
-- [ ] **Step 4: Ejecutar el test y verificar que pasa**
+- [x] **Step 4: Ejecutar el test y verificar que pasa**
 
 Run: `cd /home/rodrigo_saez/atom-organizer-work && python -m pytest tests/test_credencial.py -v`
 Expected: 7 passed.
 
-- [ ] **Step 5: No romper el resto**
+- [x] **Step 5: No romper el resto**
 
 Run: `cd /home/rodrigo_saez/atom-organizer-work && python -m pytest tests/ -q`
 Expected: mismo resultado que antes de la task (si ya había fallos previos, repórtalos como preexistentes, no los arregles).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd /home/rodrigo_saez/atom-organizer-work
@@ -310,7 +314,7 @@ Repo: `/home/rodrigo_saez/atom-organizer-work`. Persistencia pura en JSON atómi
   - `marcar_intento(job_id: str, error: str = "", *, ruta: Path | None = None) -> None`
   - Cada job es `{"id": str, "folder": str, "prefix": str, "inspeccion_id": int | None, "creado_en": float, "intentos": int, "ultimo_error": str}`.
 
-- [ ] **Step 1: Escribir el test que falla**
+- [x] **Step 1: Escribir el test que falla**
 
 Crea `tests/test_cola_subidas.py`:
 
@@ -380,12 +384,12 @@ def test_orden_de_llegada(tmp_path):
     assert [j["folder"] for j in cola_subidas.pendientes(ruta=ruta)] == ["/a", "/b"]
 ```
 
-- [ ] **Step 2: Ejecutar el test y verificar que falla**
+- [x] **Step 2: Ejecutar el test y verificar que falla**
 
 Run: `python -m pytest tests/test_cola_subidas.py -v`
 Expected: FAIL — `ImportError: cannot import name 'cola_subidas'`.
 
-- [ ] **Step 3: Implementación mínima**
+- [x] **Step 3: Implementación mínima**
 
 Crea `atom_core/cola_subidas.py`:
 
@@ -495,12 +499,12 @@ def marcar_intento(job_id: str, error: str = "", *, ruta: Path | None = None) ->
             return
 ```
 
-- [ ] **Step 4: Ejecutar el test y verificar que pasa**
+- [x] **Step 4: Ejecutar el test y verificar que pasa**
 
 Run: `cd /home/rodrigo_saez/atom-organizer-work && python -m pytest tests/test_cola_subidas.py -v`
 Expected: 8 passed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /home/rodrigo_saez/atom-organizer-work
@@ -528,7 +532,7 @@ Repo: `/home/rodrigo_saez/atom-organizer-work`. Aquí se une todo: `cloud_status
   - `cloud_pendientes() -> dict` — `{"pendientes": [job, ...]}`.
   - `cloud_drenar() -> dict` — `{"lanzados": int}`.
 
-- [ ] **Step 1: Escribir el test que falla**
+- [x] **Step 1: Escribir el test que falla**
 
 Crea `tests/test_app_webview_credencial.py`. Mira antes `tests/test_app_webview_broker.py` para copiar cómo se instancia `Api` con dobles en este repo, y adapta el arranque si hace falta:
 
@@ -612,12 +616,12 @@ def test_status_reporta_cuantas_pendientes_hay(monkeypatch, tmp_path):
     assert api.cloud_status()["pendientes"] == 1
 ```
 
-- [ ] **Step 2: Ejecutar el test y verificar que falla**
+- [x] **Step 2: Ejecutar el test y verificar que falla**
 
 Run: `python -m pytest tests/test_app_webview_credencial.py -v`
 Expected: FAIL — `AttributeError: 'Api' object has no attribute 'cloud_comprobar'`.
 
-- [ ] **Step 3: Implementar**
+- [x] **Step 3: Implementar**
 
 En `app_webview.py`:
 
@@ -731,17 +735,17 @@ def cloud_drenar(self) -> dict:
 
 g) En `atom_core/webserver.py:32`, añade a `METODOS_EXPUESTOS`: `"cloud_comprobar"`, `"cloud_pendientes"`, `"cloud_drenar"`. **No** los añadas a `METODOS_REMOTOS` (:44): son locales, como `cloud_status`.
 
-- [ ] **Step 4: Ejecutar los tests y verificar que pasan**
+- [x] **Step 4: Ejecutar los tests y verificar que pasan**
 
 Run: `python -m pytest tests/test_app_webview_credencial.py -v`
 Expected: 6 passed.
 
-- [ ] **Step 5: No romper el resto**
+- [x] **Step 5: No romper el resto**
 
 Run: `cd /home/rodrigo_saez/atom-organizer-work && python -m pytest tests/ -q`
 Expected: sin regresiones respecto al estado previo. Presta atención a `tests/test_app_webview_broker.py` y `tests/test_app_webview_lote_carpeta.py`, que tocan lo mismo.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd /home/rodrigo_saez/atom-organizer-work
@@ -763,7 +767,7 @@ Repo: `/home/rodrigo_saez/atom-organizer-work`. Sin polling: la Pi normalmente e
 - Consumes: `Api.cloud_comprobar()`, `EstadoCredencial.necesita_comprobar()` (Tasks 2 y 4).
 - Produces: `Api.cloud_asegurar_estado() -> dict` — comprueba solo si toca (primera vez o latido vencido) y devuelve el estado; barata de llamar en caliente.
 
-- [ ] **Step 1: Ampliar el test**
+- [x] **Step 1: Ampliar el test**
 
 Añade a `tests/test_app_webview_credencial.py`:
 
@@ -801,12 +805,12 @@ def test_asegurar_estado_recomprueba_tras_el_latido(monkeypatch):
     assert llamadas["n"] == 2
 ```
 
-- [ ] **Step 2: Ejecutar y verificar que falla**
+- [x] **Step 2: Ejecutar y verificar que falla**
 
 Run: `python -m pytest tests/test_app_webview_credencial.py -v -k asegurar`
 Expected: FAIL — `AttributeError: 'Api' object has no attribute 'cloud_asegurar_estado'`.
 
-- [ ] **Step 3: Implementar**
+- [x] **Step 3: Implementar**
 
 a) Método nuevo en `Api`, junto a `cloud_comprobar`:
 
@@ -842,17 +846,17 @@ Llámala justo después de construir `Api` y de tener el sink de eventos listo. 
 
 c) Antes de cada acción: al principio de `cloud_upload` y de `run_task`, añade `self.cloud_asegurar_estado()`. En `run_task` es solo para refrescar el indicador — **no bloquees organizar por el estado**: es 100 % local y debe funcionar siempre.
 
-- [ ] **Step 4: Ejecutar los tests y verificar que pasan**
+- [x] **Step 4: Ejecutar los tests y verificar que pasan**
 
 Run: `cd /home/rodrigo_saez/atom-organizer-work && python -m pytest tests/test_app_webview_credencial.py -v`
 Expected: 8 passed.
 
-- [ ] **Step 5: No romper el resto**
+- [x] **Step 5: No romper el resto**
 
 Run: `cd /home/rodrigo_saez/atom-organizer-work && python -m pytest tests/ -q`
 Expected: sin regresiones.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd /home/rodrigo_saez/atom-organizer-work
@@ -875,7 +879,7 @@ Repo: `/home/rodrigo_saez/atom-organizer-work`, carpeta `webui/`. El cartel a pa
 - Consumes: variables CSS de `webui/src/index.css:12-42` (`--bg`, `--text`, `--orange`, `--u`, `--fs-*`).
 - Produces: `export default function AvisoSesion({ estado, mensaje, pendientes = 0, onEmparejar, onCerrar })`. No renderiza nada si `estado === 'ok'`.
 
-- [ ] **Step 1: Escribir el test que falla**
+- [x] **Step 1: Escribir el test que falla**
 
 Crea `webui/src/AvisoSesion.test.jsx`:
 
@@ -920,12 +924,12 @@ describe('AvisoSesion', () => {
 
 Si `@testing-library/react` no está instalado, comprueba primero cómo testean los demás `*.test.jsx` del repo y adapta el test a lo que ya haya, en vez de añadir dependencias.
 
-- [ ] **Step 2: Ejecutar y verificar que falla**
+- [x] **Step 2: Ejecutar y verificar que falla**
 
 Run: `cd /home/rodrigo_saez/atom-organizer-work/webui && npm test -- AvisoSesion`
 Expected: FAIL — no se resuelve `./AvisoSesion.jsx`.
 
-- [ ] **Step 3: Implementar el componente**
+- [x] **Step 3: Implementar el componente**
 
 Crea `webui/src/AvisoSesion.jsx`:
 
@@ -990,7 +994,7 @@ export default function AvisoSesion({ estado, mensaje, pendientes = 0, onEmparej
 }
 ```
 
-- [ ] **Step 4: Estilos**
+- [x] **Step 4: Estilos**
 
 Añade al final de `webui/src/App.css`. **Solo rem/vh, ningún `px`:**
 
@@ -1048,17 +1052,17 @@ Añade al final de `webui/src/App.css`. **Solo rem/vh, ningún `px`:**
 
 Comprueba en `webui/src/index.css:12-42` que `--fs-xl`, `--fs-md`, `--fs-sm` y `--u` existen con esos nombres; si alguno no existe, usa el equivalente real en vez de inventarlo.
 
-- [ ] **Step 5: Ejecutar los tests y verificar que pasan**
+- [x] **Step 5: Ejecutar los tests y verificar que pasan**
 
 Run: `cd /home/rodrigo_saez/atom-organizer-work/webui && npm test -- AvisoSesion`
 Expected: 5 passed.
 
-- [ ] **Step 6: Comprobar que no quedan `px` nuevos**
+- [x] **Step 6: Comprobar que no quedan `px` nuevos**
 
 Run: `cd /home/rodrigo_saez/atom-organizer-work/webui && grep -n 'px' src/App.css src/AvisoSesion.jsx`
 Expected: solo los hits que ya existían antes de esta task (los de `index.css:69-70` están en otro fichero). Ningún `px` en lo añadido.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cd /home/rodrigo_saez/atom-organizer-work
@@ -1082,7 +1086,7 @@ Repo: `/home/rodrigo_saez/atom-organizer-work`, carpeta `webui/`. El estado ya l
 - Consumes: `AvisoSesion` (Task 6); de `Api`: `cloud_status()` con `estado`/`estado_mensaje`/`pendientes`, `cloud_comprobar()`, `cloud_pendientes()`, `cloud_drenar()` (Tasks 4 y 5).
 - Produces: `api.cloudComprobar()`, `api.cloudPendientes()`, `api.cloudDrenar()` en `bridge.js`; prop nueva `credencialOk: boolean` en `KioskScreen`.
 
-- [ ] **Step 1: Añadir los métodos al bridge**
+- [x] **Step 1: Añadir los métodos al bridge**
 
 En `webui/src/bridge.js`, junto a `cloudStatus`/`cloudVerify` (:237-238):
 
@@ -1092,7 +1096,7 @@ En `webui/src/bridge.js`, junto a `cloudStatus`/`cloudVerify` (:237-238):
   cloudDrenar: () => call('cloud_drenar'),
 ```
 
-- [ ] **Step 2: Estado y aviso en App.jsx**
+- [x] **Step 2: Estado y aviso en App.jsx**
 
 a) Importa `AvisoSesion` y añade el estado del aviso:
 
@@ -1131,7 +1135,7 @@ d) Renderiza el aviso dentro del bloque del kiosco, por encima de todo:
 
 Para `onEmparejar`, usa el mismo camino que ya lleva hoy a `PairScreen` desde el menú de cuenta — localízalo en `App.jsx`/`KioskScreen.jsx` y reutilízalo; no dupliques la lógica de pairing.
 
-- [ ] **Step 3: Gating en KioskScreen.jsx**
+- [x] **Step 3: Gating en KioskScreen.jsx**
 
 a) Acepta la prop nueva en el destructuring de cabecera (:38-51): `credencialOk = true`.
 
@@ -1163,11 +1167,11 @@ c) En el montaje de `InspeccionSelector` (:697-713), sustituye por:
 
 d) **No toques** los botones "Organizar" ni "Subir en crudo" (:484-511): siguen habilitados a propósito. Organizar es local y subir se encola.
 
-- [ ] **Step 4: Ampliar el test**
+- [x] **Step 4: Ampliar el test**
 
 Añade a `webui/src/AvisoSesion.test.jsx` un test del gating, renderizando `KioskScreen` con `credencialOk={false}` y comprobando que aparece el texto de "No se puede elegir planta" y que los botones Organizar/Subir en crudo **no** están deshabilitados. Si montar `KioskScreen` entero resulta inviable por sus props, dilo en el informe y deja el gating cubierto solo por la verificación manual del paso 6, en vez de escribir un test que no prueba nada.
 
-- [ ] **Step 5: Ejecutar toda la suite del webui**
+- [x] **Step 5: Ejecutar toda la suite del webui**
 
 Run: `cd /home/rodrigo_saez/atom-organizer-work/webui && npm test`
 Expected: sin regresiones.
@@ -1175,12 +1179,12 @@ Expected: sin regresiones.
 Run: `cd /home/rodrigo_saez/atom-organizer-work/webui && npm run lint`
 Expected: sin errores nuevos.
 
-- [ ] **Step 6: Build**
+- [x] **Step 6: Build**
 
 Run: `cd /home/rodrigo_saez/atom-organizer-work/webui && npm run build`
 Expected: build correcto. Si peta por heap, reintenta con `NODE_OPTIONS=--max-old-space-size=5120 npm run build`.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cd /home/rodrigo_saez/atom-organizer-work
