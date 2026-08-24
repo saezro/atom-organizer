@@ -383,6 +383,17 @@ def main(argv: list[str] | None = None) -> int:
     if telemetria_motivo:
         print(f"[telemetria] DESACTIVADA: {telemetria_motivo}",
               file=sys.stderr, flush=True)
+        # Fail-closed dentro de Cloud Run. Un Job sin telemetria corre horas,
+        # gasta CPU y escribe en el bucket sin dejar rastro en /organizer: nadie
+        # ve el progreso ni el fallo, y la Suite se queda con un run fantasma.
+        # Fuera de Cloud Run (dev con el CLI a mano) sigue siendo fail-open, y
+        # ORGANIZER_TELEMETRIA_OPCIONAL=1 es la valvula para lanzar el Job a
+        # proposito sin Suite detras.
+        if en_cloud_run and os.environ.get("ORGANIZER_TELEMETRIA_OPCIONAL") != "1":
+            print("[telemetria] abortando: el Job no arranca sin telemetria "
+                  "(usa ORGANIZER_TELEMETRIA_OPCIONAL=1 para saltarselo)",
+                  file=sys.stderr, flush=True)
+            return 2
 
     fases: list[dict] = []
     errores: list[str] = []
