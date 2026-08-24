@@ -38,6 +38,15 @@ from atom_core import pin_kiosco
 # como el listado de redes, que debe excluirlo de las redes conectables.
 _AP_SSID = "ATOM-Organizer"
 
+# Reintento a NIVEL DE LOTE de `cloud_upload.upload_plan`: si el wifi se cae a
+# mitad de una subida de horas, los objetos que agotan sus reintentos
+# internos quedan en `res.failed` y nadie hay delante para pulsar "Subir" de
+# nuevo. `RONDAS_SUBIDA_MAX` rondas con backoff entre `ESPERA_RONDA_INICIAL` y
+# `ESPERA_RONDA_MAX` segundos cubren la caída sola.
+RONDAS_SUBIDA_MAX = 8
+ESPERA_RONDA_INICIAL = 15
+ESPERA_RONDA_MAX = 300
+
 
 def _import_webview():
     """Importa pywebview solo cuando de verdad se va a abrir una ventana.
@@ -984,6 +993,41 @@ class Api:
             return None
         return inv["remotos"]
 
+    def _verificar_lote_completo(self, plan, prefix_lote: str, auth
+                                 ) -> tuple[list[tuple[str, str]], bool]:
+        """Cruza el plan contra un listado FRESCO del bucket.
+
+        Devuelve `(faltantes, verificado)`. Un `UploadResult.ok` solo dice que
+        ningun objeto lanzo una excepcion; esto dice que estan de verdad en el
+        bucket y con su tamaño. Es lo que separa "la barra llego al 100 %" de
+        "no se quedo nada por el camino", y por eso el manifest depende de
+        esto y no solo de `ok`.
+
+        `verificado=False` = no se pudo listar (red). NO es prueba de que
+        falte nada, asi que el que llama no lo trata como fallo: solo pierde
+        la garantia, y se lo dice a la UI en vez de callarselo.
+        """
+        from atom_core import cloud_config, cloud_upload
+
+        try:
+            remotos = cloud_upload.listar_objetos_remotos(
+                cloud_config.BUCKET_DATOS, prefix_lote, auth)
+        except Exception as exc:  # noqa: BLE001 - informativo, no bloquea
+            self._log_subida("verificacion de %s: no se pudo listar (%s)",
+                             prefix_lote, exc)
+            return [], False
+
+        faltantes: list[tuple[str, str]] = []
+        for item in plan.items:
+            remoto = remotos.get(item.remote)
+            if remoto is None:
+                faltantes.append((item.remote, "no esta en el bucket"))
+            elif item.size >= 0 and remoto.size != item.size:
+                faltantes.append((
+                    item.remote,
+                    f"tamaño remoto {remoto.size} != {item.size} local"))
+        return faltantes, True
+
     def _inventario_precalentar(self, prefix: str) -> None:
         """Lanza (si no está ya) el listado del prefijo en un hilo.
 
@@ -1237,13 +1281,85 @@ class Api:
                 # nadie precalienta el prefijo del lote, solo el de la
                 # inspección), `upload_plan` lista `prefix_lote` él solo antes
                 # de subir nada.
-                res = cloud_upload.upload_plan(
-                    plan, provider,
-                    on_progress=lambda t: self._push_cloud({"kind": "log", "text": t}),
-                    on_stats=lambda s: self._on_stats_subida(reporter, s),
-                    should_stop=lambda: self._cancel_upload,
-                    remotos=self._inventario_cacheado(prefix_lote),
-                )
+                # Reintento de LOTE: los reintentos de `upload_plan` son por
+                # objeto (mismo proceso, misma sesion resumible). Un wifi que
+                # se cae de verdad tumba TODOS los objetos en vuelo a la vez,
+                # agota esos reintentos y deja el lote a medias sin que nadie
+                # lo relance. Aqui se vuelve a llamar entero, con backoff, y
+                # cada ronda salvo la primera relista el bucket (`remotos`
+                # cacheado ya no vale: puede haber cambiado a mitad de ronda).
+                acumulado = cloud_upload.UploadResult()
+                espera = ESPERA_RONDA_INICIAL
+                sin_avance = 0
+                res = None
+                verificado = False
+                faltantes: list[tuple[str, str]] = []
+                for ronda in range(1, RONDAS_SUBIDA_MAX + 1):
+                    res = cloud_upload.upload_plan(
+                        plan, provider,
+                        on_progress=lambda t: self._push_cloud({"kind": "log", "text": t}),
+                        on_stats=lambda s: self._on_stats_subida(reporter, s),
+                        should_stop=lambda: self._cancel_upload,
+                        remotos=(self._inventario_cacheado(prefix_lote)
+                                 if ronda == 1 else None),
+                    )
+                    # AUDITORIA de completitud. `res.ok` solo dice que ningun
+                    # objeto lanzo una excepcion; no dice que esten en el
+                    # bucket. Aqui se cruza el plan contra un listado FRESCO:
+                    # lo que falte entra en `failed` y se lleva otra ronda,
+                    # asi que el manifest solo se escribe con el 100 %
+                    # comprobado contra GCS, no con "no hubo excepciones".
+                    if res.ok and not self._cancel_upload:
+                        faltantes, verificado = self._verificar_lote_completo(
+                            plan, prefix_lote, auth)
+                        if faltantes:
+                            self._push_cloud({
+                                "kind": "log",
+                                "text": (f"Verificación: faltan {len(faltantes)} "
+                                         f"de {len(plan.items)} objetos en el "
+                                         f"bucket, se reintentan."),
+                            })
+                            res.failed.extend(faltantes)
+
+                    acumulado.uploaded += res.uploaded
+                    acumulado.skipped += res.skipped
+                    acumulado.skipped_remoto += res.skipped_remoto
+                    acumulado.skipped_precondicion += res.skipped_precondicion
+                    acumulado.reconciliado = (
+                        acumulado.reconciliado or res.reconciliado)
+                    acumulado.bytes_sent += res.bytes_sent
+                    acumulado.elapsed += res.elapsed
+                    acumulado.retries += res.retries
+                    acumulado.failed = res.failed
+
+                    if res.ok or self._cancel_upload:
+                        break
+
+                    if res.uploaded == 0 and res.bytes_sent == 0:
+                        sin_avance += 1
+                        if sin_avance >= 2:
+                            break
+                    else:
+                        sin_avance = 0
+
+                    self._push_cloud({
+                        "kind": "log",
+                        "text": (f"Ronda {ronda}: {len(res.failed)} objetos "
+                                 f"fallaron, reintentando en {espera}s…"),
+                    })
+                    esperado = 0
+                    while esperado < espera and not self._cancel_upload:
+                        time.sleep(1)
+                        esperado += 1
+                    if self._cancel_upload:
+                        break
+                    espera = min(espera * 2, ESPERA_RONDA_MAX)
+
+                rondas_ejecutadas = ronda
+                res = acumulado
+                mbps_total = (
+                    (res.bytes_sent * 8) / res.elapsed / 1_000_000
+                    if res.elapsed > 0 else 0.0)
 
                 # `manifest.json` es el marcador de "lote completo": se sube
                 # EL ÚLTIMO y SOLO si todo lo demás fue bien. Si falla (o la
@@ -1284,11 +1400,19 @@ class Api:
                     "skipped_precondicion": res.skipped_precondicion,
                     "reconciliado": res.reconciliado,
                     "bytes": res.bytes_sent, "elapsed": res.elapsed,
-                    "mbps": round(res.mbps, 1), "retries": res.retries,
+                    "mbps": round(mbps_total, 1), "retries": res.retries,
                     "failed": [{"objeto": o, "error": e} for o, e in res.failed[:20]],
                     "failed_total": len(res.failed),
                     "cancelled": self._cancel_upload,
                     "log": str(upload_log.ruta()),
+                    "rondas": rondas_ejecutadas,
+                    # Garantia dura para el operario: no "la barra llego al
+                    # 100 %", sino "N de M objetos comprobados en el bucket".
+                    # `verificado: false` = no se pudo listar para comprobarlo.
+                    "verificado": verificado,
+                    "verificados": (len(plan.items) - len(faltantes)
+                                    if verificado else 0),
+                    "items_total": len(plan.items),
                 })
 
                 # Aviso a la Suite (`/organizer`), en su PROPIO try: un fallo

@@ -290,6 +290,51 @@ def test_on_stats_subida_con_reporter_none_solo_repinta(api):
     assert eventos[0]["total"] == 5
 
 
+# ---------------------------------------------------------------------------
+# 6. Reintento de LOTE: la primera ronda deja `failed` no vacío, la segunda
+#    sale limpia. `upload_plan` se llama 2 veces y la subida acaba en éxito.
+# ---------------------------------------------------------------------------
+def test_ronda_fallida_reintenta_y_la_segunda_ronda_ok(api, monkeypatch):
+    a, sink, root = api
+    reporter = _ReporterFalso(activo=True)
+    monkeypatch.setattr(a, "_reporter_actual", lambda: reporter)
+    monkeypatch.setattr(aw.time, "sleep", lambda s: None)  # sin esperas reales
+
+    plan = _plan_falso(root, "PLANTA_RETRY")
+    monkeypatch.setattr(cloud_upload, "build_plan", lambda r, p: plan)
+
+    llamadas = []
+
+    def fake_upload_plan(plan_, provider, *, on_progress=None, on_stats=None,
+                         should_stop=None, remotos=None, **kw):
+        llamadas.append({"remotos": remotos})
+        if len(llamadas) == 1:
+            return cloud_upload.UploadResult(
+                uploaded=1, bytes_sent=100, elapsed=0.1,
+                failed=[("f1.jpg", "wifi caído")])
+        return cloud_upload.UploadResult(
+            uploaded=1, bytes_sent=100, elapsed=0.1, reconciliado=True)
+
+    monkeypatch.setattr(cloud_upload, "upload_plan", fake_upload_plan)
+
+    res = a.cloud_upload(str(root), prefix="PLANTA_RETRY")
+    assert res["started"] is True
+    _esperar_fin(a)
+
+    assert len(llamadas) == 2
+
+    done = _eventos_de(sink, "done")
+    assert len(done) == 1
+    assert done[0]["ok"] is True
+    assert done[0]["rondas"] == 2
+    # totales acumulados de las dos rondas, no solo de la última
+    assert done[0]["uploaded"] == 2
+    assert done[0]["bytes"] == 200
+
+    assert len(reporter.llamadas_fin) == 1
+    assert reporter.llamadas_fin[0]["ok"] is True
+
+
 def test_on_stats_subida_con_reporter_repinta_y_llama_progreso(api):
     a, sink, root = api
     reporter = _ReporterFalso(activo=True)
@@ -302,3 +347,110 @@ def test_on_stats_subida_con_reporter_repinta_y_llama_progreso(api):
     assert eventos[0]["uploaded"] == 3
 
     assert reporter.llamadas_progreso == [stats]
+
+
+# ---------------------------------------------------------------------------
+# 7. Auditoría de completitud: `upload_plan` dice OK, pero el bucket todavía no
+#    tiene todos los objetos. No basta con `res.ok`: hay que dar otra ronda y
+#    solo entonces escribir el manifest.
+# ---------------------------------------------------------------------------
+def _remotos_de(items):
+    return {i.remote: cloud_upload.RemoteObject(i.remote, i.size)
+            for i in items}
+
+
+def test_verificacion_detecta_objeto_que_falta_y_da_otra_ronda(api, monkeypatch):
+    a, sink, root = api
+    monkeypatch.setattr(a, "_reporter_actual", lambda: None)
+    monkeypatch.setattr(aw.time, "sleep", lambda s: None)
+
+    plan = _plan_falso(root, "PLANTA_V")
+    monkeypatch.setattr(cloud_upload, "build_plan", lambda r, p: plan)
+
+    subidas = []
+    monkeypatch.setattr(cloud_upload, "upload_plan",
+                        lambda *a_, **kw: (subidas.append(1) or _resultado_ok()))
+
+    # 1er listado: solo llegó uno de los dos. 2º: ya están los dos.
+    listados = []
+
+    def fake_listar(bucket, prefix, auth, **kw):
+        listados.append(prefix)
+        if len(listados) == 1:
+            return _remotos_de(plan.items[:1])
+        return _remotos_de(plan.items)
+
+    monkeypatch.setattr(cloud_upload, "listar_objetos_remotos", fake_listar)
+
+    manifests = []
+    monkeypatch.setattr(a, "_subir_objeto_json",
+                        lambda remoto, contenido: manifests.append(remoto))
+
+    a.cloud_upload(str(root), prefix="PLANTA_V")
+    _esperar_fin(a)
+
+    assert len(subidas) == 2  # la ronda extra la fuerza la verificación
+    done = _eventos_de(sink, "done")[0]
+    assert done["ok"] is True
+    assert done["verificado"] is True
+    # `agregar_estadillos` mete el estadillo en el plan: el total no es el del
+    # `_plan_falso`, sino lo que el plan tenga al final. Lo que importa es que
+    # se comprobaron TODOS.
+    assert done["items_total"] == len(plan.items)
+    assert done["verificados"] == done["items_total"]
+    assert len(manifests) == 1  # manifest SOLO con el 100 % comprobado
+
+
+def test_verificacion_que_nunca_cuadra_no_escribe_manifest(api, monkeypatch):
+    a, sink, root = api
+    monkeypatch.setattr(a, "_reporter_actual", lambda: None)
+    monkeypatch.setattr(aw.time, "sleep", lambda s: None)
+
+    plan = _plan_falso(root, "PLANTA_W")
+    monkeypatch.setattr(cloud_upload, "build_plan", lambda r, p: plan)
+    monkeypatch.setattr(cloud_upload, "upload_plan",
+                        lambda *a_, **kw: _resultado_ok())
+    # El bucket nunca llega a tener el segundo objeto.
+    monkeypatch.setattr(cloud_upload, "listar_objetos_remotos",
+                        lambda *a_, **kw: _remotos_de(plan.items[:1]))
+
+    manifests = []
+    monkeypatch.setattr(a, "_subir_objeto_json",
+                        lambda remoto, contenido: manifests.append(remoto))
+
+    a.cloud_upload(str(root), prefix="PLANTA_W")
+    _esperar_fin(a, timeout=20.0)
+
+    done = _eventos_de(sink, "done")[0]
+    assert done["ok"] is False
+    assert done["failed_total"] == len(plan.items) - 1  # solo llegó el primero
+    assert done["rondas"] == aw.RONDAS_SUBIDA_MAX
+    assert manifests == []  # lote invisible para la Suite, a propósito
+
+
+def test_listado_caido_no_bloquea_el_manifest_pero_lo_dice(api, monkeypatch):
+    a, sink, root = api
+    monkeypatch.setattr(a, "_reporter_actual", lambda: None)
+
+    plan = _plan_falso(root, "PLANTA_Z")
+    monkeypatch.setattr(cloud_upload, "build_plan", lambda r, p: plan)
+    monkeypatch.setattr(cloud_upload, "upload_plan",
+                        lambda *a_, **kw: _resultado_ok())
+
+    def revienta(*a_, **kw):
+        raise RuntimeError("sin red para listar")
+
+    monkeypatch.setattr(cloud_upload, "listar_objetos_remotos", revienta)
+
+    manifests = []
+    monkeypatch.setattr(a, "_subir_objeto_json",
+                        lambda remoto, contenido: manifests.append(remoto))
+
+    a.cloud_upload(str(root), prefix="PLANTA_Z")
+    _esperar_fin(a)
+
+    done = _eventos_de(sink, "done")[0]
+    assert done["ok"] is True
+    assert done["verificado"] is False   # no hay garantía, y se dice
+    assert done["rondas"] == 1
+    assert len(manifests) == 1
