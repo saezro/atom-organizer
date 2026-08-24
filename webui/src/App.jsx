@@ -645,7 +645,7 @@ function App() {
               onRefreshStatus={() =>
                 api.cloudStatus().then(setKioskCloudStatus).catch(() => setKioskCloudStatus(null))
               }
-              credencialOk={(kioskCloudStatus?.estado || 'ok') === 'ok'}
+              credencialOk={kioskCloudStatus?.estado === 'ok'}
               abrirCuenta={kioskAbrirCuenta}
               busy={kioskBusy}
               progreso={kioskProgreso}

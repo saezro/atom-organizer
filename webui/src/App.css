@@ -2656,11 +2656,18 @@ html.kiosk-modo body * {
 }
 .kiosk-estado-red-sin { color: #f87171; }
 
-/* Aviso de sesión — cubre la pantalla de la Pi (480x320). */
+/* Aviso de sesión — modal compacto sobre la pantalla actual (480x320). */
 .aviso-sesion {
   position: fixed;
   inset: 0;
   z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(var(--u) * 0.6);
+  background: rgba(0, 0, 0, 0.72);
+}
+.aviso-sesion-caja {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2669,6 +2676,12 @@ html.kiosk-modo body * {
   padding: calc(var(--u) * 1.2);
   text-align: center;
   background: var(--bg);
+  border: 0.08rem solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.9rem;
+  width: min(92vw, 26rem);
+  max-width: 26rem;
+  max-height: 88vh;
+  overflow-y: auto;
   color: var(--text);
 }
 .aviso-sesion-icono {
@@ -2679,8 +2692,9 @@ html.kiosk-modo body * {
 .aviso-sesion-icono svg { width: 100%; height: 100%; }
 .aviso-sesion-titulo {
   margin: 0;
-  font-size: var(--fs-lg);
-  letter-spacing: 0.08em;
+  font-size: var(--fs-md);
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
   color: var(--orange);
 }
 .aviso-sesion-cuerpo { margin: 0; font-size: var(--fs-md); }

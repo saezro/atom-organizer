@@ -32,26 +32,28 @@ export default function AvisoSesion({ estado, mensaje, pendientes = 0, onEmparej
 
   return (
     <div className="aviso-sesion" role="alertdialog" aria-label={texto.titulo}>
-      <div className="aviso-sesion-icono"><IconoAviso /></div>
-      <h1 className="aviso-sesion-titulo">{texto.titulo}</h1>
-      <p className="aviso-sesion-cuerpo">{mensaje || texto.cuerpo}</p>
-      <p className="aviso-sesion-ayuda">{texto.ayuda}</p>
-      {pendientes > 0 && (
-        <p className="aviso-sesion-cola">
-          {pendientes} subida{pendientes === 1 ? '' : 's'} en cola, saldrá{pendientes === 1 ? '' : 'n'} al recuperar la sesión.
-        </p>
-      )}
-      <div className="aviso-sesion-acciones">
-        {estado === 'sin-credencial' && onEmparejar && (
-          <button type="button" className="aviso-sesion-btn aviso-sesion-btn-primario" onClick={onEmparejar}>
-            Emparejar con QR
-          </button>
+      <div className="aviso-sesion-caja">
+        <div className="aviso-sesion-icono"><IconoAviso /></div>
+        <h1 className="aviso-sesion-titulo">{texto.titulo}</h1>
+        <p className="aviso-sesion-cuerpo">{mensaje || texto.cuerpo}</p>
+        <p className="aviso-sesion-ayuda">{texto.ayuda}</p>
+        {pendientes > 0 && (
+          <p className="aviso-sesion-cola">
+            {pendientes} subida{pendientes === 1 ? '' : 's'} en cola, saldrá{pendientes === 1 ? '' : 'n'} al recuperar la sesión.
+          </p>
         )}
-        {onCerrar && (
-          <button type="button" className="aviso-sesion-btn" onClick={onCerrar}>
-            Seguir sin sesión
-          </button>
-        )}
+        <div className="aviso-sesion-acciones">
+          {estado === 'sin-credencial' && onEmparejar && (
+            <button type="button" className="aviso-sesion-btn aviso-sesion-btn-primario" onClick={onEmparejar}>
+              Emparejar con QR
+            </button>
+          )}
+          {onCerrar && (
+            <button type="button" className="aviso-sesion-btn" onClick={onCerrar}>
+              Cerrar
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )
