@@ -1230,15 +1230,15 @@ escucha en `:8765`, `HTTP 200`, sirve `index-B9YX5vwg.js`.
 
 Rollback: `ssh -p 2222 pi@localhost 'rm -rf ~/organizer && mv ~/organizer.bak-2026-08-24 ~/organizer'` + relanzar.
 
-- [ ] **Step 5: Prueba en hardware (la hace Rodrigo, requiere la pantalla)**
+- [x] **Step 5: Prueba en hardware (la hace Rodrigo, requiere la pantalla)**
 
 ```
 1. Arrancar sin emparejar   → debe salir el cartel de sesión.
-2. Pulsar "Subir en crudo"  → debe encolar.
+2. Pulsar "Subir en crudo"  → deshabilitado sin credencial (decision revisada, e5dbe0c).
 3. Emparejar con el QR      → la cola debe drenarse sola.
 ```
 
-- [ ] **Step 6: Documentar en el Atlas**
+- [x] **Step 6: Documentar en el Atlas**
 
 Skill `documentar-sesion`: nota canónica del kiosco + `30_Gestion/Proyectos/ATOM/Diario/2026-08-24.md`.
 
