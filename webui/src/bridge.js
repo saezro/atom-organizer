@@ -243,6 +243,12 @@ export const api = {
   cloudLogout: () => call('cloud_logout'),
   cloudPairStart: () => call('cloud_pair_start'),
   cloudPairPoll: (pairId) => call('cloud_pair_poll', pairId),
+  // PIN local del kiosco (dispositivo, no usuario). El backend nunca
+  // devuelve el hash: solo {ok, hay_pin, bloqueado, espera_segundos}.
+  pinEstado: () => call('pin_estado'),
+  pinFijar: (nuevo) => call('pin_fijar', nuevo),
+  pinVerificar: (pin) => call('pin_verificar', pin),
+  pinCambiar: (actual, nuevo) => call('pin_cambiar', actual, nuevo),
   cloudInspecciones: () => call('cloud_inspecciones'),
   cloudPrepare: (folder, prefix) => call('cloud_prepare', folder, prefix ?? null),
   cloudUpload: (folder, force, prefix, inspeccionId, confirmarSubidaExtra) =>
