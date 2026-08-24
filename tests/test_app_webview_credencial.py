@@ -22,6 +22,9 @@ class AuthFalso:
             raise self._excepcion
         return self._resultado
 
+    def logout(self):
+        self._logueado = False
+
 
 def _api(monkeypatch, auth):
     from app_webview import Api
@@ -139,3 +142,14 @@ def test_drenar_lanza_solo_uno_por_llamada_con_varios_pendientes(monkeypatch, tm
 
     assert r["lanzados"] == 1
     assert len(cola_subidas.pendientes(ruta=ruta)) == 1
+
+
+def test_cerrar_sesion_invalida_el_estado_cacheado(monkeypatch):
+    # Cerrar sesion sin invalidar dejaba `ok` hasta el siguiente latido (6 h),
+    # asi que la UI no ensenaba el aviso y la Pi parecia emparejada.
+    api = _api(monkeypatch, AuthFalso(resultado=(True, "Sesión válida.")))
+    assert api.cloud_comprobar()["estado"] == ESTADO_OK
+
+    assert api.cloud_logout()["ok"] is True
+
+    assert api.cloud_status()["estado"] == ESTADO_SIN_CREDENCIAL

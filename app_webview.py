@@ -738,6 +738,9 @@ class Api:
             auth.logout()
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
+        # Sin esto el estado cacheado se queda en `ok` hasta el siguiente
+        # latido (6 h): la UI seguiria sin avisar de que ya no hay sesion.
+        self._credencial.invalidar("Se cerro la sesion en este equipo.")
         return {"ok": True}
 
     # ---- emparejamiento por QR (modo broker, Raspberry Pi) -----------------
