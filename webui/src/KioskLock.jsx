@@ -131,7 +131,12 @@ export default function KioskLock({ modo = 'verificar', onOk, onCancelar }) {
           </BotonToque>
         ))}
         {onCancelar ? (
-          <BotonToque className="kiosk-pin-tecla kiosk-pin-aux" tactil={tactil} onActivar={onCancelar}>
+          <BotonToque
+            className="kiosk-pin-tecla kiosk-pin-aux"
+            tactil={tactil}
+            disabled={bloqueado}
+            onActivar={onCancelar}
+          >
             Cancelar
           </BotonToque>
         ) : (
