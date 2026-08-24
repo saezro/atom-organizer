@@ -46,7 +46,7 @@ function IconoWifiTachado() {
   )
 }
 
-export default function EstadoRed() {
+export default function EstadoRed({ compacto = false }) {
   const [estado, setEstado] = useState(null)
 
   useEffect(() => {
@@ -78,7 +78,7 @@ export default function EstadoRed() {
     return (
       <div className="kiosk-estado-red" data-testid="kiosk-estado-red">
         <IconoCable />
-        <span>Cable</span>
+        {!compacto && <span>Cable</span>}
       </div>
     )
   }
@@ -88,7 +88,7 @@ export default function EstadoRed() {
     return (
       <div className="kiosk-estado-red" data-testid="kiosk-estado-red">
         <IconoWifi nivel={nivel} />
-        <span>{estado.ssid} · {estado.senal}%</span>
+        {!compacto && <span>{estado.ssid} · {estado.senal}%</span>}
       </div>
     )
   }
@@ -96,7 +96,7 @@ export default function EstadoRed() {
   return (
     <div className="kiosk-estado-red kiosk-estado-red-sin" data-testid="kiosk-estado-red">
       <IconoWifiTachado />
-      <span>Sin red</span>
+      {!compacto && <span>Sin red</span>}
     </div>
   )
 }

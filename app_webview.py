@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import glob
 import importlib
 import json
 import multiprocessing
@@ -77,6 +78,49 @@ def _base_dir() -> Path:
 ROOT = _base_dir()
 DIST_INDEX = ROOT / "webui" / "dist" / "index.html"
 DEV_URL = "http://localhost:5173"
+
+
+def _disco_externo() -> str | None:
+    """Ruta del primer disco externo montado, o None si no hay ninguno.
+
+    Solo tiene sentido en Linux (Raspberry Pi): las inspecciones llegan por
+    disco USB, montado por udisks2/gvfs en ``/media/<usuario>/<etiqueta>``,
+    por algunos gestores en ``/media/<etiqueta>`` a secas, o manualmente
+    (fstab, script de arranque) en ``/mnt/<lo-que-sea>``.
+    """
+    candidatos = set()
+    for patron in ("/media/*/*", "/media/*", "/mnt/*"):
+        candidatos.update(glob.glob(patron))
+
+    raiz_dev = os.stat("/").st_dev
+    validos = []
+    for cand in candidatos:
+        try:
+            if not os.path.isdir(cand):
+                continue
+            # Un disco "extra" es, por definicion, uno en un dispositivo
+            # distinto al de la raiz del sistema. Este criterio no depende
+            # de nombres ni de convenciones de montaje, asi que es robusto
+            # ante cualquier gestor de discos (udisks2, gvfs, montaje
+            # manual...).
+            if os.stat(cand).st_dev == raiz_dev:
+                continue
+            if not os.access(cand, os.R_OK):
+                continue
+            # Basta con la primera entrada para saber que no esta vacio:
+            # os.scandir es perezoso, a diferencia de os.listdir (que en un
+            # disco USB con miles de fotos de inspeccion lee el directorio
+            # entero solo para tirarlo).
+            with os.scandir(cand) as it:
+                if next(iter(it), None) is None:
+                    continue  # disco montado pero vacio: no sirve de nada
+        except OSError:
+            continue  # disco a medio montar, desconectado, etc.
+        validos.append(cand)
+
+    if validos:
+        return sorted(validos)[0]
+    return None
 
 
 # Diálogo de carpeta MODERNO en Windows (IFileOpenDialog + FOS_PICKFOLDERS): el del
@@ -371,44 +415,8 @@ class Api:
             return {"ok": True, "path": home}
 
         try:
-            # Candidatos tipicos de montaje automatico en Linux: udisks2/gvfs
-            # montan en /media/<usuario>/<etiqueta>, algunos gestores en
-            # /media/<etiqueta> a secas, y /mnt/<lo-que-sea> es el sitio
-            # habitual para montajes manuales (fstab, script de arranque).
-            import glob
-
-            candidatos = set()
-            for patron in ("/media/*/*", "/media/*", "/mnt/*"):
-                candidatos.update(glob.glob(patron))
-
-            raiz_dev = os.stat("/").st_dev
-            validos = []
-            for cand in candidatos:
-                try:
-                    if not os.path.isdir(cand):
-                        continue
-                    # Un disco "extra" es, por definicion, uno en un
-                    # dispositivo distinto al de la raiz del sistema. Este
-                    # criterio no depende de nombres ni de convenciones de
-                    # montaje, asi que es robusto ante cualquier gestor de
-                    # discos (udisks2, gvfs, montaje manual...).
-                    if os.stat(cand).st_dev == raiz_dev:
-                        continue
-                    if not os.access(cand, os.R_OK):
-                        continue
-                    # Basta con la primera entrada para saber que no esta
-                    # vacio: os.scandir es perezoso, a diferencia de
-                    # os.listdir (que en un disco USB con miles de fotos de
-                    # inspeccion lee el directorio entero solo para tirarlo).
-                    with os.scandir(cand) as it:
-                        if next(iter(it), None) is None:
-                            continue  # disco montado pero vacio: no sirve de nada
-                except OSError:
-                    continue  # disco a medio montar, desconectado, etc.
-                validos.append(cand)
-
-            if validos:
-                destino = sorted(validos)[0]
+            destino = _disco_externo()
+            if destino is not None:
                 resultado = self.list_dir(destino)
                 if resultado.get("ok"):
                     return resultado
@@ -1944,6 +1952,20 @@ class Api:
                 "ok": True, "tipo": tipo, "ssid": ssid,
                 "senal": senal, "ip": self._ip_dispositivo(elegido[0]),
             }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def disco_estado(self) -> dict:
+        """Si hay un disco externo montado ahora mismo.
+
+        Lo pinta el indicador del kiosco, que se refresca por polling cada
+        10s: por eso solo mira montajes ya hechos (glob + stat), sin ningun
+        escaneo lento ni subprocess.
+        """
+        try:
+            if not sys.platform.startswith("linux"):
+                return {"ok": True, "conectado": False}
+            return {"ok": True, "conectado": _disco_externo() is not None}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 

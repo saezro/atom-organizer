@@ -295,6 +295,9 @@ export const api = {
   redConexion: () => call('red_conexion'),
   redApActivar: () => call('red_ap_activar'),
   redApDesactivar: () => call('red_ap_desactivar'),
+  // discoEstado devuelve {ok, conectado: bool} | {ok:false, error}. Consumido
+  // por `BarraEstado.jsx`.
+  discoEstado: () => call('disco_estado'),
 }
 
 // Python empuja progreso del pipeline con:

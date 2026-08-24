@@ -138,3 +138,70 @@ def test_linux_excepcion_en_el_escaneo_cae_al_home(monkeypatch):
     res = app_webview.Api().default_dir()
     assert res["ok"] is True
     assert res["path"] == os.path.expanduser("~")
+
+
+def test_disco_externo_sin_candidatos_devuelve_none(monkeypatch):
+    import glob
+
+    monkeypatch.setattr(glob, "glob", lambda patron: [])
+    assert app_webview._disco_externo() is None
+
+
+def test_disco_externo_con_candidato_devuelve_la_ruta(monkeypatch, tmp_path):
+    import glob
+
+    disco = tmp_path / "media" / "pi" / "USB"
+    disco.mkdir(parents=True)
+    (disco / "archivo.txt").write_text("x", encoding="utf-8")
+
+    monkeypatch.setattr(
+        glob, "glob",
+        lambda patron: [str(disco)] if patron == "/media/*/*" else [],
+    )
+
+    real_stat = os.stat
+
+    def _stat_fake(ruta, *a, **kw):
+        original = real_stat(ruta, *a, **kw)
+        if str(ruta) == str(disco):
+            campos = list(original)
+            campos[2] = real_stat("/").st_dev + 1
+            return os.stat_result(campos)
+        return original
+
+    monkeypatch.setattr(os, "stat", _stat_fake)
+
+    assert app_webview._disco_externo() == str(disco)
+
+
+def test_disco_estado_no_linux_siempre_desconectado(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(app_webview, "_disco_externo", lambda: "/media/pi/USB")
+    res = app_webview.Api().disco_estado()
+    assert res == {"ok": True, "conectado": False}
+
+
+def test_disco_estado_linux_sin_disco(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(app_webview, "_disco_externo", lambda: None)
+    res = app_webview.Api().disco_estado()
+    assert res == {"ok": True, "conectado": False}
+
+
+def test_disco_estado_linux_con_disco(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(app_webview, "_disco_externo", lambda: "/media/pi/USB")
+    res = app_webview.Api().disco_estado()
+    assert res == {"ok": True, "conectado": True}
+
+
+def test_disco_estado_excepcion_devuelve_error(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def _boom():
+        raise OSError("disco a medio montar")
+
+    monkeypatch.setattr(app_webview, "_disco_externo", _boom)
+    res = app_webview.Api().disco_estado()
+    assert res["ok"] is False
+    assert "error" in res
