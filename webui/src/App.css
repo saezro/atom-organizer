@@ -2573,3 +2573,53 @@ html.kiosk-modo body * {
   text-overflow: ellipsis;
 }
 .kiosk-estado-red-sin { color: #f87171; }
+
+/* Aviso de sesión — cubre la pantalla de la Pi (480x320). */
+.aviso-sesion {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) * 0.5);
+  padding: calc(var(--u) * 1.2);
+  text-align: center;
+  background: var(--bg);
+  color: var(--text);
+}
+.aviso-sesion-icono {
+  width: 2.6rem;
+  height: 2.6rem;
+  color: var(--orange);
+}
+.aviso-sesion-icono svg { width: 100%; height: 100%; }
+.aviso-sesion-titulo {
+  margin: 0;
+  font-size: var(--fs-lg);
+  letter-spacing: 0.08em;
+  color: var(--orange);
+}
+.aviso-sesion-cuerpo { margin: 0; font-size: var(--fs-md); }
+.aviso-sesion-ayuda { margin: 0; font-size: var(--fs-sm); opacity: 0.75; }
+.aviso-sesion-cola { margin: 0; font-size: var(--fs-sm); opacity: 0.9; }
+.aviso-sesion-acciones {
+  display: flex;
+  gap: calc(var(--u) * 0.6);
+  margin-top: calc(var(--u) * 0.4);
+}
+.aviso-sesion-btn {
+  min-height: 2.6rem;
+  padding: 0 calc(var(--u) * 0.9);
+  border: 0.08rem solid currentColor;
+  border-radius: 0.6rem;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-md);
+}
+.aviso-sesion-btn-primario {
+  border-color: var(--orange);
+  background: var(--orange);
+  color: #0a0a0a;
+}
