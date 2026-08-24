@@ -32,6 +32,7 @@ from atom_core.credencial import (
 )
 from atom_core.event_sink import WebviewSink
 from atom_core.google_auth import AuthError
+from atom_core import pin_kiosco
 
 # SSID del hotspot de configuracion de la Pi. Lo usan tanto el propio hotspot
 # como el listado de redes, que debe excluirlo de las redes conectables.
@@ -149,6 +150,10 @@ class Api:
         # a subir nada en toda la sesión.
         self._auth = None
         self._credencial = EstadoCredencial()
+        # El PIN del kiosco es del dispositivo, no de la sesion: se abre su
+        # propio store para no depender de que haya credencial configurada.
+        self._pin_store = None
+        self._pin_intentos = pin_kiosco.ControlIntentos()
         # `broker`: modo Raspberry Pi (`main()`, rama `--server`). Sin cliente
         # OAuth propio, `_get_auth` construye un `GoogleAuth` broker_only en
         # vez de devolver `None`. El escritorio (Windows) nunca pasa esto:
@@ -741,7 +746,94 @@ class Api:
         # Sin esto el estado cacheado se queda en `ok` hasta el siguiente
         # latido (6 h): la UI seguiria sin avisar de que ya no hay sesion.
         self._credencial.invalidar("Se cerro la sesion en este equipo.")
+        self._olvidar_pin()
         return {"ok": True}
+
+    def _store_pin(self):
+        """SessionStore propio del PIN. Perezoso: los tests lo sustituyen."""
+        if self._pin_store is None:
+            from atom_core.google_auth import STORE_NAME, user_data_dir
+            from atom_core.session_store import SessionStore
+
+            self._pin_store = SessionStore(user_data_dir() / STORE_NAME)
+        return self._pin_store
+
+    def pin_estado(self) -> dict:
+        try:
+            hay = pin_kiosco.hay_pin(self._store_pin())
+        except Exception as exc:  # noqa: BLE001 - un store roto no bloquea la Pi
+            print(f"[pin] No se pudo leer el PIN del kiosco: {exc}")
+            hay = False
+        return {
+            "ok": True,
+            "hay_pin": hay,
+            "bloqueado": self._pin_intentos.bloqueado(),
+            "espera_segundos": self._pin_intentos.espera_segundos(),
+        }
+
+    def pin_fijar(self, nuevo: str) -> dict:
+        try:
+            pin_kiosco.fijar(self._store_pin(), nuevo)
+        except pin_kiosco.PinInvalido as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        self._pin_intentos.acierto()
+        return {"ok": True}
+
+    def pin_verificar(self, pin: str) -> dict:
+        if self._pin_intentos.bloqueado():
+            return {
+                "ok": False,
+                "error": "Demasiados intentos.",
+                "espera_segundos": self._pin_intentos.espera_segundos(),
+            }
+        try:
+            correcto = pin_kiosco.verificar(self._store_pin(), pin)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        if correcto:
+            self._pin_intentos.acierto()
+            return {"ok": True}
+        self._pin_intentos.fallo()
+        return {
+            "ok": False,
+            "error": "PIN incorrecto.",
+            "espera_segundos": self._pin_intentos.espera_segundos(),
+        }
+
+    def pin_cambiar(self, actual: str, nuevo: str) -> dict:
+        if self._pin_intentos.bloqueado():
+            return {
+                "ok": False,
+                "error": "Demasiados intentos.",
+                "espera_segundos": self._pin_intentos.espera_segundos(),
+            }
+        try:
+            pin_kiosco._validar(nuevo)
+        except pin_kiosco.PinInvalido as exc:
+            return {"ok": False, "error": str(exc)}
+        try:
+            cambiado = pin_kiosco.cambiar(self._store_pin(), actual, nuevo)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        if not cambiado:
+            self._pin_intentos.fallo()
+            return {
+                "ok": False,
+                "error": "El PIN actual no es correcto.",
+                "espera_segundos": self._pin_intentos.espera_segundos(),
+            }
+        self._pin_intentos.acierto()
+        return {"ok": True}
+
+    def _olvidar_pin(self) -> None:
+        """Desemparejar resetea el PIN: es la via de recuperacion acordada."""
+        try:
+            pin_kiosco.borrar(self._store_pin())
+        except Exception as exc:  # noqa: BLE001
+            print(f"[pin] No se pudo borrar el PIN del kiosco: {exc}")
+        self._pin_intentos.acierto()
 
     # ---- emparejamiento por QR (modo broker, Raspberry Pi) -----------------
     # La Pi no puede abrir el navegador del sistema en su propia pantalla como
@@ -809,6 +901,7 @@ class Api:
             # device_token. Sin registrarlo, el estado cacheado se quedaba en
             # `sin-credencial` y la UI seguia bloqueada tras emparejar.
             self._credencial.registrar(ESTADO_OK, "Dispositivo emparejado.")
+            self._olvidar_pin()
             # Mismo evento que `cloud_login`: la UI no necesita saber si el
             # login vino del navegador de escritorio o de un QR emparejado.
             self._push_cloud({"kind": "login", "ok": True,
