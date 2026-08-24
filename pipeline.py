@@ -638,6 +638,18 @@ class CompressImage:
             if img is not None and getattr(img, "fp", None) is not None:
                 img.close()
 
+    @staticmethod
+    def _ya_girada(ruta: str) -> bool:
+        """True si la imagen ya está vertical, es decir, girada en una pasada anterior.
+
+        Las RGB del dron salen siempre apaisadas de fábrica y el recorte `_CROP` es
+        centrado por porcentaje, así que conserva la proporción: en ambos casos
+        `height > width` solo puede ser el resultado de un giro previo. Es el mismo
+        criterio que usa la térmica en `rotate_thermal_jpgs_in_place`.
+        """
+        with Image.open(ruta) as im:
+            return im.height > im.width
+
     def rotate_and_save(self, image_name: str, input_folder: str, degrees: str, quality: int, progress_callback) -> bool:
         """
         Función que rota las imágenes RGB in-place (realmente hace un transpose) con los grados proporcionados por el parámetro degrees.
@@ -666,35 +678,59 @@ class CompressImage:
         image_open = None
         crop_imagen_open = None
         try:
-            image_open = Image.open(os.path.join(input_folder,image_name))
+            ruta_original = os.path.join(input_folder, image_name)
             file_splitted = os.path.splitext(image_name)
             crop_image_name = file_splitted[0] + "_CROP" + file_splitted[1]
-            if os.path.exists(os.path.join(input_folder, crop_image_name)):
-                crop_imagen_open = Image.open(os.path.join(input_folder, crop_image_name))
+            ruta_crop = os.path.join(input_folder, crop_image_name)
+            hay_crop = os.path.exists(ruta_crop)
+
+            # Guarda anti-doble-giro, la misma que ya protege a la térmica en
+            # `rotate_thermal_jpgs_in_place`: las RGB del dron salen apaisadas, así que
+            # una vertical solo puede venir de una pasada anterior sobre esta carpeta.
+            # Hace falta porque el criterio de giro es el gimbal yaw del XMP, que NO
+            # cambia al rotar los píxeles (se reescribe tal cual unas líneas más abajo):
+            # sin esto, relanzar el pipeline sobre un vuelo ya girado —el modo normal de
+            # recuperación, porque el Job de Cloud Run no reanuda por fases— lo deja a 180º.
+            # Se comprueba fichero a fichero y no por el estado del original: el par
+            # original/`_CROP` se guarda en dos escrituras distintas, y una caída entre
+            # ambas deja el original girado y el recorte pendiente.
+            girar_original = not self._ya_girada(ruta_original)
+            girar_crop = hay_crop and not self._ya_girada(ruta_crop)
+            if not girar_original and not girar_crop:
+                self.organizer_logger.logger.info(
+                    f"Ya estaba girada, se deja como está: {ruta_original}")
+                return hay_crop
+
+            image_open = Image.open(ruta_original)
+            if girar_crop:
+                crop_imagen_open = Image.open(ruta_crop)
+            cropped_images = hay_crop
 
             exif = image_open.getexif()  # Obtengo los datos exif de la imagen original.
             # self.organizer_logger.logger.debug("Exif size: " + str(len(exif.items())))
-            image_open = image_open.transpose(degrees)  # Se gira la imagen mediante transpose para mantener las resoluciones correctamente. Si giramos normalmente, la imagen queda
-            # recortada.
+            if girar_original:
+                image_open = image_open.transpose(degrees)  # Se gira la imagen mediante transpose para mantener las resoluciones correctamente. Si giramos normalmente, la imagen queda
+                # recortada.
             if crop_imagen_open:
-                crop_imagen_open = crop_imagen_open.transpose(degrees) 
-                cropped_images = True
+                crop_imagen_open = crop_imagen_open.transpose(degrees)
 
-            gimbal_data = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder, image_name))  # Obtenemos los datos de gimbal del archivo antes de guardarlo.
-            xmp_all_data = self.exif_management_obj.get_xmp_data(os.path.join(input_folder, image_name))  # Obtenemos el resto de datos xmp del archivo antes de guardarlo.
-            # Sin optimize=True a propósito: en un JPEG de 48 MP cuesta un +68 % de tiempo de
-            # encode (0,306 s vs 0,182 s medidos) para ahorrar un 3-5 % de tamaño. Este fichero
-            # se vuelve a tocar después (conversión/compresión), no es el entregable final.
-            image_open.save(os.path.join(input_folder, image_name), quality=quality, exif=exif)
+            gimbal_data = self.exif_management_obj.get_gimbal_yaw_pitch(ruta_original)  # Obtenemos los datos de gimbal del archivo antes de guardarlo.
+            xmp_all_data = self.exif_management_obj.get_xmp_data(ruta_original)  # Obtenemos el resto de datos xmp del archivo antes de guardarlo.
+            if girar_original:
+                # Sin optimize=True a propósito: en un JPEG de 48 MP cuesta un +68 % de tiempo de
+                # encode (0,306 s vs 0,182 s medidos) para ahorrar un 3-5 % de tamaño. Este fichero
+                # se vuelve a tocar después (conversión/compresión), no es el entregable final.
+                image_open.save(ruta_original, quality=quality, exif=exif)
             image_open.close()
 
             if crop_imagen_open:
-                crop_imagen_open.save(os.path.join(input_folder, crop_image_name), quality=quality)  # Sin optimize=True: ver el save del original.
+                crop_imagen_open.save(ruta_crop, quality=quality)  # Sin optimize=True: ver el save del original.
                 crop_imagen_open.close()
 
-            self.exif_management_obj.saving_all_xmp_data(os.path.join(input_folder, image_name), gimbal_data, xmp_all_data)  # Se graban los datos en el mismo archivo de entrada, pero rotado, en una sola escritura.
+            if girar_original:
+                self.exif_management_obj.saving_all_xmp_data(ruta_original, gimbal_data, xmp_all_data)  # Se graban los datos en el mismo archivo de entrada, pero rotado, en una sola escritura.
 
-            self.check_and_fix_xmp_data(input_folder,image_name, gimbal_data, xmp_all_data, progress_callback)
+                self.check_and_fix_xmp_data(input_folder,image_name, gimbal_data, xmp_all_data, progress_callback)
             return cropped_images
         except FileNotFoundError as f:
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
