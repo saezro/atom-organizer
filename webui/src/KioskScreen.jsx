@@ -495,44 +495,52 @@ export default function KioskScreen({
             onCancelar={() => setCambiandoPin(false)}
           />
         ) : (
+          // 480x320 es apaisada y muy baja: en columna única (foto grande +
+          // email + datos + botones apilados) no cabía sin scroll. Dos
+          // columnas usando el ANCHO: izquierda foto+email, derecha datos y
+          // acciones.
           <div className="kiosk-perfil">
-            <div className="kiosk-perfil-foto-marco">
-              {status?.picture ? (
-                <img
-                  src={status.picture}
-                  alt={`Foto de ${email}`}
-                  className="kiosk-perfil-foto"
-                  data-testid="kiosk-perfil-foto"
-                />
-              ) : (
-                <span className="kiosk-perfil-inicial">{inicial}</span>
-              )}
+            <div className="kiosk-perfil-izq">
+              <div className="kiosk-perfil-foto-marco">
+                {status?.picture ? (
+                  <img
+                    src={status.picture}
+                    alt={`Foto de ${email}`}
+                    className="kiosk-perfil-foto"
+                    data-testid="kiosk-perfil-foto"
+                  />
+                ) : (
+                  <span className="kiosk-perfil-inicial">{inicial}</span>
+                )}
+              </div>
+              <span className="kiosk-perfil-email">{email}</span>
             </div>
-            <span className="kiosk-perfil-email">{email}</span>
-            <dl className="kiosk-perfil-datos">
-              <dt>Último acceso</dt>
-              <dd>{ultimoAcceso}</dd>
-              <dt>Subidas pendientes</dt>
-              <dd>{pendientes}</dd>
-            </dl>
-            <div className="kiosk-perfil-acciones">
-              <BotonToque
-                className="btn kiosk-btn"
-                tactil={tactil}
-                onActivar={() => setCambiandoPin(true)}
-              >
-                Cambiar PIN
-              </BotonToque>
-              <BotonToque
-                className="btn-ghost kiosk-btn"
-                tactil={tactil}
-                onActivar={async () => {
-                  await api.cloudLogout().catch(() => {})
-                  onRefreshStatus?.()
-                }}
-              >
-                Cerrar sesión
-              </BotonToque>
+            <div className="kiosk-perfil-der">
+              <dl className="kiosk-perfil-datos">
+                <dt>Último acceso</dt>
+                <dd>{ultimoAcceso}</dd>
+                <dt>Subidas pendientes</dt>
+                <dd>{pendientes}</dd>
+              </dl>
+              <div className="kiosk-perfil-acciones">
+                <BotonToque
+                  className="btn kiosk-btn"
+                  tactil={tactil}
+                  onActivar={() => setCambiandoPin(true)}
+                >
+                  Cambiar PIN
+                </BotonToque>
+                <BotonToque
+                  className="btn-ghost kiosk-btn"
+                  tactil={tactil}
+                  onActivar={async () => {
+                    await api.cloudLogout().catch(() => {})
+                    onRefreshStatus?.()
+                  }}
+                >
+                  Cerrar sesión
+                </BotonToque>
+              </div>
             </div>
           </div>
         )}
