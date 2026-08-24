@@ -23,6 +23,7 @@ import BotonAtras from './BotonAtras.jsx'
 import Paginador from './Paginador.jsx'
 import KioskTareas from './KioskTareas.jsx'
 import KioskAjustes from './KioskAjustes.jsx'
+import KioskLock from './KioskLock.jsx'
 import EstadoRed from './EstadoRed.jsx'
 import { APPS } from './apps/registry.js'
 
@@ -81,6 +82,7 @@ export default function KioskScreen({
   }, [])
 
   const [accion, setAccion] = useState(accionInicial)
+  const [cambiandoPin, setCambiandoPin] = useState(false)
   // `abrirCuenta` llega de fuera (el cartel `AvisoSesion` en `App.jsx`): cada
   // vez que cambia (incluida la primera si arranca > 0) salta al paso
   // "cuenta". Se compara contra el valor anterior, no contra 0, para no
@@ -471,28 +473,68 @@ export default function KioskScreen({
   // navegador propio para el consentimiento OAuth (ver PairScreen).
   if (accion === 'cuenta') {
     const logueado = Boolean(status?.logged_in)
+    const pendientes = status?.pendientes || 0
+    const ultimoAcceso = status?.validada_en
+      ? new Date(status.validada_en * 1000).toLocaleString('es-ES', {
+          day: '2-digit', month: '2-digit', year: 'numeric',
+          hour: '2-digit', minute: '2-digit',
+        })
+      : 'Sin registrar'
     return (
       <div className="kiosk kiosk-cuenta">
         <div className="kiosk-header kiosk-header-paso">
-          <BotonAtras tactil={tactil} onActivar={() => setAccion(null)} />
+          <BotonAtras tactil={tactil} onActivar={() => { setCambiandoPin(false); setAccion(null) }} />
           <span className="kiosk-titulo">Cuenta</span>
         </div>
-        {logueado ? (
-          <div className="kiosk-cuenta-datos">
-            <span className="kiosk-cuenta-email">{email}</span>
-            <BotonToque
-              className="btn-ghost kiosk-btn"
-              tactil={tactil}
-              onActivar={async () => {
-                await api.cloudLogout().catch(() => {})
-                onRefreshStatus?.()
-              }}
-            >
-              Cerrar sesión
-            </BotonToque>
-          </div>
-        ) : (
+        {!logueado ? (
           <PairScreen onPaired={() => { onRefreshStatus?.(); setAccion(null) }} />
+        ) : cambiandoPin ? (
+          <KioskLock
+            modo="cambiar"
+            onOk={() => setCambiandoPin(false)}
+            onCancelar={() => setCambiandoPin(false)}
+          />
+        ) : (
+          <div className="kiosk-perfil">
+            <div className="kiosk-perfil-foto-marco">
+              {status?.picture ? (
+                <img
+                  src={status.picture}
+                  alt={`Foto de ${email}`}
+                  className="kiosk-perfil-foto"
+                  data-testid="kiosk-perfil-foto"
+                />
+              ) : (
+                <span className="kiosk-perfil-inicial">{inicial}</span>
+              )}
+            </div>
+            <span className="kiosk-perfil-email">{email}</span>
+            <dl className="kiosk-perfil-datos">
+              <dt>Último acceso</dt>
+              <dd>{ultimoAcceso}</dd>
+              <dt>Subidas pendientes</dt>
+              <dd>{pendientes}</dd>
+            </dl>
+            <div className="kiosk-perfil-acciones">
+              <BotonToque
+                className="btn kiosk-btn"
+                tactil={tactil}
+                onActivar={() => setCambiandoPin(true)}
+              >
+                Cambiar PIN
+              </BotonToque>
+              <BotonToque
+                className="btn-ghost kiosk-btn"
+                tactil={tactil}
+                onActivar={async () => {
+                  await api.cloudLogout().catch(() => {})
+                  onRefreshStatus?.()
+                }}
+              >
+                Cerrar sesión
+              </BotonToque>
+            </div>
+          </div>
         )}
       </div>
     )
