@@ -304,6 +304,10 @@ function App() {
             setKioskCloudStats(null)
             setKioskResultado({ ok: false, error: d.text || 'Error en la subida' })
             break
+          // `login` lo emite el emparejamiento por QR; sin este caso el
+          // kiosco se quedaba bloqueado despues de emparejar, porque
+          // `kioskCloudStatus` seguia con el `sin-credencial` anterior.
+          case 'login':
           case 'session':
             // Cambio de sesión (login/logout/expiración): refresca el status
             // del kiosco para recoger `estado`/`pendientes` y reabre el

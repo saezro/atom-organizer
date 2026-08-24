@@ -805,6 +805,10 @@ class Api:
                 )
             except Exception as exc:  # noqa: BLE001
                 return {"ok": False, "error": str(exc)}
+            # Emparejar ES la comprobacion: la Suite acaba de validar el
+            # device_token. Sin registrarlo, el estado cacheado se quedaba en
+            # `sin-credencial` y la UI seguia bloqueada tras emparejar.
+            self._credencial.registrar(ESTADO_OK, "Dispositivo emparejado.")
             # Mismo evento que `cloud_login`: la UI no necesita saber si el
             # login vino del navegador de escritorio o de un QR emparejado.
             self._push_cloud({"kind": "login", "ok": True,
