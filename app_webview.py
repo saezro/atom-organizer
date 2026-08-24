@@ -772,12 +772,28 @@ class Api:
         }
 
     def pin_fijar(self, nuevo: str) -> dict:
+        """Alta INICIAL del PIN. Si ya hay uno, hay que pasar por `pin_cambiar`.
+
+        Sin esta guarda, cualquiera con acceso al Chromium del kiosco -- que
+        es justo el actor del que protege el PIN -- reescribe el PIN vigente
+        sin conocerlo y sin pasar por el bloqueo escalado.
+        """
+        if self._pin_intentos.bloqueado():
+            return {
+                "ok": False,
+                "error": "Demasiados intentos.",
+                "espera_segundos": self._pin_intentos.espera_segundos(),
+            }
         try:
-            pin_kiosco.fijar(self._store_pin(), nuevo)
+            store = self._store_pin()
+            if pin_kiosco.hay_pin(store):
+                return {"ok": False, "error": "Ya hay un PIN: usa cambiar."}
+            pin_kiosco.fijar(store, nuevo)
         except pin_kiosco.PinInvalido as exc:
             return {"ok": False, "error": str(exc)}
         except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": str(exc)}
+            print(f"[pin] No se pudo fijar el PIN del kiosco: {exc}")
+            return {"ok": False, "error": "No se pudo guardar el PIN."}
         self._pin_intentos.acierto()
         return {"ok": True}
 

@@ -90,3 +90,30 @@ def test_cerrar_sesion_borra_el_pin(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "_get_auth", lambda: AuthFalso())
     assert api.cloud_logout()["ok"] is True
     assert api.pin_estado()["hay_pin"] is False
+
+
+def test_fijar_no_pisa_un_pin_existente(tmp_path):
+    """Regresion: `pin_fijar` era un bypass total del PIN.
+
+    Sin esta guarda, quien tuviera el Chromium del kiosco delante --el actor
+    del que protege el PIN-- reescribia el PIN vigente sin conocerlo y sin
+    pasar por el bloqueo escalado.
+    """
+    api = _api(tmp_path)
+    assert api.pin_fijar("1234")["ok"] is True
+
+    res = api.pin_fijar("0000")
+    assert res["ok"] is False
+    assert api.pin_verificar("1234")["ok"] is True
+    assert api.pin_verificar("0000")["ok"] is False
+
+
+def test_fijar_respeta_el_bloqueo_por_intentos(tmp_path):
+    api = _api(tmp_path)
+    api.pin_fijar("1234")
+    for _ in range(5):
+        api.pin_verificar("9999")
+
+    res = api.pin_fijar("0000")
+    assert res["ok"] is False
+    assert res.get("espera_segundos", 0) > 0
