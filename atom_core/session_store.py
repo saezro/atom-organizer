@@ -81,6 +81,9 @@ class Sesion:
     # reiniciar: sin esto el avatar del kiosco vuelve a la inicial en cada
     # arranque de la Pi aunque el emparejamiento la trajera.
     picture: str = ""
+    # Nombre del usuario de Google (o de la Suite en modo broker). Igual que
+    # `picture`: no es secreto, se guarda solo para no perderlo al reiniciar.
+    nombre: str = ""
 
 
 # --------------------------------------------------------------------------
@@ -278,6 +281,7 @@ class SessionStore:
         for columna, ddl in (
             ("modo", "ALTER TABLE sesion ADD COLUMN modo TEXT NOT NULL DEFAULT 'google'"),
             ("picture", "ALTER TABLE sesion ADD COLUMN picture TEXT NOT NULL DEFAULT ''"),
+            ("nombre", "ALTER TABLE sesion ADD COLUMN nombre TEXT NOT NULL DEFAULT ''"),
         ):
             if columna in columnas:
                 continue
@@ -303,7 +307,7 @@ class SessionStore:
         try:
             con = self._conectar()
             fila = con.execute(
-                "SELECT email, refresh_cifrado, actualizado_en, validada_en, modo, picture "
+                "SELECT email, refresh_cifrado, actualizado_en, validada_en, modo, picture, nombre "
                 "FROM sesion WHERE id = 1").fetchone()
         except sqlite3.OperationalError as exc:
             # Transitorio (BD bloqueada por otro hilo, permiso momentáneo): el
@@ -326,7 +330,7 @@ class SessionStore:
 
         if fila is None:
             return None
-        email, cifrado, actualizado, validada, modo, picture = fila
+        email, cifrado, actualizado, validada, modo, picture, nombre = fila
         try:
             refresh = self.protector.desproteger(bytes(cifrado)).decode("utf-8")
         except Exception as exc:  # noqa: BLE001 - descifrar es lo que puede fallar aquí
@@ -340,15 +344,17 @@ class SessionStore:
             return None
         return Sesion(email=email, refresh_token=refresh,
                       actualizado_en=actualizado, validada_en=validada,
-                      modo=modo or "google", picture=picture or "")
+                      modo=modo or "google", picture=picture or "",
+                      nombre=nombre or "")
 
     def guardar(self, email: str | None, refresh_token: str, *,
-                modo: str = "google", picture: str = "") -> None:
+                modo: str = "google", picture: str = "", nombre: str = "") -> None:
         """Guarda la credencial de sesión (refresh_token de Google, o
         device_token en modo `broker`). `modo` distingue el flujo de auth; no
         confundir con la columna `backend`, que sigue siendo el cifrador
-        (dpapi/keyfile) y no cambia por esto. `picture` no es secreto -no pasa
-        por el protector-, es solo la URL de la foto de perfil."""
+        (dpapi/keyfile) y no cambia por esto. `picture` y `nombre` no son
+        secretos -no pasan por el protector-, son solo la URL de la foto de
+        perfil y el nombre del usuario de Google."""
         if not refresh_token:
             raise ValueError("no se guarda una sesión sin refresh_token")
         cifrado = self.protector.proteger(refresh_token.encode("utf-8"))
@@ -357,16 +363,18 @@ class SessionStore:
         try:
             con.execute("""
                 INSERT INTO sesion (id, email, refresh_cifrado, backend,
-                                    creado_en, actualizado_en, validada_en, modo, picture)
-                VALUES (1, ?, ?, ?, ?, ?, NULL, ?, ?)
+                                    creado_en, actualizado_en, validada_en, modo, picture, nombre)
+                VALUES (1, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     email = excluded.email,
                     refresh_cifrado = excluded.refresh_cifrado,
                     backend = excluded.backend,
                     actualizado_en = excluded.actualizado_en,
                     modo = excluded.modo,
-                    picture = excluded.picture
-            """, (email, cifrado, self.protector.nombre, ahora, ahora, modo, picture or ""))
+                    picture = excluded.picture,
+                    nombre = excluded.nombre
+            """, (email, cifrado, self.protector.nombre, ahora, ahora, modo,
+                  picture or "", nombre or ""))
             con.commit()
         finally:
             con.close()

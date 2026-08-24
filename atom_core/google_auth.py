@@ -97,6 +97,7 @@ class Identity:
     email: str
     domain: str
     picture: str = ""
+    nombre: str = ""
 
     def __str__(self) -> str:  # lo que se enseña en la UI
         return self.email
@@ -252,14 +253,15 @@ class GoogleAuth:
         self._validada_en = sesion.validada_en
         self._modo = sesion.modo or MODO_GOOGLE
         if sesion.email:
-            # `sesion.picture` puede venir vacía en sesiones guardadas antes de
-            # que `session_store.py` supiera de esta columna (default '' por
-            # la migración in-place): no pasa nada, se pierde la foto hasta el
-            # próximo login/emparejamiento y no hace falta que la UI lo trate
-            # como error.
+            # `sesion.picture`/`sesion.nombre` pueden venir vacíos en sesiones
+            # guardadas antes de que `session_store.py` supiera de esas
+            # columnas (default '' por la migración in-place): no pasa nada,
+            # se pierden hasta el próximo login/emparejamiento y no hace falta
+            # que la UI lo trate como error.
             self._identity = Identity(email=sesion.email,
                                       domain=sesion.email.rsplit("@", 1)[-1],
-                                      picture=sesion.picture or "")
+                                      picture=sesion.picture or "",
+                                      nombre=sesion.nombre or "")
 
     def _migrar_legacy(self) -> bool:
         """Importa el `google_auth.json` de versiones anteriores, si lo hay.
@@ -287,7 +289,8 @@ class GoogleAuth:
             return
         self._store.guardar(self._identity.email if self._identity else None,
                             self._refresh_token, modo=self._modo,
-                            picture=self._identity.picture if self._identity else "")
+                            picture=self._identity.picture if self._identity else "",
+                            nombre=self._identity.nombre if self._identity else "")
 
     def _olvidar_local(self) -> None:
         """Tira la sesión de memoria y de disco. No habla con Google."""
@@ -458,7 +461,8 @@ class GoogleAuth:
                 pass
         return identidad
 
-    def pair(self, device_token: str, email: str, picture: str = "") -> Identity:
+    def pair(self, device_token: str, email: str, picture: str = "",
+             nombre: str = "") -> Identity:
         """Empareja este equipo con la Suite (modo broker, Raspberry Pi).
 
         No hay canje con Google aquí: el `device_token` lo emite la Suite tras
@@ -468,16 +472,17 @@ class GoogleAuth:
         `login()` guarda el `refresh_token` — pero marcando `modo='broker'`
         para que `access_token()` sepa que no debe ir a Google con él.
 
-        `picture` es opcional: la trae el endpoint `pair/poll` de la Suite
-        junto al `device_token`, pero una Suite más antigua puede no
-        mandarla todavía — degrada a cadena vacía sin romper el emparejamiento.
+        `picture` y `nombre` son opcionales: los trae el endpoint
+        `pair/poll` de la Suite junto al `device_token`, pero una Suite más
+        antigua puede no mandarlos todavía — degradan a cadena vacía sin
+        romper el emparejamiento.
         """
         if not device_token:
             raise ValueError("device_token vacío")
         if not email:
             raise ValueError("email vacío")
         identidad = Identity(email=email, domain=email.rsplit("@", 1)[-1],
-                             picture=picture or "")
+                             picture=picture or "", nombre=nombre or "")
         with self._lock:
             self._refresh_token = device_token
             self._identity = identidad
@@ -678,8 +683,8 @@ def _identidad_de_id_token(id_token: str) -> Identity | None:
     email = claims.get("email")
     if not email:
         return None
-    # `picture` solo llega si el scope `profile` fue concedido; una sesión
-    # anterior a ese cambio (o un id_token recortado) no lo trae, y no debe
-    # romper el login por eso.
+    # `picture`/`name` solo llegan si el scope `profile` fue concedido; una
+    # sesión anterior a ese cambio (o un id_token recortado) no los trae, y no
+    # debe romper el login por eso.
     return Identity(email=email, domain=claims.get("hd") or email.rsplit("@", 1)[-1],
-                    picture=claims.get("picture") or "")
+                    picture=claims.get("picture") or "", nombre=claims.get("name") or "")

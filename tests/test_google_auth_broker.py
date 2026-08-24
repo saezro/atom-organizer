@@ -179,3 +179,25 @@ def test_pair_sin_picture_degrada_a_vacio_sin_romper(auth):
 
     assert identidad.picture == ""
     assert auth.is_logged_in()
+
+
+def test_pair_propaga_nombre_a_la_identidad_y_sobrevive_a_reabrir(auth):
+    identidad = auth.pair("device-token-abc", "piloto@aerotools.es",
+                          picture="https://lh3.googleusercontent.com/foo",
+                          nombre="Piloto Aerotools")
+
+    assert identidad.nombre == "Piloto Aerotools"
+    assert auth.identity.nombre == "Piloto Aerotools"
+
+    # Se persiste: reabrir la app (otra instancia contra el mismo store) debe
+    # devolver el mismo nombre sin que nadie vuelva a llamar a `pair()`.
+    otra = ga.GoogleAuth("", "", broker_only=True, store_path=auth.store_path)
+    assert otra.identity.nombre == "Piloto Aerotools"
+
+
+def test_pair_sin_nombre_degrada_a_vacio_sin_romper(auth):
+    """Una Suite vieja que no manda `nombre` en el poll no debe reventar."""
+    identidad = auth.pair("device-token-abc", "piloto@aerotools.es")
+
+    assert identidad.nombre == ""
+    assert auth.is_logged_in()

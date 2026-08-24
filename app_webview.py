@@ -618,6 +618,7 @@ class Api:
                 "logged_in": auth.is_logged_in(),
                 "email": ident.email if ident else None,
                 "picture": ident.picture if ident else None,
+                "nombre": ident.nombre if ident else None,
                 # Lo que se sabe SIN preguntar a Google: si la sesión sigue
                 # viva se comprueba aparte (`cloud_verify`), porque eso es una
                 # llamada de red y el estado inicial no puede esperarla.
@@ -910,6 +911,7 @@ class Api:
                     datos["device_token"],
                     datos.get("email", ""),
                     datos.get("picture", ""),
+                    datos.get("nombre", ""),
                 )
             except Exception as exc:  # noqa: BLE001
                 return {"ok": False, "error": str(exc)}

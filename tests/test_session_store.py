@@ -338,3 +338,63 @@ def test_guardar_y_leer_una_picture_va_y_vuelve(store):
 
     assert sesion is not None
     assert sesion.picture == "https://lh3.googleusercontent.com/foo"
+
+
+# --- migración de esquema: columna `nombre` (llegó junto al nombre del kiosco)
+
+def test_una_bd_sin_columna_nombre_se_migra_sola_sin_perder_la_sesion(tmp_path):
+    """`nombre` llegó después de `picture`: una BD del broker ya en uso (con
+    `modo`/`picture` pero sin `nombre`) tiene que seguir abriendo sin perder
+    la sesión y sin excepción, con el nombre en blanco hasta el próximo
+    emparejamiento."""
+    db_path = tmp_path / "session.db"
+    protector = KeyfileProtector(tmp_path / "session.key")
+    cifrado = protector.proteger(TOKEN.encode("utf-8"))
+
+    # El CREATE TABLE tal cual era con `modo`/`picture` pero antes de `nombre`.
+    con = sqlite3.connect(db_path)
+    con.execute("""
+        CREATE TABLE sesion (
+            id              INTEGER PRIMARY KEY CHECK (id = 1),
+            email           TEXT,
+            refresh_cifrado BLOB NOT NULL,
+            backend         TEXT NOT NULL,
+            creado_en       REAL NOT NULL,
+            actualizado_en  REAL NOT NULL,
+            validada_en     REAL,
+            modo            TEXT NOT NULL DEFAULT 'google',
+            picture         TEXT NOT NULL DEFAULT ''
+        )""")
+    con.execute(
+        "INSERT INTO sesion (id, email, refresh_cifrado, backend, creado_en, "
+        "actualizado_en, validada_en, modo, picture) VALUES (1, ?, ?, ?, ?, ?, NULL, ?, ?)",
+        ("piloto@aerotools.es", cifrado, protector.nombre, 1.0, 1.0, "broker",
+         "https://lh3.googleusercontent.com/foo"))
+    con.commit()
+    con.close()
+
+    store = SessionStore(db_path, protector=protector)
+    sesion = store.leer()
+
+    assert sesion is not None
+    assert sesion.refresh_token == TOKEN
+    assert sesion.email == "piloto@aerotools.es"
+    assert sesion.modo == "broker"
+    assert sesion.picture == "https://lh3.googleusercontent.com/foo"
+    # Sin la columna nueva no hay nombre que rescatar: cae a vacío, no a error.
+    assert sesion.nombre == ""
+
+    columnas = {fila[1] for fila in
+                sqlite3.connect(db_path).execute("PRAGMA table_info(sesion)")}
+    assert "nombre" in columnas
+
+
+def test_guardar_y_leer_un_nombre_va_y_vuelve(store):
+    store.guardar("piloto@aerotools.es", TOKEN, modo="broker",
+                  picture="https://lh3.googleusercontent.com/foo",
+                  nombre="Piloto Aerotools")
+
+    sesion = store.leer()
+
+    assert sesion is not None
+    assert sesion.nombre == "Piloto Aerotools"

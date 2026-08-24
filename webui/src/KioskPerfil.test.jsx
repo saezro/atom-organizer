@@ -75,4 +75,21 @@ describe('pantalla de perfil del kiosco', () => {
     screen.getByRole('button', { name: /cambiar pin/i }).click()
     await vi.waitFor(() => expect(screen.getByText(/pin actual/i)).toBeTruthy())
   })
+
+  it('muestra el nombre cuando status.nombre viene informado', () => {
+    pintar({ ...STATUS, nombre: 'Rebeca García' })
+    expect(screen.getByTestId('kiosk-perfil-nombre').textContent).toBe('Rebeca García')
+    expect(screen.getByText('rebeca@aerotools.es')).toBeTruthy()
+  })
+
+  it('sin nombre no pinta el elemento y el email se sigue viendo', () => {
+    pintar({ ...STATUS, nombre: '' })
+    expect(screen.queryByTestId('kiosk-perfil-nombre')).toBeNull()
+    expect(screen.getByText('rebeca@aerotools.es')).toBeTruthy()
+  })
+
+  it('con nombre ausente tampoco pinta el elemento', () => {
+    pintar(STATUS)
+    expect(screen.queryByTestId('kiosk-perfil-nombre')).toBeNull()
+  })
 })
