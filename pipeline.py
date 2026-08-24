@@ -1516,48 +1516,66 @@ class GenStructFolder:
         self.csvs_root_folder = os.path.join(self.root_folder, "CSVs") # Almacenamos el path de CSVs, donde vive el criterio de giro.
 
         # Recorremos las carpetas del parámetro folders_to_check, para saber si es RGB o no (TERMICA).
-        for folder in folders_to_check:
+        #
+        # `folders_to_check` puede traer DOS entradas (["TERMICA", "RGB"], phases.py:805 y :859).
+        # El fallback "no está la carpeta buscada, así que `input_folder` YA es la raíz del vuelo"
+        # es una decisión sobre `input_folder`, no sobre cada entrada de la lista. Mientras vivió
+        # dentro del bucle se disparaba una vez POR ENTRADA AUSENTE, y cada pasada volvía a girar
+        # las mismas imágenes: 90 + 90 = 180. Dos variantes del mismo fallo:
+        #   - ni TERMICA ni RGB existen  -> la raíz se rotaba DOS veces.
+        #   - existe TERMICA pero no RGB -> se rotaba TERMICA y DESPUÉS la raíz, que la contiene.
+        # Por eso el fallback sale del bucle: corre UNA sola vez y solo si NINGUNA de las carpetas
+        # buscadas está en `input_folder`.
+        folders_presentes = [folder for folder in folders_to_check if folder in list_dir]
+
+        for folder in folders_presentes:
             if folder == "RGB":
                 rgb_processing = True
             else:
                 self.utils_obj.prepare_output_folder(input_folder, ["CSVs"])  # Generamos la carpeta CSVs si no está. Ya no se generan miniaturas.
                 rgb_processing = False
-            
-            # Aquí radica el que podamos seguir trabajando en el caso de que se eligiera la carpeta con RGB y TERMICA como root. Si la carpeta de folders_to_check está en la
-            # lista de directorios de la carpeta de entrada, entonces su carpeta de entrada la hacemos con os.path.join para hacer la correspondiente a RGB o TERMICA.
-            # Si no lo está, entonces llevamos a cabo el proceso indicado en la carpeta de entrada, sea la que sea, sin diferenciar RGB o TERMICA. Es algo que tendrán
-            # que tener en cuenta ellos.
-            if folder in list_dir:
-                # Con reparto, se arranca en cada vuelo propio en vez de en la raíz de
-                # RGB/TERMICA. `gen_thumbnails_and_rotate` es recursiva y no mira dónde
-                # empieza el árbol, y `root_folder`/`csvs_root_folder` (de donde sale el
-                # criterio de giro) se han fijado arriba a la raíz de verdad, así que el
-                # resultado es idéntico.
-                if only_pb is None:
-                    raices = [os.path.join(input_folder, folder)]
-                else:
-                    base = os.path.join(input_folder, folder)
-                    raices = [sharding.ruta_de_relativo(base, rel) for rel in only_pb
-                              if os.path.isdir(sharding.ruta_de_relativo(base, rel))]
-                for raiz in raices:
-                    if rotation_mode_auto:
-                        self.gen_thumbnails_and_rotate(raiz, rgb_processing, max_error, lim_max_270, lim_min_270, lim_max_90, lim_min_90, progress_callback, progress_bar)
-                    else:
-                        self.gen_thumbnails_and_rotate_manual(raiz, rgb_processing, rotation_value_90, progress_callback, progress_bar)
 
+            # Con reparto, se arranca en cada vuelo propio en vez de en la raíz de
+            # RGB/TERMICA. `gen_thumbnails_and_rotate` es recursiva y no mira dónde
+            # empieza el árbol, y `root_folder`/`csvs_root_folder` (de donde sale el
+            # criterio de giro) se han fijado arriba a la raíz de verdad, así que el
+            # resultado es idéntico.
+            if only_pb is None:
+                raices = [os.path.join(input_folder, folder)]
             else:
-                if only_pb is None:
-                    raices_fallback = [input_folder]
+                base = os.path.join(input_folder, folder)
+                raices = [sharding.ruta_de_relativo(base, rel) for rel in only_pb
+                          if os.path.isdir(sharding.ruta_de_relativo(base, rel))]
+            for raiz in raices:
+                if rotation_mode_auto:
+                    self.gen_thumbnails_and_rotate(raiz, rgb_processing, max_error, lim_max_270, lim_min_270, lim_max_90, lim_min_90, progress_callback, progress_bar)
                 else:
-                    raices_fallback = [
-                        sharding.ruta_de_relativo(input_folder, rel) for rel in only_pb
-                        if os.path.isdir(sharding.ruta_de_relativo(input_folder, rel))
-                    ]
-                for raiz in raices_fallback:
-                    if rotation_mode_auto:
-                        self.gen_thumbnails_and_rotate(raiz, rgb_processing, max_error, lim_max_270, lim_min_270, lim_max_90, lim_min_90, progress_callback, progress_bar)
-                    else:
-                        self.gen_thumbnails_and_rotate_manual(raiz, rgb_processing, rotation_value_90, progress_callback, progress_bar)
+                    self.gen_thumbnails_and_rotate_manual(raiz, rgb_processing, rotation_value_90, progress_callback, progress_bar)
+
+        if not folders_presentes:
+            # Aquí radica el que podamos seguir trabajando si se eligió como raíz una carpeta que
+            # no separa RGB de TERMICA: se procesa `input_folder` tal cual, sin diferenciar. El
+            # modo se decide por lo que se PEDÍA: solo se trata como RGB si RGB era lo único
+            # buscado; en cuanto TERMICA esté entre las pedidas manda TERMICA, que es la que
+            # genera `CSVs/` y de donde sale el criterio de giro.
+            if "TERMICA" not in folders_to_check and "RGB" in folders_to_check:
+                rgb_processing = True
+            else:
+                self.utils_obj.prepare_output_folder(input_folder, ["CSVs"])
+                rgb_processing = False
+
+            if only_pb is None:
+                raices_fallback = [input_folder]
+            else:
+                raices_fallback = [
+                    sharding.ruta_de_relativo(input_folder, rel) for rel in only_pb
+                    if os.path.isdir(sharding.ruta_de_relativo(input_folder, rel))
+                ]
+            for raiz in raices_fallback:
+                if rotation_mode_auto:
+                    self.gen_thumbnails_and_rotate(raiz, rgb_processing, max_error, lim_max_270, lim_min_270, lim_max_90, lim_min_90, progress_callback, progress_bar)
+                else:
+                    self.gen_thumbnails_and_rotate_manual(raiz, rgb_processing, rotation_value_90, progress_callback, progress_bar)
 
         return True
 
