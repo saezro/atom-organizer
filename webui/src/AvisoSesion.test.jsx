@@ -59,12 +59,12 @@ describe('AvisoSesion', () => {
   })
 })
 
-// Gating parcial en el kiosco (Task 7): sin credencial se bloquea SOLO elegir
-// planta (InspeccionSelector, que depende de ATOM Suite). "Organizar" y
-// "Subir en crudo" son 100% locales/en cola y NUNCA deben deshabilitarse por
-// falta de sesión.
-describe('KioskScreen — gating parcial con credencialOk={false}', () => {
-  it('bloquea elegir planta pero deja Organizar y Subir en crudo habilitados', () => {
+// Gating en el kiosco: sin credencial se bloquean elegir planta
+// (InspeccionSelector, que depende de ATOM Suite) y "Subir en crudo" (subir
+// sin emparejar solo encolaba, y en el kiosco eso se lee como subida hecha).
+// "Organizar" es 100% local y NUNCA se deshabilita por falta de sesión.
+describe('KioskScreen — gating con credencialOk={false}', () => {
+  it('bloquea elegir planta y Subir en crudo, deja Organizar habilitado', () => {
     const inspecciones = [
       { id: 1, prefijo: 'ACME--PLANTA1--2026--PV', etiqueta: 'ACME PLANTA1 2026', anio: 2026, fase: 'Vuelo' },
     ]
@@ -95,10 +95,9 @@ describe('KioskScreen — gating parcial con credencialOk={false}', () => {
     expect(screen.queryByText('ACME PLANTA1 2026')).toBeNull()
     unmount()
 
-    // (b) organizar es 100% local: Organizar y Subir en crudo NUNCA se
-    // bloquean por falta de sesión.
+    // (b) organizar es 100% local y sigue disponible; subir en crudo no.
     render(<KioskScreen {...baseProps({ accionInicial: 'organizer' })} />)
     expect(screen.getByText('Organizar').closest('button')).not.toBeDisabled()
-    expect(screen.getByText('Subir en crudo').closest('button')).not.toBeDisabled()
+    expect(screen.getByText('Subir en crudo').closest('button')).toBeDisabled()
   })
 })
