@@ -73,3 +73,51 @@ describe('KioskGuard', () => {
     }
   })
 })
+
+describe('KioskGuard — ante la duda, bloquea', () => {
+  beforeEach(() => {
+    pinEstado.mockReset()
+  })
+
+  it('si pinEstado falla NO abre el kiosco, aunque no haya sesion', async () => {
+    // Regresion: el catch asumia "no hay PIN" y con `status` sin sesion
+    // dejaba pasar a children. Un backend caido abria la Pi de par en par.
+    pinEstado.mockRejectedValue(new Error('sin backend'))
+    await act(async () => {
+      render(
+        <KioskGuard status={{ logged_in: false }} ocupado={false}>
+          <div data-testid="kiosk-dentro">dentro</div>
+        </KioskGuard>,
+      )
+    })
+    expect(screen.queryByTestId('kiosk-dentro')).toBeNull()
+    expect(screen.getByTestId('kiosk-pin-error-estado')).toBeTruthy()
+  })
+
+  it('una respuesta sin hay_pin tampoco se toma por "no hay PIN"', async () => {
+    pinEstado.mockResolvedValue({ ok: false, error: 'store roto' })
+    await act(async () => {
+      render(
+        <KioskGuard status={{ logged_in: false }} ocupado={false}>
+          <div data-testid="kiosk-dentro">dentro</div>
+        </KioskGuard>,
+      )
+    })
+    expect(screen.queryByTestId('kiosk-dentro')).toBeNull()
+    expect(screen.getByTestId('kiosk-pin-error-estado')).toBeTruthy()
+  })
+
+  it('no abre mientras `status` aun no ha resuelto', async () => {
+    // Ventana de carrera al arrancar: pinEstado resuelve antes que
+    // cloudStatus. Sin esta guarda la pantalla queda abierta en ese hueco.
+    pinEstado.mockResolvedValue({ ok: true, hay_pin: false, bloqueado: false, espera_segundos: 0 })
+    await act(async () => {
+      render(
+        <KioskGuard status={null} ocupado={false}>
+          <div data-testid="kiosk-dentro">dentro</div>
+        </KioskGuard>,
+      )
+    })
+    expect(screen.queryByTestId('kiosk-dentro')).toBeNull()
+  })
+})
