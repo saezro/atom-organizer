@@ -23,6 +23,8 @@
   --text: #f1f5f9;
   --muted: #6b7280;
   --orange: #ee753a;
+  --verde: #34d399;
+  --rojo: #f87171;
   --dot: rgba(255, 255, 255, 0.06);
 
   /* Escala en rem para que la misma UI sirva en un portatil de 1100x760 y en

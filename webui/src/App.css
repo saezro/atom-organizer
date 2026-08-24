@@ -2664,7 +2664,23 @@ html.kiosk-modo body * {
   text-overflow: ellipsis;
   min-width: 0;
 }
-.kiosk-estado-red-sin { color: #f87171; }
+/* Sin red / cable: sin semaforo, gris apagado (el aviso ya lo da el icono
+   tachado y el texto "Sin red"). */
+.kiosk-estado-red-sin { color: var(--muted); }
+
+/* Semaforo de calidad de wifi: solo pinta el icono, el SSID sigue en --muted.
+   Umbrales alineados con los 3 arcos que enciende IconoWifi (>=67 / >=34). */
+.kiosk-estado-red-nivel-3 svg { color: var(--verde); }
+.kiosk-estado-red-nivel-2 svg { color: var(--orange); }
+.kiosk-estado-red-nivel-1 svg { color: var(--rojo); }
+
+/* Los dos iconos de la barra comparten tamano para que pesen igual en
+   pantalla: a 1em el pendrive se veia mas pequeno que los arcos del wifi. */
+.kiosk-barra-estado svg {
+  width: 1.35em;
+  height: 1.35em;
+  flex-shrink: 0;
+}
 
 /* Indicador de disco externo: solo icono, conectado en naranja Atom. */
 .kiosk-estado-disco {

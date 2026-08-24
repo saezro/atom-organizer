@@ -24,6 +24,13 @@ describe('EstadoRed', () => {
     expect(chip).toHaveTextContent('80%')
   })
 
+  it('marca el nivel de senal en la clase para el semaforo de color', async () => {
+    redConexion.mockResolvedValue({ ok: true, tipo: 'wifi', ssid: 'CASA-WIFI', senal: 20, ip: '192.168.1.5' })
+    render(<EstadoRed />)
+    const chip = await screen.findByTestId('kiosk-estado-red')
+    expect(chip).toHaveClass('kiosk-estado-red-nivel-1')
+  })
+
   it('pinta "Cable" con tipo cable', async () => {
     redConexion.mockResolvedValue({ ok: true, tipo: 'cable', ssid: '', senal: null, ip: '192.168.1.5' })
     render(<EstadoRed />)

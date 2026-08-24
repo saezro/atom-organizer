@@ -85,8 +85,10 @@ export default function EstadoRed({ compacto = false }) {
 
   if (estado.tipo === 'wifi') {
     const nivel = estado.senal >= 67 ? 3 : estado.senal >= 34 ? 2 : 1
+    // El color va al icono (clase `-nivel-N`, colores en App.css), no al SSID:
+    // el texto se lee mejor en `--muted` y el semaforo ya lo dan los arcos.
     return (
-      <div className="kiosk-estado-red" data-testid="kiosk-estado-red">
+      <div className={`kiosk-estado-red kiosk-estado-red-nivel-${nivel}`} data-testid="kiosk-estado-red">
         <IconoWifi nivel={nivel} />
         {!compacto && <span>{estado.ssid} · {estado.senal}%</span>}
       </div>
