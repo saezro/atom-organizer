@@ -507,6 +507,42 @@ describe('KioskScreen — pantalla de resultado', () => {
     expect(screen.getByTestId('kiosk-resultado-detalle')).toHaveTextContent('42 archivos subidos')
   })
 
+  it('el detalle pinta la garantía del backend: verificados en la nube e intentos', () => {
+    render(
+      <KioskScreen
+        {...baseProps({
+          resultado: { ok: true, subidos: 1213, verificado: true,
+                       verificados: 1213, items_total: 1213, rondas: 3 },
+        })}
+      />
+    )
+    const detalle = screen.getByTestId('kiosk-resultado-detalle')
+    expect(detalle).toHaveTextContent('1213/1213 verificados en la nube')
+    expect(detalle).toHaveTextContent('3 intentos')
+  })
+
+  it('si no se pudo listar el bucket, el detalle lo dice en vez de mentir', () => {
+    render(
+      <KioskScreen
+        {...baseProps({
+          resultado: { ok: true, subidos: 5, verificado: false,
+                       verificados: 0, items_total: 5, rondas: 1 },
+        })}
+      />
+    )
+    const detalle = screen.getByTestId('kiosk-resultado-detalle')
+    expect(detalle).toHaveTextContent('sin comprobar en la nube')
+    expect(detalle).not.toHaveTextContent('intentos')
+  })
+
+  it('un payload viejo (sin items_total) no pinta ni undefined ni garantía', () => {
+    render(<KioskScreen {...baseProps({ resultado: { ok: true, subidos: 7 } })} />)
+    const detalle = screen.getByTestId('kiosk-resultado-detalle')
+    expect(detalle).toHaveTextContent('7 archivos subidos')
+    expect(detalle).not.toHaveTextContent('verificados')
+    expect(detalle).not.toHaveTextContent('undefined')
+  })
+
   it('resultado ok con subidos=0 muestra "No había nada nuevo que subir"', () => {
     render(<KioskScreen {...baseProps({ resultado: { ok: true, subidos: 0 } })} />)
     expect(screen.getByText('No había nada nuevo que subir')).toBeInTheDocument()
