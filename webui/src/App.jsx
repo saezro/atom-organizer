@@ -11,6 +11,7 @@ import FolderPicker from './FolderPicker'
 import SplashInicio from './SplashInicio'
 import NavIcon from './NavIcon'
 import KioskScreen from './KioskScreen'
+import KioskGuard from './KioskGuard.jsx'
 import PairScreen from './PairScreen'
 import AvisoSesion from './AvisoSesion.jsx'
 import { formatBytes, formatDuracion } from './formato'
@@ -624,30 +625,32 @@ function App() {
 
       <main>
         {kiosco ? (
-          <KioskScreen
-            status={kioskCloudStatus}
-            carpeta={kioskCarpeta}
-            onPickCarpeta={kioskPickCarpeta}
-            inspecciones={kioskInspecciones}
-            inspeccion={kioskInspeccion}
-            onSelectInspeccion={setKioskInspeccion}
-            onActualizarInspecciones={kioskCargarInspecciones}
-            estadillo={kioskEstadillo}
-            onEstadillo={setKioskEstadillo}
-            onOrganizar={kioskOrganizar}
-            onSubirCrudo={kioskSubirCrudo}
-            onComprobarSubida={kioskComprobarSubida}
-            onRefreshStatus={() =>
-              api.cloudStatus().then(setKioskCloudStatus).catch(() => setKioskCloudStatus(null))
-            }
-            credencialOk={(kioskCloudStatus?.estado || 'ok') === 'ok'}
-            abrirCuenta={kioskAbrirCuenta}
-            busy={kioskBusy}
-            progreso={kioskProgreso}
-            resultado={kioskResultado}
-            onCerrarResultado={() => setKioskResultado(null)}
-            onRunTask={(task, params) => run(task, params, null)}
-          />
+          <KioskGuard status={kioskCloudStatus} ocupado={Boolean(kioskBusy || kioskSubiendo)}>
+            <KioskScreen
+              status={kioskCloudStatus}
+              carpeta={kioskCarpeta}
+              onPickCarpeta={kioskPickCarpeta}
+              inspecciones={kioskInspecciones}
+              inspeccion={kioskInspeccion}
+              onSelectInspeccion={setKioskInspeccion}
+              onActualizarInspecciones={kioskCargarInspecciones}
+              estadillo={kioskEstadillo}
+              onEstadillo={setKioskEstadillo}
+              onOrganizar={kioskOrganizar}
+              onSubirCrudo={kioskSubirCrudo}
+              onComprobarSubida={kioskComprobarSubida}
+              onRefreshStatus={() =>
+                api.cloudStatus().then(setKioskCloudStatus).catch(() => setKioskCloudStatus(null))
+              }
+              credencialOk={(kioskCloudStatus?.estado || 'ok') === 'ok'}
+              abrirCuenta={kioskAbrirCuenta}
+              busy={kioskBusy}
+              progreso={kioskProgreso}
+              resultado={kioskResultado}
+              onCerrarResultado={() => setKioskResultado(null)}
+              onRunTask={(task, params) => run(task, params, null)}
+            />
+          </KioskGuard>
         ) : section === 'organizar' ? (
           <OrganizarScreen ready={ready} running={running} onRun={run} />
         ) : section === 'bucket' ? (
