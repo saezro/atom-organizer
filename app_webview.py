@@ -25,7 +25,13 @@ import threading
 import time
 from pathlib import Path
 
+from atom_core import cola_subidas
+from atom_core.credencial import (
+    ESTADO_OK, ESTADO_SIN_CREDENCIAL, ESTADO_SIN_CONEXION,
+    EstadoCredencial, clasificar,
+)
 from atom_core.event_sink import WebviewSink
+from atom_core.google_auth import AuthError
 
 # SSID del hotspot de configuracion de la Pi. Lo usan tanto el propio hotspot
 # como el listado de redes, que debe excluirlo de las redes conectables.
@@ -142,6 +148,7 @@ class Api:
         # arranque tendría que leer el fichero de credenciales aunque nadie vaya
         # a subir nada en toda la sesión.
         self._auth = None
+        self._credencial = EstadoCredencial()
         # `broker`: modo Raspberry Pi (`main()`, rama `--server`). Sin cliente
         # OAuth propio, `_get_auth` construye un `GoogleAuth` broker_only en
         # vez de devolver `None`. El escritorio (Windows) nunca pasa esto:
@@ -597,7 +604,10 @@ class Api:
             return {"ok": True, "configured": False, "logged_in": False,
                     "bucket": cloud_config.BUCKET_DATOS,
                     "help": cloud_config.missing_client_help(),
-                    "pairing": False}
+                    "pairing": False,
+                    "estado": ESTADO_SIN_CREDENCIAL,
+                    "estado_mensaje": self._credencial.actual()["mensaje"],
+                    "pendientes": len(cola_subidas.pendientes())}
         ident = auth.identity
         return {"ok": True, "configured": True,
                 "logged_in": auth.is_logged_in(),
@@ -613,7 +623,37 @@ class Api:
                 # Le dice a la UI que enseñe la pantalla de QR en vez del botón
                 # "Iniciar sesión con Google": este equipo no tiene cliente
                 # OAuth propio (ver `_get_auth`), solo puede emparejarse.
-                "pairing": bool(getattr(auth, "broker_only", False))}
+                "pairing": bool(getattr(auth, "broker_only", False)),
+                "estado": self._credencial.actual()["estado"],
+                "estado_mensaje": self._credencial.actual()["mensaje"],
+                "pendientes": len(cola_subidas.pendientes())}
+
+    def cloud_comprobar(self, profunda: bool = False) -> dict:
+        """Comprueba de verdad si la credencial sirve, y cachea el resultado.
+
+        Síncrona a propósito: la llaman el arranque y el paso previo a cada
+        acción, que necesitan la respuesta antes de seguir. `cloud_verify`
+        sigue existiendo para la comprobación manual, que va por evento.
+
+        `profunda` está para el latido de 6 h; hoy ambas rutas usan
+        `verificar()`, que ya pasa por el broker de la Suite.
+        """
+        auth = self._get_auth()
+        if auth is None or not auth.is_logged_in():
+            # Sin token local no hay nada que preguntar: hay que emparejar.
+            self._credencial.registrar(ESTADO_SIN_CREDENCIAL, "No hay dispositivo emparejado.")
+            return self._credencial.actual()
+        try:
+            valida, texto = auth.verificar()
+            estado = clasificar(valida, texto, hubo_red=True)
+            self._credencial.registrar(estado, texto)
+        except AuthError as exc:
+            # El backend contestó y dijo que no: revocado o token inválido.
+            self._credencial.registrar(ESTADO_SIN_CREDENCIAL, str(exc))
+        except OSError as exc:
+            # No se llegó a hablar con el backend: no acuses a la credencial.
+            self._credencial.registrar(ESTADO_SIN_CONEXION, str(exc))
+        return self._credencial.actual()
 
     def cloud_verify(self) -> dict:
         """Comprueba contra Google que la sesión guardada sigue sirviendo.
@@ -946,8 +986,20 @@ class Api:
         if auth is None:
             return {"started": False, "reason": cloud_config.missing_client_help()}
         if not auth.is_logged_in():
-            return {"started": False,
-                    "reason": "Primero inicia sesión con tu cuenta de Aerotools."}
+            # En el campo, decir "no se puede subir" es perder el trabajo del
+            # día. Se acepta el encargo y se sube cuando vuelva a haber
+            # credencial.
+            destino, prefijo_norm, error = self._destino(folder, prefix)
+            if error:
+                return {"started": False, "reason": error}
+            job = cola_subidas.encolar(str(folder), prefijo_norm, inspeccion_id)
+            self._credencial.registrar(ESTADO_SIN_CREDENCIAL, "No hay dispositivo emparejado.")
+            return {
+                "started": False,
+                "encolado": True,
+                "job": job,
+                "reason": "Sin sesión: la subida queda en cola y saldrá al volver a emparejar.",
+            }
 
         root, prefix, error = self._destino(folder, prefix)
         if error:
@@ -1397,6 +1449,28 @@ class Api:
         finally:
             if tmp_path is not None:
                 os.unlink(tmp_path)
+
+    def cloud_pendientes(self) -> dict:
+        return {"pendientes": cola_subidas.pendientes()}
+
+    def cloud_drenar(self) -> dict:
+        """Lanza las subidas encoladas. Solo tiene sentido con estado `ok`.
+
+        Va de una en una: `cloud_upload` ya rechaza si hay otra subida en curso,
+        y el resto de la cola sigue ahí para el siguiente intento.
+        """
+        if self._credencial.actual()["estado"] != ESTADO_OK:
+            return {"lanzados": 0, "reason": "Sin credencial válida."}
+        lanzados = 0
+        for job in cola_subidas.pendientes():
+            r = self.cloud_upload(job["folder"], prefix=job["prefix"],
+                                  inspeccion_id=job.get("inspeccion_id"))
+            if r.get("started"):
+                cola_subidas.descartar(job["id"])
+                lanzados += 1
+                break
+            cola_subidas.marcar_intento(job["id"], str(r.get("reason", "")))
+        return {"lanzados": lanzados}
 
     def cloud_cancel(self) -> dict:
         """Pide parar. Los ficheros ya subidos quedan; el manifiesto local deja
