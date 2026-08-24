@@ -315,8 +315,20 @@ export default function KioskScreen({
             ? `${resultado.subidos ?? 0} archivos subidos` +
               (resultado.omitidos ? ` · ${resultado.omitidos} ya estaban` : '') +
               (resultado.bytes ? ` · ${formatBytes(resultado.bytes)}` : '') +
-              (resultado.elapsed ? ` · ${formatDuracion(resultado.elapsed)}` : '')
-            : resultado.error || `${resultado.fallidos ?? 0} archivos fallaron`}
+              (resultado.elapsed ? ` · ${formatDuracion(resultado.elapsed)}` : '') +
+              // Garantía de completitud del backend: no «la barra llegó al
+              // 100 %», sino los objetos comprobados uno a uno contra el
+              // bucket antes de dar el lote por bueno.
+              (resultado.items_total == null
+                ? ''
+                : resultado.verificado
+                  ? ` · ${resultado.verificados ?? 0}/${resultado.items_total} verificados en la nube`
+                  : ' · sin comprobar en la nube') +
+              (resultado.rondas > 1 ? ` · ${resultado.rondas} intentos` : '')
+            : (resultado.error || `${resultado.fallidos ?? 0} archivos fallaron`) +
+                (resultado.items_total != null && resultado.verificados != null
+                  ? ` · Verificados ${resultado.verificados}/${resultado.items_total}`
+                  : '')}
         </span>
         {okey && (
           <span className="kiosk-resultado-verifica" data-testid="kiosk-resultado-verifica">

@@ -297,6 +297,13 @@ function App() {
               bytes: d.bytes ?? 0,
               elapsed: d.elapsed ?? null,
               fallidos: d.failed_total ?? 0,
+              // Garantia de completitud (backend): objetos comprobados contra
+              // el bucket antes de escribir el manifest, y cuantas rondas de
+              // subida hicieron falta. Sin mapearlas aqui no llegan al kiosco.
+              verificado: d.verificado ?? null,
+              verificados: d.verificados ?? null,
+              items_total: d.items_total ?? null,
+              rondas: d.rondas ?? null,
             })
             break
           case 'error':
