@@ -222,8 +222,14 @@ export default function PasoEstadillo({ prefijo, disabled, onEstado }) {
     })
   }
 
-  // Sin array de dependencias a propósito: el padre necesita una `subir` que
-  // capture el estado más reciente en cada render.
+  // Dependencias explícitas a los valores reactivos de los que depende el
+  // objeto publicado (y por tanto el propio `subir`, que los captura por
+  // closure en el momento en que este efecto se recalcula). SIN esta lista
+  // el efecto se relanza tras CUALQUIER render — incluidos los que provoca
+  // el propio `onEstado` al guardar el objeto en el estado del padre (nueva
+  // identidad de objeto siempre) — y eso encadena un bucle infinito de
+  // renders en cuanto `onEstado` es un `setState` real (como en
+  // `TrabajoScreen`), no el mock sin efecto de los tests de este fichero.
   useEffect(() => {
     onEstado({
       rutas: estadRutas,
@@ -234,7 +240,8 @@ export default function PasoEstadillo({ prefijo, disabled, onEstado }) {
         await subirEstadilloEsperando()
       },
     })
-  })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [estadRutas, estadCheck, estadSubiendo, omitirEstadillo, prefijo, onEstado])
 
   return (
     <div className="field">

@@ -2797,3 +2797,40 @@ html.kiosk-modo body * {
   margin: 0 var(--u) calc(var(--u) / 3);
   padding: calc(var(--u) / 3) calc(var(--u) / 1.5);
 }
+
+/* Selector de destino (Task 10): elegir carpeta + inspección + estadillo
+   sobrevive al cambio de destino, así que este selector solo decide QUÉ
+   panel se muestra debajo, no reinicia nada de lo elegido arriba. */
+.destinos {
+  display: grid;
+  gap: calc(var(--u) * 2);
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+}
+.destino {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--u) * 0.5);
+  padding: calc(var(--u) * 2);
+  text-align: left;
+  border: 0.0625rem solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radio);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.destino:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+.destino-activo {
+  border-color: var(--orange);
+  background: rgba(238, 117, 58, 0.12);
+}
+.destino-titulo {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.destino-detalle {
+  font-size: var(--fs-sm);
+  opacity: 0.7;
+}
