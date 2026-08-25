@@ -26,7 +26,11 @@ function IconoAviso() {
   )
 }
 
-export default function AvisoSesion({ estado, mensaje, pendientes = 0, onEmparejar, onCerrar }) {
+// `mensaje` (el `estado_mensaje` del backend) NO se pinta: es el `str(exc)` de
+// Python (`<urlopen error [Errno 111] Connection refused>`) y a 480x320, delante
+// del PIN, el operario solo lee ruido. El detalle tecnico ya queda en el log del
+// organizer-server; aqui manda el literal en castellano de TEXTOS.
+export default function AvisoSesion({ estado, pendientes = 0, onEmparejar, onCerrar }) {
   const texto = TEXTOS[estado]
   if (!texto) return null
 
@@ -35,7 +39,7 @@ export default function AvisoSesion({ estado, mensaje, pendientes = 0, onEmparej
       <div className="aviso-sesion-caja">
         <div className="aviso-sesion-icono"><IconoAviso /></div>
         <h1 className="aviso-sesion-titulo">{texto.titulo}</h1>
-        <p className="aviso-sesion-cuerpo">{mensaje || texto.cuerpo}</p>
+        <p className="aviso-sesion-cuerpo">{texto.cuerpo}</p>
         <p className="aviso-sesion-ayuda">{texto.ayuda}</p>
         {pendientes > 0 && (
           <p className="aviso-sesion-cola">

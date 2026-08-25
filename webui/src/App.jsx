@@ -584,7 +584,6 @@ function App() {
       {kiosco && !avisoCerrado && (
         <AvisoSesion
           estado={kioskCloudStatus?.estado}
-          mensaje={kioskCloudStatus?.estado_mensaje}
           pendientes={kioskCloudStatus?.pendientes || 0}
           onEmparejar={() => {
             setAvisoCerrado(true)
