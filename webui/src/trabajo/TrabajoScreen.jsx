@@ -62,6 +62,7 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
           prefijo={prefijo}
           inspeccionId={elegida?.id}
           estadilloListo={estadillo.listo}
+          estadilloSubiendo={estadillo.subiendo}
           subirEstadillo={estadillo.subir}
           ready={ready}
           onCloudStatusChange={onCloudStatusChange}

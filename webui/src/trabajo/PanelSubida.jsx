@@ -21,6 +21,7 @@ export default function PanelSubida({
   prefijo,
   inspeccionId,
   estadilloListo,
+  estadilloSubiendo,
   subirEstadillo,
   ready,
   onAntesDeSubir,
@@ -221,7 +222,7 @@ export default function PanelSubida({
   }, [uploading, desde])
 
   const logged = !!status?.logged_in
-  const ocupado = busy || uploading
+  const ocupado = busy || uploading || estadilloSubiendo
   const puedeSubir = ready && logged && !!prefijo && plan?.ok && !ocupado && estadilloListo
 
   // Sin `<div className="card">`/`<h2>` propios a propósito: este panel es
