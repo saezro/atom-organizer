@@ -197,21 +197,12 @@ describe('Estadillo (ubicación canónica del bucket)', () => {
   })
 
   // Antes (BucketScreen monolítico): pulsaba «Subir estadillo» y comprobaba
-  // que el botón se deshabilitaba de inmediato, sin esperar al evento
-  // `start`. Tras la partición en pasos (Task 9/10), ese guardado de
-  // doble-click (`estadSubiendo`) vive dentro de `PasoEstadillo` y NO viaja a
-  // `PanelSubida`: `TrabajoScreen` solo usa `estadillo.subiendo` para
-  // deshabilitar `PasoInspeccion` (`trabajo/TrabajoScreen.jsx:31`), no se lo
-  // pasa a `PanelSubida`, así que el botón «Subir al bucket» no tiene forma
-  // de saber que la subida del estadillo está en curso. Deviación respecto al
-  // brief de Task 11 (fuera de su alcance: no toca `PanelSubida.jsx` ni
-  // `TrabajoScreen.jsx`, no están en la lista de ficheros de esta task): el
-  // test pasa a comprobar lo que SÍ es cierto hoy (se llama a
-  // `estadilloSubir` al pulsar, antes de subir ninguna imagen) en vez de una
-  // garantía de doble-click que ya no se cumple. Pendiente de follow-up:
-  // pasar `estadilloSubiendo={estadillo.subiendo}` a `PanelSubida` e incluirlo
-  // en su `ocupado`.
-  it('llama a estadilloSubir al pulsar, antes de subir ninguna imagen', async () => {
+  // que el botón se deshabilitaba de inmediato, sin esperar al evento `start`.
+  // Tras la partición en pasos, `estadSubiendo` vive dentro de `PasoEstadillo`
+  // y viaja a `PanelSubida` como prop `estadilloSubiendo` (vía
+  // `TrabajoScreen`), que la suma a su `ocupado`. El guardado anti doble-click
+  // se conserva, ahora sobre el botón único «Subir al bucket».
+  it('deshabilita subir al bucket mientras sube el estadillo', async () => {
     api.estadilloValidar.mockResolvedValue({
       ok: true,
       error: null,
@@ -237,6 +228,9 @@ describe('Estadillo (ubicación canónica del bucket)', () => {
 
     await waitFor(() => expect(api.estadilloSubir).toHaveBeenCalled())
     expect(api.cloudUpload).not.toHaveBeenCalled()
+    // Guardado anti doble-click: mientras el estadillo está subiendo el botón
+    // queda deshabilitado, sin esperar al evento `start` de las imágenes.
+    await waitFor(() => expect(botonSubir).toBeDisabled())
 
     resolver({ ok: true })
   })
