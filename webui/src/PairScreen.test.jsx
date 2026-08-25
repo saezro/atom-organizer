@@ -118,7 +118,7 @@ describe('PairScreen', () => {
   it('limpia el intervalo de sondeo al desmontar (sin fugas)', async () => {
     cloudPairStart.mockResolvedValue({ ok: true, pair_id: 'p1', url: 'https://atom/pair/p1', expires_in: 300 })
     cloudPairPoll.mockResolvedValue({ estado: 'pendiente' })
-    const clearSpy = vi.spyOn(global, 'clearInterval')
+    const clearSpy = vi.spyOn(globalThis, 'clearInterval')
 
     const { unmount } = render(<PairScreen />)
     await flush()
