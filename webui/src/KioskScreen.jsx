@@ -242,6 +242,13 @@ export default function KioskScreen({
     </BotonToque>
   )
 
+  // Se declara una vez y se pinta en cada pantalla del flujo: el estado de red
+  // importa igual (o más) al elegir inspección o al confirmar una subida que en
+  // el launcher. `compacto` en los pasos, que van justos de alto.
+  const bannerConexion = (
+    <BannerConexion estado={status?.estado} pendientes={status?.pendientes || 0} compacto />
+  )
+
   const barraProgreso = progreso && (
     <div className="kiosk-progreso" data-testid="kiosk-progreso">
       <span className="kiosk-progreso-fase">{progreso.fase}</span>
@@ -577,6 +584,7 @@ export default function KioskScreen({
           <BotonAtras tactil={tactil} onActivar={() => setAccion(null)} disabled={busy} />
           <span className="kiosk-titulo">Organizer</span>
         </div>
+        {bannerConexion}
         {barraProgreso}
         <div className="kiosk-menu">
           <BotonToque
@@ -625,9 +633,6 @@ export default function KioskScreen({
     return (
       <div className="kiosk">
         <div className="kiosk-header"><BarraEstado />{avatar}</div>
-        {/* Solo en el launcher: es la pantalla donde el operario lee el estado
-            del dispositivo. En los pasos de organizar/subir el sitio escasea y
-            cada uno ya da su propio feedback de error. */}
         <BannerConexion estado={status?.estado} pendientes={status?.pendientes || 0} />
         {barraProgreso}
         <MenuApps
@@ -696,6 +701,7 @@ export default function KioskScreen({
           <BotonAtras tactil={tactil} onActivar={() => setEligiendoFases(false)} disabled={busy} etiqueta="Listo" />
           <span className="kiosk-titulo">Fases</span>
         </div>
+        {bannerConexion}
         <div className="kiosk-fases">
           {fasesDisponibles.map((fase) => {
             const activa = fasesKiosco.includes(fase)
@@ -771,6 +777,7 @@ export default function KioskScreen({
             </svg>
           </BotonToque>
         </div>
+        {bannerConexion}
 
         <div className="kiosk-inspeccion kiosk-inspeccion-full kiosk-insp-paginado">
           <div
@@ -857,6 +864,7 @@ export default function KioskScreen({
           <BotonAtras tactil={tactil} onActivar={() => setResumen(null)} disabled={busy} />
           <span className="kiosk-titulo">Antes de subir</span>
         </div>
+        {bannerConexion}
 
         <div className="kiosk-resumen" data-testid="kiosk-resumen">
           <div className="kiosk-resumen-cifras">
@@ -926,6 +934,7 @@ export default function KioskScreen({
         <BotonAtras tactil={tactil} onActivar={() => setAccion('organizer')} disabled={busy} />
         <span className="kiosk-titulo">{esOrganizar ? 'Organizar' : 'Subir en crudo'}</span>
       </div>
+      {bannerConexion}
 
       {!esOrganizar && (
         <div className="kiosk-inspeccion">

@@ -2791,3 +2791,9 @@ html.kiosk-modo body * {
   flex-shrink: 0;
   color: var(--muted);
 }
+/* Variante de los pasos de organizar/subir: mismo mensaje, menos alto robado
+   a la lista de inspecciones (la pantalla de la Pi son 320 px de alto). */
+.kiosk-banner-conexion-compacto {
+  margin: 0 var(--u) calc(var(--u) / 3);
+  padding: calc(var(--u) / 3) calc(var(--u) / 1.5);
+}

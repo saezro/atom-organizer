@@ -28,4 +28,17 @@ describe('BannerConexion', () => {
     render(<BannerConexion estado="sin-conexion" pendientes={0} />)
     expect(screen.queryByText(/en cola/)).toBeNull()
   })
+
+  // `compacto` es la variante que usa KioskScreen en los pasos del flujo
+  // (menú Organizer, Fases, elegir inspección, Antes de subir, paso 2 final):
+  // solo cambia la clase, no el contenido, así que basta comprobar la clase.
+  it('con compacto añade la clase kiosk-banner-conexion-compacto', () => {
+    render(<BannerConexion estado="sin-conexion" compacto />)
+    expect(screen.getByTestId('kiosk-banner-conexion')).toHaveClass('kiosk-banner-conexion-compacto')
+  })
+
+  it('sin compacto no añade la clase kiosk-banner-conexion-compacto', () => {
+    render(<BannerConexion estado="sin-conexion" />)
+    expect(screen.getByTestId('kiosk-banner-conexion')).not.toHaveClass('kiosk-banner-conexion-compacto')
+  })
 })
