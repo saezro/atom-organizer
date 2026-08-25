@@ -180,12 +180,16 @@ class UploadPlan:
 
 
 def build_plan(root: Path, prefix: str = "", *,
-               suffixes: Iterable[str] | None = None) -> UploadPlan:
+               suffixes: Iterable[str] | None = None,
+               on_progress=None, should_stop=None) -> UploadPlan:
     """Recorre `root` y construye el plan de subida.
 
     `prefix` es la carpeta destino dentro del bucket (p.ej. `vuelos/antolin`).
     La estructura de subcarpetas del vuelo se conserva tal cual: el server
     necesita saber qué imagen venía de qué carpeta `DJI_*`.
+
+    `on_progress`/`should_stop` son opcionales: permiten emitir avance y
+    cortar el recorrido desde una llamada asíncrona (ver `Api.cloud_prepare_start`).
     """
     root = Path(root)
     if not root.is_dir():
@@ -197,6 +201,8 @@ def build_plan(root: Path, prefix: str = "", *,
 
     items: list[UploadItem] = []
     for path in sorted(root.rglob("*")):
+        if should_stop is not None and should_stop():
+            break
         if not path.is_file():
             continue
         if path.name.lower() in IGNORED_NAMES:
@@ -207,6 +213,8 @@ def build_plan(root: Path, prefix: str = "", *,
         remote = f"{prefix}/{rel}" if prefix else rel
         items.append(UploadItem(local=path, remote=remote,
                                 size=path.stat().st_size))
+        if on_progress is not None and len(items) % 250 == 0:
+            on_progress(len(items))
 
     return UploadPlan(root=root, items=items, prefix=prefix)
 

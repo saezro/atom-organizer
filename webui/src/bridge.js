@@ -257,6 +257,7 @@ export const api = {
   pinCambiar: (actual, nuevo) => call('pin_cambiar', actual, nuevo),
   cloudInspecciones: () => call('cloud_inspecciones'),
   cloudPrepare: (folder, prefix) => call('cloud_prepare', folder, prefix ?? null),
+  cloudPrepareStart: (folder, prefix) => call('cloud_prepare_start', folder, prefix ?? null),
   cloudUpload: (folder, force, prefix, inspeccionId, confirmarSubidaExtra) =>
     call('cloud_upload', folder, force ?? false, prefix ?? null, inspeccionId ?? null,
         confirmarSubidaExtra ?? false),

@@ -77,3 +77,28 @@ def test_detect_suffixes_sincrono_sigue_existiendo(tmp_path, api_con_sink):
     (tmp_path / "DJI_0001_T.JPG").write_bytes(b"x")
     r = api.detect_suffixes(str(tmp_path))
     assert r["thermal"] == "_T"
+
+
+def test_cloud_prepare_start_emite_el_plan_por_evento(tmp_path, api_con_sink, monkeypatch):
+    api, sink = api_con_sink
+    (tmp_path / "DJI_0001_T.JPG").write_bytes(b"x" * 10)
+    monkeypatch.setattr(api, "_destino", lambda f, p: (tmp_path, "EMPRESA--PLANTA--2026--TIPO", None))
+    monkeypatch.setattr(api, "_get_auth", lambda: None)
+
+    assert api.cloud_prepare_start(str(tmp_path), "EMPRESA--PLANTA--2026--TIPO") == {"started": True}
+    done = _esperar(sink, "done")
+    assert done["scope"] == "plan"
+    assert done["data"]["ok"] is True
+    assert done["data"]["files"] == 1
+
+
+def test_cloud_prepare_start_rechaza_si_ya_hay_analisis(tmp_path, api_con_sink):
+    api, _ = api_con_sink
+    api._analizando = True
+    r = api.cloud_prepare_start(str(tmp_path), "X")
+    assert r["started"] is False
+
+
+def test_cloud_prepare_sincrono_sigue_existiendo(api_con_sink):
+    api, _ = api_con_sink
+    assert callable(api.cloud_prepare)
