@@ -7,6 +7,12 @@ const TRAZOS = {
   aerotools: 'M12 2l9 6-9 6-9-6 9-6zm0 12l9-6M3 8l9 6',
   otros: 'M4 6h6v6H4zM14 6h6v6h-6zM9 16h6v4H9z',
   config: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19 12l2 1-2 4-2-1-2 1-1 2h-4l-1-2-2-1-2 1-2-4 2-1v-2l-2-1 2-4 2 1 2-1 1-2h4l1 2 2 1 2-1 2 4-2 1v2z',
+  // Trabajo: mismo lenguaje de línea simple que `organizar` (listado), con un
+  // check para marcar el paso a paso del flujo de subida.
+  trabajo: 'M3 7h18M3 12h9M3 17h9M16 15l2.5 2.5L21 14',
+  // Herramientas: variación de `otros` (cuadrícula de accesos) con una llave
+  // inglesa esquemática para diferenciarla del resto de la nav.
+  herramientas: 'M14.7 6.3a4 4 0 00-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 005.4-5.4l-2.6 2.6-2-2z',
 }
 
 export default function NavIcon({ id }) {

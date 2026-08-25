@@ -20,7 +20,12 @@ export default function PasoCarpeta({ label, value, onChange, disabled, avisoNoV
 
   return (
     <>
-      <FileField label={label} value={value} onPick={disabled ? () => {} : elegir} />
+      <FileField
+        label={label}
+        value={value}
+        onPick={disabled ? () => {} : elegir}
+        onType={disabled ? undefined : onChange}
+      />
       {noVacia && (
         <span className="field-hint hint-warn">
           La carpeta ya tiene {noVacia.count} ficheros. Elige una vacía para no mezclar vuelos.
