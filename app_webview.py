@@ -1132,18 +1132,12 @@ class Api:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def cloud_prepare(self, folder: str, prefix: str | None = None) -> dict:
-        """Qué se subiría de verdad: total, lo que ya está y lo que falta.
+    def _construir_plan(self, folder: str, prefix: str | None,
+                        on_progress=None, should_stop=None) -> dict:
+        """Cuerpo compartido de `cloud_prepare`/`cloud_prepare_start`.
 
-        Cruza la carpeta con lo que ya hay en el destino, así que lo que
-        enseña es el trabajo REAL pendiente, no el tamaño de la carpeta.
-
-        NUNCA lista el bucket aquí: un prefijo con decenas de miles de objetos
-        tarda ~20 s y esto se llama justo al elegir carpeta, con la pantalla
-        esperando. El listado se lanza en background (`_inventario_precalentar`)
-        y esta llamada devuelve al instante con `inventario: "calculando"`; la
-        UI recibe `kind: "inventario"` por `atom:cloud` cuando esté y vuelve a
-        preguntar, y entonces sí salen los pendientes de la caché.
+        `on_progress`/`should_stop` son `None` en la llamada síncrona; la
+        variante en hilo los usa para emitir avance y permitir cancelar.
         """
         from atom_core import cloud_config, cloud_upload
 
@@ -1151,7 +1145,8 @@ class Api:
         if error:
             return {"ok": False, "error": error}
         try:
-            plan = cloud_upload.build_plan(root, prefix)
+            plan = cloud_upload.build_plan(root, prefix, on_progress=on_progress,
+                                           should_stop=should_stop)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
 
@@ -1180,6 +1175,48 @@ class Api:
                 out["pendientes"] = len(pendientes)
                 out["bytes_pendientes"] = sum(i.size for i in pendientes)
         return out
+
+    def cloud_prepare(self, folder: str, prefix: str | None = None) -> dict:
+        """Qué se subiría de verdad: total, lo que ya está y lo que falta.
+
+        Cruza la carpeta con lo que ya hay en el destino, así que lo que
+        enseña es el trabajo REAL pendiente, no el tamaño de la carpeta.
+
+        NUNCA lista el bucket aquí: un prefijo con decenas de miles de objetos
+        tarda ~20 s y esto se llama justo al elegir carpeta, con la pantalla
+        esperando. El listado se lanza en background (`_inventario_precalentar`)
+        y esta llamada devuelve al instante con `inventario: "calculando"`; la
+        UI recibe `kind: "inventario"` por `atom:cloud` cuando esté y vuelve a
+        preguntar, y entonces sí salen los pendientes de la caché.
+        """
+        return self._construir_plan(folder, prefix)
+
+    def cloud_prepare_start(self, folder: str, prefix: str | None = None) -> dict:
+        """Igual que `cloud_prepare` pero en un hilo: el `rglob` de la carpeta
+        entera dejaba la pantalla esperando. El plan llega por `atom:analisis`."""
+        if self._analizando:
+            return {"started": False, "reason": "Ya hay un análisis en curso."}
+        self._analizando = True
+
+        def worker() -> None:
+            try:
+                data = self._construir_plan(
+                    folder, prefix,
+                    on_progress=lambda n: self._push_analisis(
+                        {"kind": "scan", "scope": "plan", "done": n}),
+                    should_stop=lambda: self._cancel_analisis,
+                )
+                if self._cancel_analisis:
+                    self._push_analisis({"kind": "cancelled", "scope": "plan"})
+                else:
+                    self._push_analisis({"kind": "done", "scope": "plan", "data": data})
+            except Exception as exc:  # noqa: BLE001 - llega a la UI como error
+                self._push_analisis({"kind": "error", "scope": "plan", "text": str(exc)})
+            finally:
+                self._analizando = False
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"started": True}
 
     def cloud_upload(self, folder: str, force: bool = False,
                      prefix: str | None = None,
