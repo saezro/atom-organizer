@@ -1,0 +1,10 @@
+[Unit]
+Description=Rotacion periodica del log del kiosco ATOM Organizer
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
