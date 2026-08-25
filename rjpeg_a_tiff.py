@@ -40,6 +40,13 @@ RESOLUCIONES = [
     (336, 256), (384, 288), (320, 256), (160, 120),
 ]
 
+# Cotas del ultimo recurso de resolucion_desde_raw (ver alli): el termico mas
+# pequeno que maneja el pipeline es 160x120, asi que por debajo de 1024 pixeles
+# el .raw esta truncado. AR_TOL es cuanto puede desviarse la relacion de aspecto
+# deducida respecto a la del JPG.
+MIN_PIXELES_TERMICOS = 1024
+AR_TOL = 0.02
+
 EXTS_IMAGEN = {".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".tif", ".tiff", ".dng"}
 
 # Subconjunto de EXTS_IMAGEN que el pipeline considera FUENTE: lo que se convierte,
@@ -119,11 +126,17 @@ def resolucion_desde_raw(n_valores, tam_jpg):
     for w, h in RESOLUCIONES:                      # resolucion conocida (H20T: 640x512)
         if w * h == n_valores:
             return w, h
-    # Ultimo recurso: misma relacion de aspecto que el JPG.
+    # Ultimo recurso: misma relacion de aspecto que el JPG. Hay que COMPROBAR que
+    # se ha conseguido: un .raw truncado divide igual (4 valores -> 2x2) y colaba
+    # como termico valido, produciendo un TIFF de temperaturas basura en vez de
+    # fallar. Se exige ademas un minimo de pixeles: por debajo no hay sensor
+    # termico real, es un fichero cortado.
     ar = ancho_jpg / float(alto_jpg)
     h = int(round(math.sqrt(n_valores / ar)))
-    if h and n_valores % h == 0:
-        return n_valores // h, h
+    if h and n_valores % h == 0 and n_valores >= MIN_PIXELES_TERMICOS:
+        w = n_valores // h
+        if abs((w / float(h)) - ar) <= AR_TOL * ar:
+            return w, h
     raise ValueError("no se puede deducir la resolucion termica de {0} valores".format(n_valores))
 
 
