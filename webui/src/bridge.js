@@ -119,7 +119,7 @@ function conectarEventos() {
   // acepta como alternativa para clientes no loopback.
   const url = tokenRemotoActual ? `/events?t=${encodeURIComponent(tokenRemotoActual)}` : '/events'
   fuenteEventos = new EventSource(url)
-  for (const canal of ['atom:progress', 'atom:update', 'atom:cloud']) {
+  for (const canal of ['atom:progress', 'atom:update', 'atom:cloud', 'atom:analisis']) {
     fuenteEventos.addEventListener(canal, (e) => {
       window.dispatchEvent(new CustomEvent(canal, { detail: JSON.parse(e.data) }))
     })
@@ -196,6 +196,12 @@ export const api = {
   // Autodetección del sufijo de separación desde los nombres de la carpeta
   // origen (DJI: térmicas `_T`). Devuelve {ok, thermal, rgb, tokens, total}.
   detectSuffixes: (origen) => call('detect_suffixes', origen),
+  // Variante en hilo de detectSuffixes: no bloquea la ventana en carpetas
+  // grandes. Devuelve {started} al instante; el resultado llega por el
+  // evento `atom:analisis` (kind 'done'), el avance por kind 'scan'.
+  detectSuffixesStart: (origen) => call('detect_suffixes_start', origen),
+  analisisCancel: () => call('analisis_cancel'),
+  analisisReset: () => call('analisis_reset'),
   // ¿La carpeta de salida está vacía? Feedback previo al arrancar (el backend
   // igualmente rechaza no-vacía). Devuelve {exists, empty, count}.
   folderIsEmpty: (path) => call('folder_is_empty', path),
@@ -341,4 +347,15 @@ export function onCloud(handler) {
   const wrapped = (e) => handler(e.detail)
   window.addEventListener('atom:cloud', wrapped)
   return () => window.removeEventListener('atom:cloud', wrapped)
+}
+
+// Eventos del análisis en hilo (Python → JS), canal propio:
+//   kind 'scan'      -> scope, done (imágenes escaneadas, cada 250)
+//   kind 'done'      -> scope, data (dict exacto de detect_suffixes)
+//   kind 'error'     -> scope, text
+//   kind 'cancelled' -> scope
+export function onAnalisis(handler) {
+  const wrapped = (e) => handler(e.detail)
+  window.addEventListener('atom:analisis', wrapped)
+  return () => window.removeEventListener('atom:analisis', wrapped)
 }
