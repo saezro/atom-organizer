@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, isServerMode, onCloud, onProgress, registerPicker, whenBridgeReady } from './bridge'
-import { SECTIONS, SPLIT_ADVANCED } from './schema'
-import TaskBlock, { Field, initialState, buildParams } from './TaskBlock'
+import { SPLIT_ADVANCED } from './schema'
+import { Field, initialState, buildParams } from './TaskBlock'
 import ProgressModal from './ProgressModal'
 import PreflightModal from './PreflightModal'
 import UpdateModal from './UpdateModal'
@@ -17,17 +17,21 @@ import AvisoSesion from './AvisoSesion.jsx'
 import { formatBytes, formatDuracion } from './formato'
 import FileField from './FileField'
 import cloudUploadConfirmando from './trabajo/cloudUploadConfirmando'
+import TrabajoScreen from './trabajo/TrabajoScreen'
+import HerramientasScreen from './HerramientasScreen'
 import './App.css'
 
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
 const ADV_FIELDS = SPLIT_ADVANCED.flatMap((s) => s.fields)
 
+// De cinco pestañas a tres: «Organizar»/«SUBIR AL BUCKET» se funden en
+// «Trabajo» (TrabajoScreen elige el destino) y «AEROTOOLS»/«OTROS EQUIPOS» en
+// «Herramientas» (HerramientasScreen las apila). El icono de ajustes es un
+// SVG inline (NavIcon ya trae el trazo 'config'), nunca un carácter/emoji.
 const NAV = [
-  { id: 'organizar', label: 'Organizar', corto: 'Organizar' },
-  { id: 'bucket', label: 'SUBIR AL BUCKET', corto: 'Bucket' },
-  { id: 'aerotools', label: 'AEROTOOLS', corto: 'Aerotools' },
-  { id: 'otros', label: 'OTROS EQUIPOS', corto: 'Equipos' },
-  { id: 'config', label: 'CONFIGURACIÓN', corto: 'Config' },
+  { id: 'trabajo', label: 'Trabajo', corto: 'Trabajo' },
+  { id: 'herramientas', label: 'Herramientas', corto: 'Herramientas' },
+  { id: 'config', label: 'Ajustes', corto: 'Ajustes' },
 ]
 
 // « a las 17:42 » para la última comprobación de sesión. Devuelve cadena vacía
@@ -147,7 +151,7 @@ function anexarLog(lineas, texto) {
 
 function App() {
   const [ready, setReady] = useState(false)
-  const [section, setSection] = useState('organizar')
+  const [section, setSection] = useState('trabajo')
   const [running, setRunning] = useState(false)
 
   // Estado del modal de progreso (derivado de los eventos atom:progress).
@@ -590,7 +594,7 @@ function App() {
       )}
 
       {!kiosco && (
-        <nav className="seg">
+        <nav className="seg" role="tablist">
           {NAV.map((n) => (
             <button
               key={n.id}
@@ -598,6 +602,8 @@ function App() {
               onClick={() => setSection(n.id)}
               title={n.label}
               aria-label={n.label}
+              role="tab"
+              aria-selected={section === n.id}
             >
               <NavIcon id={n.id} />
               <span className="seg-txt">{n.corto}</span>
@@ -634,18 +640,17 @@ function App() {
               onRunTask={(task, params) => run(task, params, null)}
             />
           </KioskGuard>
-        ) : section === 'organizar' ? (
-          <OrganizarScreen ready={ready} running={running} onRun={run} />
-        ) : section === 'bucket' ? (
-          <BucketScreen ready={ready} />
-        ) : section === 'config' ? (
-          <ConfigScreen ready={ready} />
+        ) : section === 'trabajo' ? (
+          <TrabajoScreen
+            ready={ready}
+            running={running}
+            onRun={run}
+            onCloudStatusChange={setKioskCloudStatus}
+          />
+        ) : section === 'herramientas' ? (
+          <HerramientasScreen running={running} onRun={run} />
         ) : (
-          <div className="section-blocks">
-            {SECTIONS[section].blocks.map((b) => (
-              <TaskBlock key={b.task} block={b} running={running} onRun={run} />
-            ))}
-          </div>
+          <ConfigScreen ready={ready} />
         )}
       </main>
 

@@ -17,13 +17,9 @@ const api = {
   })),
   pickFolder: vi.fn(async () => '/home/saez/Descargas/ANTOLIN'),
   pickFile: vi.fn(async () => '/home/saez/Descargas/estadillo.xlsx'),
-  cloudPrepare: vi.fn(async () => ({
-    ok: true,
-    prefix: 'ANTOLIN',
-    files: 0,
-    bytes: 0,
-    existing: 0,
-  })),
+  cloudPrepareStart: vi.fn(async () => ({ started: true })),
+  analisisReset: vi.fn(async () => ({ ok: true })),
+  analisisCancel: vi.fn(async () => ({ ok: true })),
   cloudUpload: vi.fn(async () => ({ ok: true })),
   cloudCancel: vi.fn(async () => ({ ok: true })),
   cloudLogin: vi.fn(async () => ({ started: true })),
@@ -45,6 +41,7 @@ vi.mock('../bridge', () => ({
   whenBridgeReady: () => Promise.resolve(),
   onProgress: () => () => {},
   onCloud: () => () => {},
+  onAnalisis: () => () => {},
   onUpdate: () => () => {},
   registerPicker: vi.fn(),
   isServerMode: () => false,
@@ -52,6 +49,11 @@ vi.mock('../bridge', () => ({
 
 const App = (await import('../App')).default
 
+// Navegación: Task 11 fundió «SUBIR AL BUCKET» en el destino homónimo dentro
+// del tab «Trabajo» (activo por defecto). El comportamiento que prueba este
+// test (cerrar sesión no revienta con un ReferenceError) no cambia, solo el
+// camino: hace falta elegir la carpeta del vuelo antes de que aparezcan los
+// destinos, y elegir «Subir al bucket» para montar `PanelSubida`.
 describe('BucketScreen · cerrar sesión', () => {
   it('cierra sesión sin lanzar ReferenceError', async () => {
     const errores = []
@@ -60,7 +62,8 @@ describe('BucketScreen · cerrar sesión', () => {
     window.addEventListener('unhandledrejection', onError)
 
     render(<App />)
-    fireEvent.click(await screen.findByRole('button', { name: /SUBIR AL BUCKET/i }))
+    fireEvent.click((await screen.findAllByRole('button', { name: /elegir/i }))[0])
+    fireEvent.click(await screen.findByText('Subir al bucket'))
     fireEvent.click(await screen.findByText(/Cerrar sesión/i))
 
     await waitFor(() => expect(errores).toHaveLength(0))
