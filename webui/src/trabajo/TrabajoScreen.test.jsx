@@ -14,10 +14,18 @@ vi.mock('../bridge', () => ({
     analisisReset: vi.fn().mockResolvedValue({ ok: true }),
     analisisCancel: vi.fn().mockResolvedValue({ ok: true }),
   },
-  onCloud: () => () => {},
+  onCloud: (h) => {
+    const w = (e) => h(e.detail)
+    window.addEventListener('atom:cloud', w)
+    return () => window.removeEventListener('atom:cloud', w)
+  },
   onAnalisis: () => () => {},
 }))
+import { act } from '@testing-library/react'
 import TrabajoScreen from './TrabajoScreen'
+
+const emitir = (canal, detail) =>
+  act(() => { window.dispatchEvent(new CustomEvent(canal, { detail })) })
 
 beforeEach(() => vi.clearAllMocks())
 
@@ -53,6 +61,48 @@ describe('TrabajoScreen', () => {
     fireEvent.click(screen.getByText(/Subir al bucket/i))
     await waitFor(() => expect(api.cloudPrepareStart).not.toHaveBeenCalled()) // aún sin inspección
     expect(api.pickFolder).toHaveBeenCalledTimes(1)
+  })
+
+  // F4: el original (`BucketScreen`) deshabilitaba TODO el formulario
+  // mientras había una subida en curso (`busy || uploading || estadSubiendo`).
+  // Aquí `PanelSubida` reporta su propio ocupado hacia arriba y el padre lo
+  // suma al `disabled` de los demás pasos.
+  it('deshabilita carpeta y estadillo mientras hay una subida en curso', async () => {
+    const { api } = await import('../bridge')
+    render(<TrabajoScreen ready running={false} onRun={() => {}} />)
+    fireEvent.click(screen.getAllByText(/Elegir/i)[0])
+    await screen.findByDisplayValue('/datos/vuelo')
+    fireEvent.click(screen.getByText(/Subir al bucket/i))
+    await waitFor(() => expect(api.cloudStatus).toHaveBeenCalled())
+
+    const checkbox = () => screen.getByRole('checkbox', { name: /Subir sin estadillo/i })
+    expect(checkbox().disabled).toBe(false)
+
+    emitir('atom:cloud', { kind: 'start', files: 1, bytes: 1, prefix: 'x' })
+    await waitFor(() => expect(checkbox().disabled).toBe(true))
+
+    // La carpeta ya no se puede volver a elegir mientras dura la subida.
+    api.pickFolder.mockClear()
+    fireEvent.click(screen.getAllByText(/Elegir/i)[0])
+    expect(api.pickFolder).not.toHaveBeenCalled()
+
+    emitir('atom:cloud', { kind: 'done', ok: true, uploaded: 1, cancelled: false })
+    await waitFor(() => expect(checkbox().disabled).toBe(false))
+  })
+
+  // F5: el original recargaba el catálogo de inspecciones justo al iniciar
+  // sesión (`case 'login'` → `cargarInspecciones()`), sin esperar a que el
+  // operario pulse «Actualizar» a mano.
+  it('recarga el catálogo de inspecciones tras iniciar sesión', async () => {
+    const { api } = await import('../bridge')
+    render(<TrabajoScreen ready running={false} onRun={() => {}} />)
+    fireEvent.click(screen.getAllByText(/Elegir/i)[0])
+    await screen.findByDisplayValue('/datos/vuelo')
+    fireEvent.click(screen.getByText(/Subir al bucket/i))
+    await waitFor(() => expect(api.cloudInspecciones).toHaveBeenCalledTimes(1))
+
+    emitir('atom:cloud', { kind: 'login', ok: true })
+    await waitFor(() => expect(api.cloudInspecciones).toHaveBeenCalledTimes(2))
   })
 
   it('reenvía onCloudStatusChange a PanelSubida', async () => {

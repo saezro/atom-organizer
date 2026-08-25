@@ -17,10 +17,22 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
   const [elegida, setElegida] = useState(null)
   const [estadillo, setEstadillo] = useState({ rutas: [], listo: false, subiendo: false, subir: async () => {} })
   const [destino, setDestino] = useState(null)
+  // Subida en curso dentro de `PanelSubida` (login/preparación/subida en
+  // hilo). El original (`BucketScreen`) tenía `busy`/`uploading` en el mismo
+  // componente que carpeta/inspección/estadillo y los sumaba todos a un único
+  // `ocupado` que deshabilitaba el formulario entero; aquí viven en paneles
+  // distintos, así que `PanelSubida` lo reporta hacia arriba.
+  const [subidaOcupada, setSubidaOcupada] = useState(false)
+  // Se incrementa cuando `PanelSubida` avisa de un login recién hecho, para
+  // que `PasoInspeccion` recargue su catálogo sin perder la inspección ya
+  // elegida (cambiar de valor basta, no importa a qué).
+  const [inspeccionReloadToken, setInspeccionReloadToken] = useState(0)
+
+  const ocupado = running || subidaOcupada
 
   return (
     <div className="card">
-      <PasoCarpeta label="Carpeta del vuelo" value={carpeta} onChange={setCarpeta} disabled={running} />
+      <PasoCarpeta label="Carpeta del vuelo" value={carpeta} onChange={setCarpeta} disabled={ocupado} />
       <PasoInspeccion
         ready={ready}
         prefijo={prefijo}
@@ -28,9 +40,10 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
           setPrefijo(p)
           setElegida(e)
         }}
-        disabled={running || estadillo.subiendo}
+        disabled={ocupado || estadillo.subiendo}
+        reloadToken={inspeccionReloadToken}
       />
-      <PasoEstadillo prefijo={prefijo} disabled={running} onEstado={setEstadillo} />
+      <PasoEstadillo prefijo={prefijo} disabled={ocupado} onEstado={setEstadillo} />
 
       {carpeta && (
         <div className="field">
@@ -66,6 +79,8 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
           subirEstadillo={estadillo.subir}
           ready={ready}
           onCloudStatusChange={onCloudStatusChange}
+          onOcupadoChange={setSubidaOcupada}
+          onLoginOk={() => setInspeccionReloadToken((n) => n + 1)}
         />
       )}
     </div>

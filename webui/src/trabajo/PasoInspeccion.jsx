@@ -4,7 +4,7 @@ import InspeccionSelector from '../InspeccionSelector'
 
 const NUEVA = '__nueva__'
 
-export default function PasoInspeccion({ ready, prefijo, onChange, disabled }) {
+export default function PasoInspeccion({ ready, prefijo, onChange, disabled, reloadToken }) {
   const [catalogo, setCatalogo] = useState(null) // {ok, inspecciones[], origen, error}
   const [eleccion, setEleccion] = useState(prefijo || '') // prefijo elegido | NUEVA | ''
   const [nueva, setNueva] = useState('') // nombre tecleado si eleccion === NUEVA
@@ -24,8 +24,12 @@ export default function PasoInspeccion({ ready, prefijo, onChange, disabled }) {
     if (ready) {
       cargarInspecciones()
     }
+    // `reloadToken` es el aviso de `TrabajoScreen` tras un login desde cero
+    // en `PanelSubida` (el catálogo vive aquí, ese panel no puede recargarlo
+    // directamente): cambia de valor y basta para disparar este mismo
+    // efecto, sin tocar `eleccion`/`prefijo` ya elegidos.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready])
+  }, [ready, reloadToken])
 
   // Cambiar de inspección cambia el destino, así que el plan anterior (y
   // demás estado dependiente de la inspección) lo invalida quien escuche

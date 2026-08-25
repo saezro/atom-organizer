@@ -27,6 +27,8 @@ export default function PanelSubida({
   onAntesDeSubir,
   onSubidaOk,
   onCloudStatusChange,
+  onOcupadoChange,
+  onLoginOk,
 }) {
   const [status, setStatus] = useState(null) // {configured, logged_in, email, bucket, help}
   const [sesion, setSesion] = useState(null)
@@ -128,6 +130,12 @@ export default function PanelSubida({
               // El canje del código acaba de funcionar: la sesión está viva sin
               // necesidad de volver a preguntar.
               setSesion({ ok: true, text: 'Sesión válida.', validada_en: Date.now() / 1000 })
+              // El catálogo de inspecciones vive en `PasoInspeccion` (otro
+              // paso del padre): sin avisar aquí, tras iniciar sesión desde
+              // cero la lista se queda vacía hasta que el operario pulsa
+              // «Actualizar» a mano (mismo refresco cruzado que hacía el
+              // `BucketScreen` original al recibir este evento).
+              onLoginOk?.()
             } else setResult({ error: d.text || 'No se pudo iniciar sesión.' })
             break
           case 'session':
@@ -222,8 +230,30 @@ export default function PanelSubida({
   }, [uploading, desde])
 
   const logged = !!status?.logged_in
-  const ocupado = busy || uploading || estadilloSubiendo
+  const ocupado = Boolean(busy || uploading || estadilloSubiendo)
   const puedeSubir = ready && logged && !!prefijo && plan?.ok && !ocupado && estadilloListo
+
+  // El original (`BucketScreen`) usaba este mismo `ocupado` para deshabilitar
+  // TODO el formulario (carpeta, inspección, estadillo), no solo los
+  // controles de este panel: aquí se avisa al padre (`TrabajoScreen`), que es
+  // quien compone esos otros pasos. Se reporta desde un efecto con
+  // dependencias explícitas, nunca durante el render (mismo motivo que
+  // `onEstado` en `PasoEstadillo`: un `onOcupadoChange` que fuera un
+  // `setState` directo en el cuerpo del componente encadenaría un bucle de
+  // renders).
+  useEffect(() => {
+    onOcupadoChange?.(ocupado)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ocupado, onOcupadoChange])
+
+  // Al desmontar (el operario cambia de destino en mitad de una subida) hay
+  // que soltar el candado: si no, el padre se queda con `ocupado` en true
+  // para siempre y los pasos nunca vuelven a habilitarse. Efecto aparte del
+  // de arriba, para que solo corra en el desmontaje.
+  useEffect(() => {
+    return () => onOcupadoChange?.(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Sin `<div className="card">`/`<h2>` propios a propósito: este panel es
   // un tramo del flujo de subida (Task 11 lo compone junto a los demás
