@@ -227,6 +227,36 @@ describe('KioskScreen — paso 1 (menú)', () => {
     expect(screen.queryByTestId('kiosk-banner-conexion')).not.toBeInTheDocument()
   })
 
+  // Regresión: el banner se extendió del launcher a las pantallas del flujo
+  // organizar/subir (menú "Organizer", "Fases", elegir inspección, "Antes de
+  // subir" y el paso 2 final). Aquí solo se cubre el menú "Organizer": el
+  // resto de pantallas del flujo se prueban en sus propios `describe`.
+  it('con sin-conexion el banner también se ve en el menú "Organizer"', async () => {
+    render(
+      <KioskScreen
+        {...baseProps({
+          status: { logged_in: true, estado: 'sin-conexion', email: 'rebeca@aerotools.es', picture: null },
+        })}
+      />
+    )
+    await userEvent.click(screen.getByTestId('kiosk-app-organizer'))
+    expect(screen.getByRole('button', { name: /^organizar$/i })).toBeInTheDocument()
+    expect(screen.getByTestId('kiosk-banner-conexion')).toBeInTheDocument()
+  })
+
+  it('con estado ok el menú "Organizer" no muestra el banner', async () => {
+    render(
+      <KioskScreen
+        {...baseProps({
+          status: { logged_in: true, estado: 'ok', email: 'rebeca@aerotools.es', picture: null },
+        })}
+      />
+    )
+    await userEvent.click(screen.getByTestId('kiosk-app-organizer'))
+    expect(screen.getByRole('button', { name: /^organizar$/i })).toBeInTheDocument()
+    expect(screen.queryByTestId('kiosk-banner-conexion')).not.toBeInTheDocument()
+  })
+
   it('el avatar abre la pantalla de cuenta, no la UI completa de escritorio', async () => {
     render(<KioskScreen {...baseProps({ status: { logged_in: true, email: 'rebeca@aerotools.es' } })} />)
     await userEvent.click(screen.getByTestId('kiosk-avatar'))
@@ -347,6 +377,34 @@ describe('KioskScreen — paso 2 (organizar)', () => {
     expect(screen.getByRole('button', { name: /^organizar$/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /subir en crudo/i })).toBeInTheDocument()
     expect(screen.queryByText(/elegir carpeta/i)).not.toBeInTheDocument()
+  })
+
+  // Regresión: el paso 2 final ("Organizar") es una de las 5 pantallas a las
+  // que se extendió el banner (antes solo vivía en el launcher).
+  it('con sin-conexion el banner se ve en el paso 2 final "Organizar"', () => {
+    render(
+      <KioskScreen
+        {...baseProps({
+          accionInicial: 'organizar',
+          status: { logged_in: true, estado: 'sin-conexion', email: 'rebeca@aerotools.es', picture: null },
+        })}
+      />
+    )
+    expect(screen.getByRole('button', { name: /^organizar$/i })).toBeInTheDocument()
+    expect(screen.getByTestId('kiosk-banner-conexion')).toBeInTheDocument()
+  })
+
+  it('con estado ok el paso 2 final "Organizar" no muestra el banner', () => {
+    render(
+      <KioskScreen
+        {...baseProps({
+          accionInicial: 'organizar',
+          status: { logged_in: true, estado: 'ok', email: 'rebeca@aerotools.es', picture: null },
+        })}
+      />
+    )
+    expect(screen.getByRole('button', { name: /^organizar$/i })).toBeInTheDocument()
+    expect(screen.queryByTestId('kiosk-banner-conexion')).not.toBeInTheDocument()
   })
 })
 

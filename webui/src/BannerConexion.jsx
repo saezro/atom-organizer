@@ -25,11 +25,20 @@ function IconoNubeTachada() {
   )
 }
 
-export default function BannerConexion({ estado, pendientes = 0 }) {
+// `compacto` solo aprieta márgenes y padding, NO recorta el texto: en los
+// pasos de organizar/subir el alto es oro (la lista de inspecciones vive de
+// él), pero un "Sin conexión" a secas se lee como el wifi tachado de la barra
+// y volvería a perderse el matiz de que se está reintentando solo.
+export default function BannerConexion({ estado, pendientes = 0, compacto = false }) {
   if (estado !== 'sin-conexion') return null
 
   return (
-    <div className="kiosk-banner-conexion" role="status" aria-live="polite" data-testid="kiosk-banner-conexion">
+    <div
+      className={`kiosk-banner-conexion${compacto ? ' kiosk-banner-conexion-compacto' : ''}`}
+      role="status"
+      aria-live="polite"
+      data-testid="kiosk-banner-conexion"
+    >
       <IconoNubeTachada />
       <span className="kiosk-banner-conexion-texto">Sin conexión — reintentando</span>
       {pendientes > 0 && (
