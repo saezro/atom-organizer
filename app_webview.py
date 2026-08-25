@@ -787,7 +787,7 @@ class Api:
         try:
             hay = pin_kiosco.hay_pin(self._store_pin())
         except Exception as exc:  # noqa: BLE001 - un store roto no bloquea la Pi
-            print(f"[pin] No se pudo leer el PIN del kiosco: {exc}")
+            logger.warning("[pin] No se pudo leer el PIN del kiosco: %s", exc)
             hay = False
         return {
             "ok": True,
@@ -817,7 +817,7 @@ class Api:
         except pin_kiosco.PinInvalido as exc:
             return {"ok": False, "error": str(exc)}
         except Exception as exc:  # noqa: BLE001
-            print(f"[pin] No se pudo fijar el PIN del kiosco: {exc}")
+            logger.warning("[pin] No se pudo fijar el PIN del kiosco: %s", exc)
             return {"ok": False, "error": "No se pudo guardar el PIN."}
         self._pin_intentos.acierto()
         return {"ok": True}
@@ -870,10 +870,11 @@ class Api:
 
     def _olvidar_pin(self) -> None:
         """Desemparejar resetea el PIN: es la via de recuperacion acordada."""
+        logger.warning("_olvidar_pin: se borra el PIN del kiosco")
         try:
             pin_kiosco.borrar(self._store_pin())
         except Exception as exc:  # noqa: BLE001
-            print(f"[pin] No se pudo borrar el PIN del kiosco: {exc}")
+            logger.warning("[pin] No se pudo borrar el PIN del kiosco: %s", exc)
         self._pin_intentos.acierto()
 
     # ---- emparejamiento por QR (modo broker, Raspberry Pi) -----------------
@@ -2342,27 +2343,73 @@ def _app_version_for_title() -> str:
         return "?"
 
 
+_BACKOFF_ARRANQUE_SEGUNDOS = (5, 10, 20, 40, 80, 160)
+_BACKOFF_ARRANQUE_ESTABLE_SEGUNDOS = 300
+
+
+def _ciclo_comprobacion_arranque(api: Api, dormir=time.sleep, push=None) -> None:
+    """Comprueba la credencial al arrancar y reintenta con backoff si falla.
+
+    El kiosco puede arrancar antes de que el wifi resuelva DNS: la primera
+    `cloud_comprobar` sale `sin-conexion` aunque la red vaya a funcionar
+    segundos después. Esta función reintenta indefinidamente (es un hilo
+    daemon; la Pi se apaga sola) con backoff creciente hasta estabilizarse
+    en `ESTADO_OK` o `ESTADO_SIN_CREDENCIAL`.
+
+    Extraída de `_comprobar_al_arrancar` como función pura y testeable: sin
+    hilos ni sleeps reales, solo llamadas a `api` y a `dormir`/`push`
+    inyectables.
+    """
+    if push is None:
+        push = api._push_cloud
+
+    def comprobar() -> dict:
+        try:
+            return api.cloud_comprobar()
+        except Exception as exc:
+            # El evento a la UI tiene que llegar siempre, o el aviso de
+            # credencial se queda colgado para siempre en el arranque.
+            return {"estado": ESTADO_SIN_CONEXION, "mensaje": str(exc)}
+
+    estado = comprobar()
+    push({"kind": "session",
+          "ok": estado["estado"] == ESTADO_OK,
+          "estado": estado["estado"],
+          "text": estado["mensaje"]})
+
+    reintentos = 0
+    estado_anterior = estado["estado"]
+    while estado_anterior == ESTADO_SIN_CONEXION:
+        if reintentos < len(_BACKOFF_ARRANQUE_SEGUNDOS):
+            espera = _BACKOFF_ARRANQUE_SEGUNDOS[reintentos]
+        else:
+            espera = _BACKOFF_ARRANQUE_ESTABLE_SEGUNDOS
+        dormir(espera)
+        reintentos += 1
+
+        estado = comprobar()
+        if estado["estado"] != estado_anterior:
+            push({"kind": "session",
+                  "ok": estado["estado"] == ESTADO_OK,
+                  "estado": estado["estado"],
+                  "text": estado["mensaje"]})
+            logger.info("comprobacion arranque: estado %s -> %s tras %d reintentos",
+                        estado_anterior, estado["estado"], reintentos)
+        estado_anterior = estado["estado"]
+
+    if estado_anterior == ESTADO_OK:
+        api.cloud_drenar()
+
+
 def _comprobar_al_arrancar(api: Api) -> None:
     """Lanza la primera comprobación de credencial en un hilo aparte.
 
     Se llama justo después de tener el sink de eventos listo (`bind_sink` /
     `bind_window`). No retrasa el pintado de la UI: `cloud_comprobar` hace red
-    y puede tardar. Si sale OK, aprovecha para drenar un job de la cola.
+    y puede tardar. Si sale `sin-conexion`, `_ciclo_comprobacion_arranque`
+    reintenta con backoff en el mismo hilo daemon.
     """
-    def worker() -> None:
-        try:
-            estado = api.cloud_comprobar()
-        except Exception as exc:
-            # El evento a la UI tiene que llegar siempre, o el aviso de
-            # credencial se queda colgado para siempre en el arranque.
-            estado = {"estado": ESTADO_SIN_CONEXION, "mensaje": str(exc)}
-        api._push_cloud({"kind": "session",
-                         "ok": estado["estado"] == ESTADO_OK,
-                         "estado": estado["estado"],
-                         "text": estado["mensaje"]})
-        if estado["estado"] == ESTADO_OK:
-            api.cloud_drenar()
-    threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=_ciclo_comprobacion_arranque, args=(api,), daemon=True).start()
 
 
 def _build_parser() -> argparse.ArgumentParser:
