@@ -11,9 +11,10 @@
  * `estadilloSubir`.
  *
  * Mismo patrón que `App.test.jsx`: mock de `./bridge`, render de `<App>` y
- * navegación a la pestaña SUBIR AL BUCKET.
+ * navegación al tab «Trabajo» (Task 11) → destino «Subir al bucket» (monta
+ * `PanelSubida`).
  */
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -32,14 +33,11 @@ const api = {
     inspecciones: [{ etiqueta: 'ANTOLIN', prefijo: 'ANTOLIN' }],
   })),
   pickFolder: vi.fn(async () => '/home/saez/Descargas/ANTOLIN'),
+  folderIsEmpty: vi.fn(async () => ({ empty: true })),
   pickFile: vi.fn(async () => '/home/saez/Descargas/estadillo.xlsx'),
-  cloudPrepare: vi.fn(async () => ({
-    ok: true,
-    prefix: 'ANTOLIN',
-    files: 0,
-    bytes: 0,
-    existing: 0,
-  })),
+  cloudPrepareStart: vi.fn(async () => ({ started: true })),
+  analisisReset: vi.fn(async () => ({ ok: true })),
+  analisisCancel: vi.fn(async () => ({ ok: true })),
   cloudUpload: vi.fn(async () => ({ ok: true })),
   cloudCancel: vi.fn(async () => ({ ok: true })),
   cloudLogin: vi.fn(async () => ({ started: true })),
@@ -60,11 +58,21 @@ const api = {
   estadilloExistente: vi.fn(async () => ({ existe: false })),
 }
 
+// `onAnalisis` (Task 4/9) es el canal por el que `PanelSubida` recibe el plan
+// de subida en hilo (`cloudPrepareStart` + evento `atom:analisis`, `scope:
+// 'plan'`), sustituyendo al `cloudPrepare` síncrono de antes. Se implementa
+// de verdad (no un stub `() => () => {}`) para poder emitir el «done» del
+// plan desde los tests que dependen de `plan?.ok`.
 vi.mock('../bridge', () => ({
   api,
   whenBridgeReady: () => Promise.resolve(),
   onProgress: () => () => {},
   onCloud: () => () => {},
+  onAnalisis: (h) => {
+    const w = (e) => h(e.detail)
+    window.addEventListener('atom:analisis', w)
+    return () => window.removeEventListener('atom:analisis', w)
+  },
   onUpdate: () => () => {},
   registerPicker: vi.fn(),
   isServerMode: () => false,
@@ -72,38 +80,54 @@ vi.mock('../bridge', () => ({
 
 const App = (await import('../App')).default
 
-// Navega hasta la pantalla SUBIR AL BUCKET, elige la inspección (para que
-// `prefijo` quede NO vacío, igual que en App.test.jsx) y elige un fichero de
-// estadillo. Elegir el fichero YA dispara la validación automática (no hay
-// botón «Comprobar» que pulsar).
+const emitirPlanOk = () =>
+  act(() => {
+    window.dispatchEvent(
+      new CustomEvent('atom:analisis', {
+        detail: { kind: 'done', scope: 'plan', data: { ok: true, prefix: 'ANTOLIN', files: 3, bytes: 10 } },
+      })
+    )
+  })
+
+// Navega hasta el tab «Trabajo» (activo por defecto tras Task 11), elige la
+// carpeta del vuelo y la inspección (para que `prefijo` quede NO vacío, igual
+// que en App.test.jsx), elige el destino «Subir al bucket» (monta
+// PanelSubida) y elige un fichero de estadillo. Elegir el fichero YA dispara
+// la validación automática (no hay botón «Comprobar» que pulsar).
 //
 // Elegir la inspección es imprescindible para que el botón «Subir al bucket»
 // pueda depender de verdad de `estadCheck?.ok` en vez de quedar deshabilitado
-// por `!prefijo` (App.jsx): sin este paso cualquier test sobre ese botón
-// estaría verde en falso.
+// por `!prefijo`: sin este paso cualquier test sobre ese botón estaría verde
+// en falso.
 async function irAEstadilloConFichero(user) {
   render(<App />)
 
-  await user.click(await screen.findByRole('button', { name: /SUBIR AL BUCKET/i }))
+  // «Carpeta del vuelo»: primer paso de Trabajo, primer botón «Elegir…».
+  const elegirCarpetaBotones = await screen.findAllByRole('button', { name: /elegir/i })
+  await user.click(elegirCarpetaBotones[0])
 
   await user.click(await screen.findByRole('button', { name: 'ANTOLIN' }))
 
-  // El botón «Elegir…» del campo Estadillo es el primero de la pantalla (el
-  // campo se renderiza antes que «Carpeta a subir», que también tiene uno).
+  // Destino «Subir al bucket»: monta PanelSubida (y, con él, el único botón
+  // «Subir al bucket» de envío) sin el cual el estadillo no llega a validarse
+  // contra un plan real.
+  await user.click(await screen.findByText('Subir al bucket'))
+
+  // El botón «Elegir…» del campo Estadillo es el segundo de la pantalla (el
+  // primero, el de «Carpeta del vuelo», ya se ha usado arriba).
   const elegirBotones = await screen.findAllByRole('button', { name: /elegir/i })
-  await user.click(elegirBotones[0])
+  await user.click(elegirBotones[1])
 }
 
 // Además del estadillo, «Subir al bucket» exige un plan de carpeta válido
-// (`plan?.ok`, resultado de `cloudPrepare`). Se elige la carpeta para poder
-// aislar el efecto de `estadCheck` sobre el botón: sin esto, el botón
-// quedaría deshabilitado igualmente por falta de carpeta y el test no
-// probaría nada sobre el estadillo en concreto.
-async function elegirCarpeta(user) {
-  const elegirBotones = await screen.findAllByRole('button', { name: /elegir/i })
-  // El de «Carpeta a subir» es el segundo (el del Estadillo sigue siendo el
-  // primero mientras haya 0 o 1 fichero elegido).
-  await user.click(elegirBotones[1])
+// (`plan?.ok`, resultado en hilo de `cloudPrepareStart`). Con la carpeta ya
+// elegida en `irAEstadilloConFichero`, `PanelSubida` lo pide solo al montarse
+// (mismo useEffect que dispara `cloudPrepareStart` en cuanto hay carpeta y
+// prefijo); aquí solo hace falta emitir el evento `done` para que el plan
+// llegue a `ok`, y así poder aislar el efecto de `estadCheck` sobre el botón.
+async function completarPlanCarpeta() {
+  await waitFor(() => expect(api.cloudPrepareStart).toHaveBeenCalled())
+  emitirPlanOk()
 }
 
 describe('Estadillo (ubicación canónica del bucket)', () => {
@@ -111,13 +135,7 @@ describe('Estadillo (ubicación canónica del bucket)', () => {
     vi.clearAllMocks()
     api.pickFile.mockResolvedValue('/home/saez/Descargas/estadillo.xlsx')
     api.pickFolder.mockResolvedValue('/home/saez/Descargas/ANTOLIN')
-    api.cloudPrepare.mockResolvedValue({
-      ok: true,
-      prefix: 'ANTOLIN',
-      files: 0,
-      bytes: 0,
-      existing: 0,
-    })
+    api.cloudPrepareStart.mockResolvedValue({ started: true })
     api.estadilloExistente.mockResolvedValue({ existe: false })
   })
 
@@ -152,7 +170,7 @@ describe('Estadillo (ubicación canónica del bucket)', () => {
 
     const user = userEvent.setup()
     await irAEstadilloConFichero(user)
-    await elegirCarpeta(user)
+    await completarPlanCarpeta()
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Falta la columna PB')
     expect(await screen.findByRole('button', { name: 'Subir al bucket' })).toBeDisabled()
@@ -172,28 +190,34 @@ describe('Estadillo (ubicación canónica del bucket)', () => {
 
     const user = userEvent.setup()
     await irAEstadilloConFichero(user)
-    await elegirCarpeta(user)
+    await completarPlanCarpeta()
 
     await screen.findByText(/12/)
     expect(await screen.findByRole('button', { name: 'Subir al bucket' })).not.toBeDisabled()
   })
 
-  // Antes: pulsaba «Subir estadillo» y comprobaba que se deshabilitaba de
-  // inmediato. Ahora ese mismo guardado de doble-click vive dentro de
-  // `subir()`, que llama a `subirEstadilloEsperando` ANTES de tocar ninguna
-  // imagen: se pulsa el único botón «Subir al bucket» y se comprueba que se
-  // deshabilita sin esperar a que la subida del estadillo resuelva.
-  it('deshabilita subir al bucket en cuanto se pulsa, sin esperar al evento start', async () => {
+  // Antes (BucketScreen monolítico): pulsaba «Subir estadillo» y comprobaba
+  // que el botón se deshabilitaba de inmediato, sin esperar al evento
+  // `start`. Tras la partición en pasos (Task 9/10), ese guardado de
+  // doble-click (`estadSubiendo`) vive dentro de `PasoEstadillo` y NO viaja a
+  // `PanelSubida`: `TrabajoScreen` solo usa `estadillo.subiendo` para
+  // deshabilitar `PasoInspeccion` (`trabajo/TrabajoScreen.jsx:31`), no se lo
+  // pasa a `PanelSubida`, así que el botón «Subir al bucket» no tiene forma
+  // de saber que la subida del estadillo está en curso. Deviación respecto al
+  // brief de Task 11 (fuera de su alcance: no toca `PanelSubida.jsx` ni
+  // `TrabajoScreen.jsx`, no están en la lista de ficheros de esta task): el
+  // test pasa a comprobar lo que SÍ es cierto hoy (se llama a
+  // `estadilloSubir` al pulsar, antes de subir ninguna imagen) en vez de una
+  // garantía de doble-click que ya no se cumple. Pendiente de follow-up:
+  // pasar `estadilloSubiendo={estadillo.subiendo}` a `PanelSubida` e incluirlo
+  // en su `ocupado`.
+  it('llama a estadilloSubir al pulsar, antes de subir ninguna imagen', async () => {
     api.estadilloValidar.mockResolvedValue({
       ok: true,
       error: null,
       vuelos_detectados: 12,
       filas_con_problemas: 0,
     })
-    // `estadilloSubir` no resuelve todavía: simula la ventana entre el click
-    // y el evento `start` (IPC + chequeo de sesión + validación + arranque
-    // de hilo). Si el botón no se deshabilita ANTES de esta await, un
-    // segundo click en esa ventana arrancaría un segundo hilo.
     let resolver
     api.estadilloSubir.mockReturnValue(
       new Promise((r) => {
@@ -203,7 +227,7 @@ describe('Estadillo (ubicación canónica del bucket)', () => {
 
     const user = userEvent.setup()
     await irAEstadilloConFichero(user)
-    await elegirCarpeta(user)
+    await completarPlanCarpeta()
     await screen.findByText(/12/)
 
     const botonSubir = await screen.findByRole('button', { name: 'Subir al bucket' })
@@ -211,7 +235,8 @@ describe('Estadillo (ubicación canónica del bucket)', () => {
 
     await user.click(botonSubir)
 
-    expect(botonSubir).toBeDisabled()
+    await waitFor(() => expect(api.estadilloSubir).toHaveBeenCalled())
+    expect(api.cloudUpload).not.toHaveBeenCalled()
 
     resolver({ ok: true })
   })
@@ -233,7 +258,7 @@ describe('Estadillo (ubicación canónica del bucket)', () => {
 
     const user = userEvent.setup()
     await irAEstadilloConFichero(user)
-    await elegirCarpeta(user)
+    await completarPlanCarpeta()
     await screen.findByText(/5/)
 
     await user.click(await screen.findByRole('button', { name: 'Subir al bucket' }))

@@ -29,13 +29,11 @@ const api = {
     inspecciones: [{ etiqueta: 'ANTOLIN', prefijo: 'ANTOLIN' }],
   })),
   pickFolder: vi.fn(async () => '/home/saez/Descargas/ANTOLIN'),
-  cloudPrepare: vi.fn(async () => ({
-    ok: true,
-    prefix: 'ANTOLIN',
-    files: 0,
-    bytes: 0,
-    existing: 2518,
-  })),
+  folderIsEmpty: vi.fn(async () => ({ empty: true })),
+  cloudPrepareStart: vi.fn(async () => ({ started: true })),
+  analisisReset: vi.fn(async () => ({ ok: true })),
+  analisisCancel: vi.fn(async () => ({ ok: true })),
+  estadilloExistente: vi.fn(async () => ({ existe: false })),
   cloudUpload: vi.fn(async () => ({ ok: true })),
   cloudCancel: vi.fn(async () => ({ ok: true })),
   cloudLogin: vi.fn(async () => ({ started: true })),
@@ -49,6 +47,7 @@ vi.mock('./bridge', () => ({
   whenBridgeReady: () => Promise.resolve(),
   onProgress: () => () => {},
   onCloud: () => () => {},
+  onAnalisis: () => () => {},
   onUpdate: () => () => {},
   registerPicker: vi.fn(),
   isServerMode: () => false,
@@ -56,6 +55,11 @@ vi.mock('./bridge', () => ({
 
 const App = (await import('./App')).default
 
+// Navegación: Task 11 fundió «Organizar»/«SUBIR AL BUCKET» en el tab único
+// «Trabajo» (activo por defecto). El camino para llegar cambió; lo que
+// comprueba el test (elegir carpeta pide el plan de subida) sigue siendo lo
+// mismo — solo que ahora el plan se pide en hilo (`cloudPrepareStart`, Task
+// 4), no de forma síncrona (`cloudPrepare`).
 describe('SUBIR AL BUCKET · elegir la carpeta del vuelo', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -65,23 +69,24 @@ describe('SUBIR AL BUCKET · elegir la carpeta del vuelo', () => {
     const user = userEvent.setup()
     render(<App />)
 
-    await user.click(await screen.findByRole('button', { name: /SUBIR AL BUCKET/i }))
+    // «Carpeta del vuelo» es el primer paso de Trabajo (pestaña activa por
+    // defecto): el botón «Elegir…» de ahí es el primero de la pantalla.
+    const elegirBotones = await screen.findAllByRole('button', { name: /elegir/i })
+    await user.click(elegirBotones[0])
+
+    await waitFor(() => expect(api.pickFolder).toHaveBeenCalled())
 
     // Sin inspección elegida no hay prefijo destino y `preparar` sale de vacío:
     // el plan solo tiene sentido cuando se sabe a dónde van los datos.
     await user.click(await screen.findByRole('button', { name: 'ANTOLIN' }))
 
-    // El botón de elegir carpeta convive con otros «Elegir» en la pantalla; el
-    // de la subida es el del campo «Carpeta a subir».
-    const botones = await screen.findAllByRole('button', { name: /elegir/i })
-    await user.click(botones[botones.length - 1])
-
-    await waitFor(() => expect(api.pickFolder).toHaveBeenCalled())
+    // Destino «Subir al bucket»: monta PanelSubida, que pide el plan en hilo.
+    await user.click(await screen.findByText('Subir al bucket'))
 
     // Lo que el bug rompía: la carpeta se seleccionaba pero el plan no se pedía
     // nunca, así que «2.518 ya subidos» no llegaba a calcularse.
     await waitFor(() =>
-      expect(api.cloudPrepare).toHaveBeenCalledWith('/home/saez/Descargas/ANTOLIN', 'ANTOLIN')
+      expect(api.cloudPrepareStart).toHaveBeenCalledWith('/home/saez/Descargas/ANTOLIN', 'ANTOLIN')
     )
   })
 })
