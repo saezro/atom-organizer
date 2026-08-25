@@ -25,6 +25,7 @@ import KioskTareas from './KioskTareas.jsx'
 import KioskAjustes from './KioskAjustes.jsx'
 import KioskLock from './KioskLock.jsx'
 import BarraEstado from './BarraEstado.jsx'
+import BannerConexion from './BannerConexion.jsx'
 import { APPS } from './apps/registry.js'
 
 // Deriva la ruta de destino a partir de la carpeta de origen, añadiendo el
@@ -624,6 +625,10 @@ export default function KioskScreen({
     return (
       <div className="kiosk">
         <div className="kiosk-header"><BarraEstado />{avatar}</div>
+        {/* Solo en el launcher: es la pantalla donde el operario lee el estado
+            del dispositivo. En los pasos de organizar/subir el sitio escasea y
+            cada uno ya da su propio feedback de error. */}
+        <BannerConexion estado={status?.estado} pendientes={status?.pendientes || 0} />
         {barraProgreso}
         <MenuApps
           apps={APPS}

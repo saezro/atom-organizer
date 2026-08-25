@@ -2755,3 +2755,39 @@ html.kiosk-modo body * {
   background: var(--orange);
   color: #0a0a0a;
 }
+
+/* Banner de "sin conexión" del launcher (BannerConexion.jsx): fila en el
+   flujo, justo bajo la cabecera, sin robarle alto al menú de apps. Naranja
+   Atom tenue, no rojo: la sesión sigue siendo válida, esto no es un error del
+   que el operario tenga que hacer nada. */
+.kiosk-banner-conexion {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) / 1.5);
+  margin: 0 var(--u) calc(var(--u) / 2);
+  padding: calc(var(--u) / 1.5) var(--u);
+  border: 0.0625rem solid rgba(238, 117, 58, 0.35);
+  border-radius: var(--radio);
+  background: rgba(238, 117, 58, 0.12);
+  color: var(--orange);
+  font-size: var(--fs-sm);
+  line-height: 1.2;
+}
+.kiosk-banner-conexion svg {
+  width: 1.2em;
+  height: 1.2em;
+  flex-shrink: 0;
+}
+.kiosk-banner-conexion-texto {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* Recuento de subidas en cola: dato secundario, se apaga para que el mensaje
+   principal siga siendo lo que se lee de un vistazo. */
+.kiosk-banner-conexion-cola {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--muted);
+}

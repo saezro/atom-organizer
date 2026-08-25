@@ -193,6 +193,40 @@ describe('KioskScreen — paso 1 (menú)', () => {
     expect(img).toHaveAttribute('src', 'http://x/foto.png')
   })
 
+  // Regresión: BannerConexion se monta en el launcher junto al avatar, y la
+  // coherencia entre ambos es el punto clave (ver comentario de
+  // BannerConexion.jsx) — sin red el banner avisa, pero el avatar sigue
+  // mostrando la sesión como válida, no "Sin sesión".
+  it('con estado sin-conexion muestra el banner y el avatar sigue con sesión (no "Sin sesión")', () => {
+    render(
+      <KioskScreen
+        {...baseProps({
+          status: {
+            logged_in: true,
+            estado: 'sin-conexion',
+            email: 'rebeca@aerotools.es',
+            picture: 'http://x/foto.png',
+          },
+        })}
+      />
+    )
+    expect(screen.getByTestId('kiosk-banner-conexion')).toBeInTheDocument()
+    const avatar = screen.getByTestId('kiosk-avatar')
+    expect(avatar.querySelector('img')).toHaveAttribute('src', 'http://x/foto.png')
+    expect(screen.queryByText('Sin sesión')).not.toBeInTheDocument()
+  })
+
+  it('con estado ok no hay banner de conexión', () => {
+    render(
+      <KioskScreen
+        {...baseProps({
+          status: { logged_in: true, estado: 'ok', email: 'rebeca@aerotools.es', picture: null },
+        })}
+      />
+    )
+    expect(screen.queryByTestId('kiosk-banner-conexion')).not.toBeInTheDocument()
+  })
+
   it('el avatar abre la pantalla de cuenta, no la UI completa de escritorio', async () => {
     render(<KioskScreen {...baseProps({ status: { logged_in: true, email: 'rebeca@aerotools.es' } })} />)
     await userEvent.click(screen.getByTestId('kiosk-avatar'))
