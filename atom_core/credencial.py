@@ -12,7 +12,10 @@ preguntar "¿puedo trabajar?".
 
 from __future__ import annotations
 
+import logging
 import time
+
+logger = logging.getLogger(__name__)
 
 ESTADO_OK = "ok"
 ESTADO_SIN_CREDENCIAL = "sin-credencial"
@@ -55,6 +58,7 @@ class EstadoCredencial:
 
     def invalidar(self, mensaje: str = "") -> None:
         """Un 401 en una llamada real: se sabe ya, sin esperar al latido."""
+        logger.warning("EstadoCredencial.invalidar: %s", mensaje or "sin motivo")
         self._estado = ESTADO_SIN_CREDENCIAL
         self._mensaje = mensaje
         self._comprobado_en = None

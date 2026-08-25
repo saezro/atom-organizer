@@ -229,7 +229,7 @@ export default function KioskScreen({
       onActivar={() => setAccion('cuenta')}
       data-testid="kiosk-avatar"
     >
-      {status ? (
+      {status && status.logged_in && status.estado !== 'sin-credencial' ? (
         status.picture ? (
           <img src={status.picture} alt={`Avatar de ${email}`} className="kiosk-avatar-img" />
         ) : (

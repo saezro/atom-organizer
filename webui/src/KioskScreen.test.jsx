@@ -128,7 +128,7 @@ describe('KioskScreen — paso 1 (menú)', () => {
   it('renderiza avatar con picture si existe', () => {
     render(
       <KioskScreen
-        {...baseProps({ status: { email: 'rebeca@aerotools.es', picture: 'http://x/foto.png' } })}
+        {...baseProps({ status: { logged_in: true, email: 'rebeca@aerotools.es', picture: 'http://x/foto.png' } })}
       />
     )
     const img = screen.getByRole('img', { name: /rebeca@aerotools.es/i })
@@ -136,9 +136,61 @@ describe('KioskScreen — paso 1 (menú)', () => {
   })
 
   it('sin picture pero con email muestra avatar de respaldo con la inicial, sin <img>', () => {
-    render(<KioskScreen {...baseProps({ status: { email: 'rebeca@aerotools.es', picture: null } })} />)
+    render(<KioskScreen {...baseProps({ status: { logged_in: true, email: 'rebeca@aerotools.es', picture: null } })} />)
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
     expect(screen.getByText('R')).toBeInTheDocument()
+  })
+
+  it('con estado sin-credencial NO se renderiza el avatar aunque logged_in sea true (sesión inválida)', () => {
+    render(
+      <KioskScreen
+        {...baseProps({
+          status: {
+            logged_in: true,
+            estado: 'sin-credencial',
+            email: 'rebeca@aerotools.es',
+            picture: 'http://x/foto.png',
+          },
+        })}
+      />
+    )
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+    expect(screen.queryByText('R')).not.toBeInTheDocument()
+    expect(screen.getByText(/sin sesión/i)).toBeInTheDocument()
+  })
+
+  it('con logged_in false NO se renderiza el avatar aunque el estado sea ok', () => {
+    render(
+      <KioskScreen
+        {...baseProps({
+          status: {
+            logged_in: false,
+            estado: 'ok',
+            email: 'rebeca@aerotools.es',
+            picture: 'http://x/foto.png',
+          },
+        })}
+      />
+    )
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+    expect(screen.getByText(/sin sesión/i)).toBeInTheDocument()
+  })
+
+  it('con estado sin-conexion SÍ se sigue renderizando el avatar (sesión válida sin red, no debe parpadear)', () => {
+    render(
+      <KioskScreen
+        {...baseProps({
+          status: {
+            logged_in: true,
+            estado: 'sin-conexion',
+            email: 'rebeca@aerotools.es',
+            picture: 'http://x/foto.png',
+          },
+        })}
+      />
+    )
+    const img = screen.getByRole('img', { name: /rebeca@aerotools.es/i })
+    expect(img).toHaveAttribute('src', 'http://x/foto.png')
   })
 
   it('el avatar abre la pantalla de cuenta, no la UI completa de escritorio', async () => {
