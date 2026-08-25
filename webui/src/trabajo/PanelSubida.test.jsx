@@ -102,6 +102,39 @@ describe('PanelSubida', () => {
   // quedaba con `estado: 'ok'` y "Subir en crudo" seguía pulsable sin sesión.
   // `onCloudStatusChange` es el cable que `App` (Task 11) usará para
   // mantener sincronizado su propio estado de nube del kiosco.
+  // F4: durante una subida en curso, el padre (`TrabajoScreen`) necesita
+  // saberlo para bloquear carpeta/inspección/estadillo, tal como hacía el
+  // `ocupado` único del `BucketScreen` original.
+  it('avisa a onOcupadoChange cuando arranca una subida', async () => {
+    const onOcupadoChange = vi.fn()
+    render(<PanelSubida {...props} onOcupadoChange={onOcupadoChange} />)
+    await waitFor(() => expect(onOcupadoChange).toHaveBeenCalledWith(false))
+    onOcupadoChange.mockClear()
+    emitir('atom:cloud', { kind: 'start', files: 30, bytes: 100, prefix: 'ACME--P--2026--T' })
+    await waitFor(() => expect(onOcupadoChange).toHaveBeenCalledWith(true))
+    onOcupadoChange.mockClear()
+    emitir('atom:cloud', { kind: 'done', ok: true, uploaded: 30, cancelled: false })
+    await waitFor(() => expect(onOcupadoChange).toHaveBeenCalledWith(false))
+  })
+
+  // F5: tras iniciar sesión desde cero, `PasoInspeccion` (otro paso del
+  // padre) tiene que recargar su catálogo; `PanelSubida` no puede tocarlo
+  // directamente, así que avisa con `onLoginOk`.
+  it('avisa a onLoginOk cuando el login termina bien', async () => {
+    const onLoginOk = vi.fn()
+    render(<PanelSubida {...props} onLoginOk={onLoginOk} />)
+    emitir('atom:cloud', { kind: 'login', ok: true })
+    await waitFor(() => expect(onLoginOk).toHaveBeenCalled())
+  })
+
+  it('no avisa a onLoginOk si el login falla', async () => {
+    const onLoginOk = vi.fn()
+    render(<PanelSubida {...props} onLoginOk={onLoginOk} />)
+    emitir('atom:cloud', { kind: 'login', ok: false, text: 'denegado' })
+    await screen.findByText(/denegado/)
+    expect(onLoginOk).not.toHaveBeenCalled()
+  })
+
   it('avisa a onCloudStatusChange con el estado ya sin sesión tras logout', async () => {
     const onCloudStatusChange = vi.fn()
     api.cloudStatus
