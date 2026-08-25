@@ -57,6 +57,16 @@ describe('AvisoSesion', () => {
     render(<AvisoSesion estado="sin-credencial" pendientes={3} />)
     expect(screen.getByText(/3/)).toBeTruthy()
   })
+
+  // Regresión: el cuerpo pintaba `estado_mensaje` del backend, que es el
+  // `str(exc)` de Python. A 480x320 y delante del PIN eso es ruido ilegible
+  // para el operario; el detalle técnico se queda en el log del server.
+  it('no pinta el error crudo del backend aunque se le pase un mensaje', () => {
+    render(<AvisoSesion estado="sin-conexion" mensaje="<urlopen error [Errno 111] Connection refused>" />)
+    expect(screen.queryByText(/urlopen|Errno/)).toBeNull()
+    expect(screen.getByText('No se ha podido hablar con ATOM Suite.')).toBeInTheDocument()
+  })
+
 })
 
 // Gating en el kiosco: sin credencial se bloquean elegir planta
