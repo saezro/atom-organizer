@@ -37,6 +37,7 @@ import base64
 import hashlib
 import http.server
 import json
+import logging
 import os
 import secrets
 import socket
@@ -51,6 +52,8 @@ from pathlib import Path
 
 from .host_env import abrir_en_navegador
 from .session_store import LEGACY_STORE_NAME, STORE_NAME, SessionStore
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "GoogleAuth",
@@ -294,6 +297,7 @@ class GoogleAuth:
 
     def _olvidar_local(self) -> None:
         """Tira la sesión de memoria y de disco. No habla con Google."""
+        logger.warning("Borrando la sesión local (device_token/refresh_token descartados).")
         self._refresh_token = None
         self._access_token = None
         self._id_token = None
@@ -506,6 +510,7 @@ class GoogleAuth:
 
     def logout(self) -> None:
         """Olvida la sesión local y revoca el refresh token en Google."""
+        logger.info("logout: cierre de sesión explícito del usuario.")
         with self._lock:
             token = self._refresh_token
             # En modo broker `token` es el `device_token` de la Suite, no un
@@ -602,6 +607,9 @@ class GoogleAuth:
             if exc.code in (400, 401):
                 # `invalid_grant` = el usuario revocó el acceso o cambió la
                 # contraseña. La sesión guardada ya no sirve para nada.
+                logger.warning(
+                    "_token_request: Google devolvió %s (%s); se invalida la sesión.",
+                    exc.code, str(detalle)[:200])
                 with self._lock:
                     self._olvidar_local()
                 raise AuthError(
@@ -627,6 +635,9 @@ class GoogleAuth:
         except urllib.error.HTTPError as exc:
             detalle = _mensaje_de_error(exc)
             if exc.code == 401:
+                logger.warning(
+                    "_broker_token_request: la Suite devolvió 401 (device_token revocado): %s",
+                    str(detalle)[:200])
                 with self._lock:
                     self._olvidar_local()
                 raise AuthError(

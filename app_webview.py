@@ -17,6 +17,7 @@ import base64
 import glob
 import importlib
 import json
+import logging
 import multiprocessing
 import os
 import platform
@@ -34,6 +35,8 @@ from atom_core.credencial import (
 from atom_core.event_sink import WebviewSink
 from atom_core.google_auth import AuthError
 from atom_core import pin_kiosco
+
+logger = logging.getLogger(__name__)
 
 # SSID del hotspot de configuracion de la Pi. Lo usan tanto el propio hotspot
 # como el listado de redes, que debe excluirlo de las redes conectables.
@@ -669,15 +672,19 @@ class Api:
         try:
             valida, texto = auth.verificar()
             estado = clasificar(valida, texto, hubo_red=True)
+            logger.info("cloud_comprobar: estado=%s valida=%s", estado, valida)
             self._credencial.registrar(estado, texto)
         except AuthError as exc:
             # El backend contestó y dijo que no: revocado o token inválido.
+            logger.warning("cloud_comprobar: AuthError (%s): %s", type(exc).__name__, exc)
             self._credencial.registrar(ESTADO_SIN_CREDENCIAL, str(exc))
         except OSError as exc:
             # No se llegó a hablar con el backend: no acuses a la credencial.
+            logger.warning("cloud_comprobar: OSError (%s): %s", type(exc).__name__, exc)
             self._credencial.registrar(ESTADO_SIN_CONEXION, str(exc))
         except Exception as exc:
             # Organizar es local y NUNCA puede caerse por un fallo inesperado aquí.
+            logger.warning("cloud_comprobar: excepción inesperada (%s): %s", type(exc).__name__, exc)
             self._credencial.registrar(ESTADO_SIN_CONEXION, str(exc))
         return self._credencial.actual()
 
@@ -2388,6 +2395,19 @@ def main() -> None:
     if args.server:
         from atom_core.event_sink import QueueSink
         from atom_core.webserver import servir
+
+        # En modo servidor (kiosco Pi) no hay ventana ni consola: el servicio
+        # redirige stdout/stderr a fichero, así que basta con loguear a stderr
+        # para que quede rastro en disco cuando se pierde la sesión/emparejamiento.
+        nivel_env = os.environ.get("ATOM_LOG_LEVEL", "INFO")
+        nivel = getattr(logging, nivel_env.upper(), None)
+        if not isinstance(nivel, int):
+            nivel = logging.INFO
+        logging.basicConfig(
+            stream=sys.stderr,
+            level=nivel,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
 
         api = Api(broker=True)
         sink = QueueSink()
