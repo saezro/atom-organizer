@@ -28,26 +28,29 @@ block_cipher = None
 pyexiv2_datas, pyexiv2_binaries, pyexiv2_hidden = collect_all('pyexiv2')
 
 # CAUSA RAÍZ del 'ModuleNotFoundError: No module named exiv2api' al leer el estadillo
-# (v3.9, solo Windows): pyexiv2/lib/__init__.py hace en RUNTIME, en Windows:
-#     ctypes.CDLL(<lib>/exiv2.dll); sys.path.append(<lib>/py3.11-win); import exiv2api
-# El `import exiv2api` es TOP-LEVEL y ocurre DESPUÉS de un sys.path.append dinámico, así
-# que el análisis estático de PyInstaller no lo ve y collect_all() no garantiza que el
-# .pyd/DLL queden en la ruta EXACTA que el runtime busca. Se fuerzan como `datas` (no
-# como binaries: datas preserva el path relativo literal y evita que PyInstaller reubique
-# o aplane el .pyd). Sin esto, cualquier lectura de EXIF/estadillo revienta.
-import os as _os_px, sys as _sys_px
+# (v3.9, solo Windows): pyexiv2/lib/__init__.py carga en RUNTIME el binario nativo que
+# vive junto a él (ctypes.CDLL(<lib>/exiv2.dll) + import de exiv2api). collect_all() no
+# garantiza que el .pyd/DLL queden en la ruta EXACTA que el runtime busca, así que se
+# fuerzan como `datas` (no como binaries: datas preserva el path relativo literal y evita
+# que PyInstaller reubique o aplane el .pyd). Sin esto, cualquier lectura de EXIF revienta.
+# El layout cambió con pyexiv2 2.16: hasta 2.8 el .pyd colgaba de lib/py3.X-win/ y se
+# importaba tras un sys.path.append dinámico; desde 2.9 está plano en lib/. Se soportan
+# ambos para no atarse a la versión pineada en requirements.txt.
+import os as _os_px, sys as _sys_px, glob as _glob_px
 import pyexiv2 as _px
 _px_lib = _os_px.path.join(_os_px.path.dirname(_px.__file__), 'lib')
 _px_pyver = 'py{}.{}-win'.format(_sys_px.version_info.major, _sys_px.version_info.minor)
 pyexiv2_native = []
-for _src, _dst in (
-    (_os_px.path.join(_px_lib, 'exiv2.dll'), 'pyexiv2/lib'),
-    (_os_px.path.join(_px_lib, _px_pyver, 'exiv2api.pyd'), 'pyexiv2/lib/' + _px_pyver),
-):
-    if _os_px.path.exists(_src):
-        pyexiv2_native.append((_src, _dst))
-    else:
-        raise SystemExit('[spec] pyexiv2 nativo NO encontrado: ' + _src)
+for _dll in _glob_px.glob(_os_px.path.join(_px_lib, 'exiv2.dll')):
+    pyexiv2_native.append((_dll, 'pyexiv2/lib'))
+_px_api = (_glob_px.glob(_os_px.path.join(_px_lib, 'exiv2api*.pyd')) or
+           _glob_px.glob(_os_px.path.join(_px_lib, _px_pyver, 'exiv2api*.pyd')))
+if not _px_api:
+    raise SystemExit('[spec] pyexiv2 nativo NO encontrado bajo: ' + _px_lib)
+for _src in _px_api:
+    _rel = _os_px.path.relpath(_os_px.path.dirname(_src), _px_lib)
+    _dst = 'pyexiv2/lib' if _rel == '.' else 'pyexiv2/lib/' + _rel.replace('\\', '/')
+    pyexiv2_native.append((_src, _dst))
 # matplotlib mpl-data (colormaps usados por el pipeline)
 mpl_datas = collect_data_files('matplotlib')
 
