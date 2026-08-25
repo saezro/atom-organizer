@@ -178,6 +178,22 @@ def _handler_factory(api, dist_dir: str, sink):
                 return self._sse()
             return super().do_GET()
 
+        def end_headers(self):
+            # El HTML no se cachea NUNCA. `index.html` es el unico fichero con
+            # nombre fijo: si Chromium se lo queda (el kiosco arranca con un
+            # perfil persistente), sigue pidiendo el bundle viejo aunque el
+            # `dist` ya este actualizado, y un `systemctl restart` no lo
+            # arregla — hace falta Ctrl+Shift+R a mano en la Pi. Los assets si
+            # se cachean: llevan hash en el nombre, cambiarlos cambia la URL.
+            ruta = self.path.split("?", 1)[0]
+            # `/events` ya manda su propio `Cache-Control`; no lo dupliques.
+            if ruta != "/events" and (
+                ruta.endswith("/") or ruta.endswith(".html")
+                or "." not in ruta.rsplit("/", 1)[-1]
+            ):
+                self.send_header("Cache-Control", "no-store, must-revalidate")
+            super().end_headers()
+
         def _sse(self) -> None:
             """Un solo stream para los tres canales de eventos.
 
