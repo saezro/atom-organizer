@@ -122,6 +122,25 @@ describe('PasoEstadillo', () => {
     })
   })
 
+  it('no hereda «omitir estadillo» al cambiar a una inspección sin estadillo previo', async () => {
+    // Regresión: `estadPrevio` (respuesta de `api.estadilloExistente`) se
+    // quedaba con el valor de la inspección A hasta que resolvía el fetch de
+    // la B, y el efecto de auto-marcado corría en ese mismo flush con el
+    // valor viejo, dejando `omitirEstadillo = true` heredado en una
+    // inspección que NO tiene estadillo subido.
+    api.estadilloExistente.mockImplementation((prefijo) =>
+      Promise.resolve({ existe: prefijo === 'ACME--P--2026--T' }))
+    const onEstado = vi.fn()
+    const { rerender } = render(
+      <PasoEstadillo prefijo="ACME--P--2026--T" onEstado={onEstado} />)
+
+    await waitFor(() => expect(screen.getByLabelText(/estadillo de esta inspección/i).checked).toBe(true))
+
+    rerender(<PasoEstadillo prefijo="OTRA--P--2026--T" onEstado={onEstado} />)
+
+    await waitFor(() => expect(screen.getByLabelText(/subir sin estadillo/i).checked).toBe(false))
+  })
+
   it('un evento error del estadillo rehabilita el paso', async () => {
     let estado = null
     render(<PasoEstadillo prefijo="ACME--P--2026--T" onEstado={(e) => { estado = e }} />)
