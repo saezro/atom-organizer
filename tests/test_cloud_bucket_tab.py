@@ -157,7 +157,9 @@ def test_comprobar_la_sesion_no_bloquea_el_bridge():
 
 
 def test_la_ui_ensena_quien_esta_dentro_y_si_la_sesion_vale():
-    src = _fuente(os.path.join("webui", "src", "App.jsx"))
+    # El panel de sesión vive en `trabajo/PanelSubida.jsx` desde que se partió
+    # `BucketScreen` en el flujo «un trabajo, tres destinos».
+    src = _fuente(os.path.join("webui", "src", "trabajo", "PanelSubida.jsx"))
     assert "cloudVerify" in src
     assert "Sesión activa y comprobada" in src
     assert "Volver a iniciar sesión" in src
@@ -166,4 +168,6 @@ def test_la_ui_ensena_quien_esta_dentro_y_si_la_sesion_vale():
 def test_la_ui_avisa_cuando_el_almacen_no_se_puede_leer():
     """Perfil copiado a otro equipo: sin esto solo se vería un «sin iniciar
     sesión» que no encaja con lo que el operador recuerda."""
-    assert "status?.aviso" in _fuente(os.path.join("webui", "src", "App.jsx"))
+    assert "status?.aviso" in _fuente(
+        os.path.join("webui", "src", "trabajo", "PanelSubida.jsx")
+    )
