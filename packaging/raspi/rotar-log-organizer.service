@@ -1,0 +1,6 @@
+[Unit]
+Description=Rotar el log del kiosco ATOM Organizer
+
+[Service]
+Type=oneshot
+ExecStart=/home/pi/organizer/scripts/rotar-log-kiosco.sh /home/pi/organizer-logs/server.log
