@@ -19,7 +19,7 @@ import './App.css'
 // «Trabajo» (TrabajoScreen elige el destino) y «AEROTOOLS»/«OTROS EQUIPOS» en
 // «Herramientas» (HerramientasScreen las apila). El icono de ajustes es un
 // SVG inline (NavIcon ya trae el trazo 'config'), nunca un carácter/emoji.
-const NAV = [
+export const NAV = [
   { id: 'trabajo', label: 'Trabajo', corto: 'Trabajo' },
   { id: 'herramientas', label: 'Herramientas', corto: 'Herramientas' },
   { id: 'config', label: 'Ajustes', corto: 'Ajustes' },

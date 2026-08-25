@@ -43,4 +43,22 @@ describe('PasoCarpeta', () => {
     await waitFor(() => expect(api.pickFolder).toHaveBeenCalled())
     expect(api.folderIsEmpty).not.toHaveBeenCalled()
   })
+
+  it('permite escribir/pegar la ruta a mano (fallback del diálogo nativo)', () => {
+    const onChange = vi.fn()
+    render(<PasoCarpeta label="Carpeta del vuelo" value="" onChange={onChange} />)
+    const input = screen.getByRole('textbox')
+    expect(input).not.toHaveAttribute('readOnly')
+    fireEvent.change(input, { target: { value: 'D:\\vuelos\\pegado' } })
+    expect(onChange).toHaveBeenCalledWith('D:\\vuelos\\pegado')
+  })
+
+  it('disabled no permite teclear la ruta', () => {
+    const onChange = vi.fn()
+    render(<PasoCarpeta label="Carpeta del vuelo" value="" onChange={onChange} disabled />)
+    const input = screen.getByRole('textbox')
+    expect(input).toHaveAttribute('readOnly')
+    fireEvent.change(input, { target: { value: 'no debería pasar' } })
+    expect(onChange).not.toHaveBeenCalled()
+  })
 })

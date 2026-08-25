@@ -44,6 +44,11 @@ export default function PasoEstadillo({ prefijo, disabled, onEstado }) {
   // cambia mientras una validación anterior sigue en vuelo, la respuesta
   // tardía de la selección vieja no debe pisar el resultado de la nueva.
   const estadCheckTokenRef = useRef(0)
+  // Guarda el ÚLTIMO prefijo para el que ya corrió el reseteo de abajo, para
+  // no vaciar la selección en el primer montaje (no hay nada que limpiar
+  // todavía) y solo hacerlo cuando el operador cambia de inspección de
+  // verdad.
+  const prefijoAnteriorRef = useRef(prefijo)
 
   function cambiarEstadRutas(next) {
     setEstadRutas(next)
@@ -66,6 +71,23 @@ export default function PasoEstadillo({ prefijo, disabled, onEstado }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [estadRutas])
+
+  // Cambiar de inspección cambia el destino del estadillo: si no se limpia
+  // aquí, los ficheros (y el preview validado) de la inspección anterior
+  // siguen vivos y listos para subirse contra la nueva, con riesgo REAL de
+  // subir el estadillo equivocado a la planta equivocada (mismo motivo que
+  // `elegir()` en el App.jsx original). La exención (`omitirEstadillo`)
+  // tampoco se hereda: un `true` arrastrado de la inspección anterior
+  // habilitaría SUBIR en cuanto se recalcule el estado, dejando pasar una
+  // subida sin estadillo. No corre en el primer montaje (nada que limpiar
+  // todavía, y `estadPrevio` aún no se ha resuelto ni auto-marcado nada).
+  useEffect(() => {
+    if (prefijoAnteriorRef.current === prefijo) return
+    prefijoAnteriorRef.current = prefijo
+    cambiarEstadRutas([])
+    setOmitirEstadillo(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefijo])
 
   // Detecta si la inspección elegida ya tiene un estadillo subido en el
   // bucket, para auto-marcar «omitir estadillo» en una resubida y cambiar la

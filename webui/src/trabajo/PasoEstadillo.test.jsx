@@ -102,6 +102,26 @@ describe('PasoEstadillo', () => {
     await expect(estado.subir()).rejects.toThrow('ya hay una subida')
   })
 
+  it('vacía la selección de estadillo al cambiar de inspección', async () => {
+    api.estadilloValidar.mockResolvedValue({ ok: true, vuelos_detectados: 1 })
+    const onEstado = vi.fn()
+    const { rerender } = render(
+      <PasoEstadillo prefijo="ACME--P--2026--T" onEstado={onEstado} />)
+    await elegirEstadillo()
+    await waitFor(() => {
+      const ultimo = onEstado.mock.calls.at(-1)[0]
+      expect(ultimo.rutas.length).toBe(1)
+    })
+
+    onEstado.mockClear()
+    rerender(<PasoEstadillo prefijo="OTRA--P--2026--T" onEstado={onEstado} />)
+
+    await waitFor(() => {
+      const ultimo = onEstado.mock.calls.at(-1)[0]
+      expect(ultimo.rutas).toEqual([])
+    })
+  })
+
   it('un evento error del estadillo rehabilita el paso', async () => {
     let estado = null
     render(<PasoEstadillo prefijo="ACME--P--2026--T" onEstado={(e) => { estado = e }} />)
