@@ -27,7 +27,7 @@ export default function PasoEstadillo({ prefijo, disabled, onEstado }) {
   // auto-marcar el checkbox y cambiar su etiqueta sin que el operador tenga
   // que saberlo de memoria.
   const [omitirEstadillo, setOmitirEstadillo] = useState(false)
-  const [estadPrevio, setEstadPrevio] = useState(null) // null | {existe, error}
+  const [estadPrevio, setEstadPrevio] = useState(null) // null | {existe, error, _prefijo}
   // Puente entre el `await` de `subirEstadilloEsperando` y el evento
   // `atom:cloud` (`scope: 'estadillo'`) que trae el resultado real: la llamada
   // a `estadillo_subir` solo devuelve `{started}`, así que la promesa se
@@ -86,6 +86,14 @@ export default function PasoEstadillo({ prefijo, disabled, onEstado }) {
     prefijoAnteriorRef.current = prefijo
     cambiarEstadRutas([])
     setOmitirEstadillo(false)
+    // `estadPrevio` es de la inspección ANTERIOR hasta que resuelva el fetch
+    // de abajo. Sin limpiarlo aquí, el efecto de auto-marcado corre en este
+    // mismo flush (reacciona a `prefijo`), pisa el `false` de arriba con el
+    // valor viejo y marca `autoOmitAplicadoRef` con el prefijo nuevo: cuando
+    // llega la respuesta real ya no se aplica, y la inspección nueva se queda
+    // con «omitir estadillo» heredado.
+    setEstadPrevio(null)
+    autoOmitAplicadoRef.current = null
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefijo])
 
@@ -102,9 +110,9 @@ export default function PasoEstadillo({ prefijo, disabled, onEstado }) {
     ;(async () => {
       try {
         const r = await api.estadilloExistente(prefijo)
-        if (!cancelado) setEstadPrevio(r)
+        if (!cancelado) setEstadPrevio({ ...r, _prefijo: prefijo })
       } catch (e) {
-        if (!cancelado) setEstadPrevio({ existe: false, error: String(e) })
+        if (!cancelado) setEstadPrevio({ existe: false, error: String(e), _prefijo: prefijo })
       }
     })()
     return () => {
@@ -121,6 +129,12 @@ export default function PasoEstadillo({ prefijo, disabled, onEstado }) {
   // cambio revertiría lo que el operador acaba de confirmar.
   useEffect(() => {
     if (!estadPrevio) return
+    // El dato va sellado con la inspección que lo pidió: al cambiar de
+    // inspección este efecto corre en el mismo flush que la limpieza, con el
+    // `estadPrevio` viejo todavía en el closure. Sin este guard aplicaría el
+    // valor de la inspección anterior y marcaría `autoOmitAplicadoRef`, con lo
+    // que la respuesta buena ya nunca se aplicaría.
+    if (estadPrevio._prefijo !== prefijo) return
     if (autoOmitAplicadoRef.current === prefijo) return
     autoOmitAplicadoRef.current = prefijo
     // Fail-open: un error de red al consultar `estadPrevio` no debe forzar
