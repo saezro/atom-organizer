@@ -219,6 +219,8 @@ class Api:
         self._verifying = False
         self._uploading = False
         self._cancel_upload = False
+        self._analizando = False
+        self._cancel_analisis = False
         # Batcher de eventos de progreso (ver `_push`). El pipeline emite DOS
         # eventos por imagen y cada uno era un `evaluate_js` bloqueante: en un
         # vuelo de 5.000 fotos, 10.000 viajes Python->Qt->Chromium con el worker
@@ -482,6 +484,45 @@ class Api:
         except Exception as exc:  # noqa: BLE001 — se reenvía al front
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
                     "thermal": "", "rgb": "", "tokens": {}, "total": 0, "no_suffix": 0}
+
+    def detect_suffixes_start(self, origen: str) -> dict:
+        """Igual que `detect_suffixes` pero en un hilo: el `os.walk` de una
+        carpeta de vuelo grande congelaba la ventana. El resultado llega por
+        `atom:analisis` (kind `done`), el avance por kind `scan`."""
+        if self._analizando:
+            return {"started": False, "reason": "Ya hay un análisis en curso."}
+        self._analizando = True
+
+        def worker() -> None:
+            try:
+                from atom_core.suffixes import detect_suffixes
+                data = detect_suffixes(
+                    origen,
+                    on_progress=lambda n: self._push_analisis(
+                        {"kind": "scan", "scope": "suffixes", "done": n}),
+                    should_stop=lambda: self._cancel_analisis,
+                )
+                if self._cancel_analisis:
+                    self._push_analisis({"kind": "cancelled", "scope": "suffixes"})
+                else:
+                    self._push_analisis({"kind": "done", "scope": "suffixes", "data": data})
+            except Exception as exc:  # noqa: BLE001 - llega a la UI como error
+                self._push_analisis({"kind": "error", "scope": "suffixes", "text": str(exc)})
+            finally:
+                self._analizando = False
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"started": True}
+
+    def analisis_cancel(self) -> dict:
+        """Pide parar el análisis en curso (escaneo de sufijos o plan de subida)."""
+        self._cancel_analisis = True
+        return {"ok": True}
+
+    def analisis_reset(self) -> dict:
+        """Limpia la bandera de cancelación antes de un análisis nuevo."""
+        self._cancel_analisis = False
+        return {"ok": True}
 
     # ---- configuración persistente (ruta ThermoViewer + % recorte por dron) -
     def read_config(self) -> dict:
@@ -1761,6 +1802,11 @@ class Api:
         if not self._sink:
             return
         self._sink.dispatch("atom:cloud", detail)
+
+    def _push_analisis(self, detail: dict) -> None:
+        if not self._sink:
+            return
+        self._sink.dispatch("atom:analisis", detail)
 
     # ---- disparo del pipeline ---------------------------------------------
     def run_organize(self, params: dict, advanced: dict | None = None) -> dict:

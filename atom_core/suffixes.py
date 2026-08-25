@@ -32,7 +32,8 @@ def _stem_suffix(stem: str) -> str | None:
     return stem[i:]
 
 
-def detect_suffixes(origen: str, max_scan: int = 4000) -> dict:
+def detect_suffixes(origen: str, max_scan: int = 4000, *,
+                     on_progress=None, should_stop=None) -> dict:
     """Escanea `origen` (recursivo, tope `max_scan` imágenes) y recomienda el
     sufijo de separación.
 
@@ -44,6 +45,10 @@ def detect_suffixes(origen: str, max_scan: int = 4000) -> dict:
         es la rama robusta del pipeline: thermal_sufix!="" y rgb_sufix=="").
       - Si NO hay `_T` pero sí tokens RGB conocidos -> thermal="", rgb=<esos>.
       - Si no hay terminaciones -> ok=False (que el operador lo ponga a mano).
+
+    `on_progress(total)` (opcional) se llama cada 250 ficheros escaneados, y
+    `should_stop()` (opcional) se consulta antes de cada fichero para permitir
+    cancelar un escaneo largo desde fuera. Ambos son no-op si no se pasan.
     """
     if not origen or not os.path.isdir(origen):
         return {"ok": False, "error": f"No existe la carpeta: {origen}",
@@ -52,8 +57,12 @@ def detect_suffixes(origen: str, max_scan: int = 4000) -> dict:
     tokens: dict[str, int] = {}
     total = 0
     no_suffix = 0
+    parado = False
     for root, _dirs, files in os.walk(origen):
         for f in files:
+            if should_stop is not None and should_stop():
+                parado = True
+                break
             if not f.endswith(_IMG_EXT):
                 continue
             total += 1
@@ -63,9 +72,11 @@ def detect_suffixes(origen: str, max_scan: int = 4000) -> dict:
                 no_suffix += 1
             else:
                 tokens[tok] = tokens.get(tok, 0) + 1
+            if on_progress is not None and total % 250 == 0:
+                on_progress(total)
             if total >= max_scan:
                 break
-        if total >= max_scan:
+        if parado or total >= max_scan:
             break
 
     if total == 0:
