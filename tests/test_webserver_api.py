@@ -114,3 +114,20 @@ def test_la_allowlist_cubre_los_metodos_reales_de_la_api():
         f"faltan por exponer: {publicos - set(METODOS_EXPUESTOS)}; "
         f"sobran en la allowlist: {set(METODOS_EXPUESTOS) - publicos}"
     )
+
+
+def test_index_no_se_cachea(servidor):
+    # El HTML no lleva nombre con hash: si el navegador lo cachea, se queda
+    # con el bundle viejo. Debe llevar siempre no-store.
+    _, _, base = servidor
+    with urllib.request.urlopen(f"{base}/", timeout=5) as r:
+        assert "no-store" in r.headers.get("Cache-Control", "")
+
+
+def test_asset_con_extension_si_se_cachea(servidor, tmp_path):
+    # Los assets llevan hash en el nombre: cambiar el fichero cambia la URL,
+    # asi que si se pueden cachear (no llevan no-store).
+    (tmp_path / "app.js").write_text("console.log('x')", encoding="utf-8")
+    _, _, base = servidor
+    with urllib.request.urlopen(f"{base}/app.js", timeout=5) as r:
+        assert "no-store" not in r.headers.get("Cache-Control", "")
