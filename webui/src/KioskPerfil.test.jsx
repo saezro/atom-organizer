@@ -56,7 +56,7 @@ describe('pantalla de perfil del kiosco', () => {
 
   it('muestra las subidas pendientes', () => {
     pintar()
-    expect(screen.getByText(/3/)).toBeTruthy()
+    expect(screen.getByText('3')).toBeTruthy()  // exacto: /3/ tambien casa con el '3' de la hora de ultimo acceso
   })
 
   it('sin ultimo acceso registrado lo dice', () => {
