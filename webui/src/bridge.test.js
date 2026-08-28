@@ -1,9 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-describe('bridge en modo servidor (sin pywebview)', () => {
+describe('bridge en modo servidor (marca del kiosco)', () => {
   beforeEach(() => {
     vi.resetModules()
     delete window.pywebview
+    // El servidor de la Pi inyecta esta marca en el `index.html` que sirve
+    // (`atom_core/webserver.py`). Es la UNICA senal del modo servidor: la
+    // ausencia de `window.pywebview` ya no vale, porque en Windows Qt la
+    // inyecta tarde y la pagina tambien se carga por http://127.0.0.1.
+    window.__ATOM_SERVIDOR__ = true
     // EventSource no existe en jsdom: se simula.
     class FakeEventSource {
       constructor(url) {
@@ -22,9 +27,12 @@ describe('bridge en modo servidor (sin pywebview)', () => {
     }))
   })
 
-  afterEach(() => { vi.restoreAllMocks() })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    delete window.__ATOM_SERVIDOR__
+  })
 
-  it('isServerMode es true si no hay pywebview', async () => {
+  it('isServerMode es true con la marca del servidor', async () => {
     const { isServerMode } = await import('./bridge.js')
     expect(isServerMode()).toBe(true)
   })
@@ -131,11 +139,15 @@ describe('bridge en modo pywebview (Windows)', () => {
   })
 })
 
-// Regresion de Windows: la pagina se carga por `file://` y la inyeccion de Qt
-// puede tardar MAS que `ESPERA_PYWEBVIEW_MS` (arranque en frio del onefile de
-// PyInstaller, antivirus, disco lento). Rendirse por reloj era irreversible y
-// dejaba el shell de produccion hablando por HTTP con un servidor inexistente.
-describe('bridge bajo file:// con pywebview lento (Windows, arranque en frio)', () => {
+// Regresion de Windows (v3.4.54): desde pywebview 6 el shell de escritorio
+// arranca su propio servidor HTTP en cuanto la URL es local, asi que la pagina
+// NO se carga por `file://` sino por `http://127.0.0.1:PORT` — y la inyeccion
+// de Qt puede tardar MAS que `ESPERA_PYWEBVIEW_MS` (arranque en frio del
+// onefile de PyInstaller, antivirus, disco lento). Con la regla vieja
+// (`no file:// y sin pywebview` ⇒ servidor) Windows se veia como el kiosco de
+// la Pi ya en el primer render, y `App.jsx` lo montaba: una pantalla tactil
+// sin salida. Sin la marca del servidor, esto es escritorio y punto.
+describe('bridge en el shell de escritorio con pywebview lento (Windows)', () => {
   let locOriginal
 
   beforeEach(() => {
@@ -144,7 +156,12 @@ describe('bridge bajo file:// con pywebview lento (Windows, arranque en frio)', 
     delete window.pywebview
     locOriginal = Object.getOwnPropertyDescriptor(window, 'location')
     Object.defineProperty(window, 'location', {
-      value: { protocol: 'file:', href: 'file:///C:/dist/index.html' },
+      value: {
+        protocol: 'http:',
+        hostname: '127.0.0.1',
+        href: 'http://127.0.0.1:41337/index.html',
+        search: '',
+      },
       configurable: true,
       writable: true,
     })
@@ -163,7 +180,7 @@ describe('bridge bajo file:// con pywebview lento (Windows, arranque en frio)', 
     vi.restoreAllMocks()
   })
 
-  it('bajo file:// isServerMode es false aunque pywebview aun no exista', async () => {
+  it('sin la marca del servidor isServerMode es false aunque pywebview aun no exista', async () => {
     const { isServerMode } = await import('./bridge.js')
     expect(isServerMode()).toBe(false)
   })
