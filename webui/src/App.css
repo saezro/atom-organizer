@@ -291,6 +291,9 @@ select.glass-input option {
   margin: 0;
   max-height: 16.25rem;
   overflow-y: auto;
+  /* contain: paint aisla la capa: sin GPU, cada scroll repintaba el layout entero */
+  contain: paint;
+  will-change: transform;
   padding: 1rem;
   border-radius: 0.625rem;
   background: rgba(0, 0, 0, 0.35);
@@ -322,6 +325,9 @@ select.glass-input option {
   width: min(35rem, 100%);
   max-height: 88vh;
   overflow-y: auto;
+  /* contain: paint aisla la capa: sin GPU, cada scroll repintaba el layout entero */
+  contain: paint;
+  will-change: transform;
   display: flex;
   flex-direction: column;
   gap: 1.1rem;
@@ -491,6 +497,9 @@ select.glass-input option {
   margin: 0.7rem 0 0;
   max-height: 12.5rem;
   overflow-y: auto;
+  /* contain: paint aisla la capa: sin GPU, cada scroll repintaba el layout entero */
+  contain: paint;
+  will-change: transform;
   padding: 0.8rem;
   border-radius: 0.625rem;
   background: rgba(0, 0, 0, 0.4);
@@ -729,6 +738,9 @@ select.glass-input option {
 .pf-flights {
   max-height: 34vh;
   overflow-y: auto;
+  /* contain: paint aisla la capa: sin GPU, cada scroll repintaba el layout entero */
+  contain: paint;
+  will-change: transform;
   border: 0.0625rem solid rgba(255, 255, 255, 0.1);
   border-radius: 0.625rem;
 }
@@ -786,6 +798,9 @@ select.glass-input option {
   margin: 0;
   max-height: 9rem;
   overflow-y: auto;
+  /* contain: paint aisla la capa: sin GPU, cada scroll repintaba el layout entero */
+  contain: paint;
+  will-change: transform;
   padding: 0.7rem 0.8rem;
   border-radius: 0.625rem;
   background: rgba(255, 255, 255, 0.04);
@@ -840,6 +855,9 @@ select.glass-input option {
   gap: 0.15rem;
   max-height: 15rem;
   overflow-y: auto;
+  /* contain: paint aisla la capa: sin GPU, cada scroll repintaba el layout entero */
+  contain: paint;
+  will-change: transform;
   border-radius: 0.625rem;
   border: 0.125rem solid rgba(255, 255, 255, 0.12);
   background: rgba(0, 0, 0, 0.2);
@@ -1004,6 +1022,9 @@ select.glass-input option {
   padding: 0;
   max-height: 45vh;
   overflow-y: auto;
+  /* contain: paint aisla la capa: sin GPU, cada scroll repintaba el layout entero */
+  contain: paint;
+  will-change: transform;
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
@@ -2718,6 +2739,9 @@ html.kiosk-modo body * {
   max-width: 26rem;
   max-height: 88vh;
   overflow-y: auto;
+  /* contain: paint aisla la capa: sin GPU, cada scroll repintaba el layout entero */
+  contain: paint;
+  will-change: transform;
   color: var(--text);
 }
 .aviso-sesion-icono {
