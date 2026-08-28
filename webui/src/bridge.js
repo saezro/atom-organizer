@@ -279,6 +279,11 @@ export const api = {
     call('cloud_upload', folder, force ?? false, prefix ?? null, inspeccionId ?? null,
         confirmarSubidaExtra ?? false),
   cloudCancel: () => call('cloud_cancel'),
+  // Encadenada tras una subida al bucket completada con éxito, solo en el
+  // destino «nube» (Task cablear PanelSubida): lanza la organización del lado
+  // servidor. Fail-open: {ok:false, error} NO significa que la subida haya
+  // fallado, solo que no se pudo arrancar la organización automática.
+  cloudOrganizar: (inspeccionId) => call('cloud_organizar', inspeccionId ?? null),
   // Ubicación canónica del estadillo en el bucket (independiente de organizar
   // y de la subida de jornada). estadilloValidar es síncrono y no sube nada:
   // devuelve {ok, error, vuelos_detectados, filas_con_problemas} para enseñar

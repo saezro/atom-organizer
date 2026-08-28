@@ -1245,6 +1245,51 @@ class Api:
         threading.Thread(target=worker, daemon=True).start()
         return {"started": True}
 
+    # Los errores de la Suite viajan como códigos; el usuario del Organizer no
+    # tiene por qué descifrarlos, y son justo los dos casos que más se va a
+    # encontrar (relanzar encima de una operación viva, o subir sin estadillo).
+    _ERRORES_ORGANIZAR = {
+        "operacion-en-curso": "Esta inspección ya se está organizando ahora mismo.",
+        "estadillo-no-encontrado": "No se encontró el estadillo de la subida, así que no se puede organizar.",
+        "estadillo-no-legible": "El estadillo de la subida no se puede leer.",
+        "inspeccion-no-encontrada": "La inspección ya no existe en la Suite.",
+        "inspeccion_id-requerido": "Falta la inspección.",
+        "esquema-desactualizado": "La Suite no está actualizada para organizar en la nube.",
+        "unauthorized": "Sin permiso para organizar en la nube: vuelve a iniciar sesión.",
+        "no-session": "Sin permiso para organizar en la nube: vuelve a iniciar sesión.",
+    }
+
+    def cloud_organizar(self, inspeccion_id: int) -> dict:
+        """Pide a la Suite que lance el Cloud Run Job de organización sobre una
+        subida ya completada (`POST /api/organizer/lanzar-desde-subida`).
+
+        FAIL-OPEN: la subida ya terminó bien antes de llamar aquí, así que
+        cualquier fallo (sin login, red caída, la Suite devuelve error o un
+        `None` fail-open de `RunReporter`) se traduce en
+        `{"ok": False, "error": ...}`, nunca en una excepción que invalide lo
+        ya subido.
+        """
+        if not inspeccion_id:
+            return {"ok": False, "error": "Falta la inspección."}
+        try:
+            reporter = self._reporter_actual()
+            if reporter is None:
+                return {"ok": False, "error": "Sin sesión: inicia sesión para organizar en la nube."}
+            resp = reporter.lanzar_organizacion(inspeccion_id=inspeccion_id)
+            if not isinstance(resp, dict) or not resp.get("ok"):
+                bruto = (resp or {}).get("error") if isinstance(resp, dict) else None
+                clave = str(bruto or "").split(":", 1)[0].strip()
+                mensaje = self._ERRORES_ORGANIZAR.get(clave) or bruto
+                return {"ok": False, "error": mensaje or "No se pudo lanzar la organización en la nube."}
+            return {
+                "ok": True,
+                "operacion_id": resp.get("operacion_id"),
+                "destino": resp.get("destino"),
+            }
+        except Exception as exc:  # noqa: BLE001 - fail-open: la subida ya terminó bien
+            self._log_subida("cloud_organizar: fallo lanzando la organización (%s)", exc)
+            return {"ok": False, "error": str(exc)}
+
     def cloud_upload(self, folder: str, force: bool = False,
                      prefix: str | None = None,
                      inspeccion_id: int | None = None,
