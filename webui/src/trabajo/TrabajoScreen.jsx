@@ -45,35 +45,41 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
       />
       <PasoEstadillo prefijo={prefijo} disabled={ocupado} onEstado={setEstadillo} />
 
-      {carpeta && (
-        <div className="field">
-          <span className="field-label">¿Qué hacemos con este trabajo?</span>
-          <div className="destinos">
-            {DESTINOS.map((d) => (
-              <button
-                key={d.id}
-                type="button"
-                className={`destino${destino === d.id ? ' destino-activo' : ''}`}
-                aria-pressed={destino === d.id}
-                onClick={() => setDestino(d.id)}
-              >
-                <span className="destino-titulo">{d.titulo}</span>
-                <span className="destino-detalle">{d.detalle}</span>
-              </button>
-            ))}
-          </div>
+      {/* Los destinos se ven SIEMPRE, deshabilitados hasta que haya carpeta:
+          si solo aparecían al elegirla, no se entendía que organizar fuese
+          una opción (feedback de Rodrigo, 2026-08-28). */}
+      <div className="field">
+        <span className="field-label">¿Qué hacemos con este trabajo?</span>
+        {!carpeta && (
+          <span className="field-hint">Elige antes la carpeta del vuelo.</span>
+        )}
+        <div className="destinos">
+          {DESTINOS.map((d) => (
+            <button
+              key={d.id}
+              type="button"
+              className={`destino${destino === d.id ? ' destino-activo' : ''}`}
+              aria-pressed={destino === d.id}
+              disabled={!carpeta || ocupado}
+              onClick={() => setDestino(d.id)}
+            >
+              <span className="destino-titulo">{d.titulo}</span>
+              <span className="destino-detalle">{d.detalle}</span>
+            </button>
+          ))}
         </div>
-      )}
+      </div>
 
-      {destino === 'local' && (
+      {carpeta && destino === 'local' && (
         <PanelOrganizar origen={carpeta} estadillos={estadillo.rutas} ready={ready} running={running} onRun={onRun} />
       )}
 
-      {(destino === 'bucket' || destino === 'nube') && (
+      {carpeta && (destino === 'bucket' || destino === 'nube') && (
         <PanelSubida
           carpeta={carpeta}
           prefijo={prefijo}
           inspeccionId={elegida?.id}
+          destino={destino}
           estadilloListo={estadillo.listo}
           estadilloSubiendo={estadillo.subiendo}
           subirEstadillo={estadillo.subir}

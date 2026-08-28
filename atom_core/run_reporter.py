@@ -72,8 +72,15 @@ class RunReporter:
         self._seq_log = 0
 
     # -- utilidad interna ---------------------------------------------------
-    def _peticion(self, metodo: str, ruta: str, cuerpo: dict) -> dict | None:
+    def _peticion(self, metodo: str, ruta: str, cuerpo: dict,
+                  detallar_error: bool = False) -> dict | None:
         """POST/PATCH a la API de la Suite. `None` si algo falla, nunca lanza.
+
+        Con `detallar_error=True`, un error HTTP con cuerpo JSON se devuelve tal
+        cual (`{"ok": False, "error": ...}`) en vez de `None`: los 400/409 de la
+        Suite ('estadillo-no-encontrado', 'operacion-en-curso') son justo lo que
+        el usuario necesita leer, y colapsarlos a `None` los convertía en un
+        'no se pudo' sin causa.
 
         Centraliza urllib + headers + timeout + el try/except para que
         `iniciar`/`progreso`/`fin` no repitan la fontanería, siguiendo el
@@ -103,6 +110,24 @@ class RunReporter:
             req.add_header("Accept", "application/json")
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 return json.loads(resp.read().decode("utf-8") or "{}")
+        except urllib.error.HTTPError as exc:
+            _log.debug("run_reporter: %s %s HTTP %s", metodo, ruta, exc.code)
+            if not detallar_error:
+                return None
+            try:
+                datos = json.loads(exc.read().decode("utf-8") or "{}")
+            except Exception:  # noqa: BLE001 - cuerpo no JSON o ilegible
+                datos = {}
+            finally:
+                try:
+                    exc.close()
+                except Exception:  # noqa: BLE001 - cerrar es best-effort
+                    pass
+            if not isinstance(datos, dict):
+                datos = {}
+            datos["ok"] = False
+            datos.setdefault("error", f"HTTP {exc.code}")
+            return datos
         except Exception as exc:  # noqa: BLE001 - fail-open: nunca puede romper la subida
             _log.debug("run_reporter: %s %s falló (%s)", metodo, ruta, exc)
             return None
@@ -351,6 +376,30 @@ class RunReporter:
             return self._peticion("POST", "/api/organizer/subidas", cuerpo)
         except Exception as exc:  # noqa: BLE001 - fail-open
             _log.debug("run_reporter.subida: excepcion inesperada (%s)", exc)
+            return None
+
+    def lanzar_organizacion(self, *, inspeccion_id: int, sin_rotacion: bool = False,
+                             giro_tiff: str | None = None) -> dict | None:
+        """Pide a la Suite que lance el Cloud Run Job de organización tras una
+        subida (`POST /api/organizer/lanzar-desde-subida`).
+
+        A diferencia del resto de métodos, es INDEPENDIENTE del ciclo
+        `iniciar`/`fin`: no lee ni depende de `self._id`. Aquí SÍ hace falta el
+        resultado (a diferencia de `subida()`), porque el llamador necesita
+        saber si el Job arrancó para poder informar al usuario; sigue siendo
+        fail-open vía `_peticion`: `None` si la llamada ni siquiera salió, o el
+        cuerpo de error de la Suite (con `ok: False`) si respondió 4xx/5xx.
+        """
+        try:
+            cuerpo: dict = {"inspeccion_id": inspeccion_id}
+            if sin_rotacion:
+                cuerpo["sin_rotacion"] = sin_rotacion
+            if giro_tiff is not None:
+                cuerpo["giro_tiff"] = giro_tiff
+            return self._peticion("POST", "/api/organizer/lanzar-desde-subida", cuerpo,
+                                  detallar_error=True)
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            _log.debug("run_reporter.lanzar_organizacion: excepcion inesperada (%s)", exc)
             return None
 
     @property

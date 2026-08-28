@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, onAnalisis, onCloud } from '../bridge'
 import { formatBytes, formatDuracion } from '../formato'
 import cloudUploadConfirmando from './cloudUploadConfirmando'
@@ -20,6 +20,7 @@ export default function PanelSubida({
   carpeta,
   prefijo,
   inspeccionId,
+  destino,
   estadilloListo,
   estadilloSubiendo,
   subirEstadillo,
@@ -51,6 +52,45 @@ export default function PanelSubida({
   const [ahora, setAhora] = useState(0) // segundos transcurridos
   const [lines, setLines] = useState([])
   const [result, setResult] = useState(null) // {ok, ...} | {error}
+  // Organización automática en el destino «nube»: se encadena SOLO tras una
+  // subida completada con éxito (evento 'done', d.ok && !d.cancelled). El
+  // listener de `onCloud` se suscribe una única vez (deps []), así que
+  // `destino`/`inspeccionId` se leen de refs actualizadas en cada render, no
+  // de las props cerradas en el primer render.
+  const destinoRef = useRef(destino)
+  destinoRef.current = destino
+  const inspeccionIdRef = useRef(inspeccionId)
+  inspeccionIdRef.current = inspeccionId
+  // Evita disparar la organización dos veces para la misma subida (p.ej. si
+  // `done` llegara duplicado). Se resetea al arrancar una subida nueva.
+  const organizarDisparadoRef = useRef(false)
+  const [organizando, setOrganizando] = useState(false)
+  const [organizarResult, setOrganizarResult] = useState(null) // {ok, operacionId} | {error}
+  // Token de subida: se incrementa en cada `case 'start'`. Al resolver
+  // `lanzarOrganizar` se compara con el token vigente para descartar una
+  // respuesta tardía de una subida anterior que pisaría el estado de una
+  // subida nueva ya en marcha.
+  const subidaTokenRef = useRef(0)
+
+  async function lanzarOrganizar(id) {
+    const token = subidaTokenRef.current
+    setOrganizando(true)
+    setOrganizarResult(null)
+    try {
+      const r = await api.cloudOrganizar(id)
+      if (subidaTokenRef.current !== token) return
+      setOrganizando(false)
+      if (r && r.ok) {
+        setOrganizarResult({ ok: true, operacionId: r.operacion_id })
+      } else {
+        setOrganizarResult({ error: (r && r.error) || 'No se pudo lanzar la organización.' })
+      }
+    } catch (e) {
+      if (subidaTokenRef.current !== token) return
+      setOrganizando(false)
+      setOrganizarResult({ error: String(e.message || e) })
+    }
+  }
 
   async function refresh() {
     let s
@@ -155,6 +195,12 @@ export default function PanelSubida({
             // componente se remonta con una subida ya en curso en el backend.
             setUploading(true)
             setLines([`Subiendo ${d.files} ficheros (${formatBytes(d.bytes)}) a ${d.prefix}/`])
+            // Nueva subida: se puede volver a lanzar la organización cuando
+            // esta termine.
+            subidaTokenRef.current += 1
+            organizarDisparadoRef.current = false
+            setOrganizando(false)
+            setOrganizarResult(null)
             break
           case 'stats':
             setStats(d)
@@ -166,7 +212,22 @@ export default function PanelSubida({
             setUploading(false)
             setResult(d)
             setStats(null)
-            if (d.ok && !d.cancelled) onSubidaOk?.(d)
+            if (d.ok && !d.cancelled) {
+              onSubidaOk?.(d)
+              // Destino «nube»: la subida al bucket es solo el primer paso,
+              // hay que encadenar la organización en el servidor. Fail-open:
+              // si esto falla, la subida ya terminó bien igualmente.
+              if (destinoRef.current === 'nube' && !organizarDisparadoRef.current) {
+                organizarDisparadoRef.current = true
+                if (inspeccionIdRef.current) {
+                  lanzarOrganizar(inspeccionIdRef.current)
+                } else {
+                  setOrganizarResult({
+                    error: 'Hace falta elegir una inspección para poder organizar en la nube.',
+                  })
+                }
+              }
+            }
             break
           case 'error':
             setUploading(false)
@@ -230,7 +291,7 @@ export default function PanelSubida({
   }, [uploading, desde])
 
   const logged = !!status?.logged_in
-  const ocupado = Boolean(busy || uploading || estadilloSubiendo)
+  const ocupado = Boolean(busy || uploading || estadilloSubiendo || organizando)
   const puedeSubir = ready && logged && !!prefijo && plan?.ok && !ocupado && estadilloListo
 
   // El original (`BucketScreen`) usaba este mismo `ocupado` para deshabilitar
@@ -318,6 +379,7 @@ export default function PanelSubida({
           Se abre el navegador para identificarte con tu cuenta de Aerotools. Los datos van
           al bucket «{status?.bucket || 'datos_para_organizar'}»; quién puede subir lo decide
           el permiso de la cuenta, no la aplicación.
+          {destino === 'nube' ? ' En cuanto la subida termine, ATOM organizará la inspección automáticamente.' : ''}
         </span>
       </div>
 
@@ -423,13 +485,30 @@ export default function PanelSubida({
         </span>
       )}
 
+      {/* Segundo paso, solo en destino «nube»: la subida al bucket ya
+          terminó, ahora se encadena la organización en el servidor. */}
+      {destino === 'nube' && organizando && (
+        <span className="field-hint">Lanzando la organización en la nube…</span>
+      )}
+      {destino === 'nube' && organizarResult && organizarResult.ok && (
+        <span className="field-hint hint-ok">
+          ATOM está organizando la inspección.
+          {organizarResult.operacionId ? ` (operación ${organizarResult.operacionId})` : ''}
+        </span>
+      )}
+      {destino === 'nube' && organizarResult && organizarResult.error && (
+        <span className="field-hint hint-warn">
+          La subida terminó bien, pero no se pudo lanzar la organización: {organizarResult.error}
+        </span>
+      )}
+
       {uploading ? (
         <button className="btn-run" onClick={() => api.cloudCancel()}>
           Cancelar subida
         </button>
       ) : (
         <button className="btn-run" disabled={!puedeSubir} onClick={subir}>
-          {busy ? 'Comprobando…' : 'Subir al bucket'}
+          {busy ? 'Comprobando…' : destino === 'nube' ? 'Subir y organizar en la nube' : 'Subir al bucket'}
         </button>
       )}
     </>
