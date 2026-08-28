@@ -35,6 +35,7 @@ from atom_core.credencial import (
 from atom_core.event_sink import WebviewSink
 from atom_core.google_auth import AuthError
 from atom_core import pin_kiosco
+from atom_core import window_state
 
 logger = logging.getLogger(__name__)
 
@@ -2554,20 +2555,59 @@ def main() -> None:
     target = resolve_target(args.dev)
     api = Api()
 
-    window = webview.create_window(
+    # Geometría persistida del arranque anterior (JSON aparte de Config.ini: ver
+    # atom_core/window_state.py). Si no existe (primer arranque, o el fichero se
+    # invalidó) la ventana abre MAXIMIZADA, que es lo esperable la primera vez.
+    geo_previa = window_state.leer()
+    ancho, alto = 1100, 760
+    pos_x = pos_y = None
+    maximizada_inicial = True
+    if geo_previa is not None:
+        ancho, alto = geo_previa["ancho"], geo_previa["alto"]
+        pos_x, pos_y = geo_previa["x"], geo_previa["y"]
+        maximizada_inicial = geo_previa["maximizada"]
+
+    window_kwargs = dict(
         # La versión va en el TÍTULO de la ventana, no solo en el header de la UI:
         # es lo que se ve en la barra de tareas y en una captura de pantalla, que es
         # como el usuario final reporta en qué build está.
         title=f"ATOM Organizer v{_app_version_for_title()}",
         url=target,
         js_api=api,
-        width=1100,
-        height=760,
-        min_size=(900, 600),
+        width=ancho,
+        height=alto,
+        min_size=(760, 520),
         background_color="#0a0a0a",
+        maximized=maximizada_inicial,
     )
+    if pos_x is not None and pos_y is not None:
+        window_kwargs["x"] = pos_x
+        window_kwargs["y"] = pos_y
+
+    window = webview.create_window(**window_kwargs)
     api.bind_window(window)
     _comprobar_al_arrancar(api)
+
+    # Cableado de persistencia de geometría. En un try/except amplio a propósito:
+    # esto es una comodidad, no algo esencial para que la app funcione — si algo
+    # falla (versión de pywebview sin alguno de estos eventos, backend distinto,
+    # etc.) la ventana debe abrir igual, sin geometría persistida.
+    try:
+        estado_ventana = window_state.EstadoVentana(
+            ancho=ancho, alto=alto, x=pos_x, y=pos_y, maximizada=maximizada_inicial
+        )
+        window.events.resized += lambda w, h: estado_ventana.on_resized(w, h)
+        window.events.moved += lambda x, y: estado_ventana.on_moved(x, y)
+        window.events.maximized += lambda: estado_ventana.on_maximized()
+        window.events.restored += lambda: estado_ventana.on_restored()
+
+        def _guardar_geometria_al_cerrar():
+            window_state.guardar(estado_ventana.snapshot())
+            # Sin return: devolver True aquí cancelaría el cierre de la ventana.
+
+        window.events.closing += _guardar_geometria_al_cerrar
+    except Exception:
+        logger.exception("No se pudo cablear la persistencia de geometría de ventana")
 
     # Comprobación de actualizaciones 3 s después del arranque. En modo --dev no
     # molesta (se corre desde fuente, la versión instalada no tiene sentido).
