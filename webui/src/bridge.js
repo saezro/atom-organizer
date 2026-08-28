@@ -26,23 +26,26 @@ export function tokenRemoto() {
   return tokenRemotoActual
 }
 
-// Bajo pywebview la pagina se carga por `file://` (`resolve_target` devuelve la
-// ruta del index, app_webview.py). El modo `--server` siempre sirve por HTTP.
-// El protocolo es, por tanto, una senal POSITIVA y sincrona del shell, a
-// diferencia de `window.pywebview`, que en Qt aparece tarde: si esto es
-// `file://`, es pywebview aunque el bridge aun no este inyectado.
-function esFile() {
-  return window.location.protocol === 'file:'
+// Senal POSITIVA y sincrona del modo `--server`: el servidor de la Pi
+// (`atom_core/webserver.py`) inyecta esta marca en el `index.html` que sirve.
+// Solo la pone quien de verdad es el kiosco.
+//
+// Antes esto se deducia del protocolo (`file://` = pywebview) y eso YA NO VALE:
+// desde pywebview 6, en cuanto la URL es un fichero local el shell de escritorio
+// arranca su propio servidor HTTP y la pagina carga por `http://127.0.0.1:PORT`
+// aunque `http_server=False` (`webview/__init__.py`, `has_local_urls`). Con la
+// regla vieja, Windows se veia como servidor en el primer render y `App.jsx`
+// arrancaba en el kiosco de la Pi — sin salida, porque el kiosco no la tiene.
+function esServidorDeclarado() {
+  return window.__ATOM_SERVIDOR__ === true
 }
 
 // Heuristica sincrona para quien necesite el modo antes de que
-// `whenBridgeReady` concluya. Con `file://` la respuesta ya es definitiva (no
-// hay servidor posible); fuera de `file://` se responde por la presencia de
-// `window.pywebview` AHORA MISMO.
+// `whenBridgeReady` concluya. Sin la marca es escritorio: `window.pywebview`
+// no sirve como test porque en Qt se inyecta tarde.
 function modoServidorActual() {
   if (modoServidor !== null) return modoServidor
-  if (esFile()) return false
-  return !window.pywebview
+  return esServidorDeclarado()
 }
 
 export function isServerMode() {
@@ -82,6 +85,10 @@ export function whenBridgeReady() {
   if (promesaBridge) return promesaBridge
   promesaBridge = new Promise((resolve) => {
     if (window.pywebview?.api) { modoServidor = false; return resolve() }
+    // Con la marca del servidor no hay nada que esperar: el kiosco no va a
+    // inyectar `window.pywebview` jamas, y antes pagaba el plazo entero en
+    // cada arranque.
+    if (esServidorDeclarado()) { modoServidor = true; conectarEventos(); return resolve() }
     let done = false
     let timer = null
     const finish = (servidor) => {
@@ -98,13 +105,14 @@ export function whenBridgeReady() {
     window.addEventListener('pywebviewready', alListo, { once: true })
     timer = setInterval(() => { if (window.pywebview?.api) finish(false) }, 100)
     // Si en este plazo no aparecio, no va a aparecer: es un navegador normal.
-    // PERO solo si NO estamos en `file://`: ahi es pywebview con la inyeccion
-    // lenta (arranque en frio de PyInstaller, antivirus). Rendirse por reloj
-    // seria irreversible —`finish` limpia intervalo y listener— y dejaria
-    // Windows hablando por `fetch` con un servidor que no existe, ademas de un
-    // EventSource contra `file:///events`. En ese caso seguimos esperando
-    // indefinidamente, que es como se comportaba antes del modo servidor.
-    const plazo = setTimeout(() => { if (!esFile()) finish(true) }, ESPERA_PYWEBVIEW_MS)
+    // PERO solo si el servidor se declaro: sin marca es pywebview con la
+    // inyeccion lenta (arranque en frio de PyInstaller, antivirus). Rendirse
+    // por reloj seria irreversible —`finish` limpia intervalo y listener— y
+    // dejaria Windows hablando por `fetch` y SSE con el servidor interno de
+    // pywebview, que no entiende `/events` ni el RPC. En ese caso seguimos
+    // esperando indefinidamente, que es como se comportaba antes del modo
+    // servidor.
+    const plazo = setTimeout(() => { if (esServidorDeclarado()) finish(true) }, ESPERA_PYWEBVIEW_MS)
   })
   return promesaBridge
 }

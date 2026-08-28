@@ -18,6 +18,7 @@ import secrets
 import threading
 import traceback
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 # Allowlist explicita. NO se usa `hasattr` para decidir que es alcanzable: un
@@ -177,7 +178,38 @@ def _handler_factory(api, dist_dir: str, sink):
                 if not self._autenticado():
                     return self.send_error(403)
                 return self._sse()
+            if ruta in ("", "/index.html"):
+                return self._servir_index()
             return super().do_GET()
+
+        def _servir_index(self) -> None:
+            """Sirve `index.html` con la marca del modo servidor inyectada.
+
+            La UI necesita saber, YA en el primer render, si es el kiosco de la
+            Pi o la app de escritorio, y no se puede deducir del entorno: desde
+            pywebview 6 el shell de escritorio tambien sirve el bundle por
+            `http://127.0.0.1` (arranca su servidor interno en cuanto la URL es
+            local, `webview/__init__.py`), asi que ni el protocolo ni la
+            ausencia de `window.pywebview` distinguen los dos casos. La unica
+            senal fiable es positiva y la da quien sirve: este servidor, que
+            solo corre en modo `--server`.
+            """
+            try:
+                cuerpo = (Path(self.directory) / "index.html").read_bytes()
+            except OSError:
+                return self.send_error(404)
+            marca = b"<script>window.__ATOM_SERVIDOR__ = true</script>"
+            # Antes de cualquier <script> del bundle: el modulo `bridge.js` la
+            # lee al importarse.
+            if b"<head>" in cuerpo:
+                cuerpo = cuerpo.replace(b"<head>", b"<head>" + marca, 1)
+            else:
+                cuerpo = marca + cuerpo
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(cuerpo)))
+            self.end_headers()
+            self.wfile.write(cuerpo)
 
         def end_headers(self):
             # El HTML no se cachea NUNCA. `index.html` es el unico fichero con
