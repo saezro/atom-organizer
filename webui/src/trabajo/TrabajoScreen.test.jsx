@@ -30,9 +30,12 @@ const emitir = (canal, detail) =>
 beforeEach(() => vi.clearAllMocks())
 
 describe('TrabajoScreen', () => {
-  it('no ofrece destino hasta que hay carpeta', async () => {
+  it('muestra los destinos pero deshabilitados hasta que hay carpeta', async () => {
     render(<TrabajoScreen ready running={false} onRun={() => {}} />)
-    expect(screen.queryByText(/Organizar aquí/i)).toBeNull()
+    const destino = screen.getByText(/Organizar aquí/i).closest('button')
+    expect(destino).toBeTruthy()
+    expect(destino.disabled).toBe(true)
+    expect(screen.getByText(/Subir y organizar en la nube/i).closest('button').disabled).toBe(true)
   })
 
   it('ofrece los tres destinos al elegir carpeta', async () => {

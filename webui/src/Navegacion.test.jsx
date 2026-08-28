@@ -34,7 +34,7 @@ describe('Navegación', () => {
 
   it('arranca en Trabajo', async () => {
     render(<App />)
-    expect(await screen.findByText(/Carpeta del vuelo/i)).toBeTruthy()
+    expect(await screen.findByText('Carpeta del vuelo')).toBeTruthy()
   })
 
   it('Herramientas agrupa las dos pantallas de herramientas', async () => {
