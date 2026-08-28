@@ -136,6 +136,24 @@ function App() {
   const [section, setSection] = useState('trabajo')
   const [running, setRunning] = useState(false)
 
+  // Confirmación de primer frame pintado (render_confirmar). Si Python no
+  // recibe esta señal, el siguiente arranque asume pantalla negra y degrada
+  // a rasterizado software. Doble rAF anidado: garantiza que el frame ya se
+  // compuso, no solo que React ya hizo commit. Nunca debe romper la UI.
+  // Los 3 s de espera son a propósito: el rAF sólo prueba que el renderer
+  // pintó, no que Qt haya presentado esa superficie en la ventana; si el
+  // usuario ve negro cierra en el acto, y al no llegar la confirmación el
+  // arranque siguiente cae a software, que es el lado seguro del fallo.
+  useEffect(() => {
+    let timer = null
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        timer = setTimeout(() => api.renderConfirmar().catch(() => {}), 3000)
+      })
+    })
+    return () => { if (timer) clearTimeout(timer) }
+  }, [])
+
   // Estado del modal de progreso (derivado de los eventos atom:progress).
   const [modalOpen, setModalOpen] = useState(false)
   const [plant, setPlant] = useState('')
@@ -680,6 +698,39 @@ function ConfigScreen({ ready }) {
   const [loaded, setLoaded] = useState(false)
   const [saved, setSaved] = useState(null) // null | {ok, msg}
 
+  // Aceleración gráfica (render_estado/render_set_modo). No va por
+  // readConfig/writeConfig: es un ajuste propio del shell (WebView2/Qt), no
+  // de la config del organizador.
+  const [renderModo, setRenderModo] = useState('auto')
+  const [renderActiva, setRenderActiva] = useState(null) // null hasta cargar
+  const [renderSaved, setRenderSaved] = useState(null) // null | {ok, msg}
+
+  useEffect(() => {
+    if (!ready) return
+    api
+      .renderEstado()
+      .then((r) => {
+        if (r?.modo) setRenderModo(r.modo)
+        setRenderActiva(r?.activa ?? null)
+      })
+      .catch(() => {})
+  }, [ready])
+
+  async function cambiarRenderModo(modo) {
+    setRenderModo(modo)
+    setRenderSaved(null)
+    try {
+      const res = await api.renderSetModo(modo)
+      setRenderSaved(
+        res?.ok
+          ? { ok: true, msg: 'Se aplicará al reiniciar la app.' }
+          : { ok: false, msg: res?.error || 'No se pudo cambiar.' }
+      )
+    } catch (e) {
+      setRenderSaved({ ok: false, msg: String(e) })
+    }
+  }
+
   // Carga inicial de la config persistente.
   useEffect(() => {
     if (!ready) return
@@ -823,6 +874,32 @@ function ConfigScreen({ ready }) {
       <button className="btn-run" disabled={!ready} onClick={save}>
         Guardar configuración
       </button>
+
+      <div className="field">
+        <span className="field-label">Aceleración gráfica</span>
+        <select
+          className="glass-input"
+          value={renderModo}
+          disabled={!ready}
+          onChange={(e) => cambiarRenderModo(e.target.value)}
+        >
+          <option value="auto">Automática (recomendado)</option>
+          <option value="gpu">Siempre activada</option>
+          <option value="software">Desactivada (si la ventana sale en negro)</option>
+        </select>
+        <span className="field-hint">
+          {renderActiva === null
+            ? 'Cargando…'
+            : renderActiva
+            ? 'Ahora mismo: acelerada'
+            : 'Ahora mismo: por software'}
+        </span>
+        {renderSaved && (
+          <span className={`field-hint ${renderSaved.ok ? 'hint-ok' : 'hint-warn'}`}>
+            {renderSaved.msg}
+          </span>
+        )}
+      </div>
     </div>
   )
 }

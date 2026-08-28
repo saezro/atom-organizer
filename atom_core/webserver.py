@@ -29,6 +29,7 @@ METODOS_EXPUESTOS = frozenset({
     "folder_is_empty", "read_estadillo_info", "estadillos_detectar", "detect_suffixes",
     "detect_suffixes_start", "analisis_cancel", "analisis_reset",
     "read_config", "write_config",
+    "render_estado", "render_confirmar", "render_set_modo",
     "app_version", "check_update", "download_update", "install_update",
     "start_update_check",
     "cloud_status", "cloud_verify", "cloud_login", "cloud_logout",

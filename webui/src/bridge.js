@@ -218,6 +218,15 @@ export const api = {
   // write persiste y devuelve {ok, path} | {ok:false, error}.
   readConfig: () => call('read_config'),
   writeConfig: (data) => call('write_config', data),
+  // Aceleración gráfica (WebView2/Qt). renderEstado devuelve {modo:
+  // 'auto'|'gpu'|'software', pendiente, fallos, activa}; renderConfirmar la
+  // llama la propia UI en cuanto pinta su primer frame (si no se llama, el
+  // siguiente arranque asume pantalla negra y degrada a software);
+  // renderSetModo cambia el modo para el próximo arranque: {ok, reiniciar:
+  // true} | {ok:false, error}.
+  renderEstado: () => call('render_estado'),
+  renderConfirmar: () => call('render_confirmar'),
+  renderSetModo: (modo) => call('render_set_modo', modo),
   // Actualizaciones (GitHub Releases). appVersion devuelve {version, platform};
   // checkUpdate {ok, update_available, current, latest, notes, asset_url,
   // asset_size, can_install}; downloadUpdate arranca la descarga (el progreso

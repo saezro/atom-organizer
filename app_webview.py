@@ -35,7 +35,7 @@ from atom_core.credencial import (
 from atom_core.event_sink import WebviewSink
 from atom_core.google_auth import AuthError
 from atom_core import pin_kiosco
-from atom_core import window_state
+from atom_core import render_state, window_state
 
 logger = logging.getLogger(__name__)
 
@@ -524,6 +524,32 @@ class Api:
         """Limpia la bandera de cancelación antes de un análisis nuevo."""
         self._cancel_analisis = False
         return {"ok": True}
+
+    # ---- aceleración gráfica (ver atom_core/render_state.py) ----------------
+    def render_estado(self) -> dict:
+        """Estado actual de la aceleración gráfica, para la pantalla de Ajustes."""
+        estado = render_state.leer()
+        flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+        estado["activa"] = "--disable-gpu" not in flags
+        return estado
+
+    def render_confirmar(self) -> dict:
+        """Lo llama el frontend en cuanto ha pintado su primer frame: el arranque
+        con GPU fue bueno, así que se limpia el marcador `pendiente` (si no, el
+        siguiente arranque lo interpretaría como pantalla negra y degradaría)."""
+        try:
+            render_state.guardar(render_state.confirmar_render(render_state.leer()))
+        except Exception:  # noqa: BLE001 — nunca debe romper el arranque
+            pass
+        return {"ok": True}
+
+    def render_set_modo(self, modo: str) -> dict:
+        """Cambia el modo (auto|gpu|software). Surte efecto al reiniciar la app."""
+        try:
+            render_state.guardar(render_state.set_modo(render_state.leer(), modo))
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "reiniciar": True}
 
     # ---- configuración persistente (ruta ThermoViewer + % recorte por dron) -
     def read_config(self) -> dict:
@@ -2012,6 +2038,10 @@ class Api:
         que tarda segundos y ademas tumba el throughput de la propia wifi.
         El cable manda sobre la wifi si ambos estan arriba: es la ruta buena.
         """
+        # En Windows no hay `nmcli`: cada llamada (el indicador la repite cada
+        # 10s) lanzaria un subprocess condenado a fallar, sin ningun dato util.
+        if platform.system() != "Linux":
+            return {"ok": True, "tipo": "ninguna", "ssid": "", "senal": None, "ip": ""}
         try:
             proc = subprocess.run(
                 ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"],
@@ -2637,10 +2667,24 @@ if __name__ == "__main__":
             "QTWEBENGINE_CHROMIUM_FLAGS", "--enable-features=UseOzonePlatform"
         )
     elif platform.system() == "Windows":
-        # --disable-gpu: fuerza el rasterizador software de Chromium. Sin GPU real
+        # --disable-gpu fuerza el rasterizador software de Chromium. Sin GPU real
         # (máquina virtual, sesión RDP, drivers pobres) el compositing acelerado de
-        # QtWebEngine deja la ventana EN NEGRO (confirmado en VM QEMU). En una UI de
-        # formularios el coste de no usar GPU es imperceptible, y así renderiza en
-        # cualquier máquina. Se respeta un valor previo de la env var si ya existe.
-        os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
+        # QtWebEngine deja la ventana EN NEGRO (confirmado en VM QEMU), pero pintarlo
+        # todo por CPU en un portátil normal se nota como lag. Así que se intenta con
+        # GPU y se cae a software solo si un arranque no llegó a pintar: la decisión
+        # y su porqué están en atom_core/render_state.py. Se respeta un valor previo
+        # de la env var si ya existe (override manual).
+        try:
+            _estado_render = render_state.leer()
+            _usar_gpu, _estado_render, _motivo = render_state.decidir(_estado_render)
+            if not render_state.guardar(_estado_render) and _estado_render.get("pendiente"):
+                # No se pudo dejar constancia del intento (disco lleno, permisos):
+                # si ese intento dejara la ventana en negro, el arranque siguiente
+                # no vería el marcador y reintentaría GPU para siempre. Sin poder
+                # registrar el intento, no se intenta.
+                _usar_gpu = False
+        except Exception:  # noqa: BLE001 — ante cualquier fallo, lo que siempre pintó
+            _usar_gpu = False
+        if not _usar_gpu:
+            os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
     main()
