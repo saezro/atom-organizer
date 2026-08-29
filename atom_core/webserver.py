@@ -26,8 +26,8 @@ from urllib.parse import parse_qs, urlsplit
 METODOS_EXPUESTOS = frozenset({
     "ping",
     "pick_folder", "pick_file", "list_dir", "default_dir",
-    "folder_is_empty", "read_estadillo_info", "estadillos_detectar", "detect_suffixes",
-    "detect_suffixes_start", "analisis_cancel", "analisis_reset",
+    "folder_is_empty", "read_estadillo_info", "estadillos_detectar", "estadillos_detectar_start",
+    "detect_suffixes", "detect_suffixes_start", "analisis_cancel", "analisis_reset",
     "read_config", "write_config",
     "render_estado", "render_confirmar", "render_set_modo",
     "app_version", "check_update", "download_update", "install_update",

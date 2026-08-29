@@ -1,10 +1,11 @@
 // Aviso de actualización. Espeja el flujo del atom-migrador: la app comprueba
 // sola al arrancar (3 s), si hay versión nueva sale este modal, el usuario
-// acepta, se descarga con progreso y al terminar se lanza el instalador
-// silencioso — que cierra esta instancia y la reabre ya actualizada.
+// acepta, se descarga con progreso y al terminar se lanza SOLO el instalador
+// silencioso — que cierra esta instancia y la reabre ya actualizada. Un solo
+// clic: 'ready' encadena la instalación sin pedir confirmación otra vez.
 //
 // Fases: 'available' → 'downloading' → 'ready' → 'installing' | 'error'.
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, onUpdate } from './bridge'
 
 function mb(bytes) {
@@ -17,6 +18,7 @@ export default function UpdateModal() {
   const [pct, setPct] = useState(0)
   const [done, setDone] = useState(0)
   const [error, setError] = useState('')
+  const yaInstalando = useRef(false)   // 'ready' encadena install() una sola vez
 
   useEffect(() => onUpdate((d) => {
     if (d.kind === 'available') { setInfo(d.data); setPhase('available') }
@@ -25,12 +27,20 @@ export default function UpdateModal() {
     else if (d.kind === 'error') { setError(d.text || 'Error desconocido'); setPhase('error') }
   }), [])
 
+  // Un solo clic: en cuanto la descarga termina se instala sola. El segundo
+  // botón obligaba a Daniel a volver a la app para rematar la actualización.
+  useEffect(() => {
+    if (phase !== 'ready' || yaInstalando.current) return
+    yaInstalando.current = true
+    install()
+  }, [phase])   // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!info) return null
 
   const size = info.asset_size || 0
 
   const start = async () => {
-    setError(''); setPct(0); setPhase('downloading')
+    setError(''); setPct(0); yaInstalando.current = false; setPhase('downloading')
     const res = await api.downloadUpdate(info.asset_url, size)
     if (res && res.started === false) { setError(res.reason || ''); setPhase('error') }
   }
@@ -67,8 +77,7 @@ export default function UpdateModal() {
             creyendo que la actualización falló. Se avisa del plan B. */}
         {phase === 'ready' && (
           <p className="up-sub">
-            Descarga completa. Al instalar, ATOM Organizer se cerrará y debería volver
-            a abrirse solo. Si no lo hace, ábrelo desde el acceso directo de siempre.
+            Descarga completa. Lanzando el instalador…
           </p>
         )}
         {phase === 'installing' && (
@@ -88,16 +97,13 @@ export default function UpdateModal() {
 
         <div className="up-actions">
           <button className="btn-ghost" onClick={() => setInfo(null)}
-                  disabled={phase === 'downloading' || phase === 'installing'}>
+                  disabled={phase === 'downloading' || phase === 'ready' || phase === 'installing'}>
             Ahora no
           </button>
           {info.can_install && (phase === 'available' || phase === 'error') && (
             <button className="btn-run" onClick={start}>
               Descargar e instalar{size ? ` (${mb(size)})` : ''}
             </button>
-          )}
-          {info.can_install && phase === 'ready' && (
-            <button className="btn-run" onClick={install}>Instalar y reiniciar</button>
           )}
         </div>
       </div>
