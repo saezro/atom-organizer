@@ -303,6 +303,10 @@ export const api = {
   // de `read_estadillo_info` (fechas, pilotos, drones, num_vuelos...). No
   // encontrar ninguno no es un error: `n_estadillos: 0`, `info: null`.
   estadillosDetectar: (carpeta) => call('estadillos_detectar', carpeta),
+  // Variante en hilo de estadillosDetectar: no bloquea la ventana en carpetas
+  // grandes. Devuelve {started} al instante; el resultado llega por el
+  // evento `atom:analisis` (scope 'estadillos', kind 'done').
+  estadillosDetectarStart: (carpeta) => call('estadillos_detectar_start', carpeta),
   // Apaga o reinicia el EQUIPO (la Pi), no la app. `modo` in {poweroff,
   // reboot}; el backend valida y no necesita sudo (polkit).
   sistemaApagar: (modo) => call('sistema_apagar', modo),
@@ -374,9 +378,12 @@ export function onCloud(handler) {
 
 // Eventos del análisis en hilo (Python → JS), canal propio:
 //   kind 'scan'      -> scope, done (imágenes escaneadas, cada 250)
-//   kind 'done'      -> scope, data (dict exacto de detect_suffixes)
+//   kind 'done'      -> scope, data (dict exacto de detect_suffixes /
+//                       cloud_prepare / estadillos_detectar según scope)
 //   kind 'error'     -> scope, text
 //   kind 'cancelled' -> scope
+// scope 'estadillos' no emite 'scan' (estadillos_detectar_start no reporta
+// avance): solo llegan 'done' o 'error'.
 export function onAnalisis(handler) {
   const wrapped = (e) => handler(e.detail)
   window.addEventListener('atom:analisis', wrapped)

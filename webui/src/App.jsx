@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, isServerMode, onCloud, onProgress, registerPicker, whenBridgeReady } from './bridge'
+import { api, isServerMode, onAnalisis, onCloud, onProgress, registerPicker, whenBridgeReady } from './bridge'
 import ProgressModal from './ProgressModal'
 import PreflightModal from './PreflightModal'
 import UpdateModal from './UpdateModal'
@@ -494,18 +494,48 @@ function App() {
     })
   }
 
+  // Espera al evento `atom:analisis` (scope 'estadillos') lanzado por
+  // `estadillosDetectarStart`: el escaneo (`os.walk` + parseo pandas de cada
+  // candidato) de una carpeta de vuelo grande congelaba la ventana igual que
+  // `detect_suffixes`, así que va en hilo (Task async estadillos_detectar).
+  // Con timeout: un fallo o carpeta enorme no puede dejar al operario colgado
+  // en «Antes de subir» sin poder continuar.
+  function esperarEstadillos() {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        off()
+        resolve({ n_estadillos: 0, info: null, error: 'timeout' })
+      }, 30000)
+      const off = onAnalisis((d) => {
+        if (d.scope !== 'estadillos') return
+        if (d.kind === 'done') { clearTimeout(timer); off(); resolve(d.data) }
+        if (d.kind === 'error') { clearTimeout(timer); off(); resolve({ n_estadillos: 0, info: null, error: d.text }) }
+        if (d.kind === 'cancelled') { clearTimeout(timer); off(); resolve({ n_estadillos: 0, info: null, error: null }) }
+      })
+    })
+  }
+
   // Comprobación EN SECO previa a subir: `cloudPrepare` dice cuántos ficheros
-  // hay pendientes de verdad y `estadillosDetectar` qué se ha volado (días,
-  // vuelos, pilotos, drones). No sube nada; el kiosco pinta el resultado como
-  // resumen y solo entonces `kioskSubirCrudo` arranca la subida real.
+  // hay pendientes de verdad y `estadillosDetectarStart` qué se ha volado
+  // (días, vuelos, pilotos, drones), en hilo aparte para no congelar la
+  // ventana. No sube nada; el kiosco pinta el resultado como resumen y solo
+  // entonces `kioskSubirCrudo` arranca la subida real.
   async function kioskComprobarSubida({ carpeta, inspeccion }) {
     const prefijo = inspeccion?.prefijo
     if (!carpeta || !prefijo) return null
-    let [prepare, estadillos] = await Promise.all([
+    const estadillosPromise = esperarEstadillos()
+    const [prepareInicial, arranqueEstadillos] = await Promise.all([
       api.cloudPrepare(carpeta, prefijo).catch((e) => ({ ok: false, error: String(e) })),
       // Que falle la detección de estadillos NO impide subir: es informativa.
-      api.estadillosDetectar(carpeta).catch((e) => ({ n_estadillos: 0, info: null, error: String(e) })),
+      api.analisisReset().then(() => api.estadillosDetectarStart(carpeta))
+        .catch((e) => ({ started: false, reason: String(e) })),
     ])
+    let prepare = prepareInicial
+    // Si no llegó a arrancar (p.ej. ya había otro análisis en curso), no hay
+    // evento que esperar: se resuelve al instante en vez de agotar el timeout.
+    const estadillos = arranqueEstadillos?.started === false
+      ? { n_estadillos: 0, info: null, error: arranqueEstadillos.reason || 'No se pudo iniciar la detección de estadillos.' }
+      : await estadillosPromise
     // Si el listado (precalentado arriba, o recién lanzado por este mismo
     // `cloudPrepare` si no había caché) aún no ha terminado, se espera al
     // evento y se repregunta UNA vez para traer los pendientes reales. Si

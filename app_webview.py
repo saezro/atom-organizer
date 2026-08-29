@@ -474,6 +474,31 @@ class Api:
         except Exception as exc:  # noqa: BLE001 — se reenvía al front
             return {"error": f"{type(exc).__name__}: {exc}"}
 
+    def estadillos_detectar_start(self, carpeta: str) -> dict:
+        """Igual que `estadillos_detectar` pero en un hilo: el `os.walk` +
+        parseo con pandas de cada candidato de una carpeta de vuelo grande
+        congelaba la ventana. El resultado llega por `atom:analisis` (scope
+        `estadillos`, kind `done`)."""
+        if self._analizando:
+            return {"started": False, "reason": "Ya hay un análisis en curso."}
+        self._analizando = True
+
+        def worker() -> None:
+            try:
+                from atom_core.estadillo import detectar_estadillos, read_estadillo_info
+                detectado = detectar_estadillos(carpeta)
+                rutas = detectado["rutas"]
+                info = read_estadillo_info(rutas) if rutas else None
+                data = {"rutas": rutas, "n_estadillos": len(rutas), "info": info, "error": None}
+                self._push_analisis({"kind": "done", "scope": "estadillos", "data": data})
+            except Exception as exc:  # noqa: BLE001 - llega a la UI como error
+                self._push_analisis({"kind": "error", "scope": "estadillos", "text": str(exc)})
+            finally:
+                self._analizando = False
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"started": True}
+
     # ---- autodetección del sufijo de separación ---------------------------
     def detect_suffixes(self, origen: str) -> dict:
         """Recomienda el sufijo térmico/RGB escaneando los nombres de la carpeta
