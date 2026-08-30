@@ -36,6 +36,7 @@ class BlobFalso:
     def upload_from_filename(self, ruta_local: str) -> None:
         if self.bucket.fallar_upload:
             raise OSError(f"fallo simulado subiendo {self.name}")
+        self.bucket.uploads += 1
         self.bucket.objetos[self.name] = Path(ruta_local).read_bytes()
 
     def download_to_filename(self, ruta_local: str) -> None:
@@ -56,6 +57,7 @@ class BucketFalso:
     def __init__(self):
         self.objetos: dict[str, bytes] = {}
         self.fallar_upload = False
+        self.uploads = 0
 
     def blob(self, nombre: str) -> BlobFalso:
         return BlobFalso(self, nombre)
@@ -170,3 +172,60 @@ def test_editar_en_sitio_gcs_falla_publicar_no_pierde_el_original(tmp_path):
             ruta_local.write_bytes(b"editado-pero-falla")
 
     assert bucket.objetos["a.JPG"] == b"original"  # el remoto queda intacto
+
+
+# --- publicar_solo_si_cambia ------------------------------------------------
+
+def test_editar_en_sitio_gcs_publicar_solo_si_cambia_sin_modificar_no_sube(tmp_path):
+    bucket = _sembrar_almacen_gcs("bucket-solo-si-cambia-sin-tocar")
+    bucket.objetos["a.JPG"] = b"original"
+
+    with almacen_mod.editar_en_sitio(
+        "gs://bucket-solo-si-cambia-sin-tocar/a.JPG", publicar_solo_si_cambia=True
+    ) as ruta_local:
+        ruta_local.read_bytes()  # se "lee" pero no se modifica
+
+    assert bucket.uploads == 0, "sin cambios no debe subir nada"
+    assert bucket.objetos["a.JPG"] == b"original"
+
+
+def test_editar_en_sitio_gcs_publicar_solo_si_cambia_modificado_sube(tmp_path):
+    bucket = _sembrar_almacen_gcs("bucket-solo-si-cambia-modificado")
+    bucket.objetos["a.JPG"] = b"original"
+
+    with almacen_mod.editar_en_sitio(
+        "gs://bucket-solo-si-cambia-modificado/a.JPG", publicar_solo_si_cambia=True
+    ) as ruta_local:
+        ruta_local.write_bytes(b"editado")
+
+    assert bucket.uploads == 1, "con cambios sí debe subir"
+    assert bucket.objetos["a.JPG"] == b"editado"
+
+
+def test_editar_en_sitio_gcs_publicar_solo_si_cambia_excepcion_no_publica(tmp_path):
+    bucket = _sembrar_almacen_gcs("bucket-solo-si-cambia-excepcion")
+    bucket.objetos["a.JPG"] = b"original"
+
+    with pytest.raises(ValueError):
+        with almacen_mod.editar_en_sitio(
+            "gs://bucket-solo-si-cambia-excepcion/a.JPG", publicar_solo_si_cambia=True
+        ) as ruta_local:
+            ruta_local.write_bytes(b"editado-pero-falla")
+            raise ValueError("fallo simulado del binario externo")
+
+    assert bucket.uploads == 0
+    assert bucket.objetos["a.JPG"] == b"original"
+
+
+def test_editar_en_sitio_gcs_publicar_solo_si_cambia_temporal_vacio_lanza(tmp_path):
+    bucket = _sembrar_almacen_gcs("bucket-solo-si-cambia-vacio")
+    bucket.objetos["a.JPG"] = b"original"
+
+    with pytest.raises(RuntimeError):
+        with almacen_mod.editar_en_sitio(
+            "gs://bucket-solo-si-cambia-vacio/a.JPG", publicar_solo_si_cambia=True
+        ) as ruta_local:
+            ruta_local.write_bytes(b"")
+
+    assert bucket.uploads == 0
+    assert bucket.objetos["a.JPG"] == b"original"  # no se publica un objeto vacío

@@ -309,8 +309,19 @@ def es_carpeta(ruta: str) -> bool:
     return os.path.isdir(ruta)
 
 
+def _huella(ruta: Path) -> str:
+    """sha256 del contenido de `ruta`, para decidir si un fichero cambió."""
+    import hashlib
+
+    hasher = hashlib.sha256()
+    with open(ruta, "rb") as f:
+        for bloque in iter(lambda: f.read(1024 * 1024), b""):
+            hasher.update(bloque)
+    return hasher.hexdigest()
+
+
 @contextmanager
-def editar_en_sitio(ruta: str):
+def editar_en_sitio(ruta: str, *, publicar_solo_si_cambia: bool = False):
     """Cede una `Path` LOCAL para editarla IN-PLACE con un binario externo
     (exiftool, dji_irp, pyexiv2, PIL...) que exige una ruta de fichero real y
     modifica su contenido sin devolver nada.
@@ -325,10 +336,19 @@ def editar_en_sitio(ruta: str):
     el temporal se limpia solo (lo hace el `finally` de `AlmacenGCS.abrir_local`).
 
     En `gs://` el objeto DEBE EXISTIR previamente (se descarga primero); no
-    sirve para CREAR un fichero nuevo en el almacén — para eso, `publicar_en`."""
+    sirve para CREAR un fichero nuevo en el almacén — para eso, `publicar_en`.
+
+    `publicar_solo_si_cambia`: solo tiene efecto en `gs://` (en local es un
+    no-op, no calcula ninguna huella). Con `True`, compara un sha256 del
+    temporal antes de ceder la `Path` y al terminar el bloque; si no cambió,
+    NO republica (ahorra el upload cuando el bloque detecta que no había nada
+    que hacer, p. ej. una imagen ya girada en una reejecución). Las garantías
+    de excepción/temporal-vacío siguen intactas: si hubo excepción, o el
+    temporal quedó vacío/borrado, nunca se publica, cambie o no el contenido."""
     if es_uri_gcs(ruta):
         almacen, prefijo = abrir_almacen(ruta)
         with almacen.abrir_local(prefijo) as ruta_local:
+            huella_antes = _huella(ruta_local) if publicar_solo_si_cambia else None
             yield ruta_local
             if not ruta_local.exists() or ruta_local.stat().st_size == 0:
                 raise RuntimeError(
@@ -336,6 +356,8 @@ def editar_en_sitio(ruta: str):
                     "borrado tras el bloque; no se publica para no dejar un "
                     "objeto truncado en el almacén."
                 )
+            if publicar_solo_si_cambia and _huella(ruta_local) == huella_antes:
+                return
             almacen.publicar(ruta_local, prefijo)
     else:
         yield Path(ruta)
