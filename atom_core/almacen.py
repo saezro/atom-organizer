@@ -299,6 +299,38 @@ def existe_ruta(ruta: str) -> bool:
     return os.path.exists(ruta)
 
 
+@contextmanager
+def editar_en_sitio(ruta: str):
+    """Cede una `Path` LOCAL para editarla IN-PLACE con un binario externo
+    (exiftool, dji_irp, pyexiv2, PIL...) que exige una ruta de fichero real y
+    modifica su contenido sin devolver nada.
+
+    En local es la propia ruta, sin copiar ni republicar nada al salir (coste
+    cero, paridad exacta con el binario editando el fichero original de
+    siempre); en `gs://` descarga a un temporal (`Almacen.abrir_local`), cede
+    esa `Path`, y solo si el bloque `with` termina SIN excepción republica el
+    temporal sobre la MISMA clave (`Almacen.publicar`; el upload de GCS es
+    atómico, no hace falta clave temporal + swap). Si el bloque lanza, el
+    objeto remoto queda intacto y la excepción sube tal cual. En ambos casos
+    el temporal se limpia solo (lo hace el `finally` de `AlmacenGCS.abrir_local`).
+
+    En `gs://` el objeto DEBE EXISTIR previamente (se descarga primero); no
+    sirve para CREAR un fichero nuevo en el almacén — para eso, `publicar_en`."""
+    if es_uri_gcs(ruta):
+        almacen, prefijo = abrir_almacen(ruta)
+        with almacen.abrir_local(prefijo) as ruta_local:
+            yield ruta_local
+            if not ruta_local.exists() or ruta_local.stat().st_size == 0:
+                raise RuntimeError(
+                    f"editar_en_sitio: el temporal de '{ruta}' quedó vacío o "
+                    "borrado tras el bloque; no se publica para no dejar un "
+                    "objeto truncado en el almacén."
+                )
+            almacen.publicar(ruta_local, prefijo)
+    else:
+        yield Path(ruta)
+
+
 def tamano_de(ruta: str) -> int:
     """Tamaño en bytes de `ruta` (fichero, local o `gs://…`).
 
