@@ -28,6 +28,13 @@ a = Analysis(
         'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets',
         'PySide6.Qt3DCore', 'PySide6.QtCharts', 'PySide6.QtQuick',
         'PySide6.QtQml', 'PySide6.QtMultimedia',
+        # atom_core.almacen_gcs importa 'google.cloud.storage' de forma perezosa
+        # (dentro de AlmacenGCS.__init__, no a nivel de módulo) para que el
+        # backend gs:// exista sin arrastrar el SDK al escritorio: SOLO lo trae
+        # la imagen del Cloud Run Job. El escritorio no lo necesita (usa
+        # atom_core.cloud_upload, solo stdlib) — se excluye explícito para que
+        # nunca se cuele en el .exe aunque el entorno de build lo tenga instalado.
+        'google.cloud.storage', 'google.cloud',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

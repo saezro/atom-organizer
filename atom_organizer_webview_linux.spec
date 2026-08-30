@@ -51,6 +51,12 @@ a = Analysis(
         # pesados que el pipeline no usa (QtWebEngine SÍ se mantiene)
         'PySide6.Qt3DCore', 'PySide6.QtCharts', 'PySide6.QtMultimedia',
         'PySide6.QtQuick3D', 'PySide6.QtDataVisualization',
+        # atom_core.almacen_gcs importa 'google.cloud.storage' de forma perezosa
+        # (dentro de AlmacenGCS.__init__, no a nivel de módulo): SOLO lo trae la
+        # imagen del Cloud Run Job. El escritorio no lo necesita (sube vía
+        # atom_core.cloud_upload, solo stdlib) — excluido explícito para que no
+        # se cuele en el .exe aunque el entorno de build lo tenga instalado.
+        'google.cloud.storage', 'google.cloud',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
