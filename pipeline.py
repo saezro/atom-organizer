@@ -1122,7 +1122,7 @@ class GenStructFolder:
 
         self.utils_obj.prepare_output_folder(output_folder, ["RGB", "TERMICA","ESTADILLOS"])
 
-        output_path_estadillo = os.path.join(output_folder,"ESTADILLOS")
+        output_path_estadillo = almacen.unir(output_folder, "ESTADILLOS")
 
         # `path_estadillo` puede traer 1 o N rutas empaquetadas (ver
         # `atom_core.estadillo.empaquetar_rutas`/`desempaquetar_rutas`): es el
@@ -1137,21 +1137,38 @@ class GenStructFolder:
         # estadillos idénticos numerados. Es el único fichero que escriben
         # todas por igual.
         if shard_index == 0:
-            for ruta in rutas_estadillo:
-                # output_path_estadillo es una carpeta, mientras que ruta es el archivo. En la siguiente línea juntamos output_path_estadillo con el nombre.
-                dest_estadillo = os.path.join(output_path_estadillo, os.path.basename(ruta))
-                # Comparamos transformando en minúsculas e igualando los / o \
-                if os.path.normcase(os.path.abspath(ruta)) == os.path.normcase(os.path.abspath(dest_estadillo)):
-                    self.organizer_logger.logger.info(f"Los estadillos son iguales. No se copia nada.")
-                    continue
-                self.organizer_logger.logger.info(f"Los estadillos son diferentes") # Son diferentes, así que hay que copiarlos y compruebo si hay algún estadillo en la carpeta de destino con el mismo nombre y en el caso de haberlo genero un nombre distinto añadiendo un contador al nombre.
-                dest = pathlib.Path(output_folder) / "ESTADILLOS" / pathlib.Path(ruta).name
-                counter = 1
-                while dest.exists():
-                    self.organizer_logger.logger.info(f"Había un estadillo con el mismo nombre. Usamos un counter - Valor: {counter}")
-                    dest = dest.with_stem(f"{dest.stem}_{counter}")
-                    counter += 1
-                shutil.copy2(ruta, dest)
+            if almacen.es_uri_gcs(output_folder):
+                # Destino en GCS: el origen del estadillo sigue siendo un fichero
+                # LOCAL (viene del disco/subida, no de un bucket), así que no hay
+                # "son el mismo fichero" que comprobar con abspath -> siempre se
+                # publica. La colisión de nombre se resuelve igual que en local,
+                # pero contra `existe_ruta`/`publicar_en` en vez de `pathlib`.
+                for ruta in rutas_estadillo:
+                    nombre_estadillo = os.path.basename(ruta)
+                    nombre, extension = os.path.splitext(nombre_estadillo)
+                    dest_estadillo = almacen.unir(output_path_estadillo, nombre_estadillo)
+                    counter = 1
+                    while almacen.existe_ruta(dest_estadillo):
+                        self.organizer_logger.logger.info(f"Había un estadillo con el mismo nombre. Usamos un counter - Valor: {counter}")
+                        dest_estadillo = almacen.unir(output_path_estadillo, f"{nombre}_{counter}{extension}")
+                        counter += 1
+                    almacen.publicar_en(ruta, dest_estadillo)
+            else:
+                for ruta in rutas_estadillo:
+                    # output_path_estadillo es una carpeta, mientras que ruta es el archivo. En la siguiente línea juntamos output_path_estadillo con el nombre.
+                    dest_estadillo = os.path.join(output_path_estadillo, os.path.basename(ruta))
+                    # Comparamos transformando en minúsculas e igualando los / o \
+                    if os.path.normcase(os.path.abspath(ruta)) == os.path.normcase(os.path.abspath(dest_estadillo)):
+                        self.organizer_logger.logger.info(f"Los estadillos son iguales. No se copia nada.")
+                        continue
+                    self.organizer_logger.logger.info(f"Los estadillos son diferentes") # Son diferentes, así que hay que copiarlos y compruebo si hay algún estadillo en la carpeta de destino con el mismo nombre y en el caso de haberlo genero un nombre distinto añadiendo un contador al nombre.
+                    dest = pathlib.Path(output_folder) / "ESTADILLOS" / pathlib.Path(ruta).name
+                    counter = 1
+                    while dest.exists():
+                        self.organizer_logger.logger.info(f"Había un estadillo con el mismo nombre. Usamos un counter - Valor: {counter}")
+                        dest = dest.with_stem(f"{dest.stem}_{counter}")
+                        counter += 1
+                    shutil.copy2(ruta, dest)
 
         # Leer el/los estadillo(s) usando Pandas. Con 1 sola ruta esto lee
         # exactamente el mismo CSV de siempre, con `sep=";"`; con N rutas las
@@ -1237,46 +1254,58 @@ class GenStructFolder:
                 # `makedirs(exist_ok=True)`, cuestan un round-trip y así ninguna
                 # tarea depende de que otra haya llegado antes para tener dónde
                 # dejar sus imágenes (entre tareas del Job no hay ninguna barrera).
+                # En GCS no hay directorios que crear (el prefijo aparece solo al
+                # subir el primer objeto ahí dentro, ver `publicar_en`); los
+                # `os.makedirs` de abajo son no-op ahí, igual que ya hace
+                # `Utils.prepare_output_folder`.
+                destino_es_gcs = almacen.es_uri_gcs(output_folder)
+
                 #-- Carpeta Termica--
                 # Creamos el path a la carpeta del PB dentro de la carpeta Termica
-                pathTermica_PB = os.path.join(os.path.join(output_folder,"TERMICA"),nombreCarpeta_PB)
+                pathTermica_PB = almacen.unir(almacen.unir(output_folder,"TERMICA"),nombreCarpeta_PB)
 
                 # Si no existe todavia la carpeta del PB dentro de termica, la creamos
-                os.makedirs(pathTermica_PB, exist_ok=True)
+                if not destino_es_gcs:
+                    os.makedirs(pathTermica_PB, exist_ok=True)
 
                 # Creamos el path a la carpeta del vuelo dentro de la carpeta PB
-                pathTermica_PB_vuelo = os.path.join(pathTermica_PB,nombreCarpeta_PB_vuelo)
+                pathTermica_PB_vuelo = almacen.unir(pathTermica_PB,nombreCarpeta_PB_vuelo)
 
                 # Si no existe todavia la carpeta del vuelo dentro del PB, la creamos
-                os.makedirs(pathTermica_PB_vuelo, exist_ok=True)
+                if not destino_es_gcs:
+                    os.makedirs(pathTermica_PB_vuelo, exist_ok=True)
 
                 #-- Carpeta RGB--
                 # Creamos el path a la carpeta del PB dentro de la carpeta RGB
-                pathRGB_PB = os.path.join(os.path.join(output_folder,"RGB"),nombreCarpeta_PB)
+                pathRGB_PB = almacen.unir(almacen.unir(output_folder,"RGB"),nombreCarpeta_PB)
 
                 # Si no existe todavia la carpeta de RGB, la creamos
-                os.makedirs(pathRGB_PB, exist_ok=True)
+                if not destino_es_gcs:
+                    os.makedirs(pathRGB_PB, exist_ok=True)
 
                 # Creamos el path a la carpeta del vuelo dentro de la carpeta PB
-                pathRGB_PB_vuelo = os.path.join(pathRGB_PB,nombreCarpeta_PB_vuelo)
+                pathRGB_PB_vuelo = almacen.unir(pathRGB_PB,nombreCarpeta_PB_vuelo)
 
                 # Si no existe todavia la carpeta del vuelo, la creamos
-                os.makedirs(pathRGB_PB_vuelo, exist_ok=True)
+                if not destino_es_gcs:
+                    os.makedirs(pathRGB_PB_vuelo, exist_ok=True)
                 #-- --
 
                 if extra_suffix:
                     #-- En este caso tenemos que crear la carpeta RGB_Extra y organizar dentro las imágenes --
                     # Creamos el path a la carpeta del PB dentro de la carpeta RGB_Extra
-                    pathRGB_Extra_PB = os.path.join(os.path.join(output_folder,"RGB_extra"),nombreCarpeta_PB)
+                    pathRGB_Extra_PB = almacen.unir(almacen.unir(output_folder,"RGB_extra"),nombreCarpeta_PB)
 
                     # Si no existe todavia la carpeta de RGB_Extra, la creamos
-                    os.makedirs(pathRGB_Extra_PB, exist_ok=True)
+                    if not destino_es_gcs:
+                        os.makedirs(pathRGB_Extra_PB, exist_ok=True)
 
                     # Creamos el path a la carpeta del vuelo dentro de la carpeta PB
-                    pathRGB_Extra_PB_vuelo = os.path.join(pathRGB_Extra_PB,nombreCarpeta_PB_vuelo)
+                    pathRGB_Extra_PB_vuelo = almacen.unir(pathRGB_Extra_PB,nombreCarpeta_PB_vuelo)
 
                     # Si no existe todavia la carpeta del vuelo, la creamos
-                    os.makedirs(pathRGB_Extra_PB_vuelo, exist_ok=True)
+                    if not destino_es_gcs:
+                        os.makedirs(pathRGB_Extra_PB_vuelo, exist_ok=True)
 
                 if organize_images:
                     # Solo se anota a quién pertenece cada franja horaria. El reparto
@@ -1336,21 +1365,23 @@ class GenStructFolder:
         # vuelos es pura aritmética sobre la caché. Solo el de las imágenes
         # PROPIAS: leer el de las 2.516 en las ocho tareas son ocho veces el
         # mismo trabajo de red, que es justo lo que se está intentando repartir.
-        self.precargar_timestamps([os.path.join(input_folder, s) for s in subcarpetas],
+        self.precargar_timestamps([almacen.unir(input_folder, s) for s in subcarpetas],
                                   progress_callback, filtro=_es_mia)
 
         movimientos: list[tuple[str, str]] = []
         for sub in subcarpetas:
-            carpeta = os.path.join(input_folder, sub)
-            if not os.path.isdir(carpeta):
+            carpeta = almacen.unir(input_folder, sub)
+            if not almacen.existe_ruta(carpeta):
                 continue
             por_destino: dict[str, int] = {}
-            for imagen in sorted(os.listdir(carpeta)):
+            nombres = (almacen.listar_ficheros(carpeta) if almacen.es_uri_gcs(input_folder)
+                      else os.listdir(carpeta))
+            for imagen in sorted(nombres):
                 if os.path.splitext(imagen)[1].lower() not in EXTS_IMAGEN:
                     continue
                 if not _es_mia(imagen):
                     continue
-                origen = os.path.join(carpeta, imagen)
+                origen = almacen.unir(carpeta, imagen)
                 try:
                     fecha_hora_imagen = self._get_timestamp_cached(origen)
                 except Exception as e:
@@ -1372,7 +1403,7 @@ class GenStructFolder:
                                 and v["inicio"] < fecha_hora_imagen < v["fin"]), None)
                 if destino is None:
                     continue
-                movimientos.append((origen, os.path.join(destino, imagen)))
+                movimientos.append((origen, almacen.unir(destino, imagen)))
                 por_destino[destino] = por_destino.get(destino, 0) + 1
 
             for destino, cuantas in por_destino.items():
@@ -1467,7 +1498,12 @@ class GenStructFolder:
         """
         if ruta_imagen in self._timestamps_cache:
             return self._timestamps_cache[ruta_imagen]
-        timestamp = self.exif_management_obj.get_timestamp_from_image(ruta_imagen)
+        # `abrir_para_lectura` es no-op en local (cede la misma ruta, sin
+        # copiar nada); en `gs://…` descarga a un temporal DENTRO de este
+        # `with` y lo borra al salir -> una sola descarga por imagen, aquí
+        # dentro de la caché, nunca en cada vuelo que pregunta por ella.
+        with almacen.abrir_para_lectura(ruta_imagen) as ruta_local:
+            timestamp = self.exif_management_obj.get_timestamp_from_image(str(ruta_local))
         with self._stats_lock:
             self._timestamps_cache[ruta_imagen] = timestamp
         return timestamp
@@ -1493,13 +1529,15 @@ class GenStructFolder:
 
         rutas = []
         for carpeta in carpetas:
-            if not carpeta or not os.path.isdir(carpeta):
+            if not carpeta or not almacen.existe_ruta(carpeta):
                 continue
-            for archivo in os.listdir(carpeta):
+            nombres = (almacen.listar_ficheros(carpeta) if almacen.es_uri_gcs(carpeta)
+                      else os.listdir(carpeta))
+            for archivo in nombres:
                 if os.path.splitext(archivo)[1].lower() in EXTS_IMAGEN:
                     if filtro is not None and not filtro(archivo):
                         continue
-                    ruta = os.path.join(carpeta, archivo)
+                    ruta = almacen.unir(carpeta, archivo)
                     if ruta not in self._timestamps_cache:
                         rutas.append(ruta)
 
@@ -1510,8 +1548,19 @@ class GenStructFolder:
         if progress_callback is not None:
             progress_callback.emit(f"\nLeyendo la fecha de {len(rutas)} imágenes...\n")
 
+        def _get_timestamp_seguro(ruta_imagen: str):
+            try:
+                return self._get_timestamp_cached(ruta_imagen)
+            except Exception as e:
+                self.organizer_logger.logger.info('------------------------------------------------------------------------------------------------------')
+                self.organizer_logger.logger.warning("ERROR: Error al obtener datos de fecha y hora de la imagen {0}".format(ruta_imagen))
+                self.organizer_logger.logger.error(e.__str__)
+                self.organizer_logger.logger.exception(e)
+                self.organizer_logger.logger.info('------------------------------------------------------------------------------------------------------')
+                return None
+
         with ThreadPoolExecutor(max_workers=self.max_io_workers) as executor:
-            list(executor.map(self._get_timestamp_cached, rutas))
+            list(executor.map(_get_timestamp_seguro, rutas))
 
     def moverListaImagenes(self, pathCarpetaOrigen: str, pathCarpetaDestino: str, listaImagenes: list[str], progress_callback, progress_bar) -> None:
         """

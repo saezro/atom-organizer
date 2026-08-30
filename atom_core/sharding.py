@@ -336,7 +336,7 @@ def ruta_de_relativo(base: str, relativo: str) -> str:
 
     Las relativas se manejan siempre con `/` (son claves, no rutas del disco);
     esto es lo único que las convierte en una ruta de verdad."""
-    return os.path.join(base, *str(relativo).replace("\\", "/").strip("/").split("/"))
+    return unir(base, *str(relativo).replace("\\", "/").strip("/").split("/"))
 
 
 def peso_de_ruta(destino: str, relativo: str, contar,

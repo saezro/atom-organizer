@@ -30,6 +30,7 @@ import re
 import external_tools as config
 import utils
 from atom_core import sharding
+from atom_core.almacen import es_uri_gcs, existe_ruta, unir
 from external_tools import resource_path
 from utils import (
     CompressRgbsConfig,
@@ -46,6 +47,19 @@ from utils import (
     TifRotatingConfig,
 )
 from rjpeg_a_tiff import EXTS_IMAGEN
+
+
+def _existe_carpeta(ruta: str) -> bool:
+    """`os.path.isdir`, consciente de `gs://…`.
+
+    En local es EXACTAMENTE `os.path.isdir` (mismo comportamiento, y el mismo
+    seam que ya monkeypatchean los tests de `test_etapas_pipeline.py` sobre
+    `atom_core.phases.os.path.isdir`); en `gs://…` no hay directorios reales
+    que comprobar, así que delega en `existe_ruta` (contenido bajo el prefijo).
+    """
+    if es_uri_gcs(ruta):
+        return existe_ruta(ruta)
+    return os.path.isdir(ruta)
 
 
 class PipelinePhasesMixin:
@@ -128,7 +142,7 @@ class PipelinePhasesMixin:
         run entero salga rojo y no 7 verdes con un rojo al lado.
         """
         presentes = [sub for sub in ("TERMICA", "RGB")
-                     if os.path.isdir(os.path.join(output_folder, sub))]
+                     if _existe_carpeta(unir(output_folder, sub))]
         if presentes:
             return
         raise FileNotFoundError(
@@ -194,14 +208,14 @@ class PipelinePhasesMixin:
         raíz hace exactamente el mismo trabajo sobre menos carpetas."""
         rutas = []
         for sub in subcarpetas:
-            raiz = os.path.join(output_folder, sub)
+            raiz = unir(output_folder, sub)
             if mis_pbs is None:
-                if os.path.isdir(raiz):
+                if _existe_carpeta(raiz):
                     rutas.append(raiz)
                 continue
             for relativo in mis_pbs:
                 ruta = sharding.ruta_de_relativo(raiz, relativo)
-                if os.path.isdir(ruta):
+                if _existe_carpeta(ruta):
                     rutas.append(ruta)
         return rutas
 
@@ -232,8 +246,8 @@ class PipelinePhasesMixin:
         """
         total = 0
         for sub in ("TERMICA", "RGB", "RGB_extra"):
-            carpeta = os.path.join(output_folder, sub)
-            if not os.path.isdir(carpeta):
+            carpeta = unir(output_folder, sub)
+            if not _existe_carpeta(carpeta):
                 continue
             total += sum(1 for imagen in self.utils_obj.get_images_from_dir(carpeta)
                          if sharding.toca_imagen(imagen, shard_index, shard_count))
