@@ -3306,7 +3306,12 @@ class SplitImages:
                 criterio_path = candidato  # Carpeta procesada por una versión anterior: el criterio sigue donde lo dejó.
                 break
         try:
-            df_pb_csv = pd.read_csv(criterio_path)
+            # `pandas` no lleva fsspec/gcsfs (a propósito: el acceso a GCS es
+            # cosa de `atom_core.almacen`), así que un `read_csv` sobre `gs://`
+            # revienta con `ImportError: Import fsspec failed`. Se baja antes; en
+            # local `abrir_para_lectura` cede la propia ruta sin copiar.
+            with almacen.abrir_para_lectura(criterio_path) as ruta_criterio:
+                df_pb_csv = pd.read_csv(ruta_criterio)
             # El CSV puede existir y estar VACÍO (solo cabecera): pasa cuando el paso
             # de rotación se fue por la rama "hay demasiadas imágenes que no rotan
             # igual" y no escribió ninguna fila. Ahí `df["Degree"][0]` lanzaba KeyError,

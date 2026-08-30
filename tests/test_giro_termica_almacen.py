@@ -294,3 +294,32 @@ def test_fallo_en_una_imagen_no_impide_procesar_las_demas_en_gcs(
     assert giradas == 1, "la buena sí se gira aunque la corrupta falle"
     assert bucket.objetos["TERMICA/PB1/PB1_V1/DJI_0002_T.JPG"] == b"esto no es un JPEG", (
         "la corrupta no puede quedar tocada ni truncada")
+
+
+def test_read_auto_rotate_degree_lee_el_criterio_desde_gcs(logger):
+    """El criterio de giro (`CSVs/_criterio/<vuelo>_Videofiles.csv`) se lee con
+    `pd.read_csv`, y pandas no lleva fsspec/gcsfs: con la planta en `gs://` eso
+    reventaba con `ImportError: Import fsspec failed` en CADA térmica y tumbaba
+    la etapa post (operación 19 en producción, conversión DJI->TIFF)."""
+    import utils
+
+    bucket = _sembrar_almacen_gcs("bucket-criterio-giro")
+    bucket.objetos[f"CSVs/{utils.CRITERIO_DIRNAME}/PB1_V1_Videofiles.csv"] = (
+        b"New Name,Original Name,Degree\na,b,270\n")
+
+    grados = _split(logger).read_auto_rotate_degree(
+        "gs://bucket-criterio-giro/TERMICA/PB1/PB1_V1", _noop_progress())
+
+    assert grados == 270
+
+
+def test_read_auto_rotate_degree_sin_criterio_en_gcs_no_revienta(logger):
+    """Sin CSV de criterio no se rota (0) y el vuelo continúa: el
+    `FileNotFoundError` que ahora llega de `abrir_para_lectura` tiene que seguir
+    cayendo en el `except` de siempre, no propagarse."""
+    _sembrar_almacen_gcs("bucket-sin-criterio")
+
+    grados = _split(logger).read_auto_rotate_degree(
+        "gs://bucket-sin-criterio/TERMICA/PB1/PB1_V1", _noop_progress())
+
+    assert grados == 0
