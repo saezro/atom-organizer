@@ -44,6 +44,8 @@ from __future__ import annotations
 import os
 import zlib
 
+from atom_core.almacen import es_uri_gcs, listar_subcarpetas, unir
+
 ETAPAS = ("todo", "split", "struct", "post")
 
 
@@ -138,13 +140,35 @@ def carpetas_con_imagenes(root: str, get_images) -> list[str]:
     - get_images - callable ruta -> lista de imágenes (típicamente
       `Utils.get_images_from_dir`), para no duplicar aquí qué extensión es imagen.
     """
+    if not es_uri_gcs(root):
+        # Camino de siempre, intacto: `os.walk` real, sin pasar por la capa
+        # URI-aware (que en local sería equivalente, pero no hay motivo para
+        # arriesgar una diferencia de comportamiento en el caso que ya funciona).
+        encontradas = []
+        for dirpath, _dirnames, _filenames in os.walk(root):
+            try:
+                if get_images(dirpath):
+                    encontradas.append(dirpath)
+            except OSError:
+                continue
+        return sorted(encontradas)
+
+    # `gs://…`: no hay `os.walk`, así que se recorre a mano con
+    # `listar_subcarpetas` (un nivel por llamada), igual que hace
+    # `SplitImages.iterate_folders` en pipeline.py para el mismo árbol.
     encontradas = []
-    for dirpath, _dirnames, _filenames in os.walk(root):
+
+    def _recorrer(carpeta: str) -> None:
         try:
-            if get_images(dirpath):
-                encontradas.append(dirpath)
+            if get_images(carpeta):
+                encontradas.append(carpeta)
         except OSError:
-            continue
+            pass  # Solo se salta ESTA carpeta; las subcarpetas se siguen mirando,
+            # igual que `os.walk` no se detiene si una llamada suelta falla.
+        for sub in listar_subcarpetas(carpeta):
+            _recorrer(unir(carpeta, sub))
+
+    _recorrer(root)
     return sorted(encontradas)
 
 

@@ -35,6 +35,14 @@ class BlobFalso:
     def delete(self) -> None:
         del self.bucket.objetos[self.name]
 
+    def reload(self) -> None:
+        # Metadatos "reales" en este doble: el tamaño está disponible sin
+        # descargar el contenido (a diferencia de `download_to_filename`).
+        if self.name not in self.bucket.objetos:
+            raise FileNotFoundError(self.name)
+        self.bucket.reloads = getattr(self.bucket, "reloads", 0) + 1
+        self.size = len(self.bucket.objetos[self.name])
+
 
 class BucketFalso:
     def __init__(self):
@@ -151,6 +159,14 @@ def test_borrar():
     bucket.objetos["raiz/a.txt"] = b"a"
     almacen.borrar("a.txt")
     assert "raiz/a.txt" not in bucket.objetos
+
+
+def test_tamano_lee_metadatos_sin_descargar():
+    almacen, bucket = _almacen(prefijo_raiz="raiz")
+    bucket.objetos["raiz/a.txt"] = b"contenido de sobra"
+    assert almacen.tamano("a.txt") == len(b"contenido de sobra")
+    assert bucket.descargas == 0
+    assert getattr(bucket, "reloads", 0) == 1
 
 
 def test_paridad_semantica_listar_existe_local_vs_gcs(tmp_path):

@@ -100,3 +100,12 @@ class AlmacenGCS:
     def borrar(self, ruta: str) -> None:
         blob = self.bucket.blob(self._clave(ruta))
         blob.delete()
+
+    def tamano(self, ruta: str) -> int:
+        """Tamaño en bytes leído de los METADATOS del blob (`reload()`), sin
+        descargar el objeto. Es justo lo que faltaba para que `split_image`
+        pudiera decidir RGB/térmica por tamaño sin bajarse la imagen entera
+        dos veces (ver el `TODO 3790 F4` que este método cierra en pipeline.py)."""
+        blob = self.bucket.blob(self._clave(ruta))
+        blob.reload()
+        return blob.size
