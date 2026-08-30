@@ -20,6 +20,7 @@ from pathlib import Path
 import pipeline
 from natsort import natsorted
 
+from atom_core.almacen import es_uri_gcs, listar_ficheros
 from rjpeg_a_tiff import EXTS_FUENTE, EXTS_IMAGEN
 
 
@@ -464,7 +465,12 @@ class Utils:
         - solo_fuente - si True, restringe a EXTS_FUENTE (excluye .tif/.tiff/.dng, que son salidas del pipeline, no fuentes a convertir/girar/comprimir).
         """
         exts = EXTS_FUENTE if solo_fuente else EXTS_IMAGEN
-        files = natsorted(os.listdir(input_folder))
+        # `listar_ficheros` solo entra en juego con `gs://…`; en local se deja
+        # el `os.listdir` de siempre, sin pasar por la capa URI-aware, para no
+        # arriesgar ninguna diferencia en el camino que ya usan a diario el
+        # escritorio y la Raspberry Pi.
+        nombres = listar_ficheros(input_folder) if es_uri_gcs(input_folder) else os.listdir(input_folder)
+        files = natsorted(nombres)
         images = [file for file in files if os.path.splitext(file)[1].lower() in exts] # Si queremos obtener imágenes con diferentes extensiones, las cambiamos aquí.
 
         if exclude_patterns:
@@ -551,6 +557,10 @@ class Utils:
         - output_folder - carpeta de salida.
         - words_list - lista de carpetas para comprobar y, si no existen, crear.
         """
+        if es_uri_gcs(output_folder):
+            # En GCS no hay directorios que crear: el prefijo aparece solo en
+            # cuanto se sube el primer objeto ahí dentro (ver `publicar_en`).
+            return
         # `exist_ok=True` y no el `if w not in list_dir` a secas: entre el listado y
         # el makedirs hay una ventana en la que otro proceso puede haber creado la
         # misma carpeta, y entonces esto reventaba con FileExistsError. Deja de ser

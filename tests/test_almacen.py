@@ -108,3 +108,10 @@ def test_borrar(tmp_path):
     almacen = AlmacenLocal(raiz)
     almacen.borrar("a.txt")
     assert not (raiz / "a.txt").exists()
+
+
+def test_tamano(tmp_path):
+    raiz = _raiz(tmp_path)
+    _crear(raiz, "a.txt", contenido="doce_bytes.")
+    almacen = AlmacenLocal(raiz)
+    assert almacen.tamano("a.txt") == (raiz / "a.txt").stat().st_size

@@ -66,6 +66,11 @@ class Almacen(Protocol):
         """Borra `ruta` del almacén."""
         ...
 
+    def tamano(self, ruta: str) -> int:
+        """Tamaño en bytes de `ruta`, leído por METADATOS: en un backend
+        remoto (GCS) no debe descargar el objeto para saber cuánto ocupa."""
+        ...
+
 
 def _normalizar(ruta: str) -> str:
     """Quita separadores sobrantes y normaliza a `/`, para que las claves que
@@ -126,6 +131,9 @@ class AlmacenLocal:
 
     def borrar(self, ruta: str) -> None:
         self._ruta(ruta).unlink()
+
+    def tamano(self, ruta: str) -> int:
+        return self._ruta(ruta).stat().st_size
 
 
 # --- Capa de rutas URI-aware ------------------------------------------------
@@ -289,3 +297,14 @@ def existe_ruta(ruta: str) -> bool:
         # necesidad de que haya un fichero con ese nombre exacto.
         return bool(almacen.listar(prefijo))
     return os.path.exists(ruta)
+
+
+def tamano_de(ruta: str) -> int:
+    """Tamaño en bytes de `ruta` (fichero, local o `gs://…`).
+
+    A diferencia de `abrir_para_lectura`, en `gs://…` NO descarga el objeto:
+    delega en `Almacen.tamano`, que en `AlmacenGCS` lee el tamaño de los
+    metadatos del blob. Para saber cuánto ocupa algo sin querer ya una copia
+    local, usar esto en vez de `abrir_para_lectura(...).stat().st_size`."""
+    almacen, prefijo = abrir_almacen(ruta)
+    return almacen.tamano(prefijo)

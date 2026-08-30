@@ -29,9 +29,12 @@ import pathlib
 import shutil
 import struct
 import subprocess
+import tempfile
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+from pathlib import Path
 import time
 
 import numpy as np
@@ -49,7 +52,7 @@ import exif as em
 
 import sys
 import external_tools
-from atom_core import rjpeg, sharding
+from atom_core import almacen, rjpeg, sharding
 
 
 def _is_windows() -> bool:
@@ -106,6 +109,41 @@ def _reflink_or_copy(src: str, dst: str) -> None:
             except OSError:
                 pass
     shutil.copy2(src, dst)
+
+
+@contextmanager
+def _origen_local_split(origen: str, ruta_local: "Path | None"):
+    """Cede una ruta local legible para `origen`, sin volver a resolverla si
+    el llamante YA la tiene.
+
+    `split_one_image` resuelve el origen de la imagen UNA sola vez por imagen
+    (`abrir_para_lectura`, que en `gs://…` descarga a un temporal) y reparte
+    esa `ruta_local` a `nombre_destino`/`split_image`/`compress_image`/
+    `_copiar_split`. Si ya viene resuelta, este helper la cede tal cual y no
+    vuelve a tocar el almacén; si no (llamadas directas a estas funciones,
+    fuera del camino paralelo), se comporta como siempre."""
+    if ruta_local is not None:
+        yield ruta_local
+    else:
+        with almacen.abrir_para_lectura(origen) as ruta:
+            yield ruta
+
+
+def _copiar_split(origen: str, destino: str, ruta_local: "Path | None" = None) -> None:
+    """Copia `origen`→`destino` para la fase `split`, con origen y/o destino
+    en `gs://…` además de disco.
+
+    En local-local es EXACTAMENTE `_reflink_or_copy` (misma reflink CoW de
+    siempre): `abrir_para_lectura` en local cede la propia ruta sin copiar
+    nada, así que `publicar_en` recibe el string de origen tal cual y delega
+    en `_reflink_or_copy` por dentro. Si cualquiera de los dos lados es
+    `gs://…`, pasa por un temporal local (descarga si el origen es remoto,
+    o el propio origen si ya es local) y sube/copia desde ahí.
+
+    `ruta_local`, si se pasa, es el origen YA resuelto (ver `_origen_local_split`):
+    evita una segunda descarga del mismo objeto `gs://…` para la misma imagen."""
+    with _origen_local_split(origen, ruta_local) as ruta:
+        almacen.publicar_en(ruta, destino)
 
 
 _LUT_SIZE = 1024
@@ -346,6 +384,14 @@ def split_one_image(image: str, cfg: "SplitJobConfig") -> dict:
     y poder enviarse a un ProcessPoolExecutor (ver `utils.run_batch` y el aviso de la
     cabecera del fichero).
 
+    El origen se resuelve UNA sola vez para toda la imagen (`abrir_para_lectura`) y esa
+    ruta local se reparte a `nombre_destino` y `split_image`: antes cada uno volvía a
+    resolverlo por su cuenta, así que con un origen `gs://…` se descargaba el MISMO
+    objeto dos veces (una para leer el tamaño en modo `mode_size`, otra para copiarlo/
+    comprimirlo) y `nombre_destino` acababa pasándole a PIL el string `gs://…` literal
+    (no un path local), con lo que el renombrado quedaba desactivado en silencio. En
+    local `abrir_para_lectura` no copia nada: cede la ruta real, coste cero.
+
     Returns:
     --------
     dict con "image", "new_name" (el nombre con el que se guardó), "messages" (lo que hay
@@ -359,12 +405,16 @@ def split_one_image(image: str, cfg: "SplitJobConfig") -> dict:
     obj.exif_management_obj.images_error_exif_data = []
     progress = _CollectingProgress()
 
-    new_name = obj.nombre_destino(image, cfg.input_folder, cfg.rename, cfg.mismatch_hours, cfg.mismatch_minutes)
-    obj.split_image(
-        image, cfg.input_folder, cfg.output_folder, cfg.mode, cfg.min_size, cfg.thermal_sufix,
-        cfg.rgb_sufix, cfg.compress_checked, cfg.quality, new_name, cfg.rename, progress,
-        cfg.extra_suffix,
-    )
+    with almacen.abrir_para_lectura(almacen.unir(cfg.input_folder, image)) as ruta_local:
+        new_name = obj.nombre_destino(
+            image, cfg.input_folder, cfg.rename, cfg.mismatch_hours, cfg.mismatch_minutes,
+            ruta_local=ruta_local,
+        )
+        obj.split_image(
+            image, cfg.input_folder, cfg.output_folder, cfg.mode, cfg.min_size, cfg.thermal_sufix,
+            cfg.rgb_sufix, cfg.compress_checked, cfg.quality, new_name, cfg.rename, progress,
+            cfg.extra_suffix, ruta_local=ruta_local,
+        )
     return {
         "image": image,
         "new_name": new_name,
@@ -532,7 +582,7 @@ class CompressImage:
                     self.error_compress += 1
                     self.images_error_compress.append(image_output_path)
 
-    def compress_image(self, image_name: str, input_folder: str, output_folder: str, quality: int, new_name: str, progress_callback, aerotools_devices: bool = False) -> None:
+    def compress_image(self, image_name: str, input_folder: str, output_folder: str, quality: int, new_name: str, progress_callback, aerotools_devices: bool = False, ruta_local: "Path | None" = None) -> None:
         """
         Función que comprime la imagen de entrada con la calidad elegida y la copia en el directorio de salida.
 
@@ -544,96 +594,125 @@ class CompressImage:
         - quality - calidad de la compresión.
         - new_name - nuevo nombre que se le quiere dar al archivo comprimido.
         - aerotools_devices - indica a la función si estamos tratando imágenes de los dispositivos de AEROTOOLS.
+        - ruta_local - origen YA resuelto a ruta local (ver `_origen_local_split`), para no
+          volver a descargar el mismo objeto `gs://…` si el llamante ya lo tiene. A None
+          (por defecto) se resuelve aquí como siempre.
         """
         self.organizer_logger.logger.debug("Factor de calidad: " + str(quality))
         self.organizer_logger.logger.debug("Nombre de la imagen: " + image_name)
         self.organizer_logger.logger.debug("Nuevo nombre: " + new_name)
 
         img = None
+        # `destino_gcs` decide si al final hay que subir un temporal en vez de
+        # guardar directo: se fija ANTES del try para que los `except` de abajo
+        # (que solo componen mensajes/rutas para el log) puedan usar
+        # `almacen.unir` igual en los dos casos sin repetir la comprobación.
+        destino_gcs = almacen.es_uri_gcs(output_folder)
         try:
-            img = Image.open(os.path.join(input_folder,image_name))
-            # print("Datos EXIF sin modificar")
-            # print(exif_management.GeneralInformationFromImage().get_all_exif_data(os.path.join(input_folder, image_name)))
+            with _origen_local_split(almacen.unir(input_folder, image_name), ruta_local) as ruta_local_origen:
+                img = Image.open(ruta_local_origen)
+                # print("Datos EXIF sin modificar")
+                # print(exif_management.GeneralInformationFromImage().get_all_exif_data(os.path.join(input_folder, image_name)))
 
-            exif = img.getexif()  # Obtengo los datos exif de la imagen original.
-            # self.organizer_logger.logger.debug("Exif size: " + str(len(exif.items())))
-            
-            if not aerotools_devices:  # Comprobamos si no son de AEROTOOLS, con lo que obtenemos los datos XMP. Si son de AEROTOOLS no tenemos dichos datos y no hace falta llamar a estas funciones.
-                gimbal_data = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder, image_name))  # Obtenemos los datos de gimbal del archivo original y antes de guardarlo,
-                # por si el directorio de salida es el mismo que el de entrada y sobrescribimos las imágenes. Además, si cambiamos el nombre, necesitamos obtener los datos del gimbal
-                # antes de cambiarlo.
-                xmp_all_data = self.exif_management_obj.get_xmp_data(os.path.join(input_folder, image_name))
-            if new_name == "":  # No hay renombrado.
-                pass
-            else:
-                image_name = new_name  # Hay renombrado y guardamos y comprimimos con el nuevo nombre.
-            
-            # print("Output Folder: {0}".format(output_folder))
-            # print("Image Name: {0}".format(image_name))
-            # print("Quality: {0}".format(quality))
-            # print("exif: {0}".format(exif.items))
-            # print("La altitud es: {0}".format(exif.get_ifd(34853)[6]))
-            # exif.get_ifd(34853)[6] = 36.761
-            # print("La altitud es: {0}".format(exif.get_ifd(34853)[6]))
+                exif = img.getexif()  # Obtengo los datos exif de la imagen original.
+                # self.organizer_logger.logger.debug("Exif size: " + str(len(exif.items())))
 
-            # print("Datos EXIF modificados")
-            # exif.items()
+                if not aerotools_devices:  # Comprobamos si no son de AEROTOOLS, con lo que obtenemos los datos XMP. Si son de AEROTOOLS no tenemos dichos datos y no hace falta llamar a estas funciones.
+                    # Se lee del mismo local que ya usó `Image.open` (en `gs://…`
+                    # es el temporal descargado por `abrir_para_lectura`, no hay
+                    # una segunda bajada): datos de gimbal del archivo original y
+                    # antes de guardarlo, por si el directorio de salida es el
+                    # mismo que el de entrada y sobrescribimos las imágenes.
+                    # Además, si cambiamos el nombre, necesitamos obtener los
+                    # datos del gimbal antes de cambiarlo.
+                    gimbal_data = self.exif_management_obj.get_gimbal_yaw_pitch(str(ruta_local_origen))
+                    xmp_all_data = self.exif_management_obj.get_xmp_data(str(ruta_local_origen))
+                if new_name == "":  # No hay renombrado.
+                    pass
+                else:
+                    image_name = new_name  # Hay renombrado y guardamos y comprimimos con el nuevo nombre.
 
-            img.save(os.path.join(output_folder, image_name), quality=quality, exif=exif)  # Comprimo la imagen grabando los datos exif original. Si no tiene, no da error. Sin optimize=True: ver process_one_image.
-            # self.exif_management_obj.copy_xmp_data(os.path.join(input_folder,image_name),os.path.join(output_folder, image_name))  # Intento de grabar los datos xmp en el archivo comprimido.
-            # no me fío mucho, pues algún archivo me ha dado error.
-            img.close()
-            if not aerotools_devices: # Comprobamos si no son de AEROTOOLS, con lo que grabamos los datos XMP en las imágenes al comprimir para no perder ningún dato. Si son de AEROTOOLS no tenemos dichos datos y no hace falta llamar a estas funciones.
-                # Una sola escritura en vez de dos: cada `saving_*_in_xmp` reescribía el JPEG
-                # entero, así que grabar gimbal y resto por separado costaba dos pasadas
-                # completas sobre el fichero de destino. Ver `exif.saving_all_xmp_data`.
-                self.exif_management_obj.saving_all_xmp_data(os.path.join(output_folder, image_name), gimbal_data, xmp_all_data)  # Se graban los datos en el archivo de destino.
-                self.check_and_fix_xmp_data(output_folder,image_name, gimbal_data, xmp_all_data, progress_callback)
-                
+                # print("Output Folder: {0}".format(output_folder))
+                # print("Image Name: {0}".format(image_name))
+                # print("Quality: {0}".format(quality))
+                # print("exif: {0}".format(exif.items))
+                # print("La altitud es: {0}".format(exif.get_ifd(34853)[6]))
+                # exif.get_ifd(34853)[6] = 36.761
+                # print("La altitud es: {0}".format(exif.get_ifd(34853)[6]))
+
+                # print("Datos EXIF modificados")
+                # exif.items()
+
+                if destino_gcs:
+                    # No hay "guardar directo" en `gs://…`: se comprime a un
+                    # temporal local (con el nombre FINAL, para que el resto de
+                    # este bloque —XMP incluido— opere sobre un fichero real de
+                    # verdad) y se sube entero al terminar. En local sigue
+                    # siendo el `img.save` de siempre, sin pasar por aquí.
+                    with tempfile.TemporaryDirectory() as carpeta_temporal:
+                        ruta_local_destino = Path(carpeta_temporal) / image_name
+                        img.save(ruta_local_destino, quality=quality, exif=exif)  # Comprimo la imagen grabando los datos exif original. Si no tiene, no da error. Sin optimize=True: ver process_one_image.
+                        img.close()
+                        if not aerotools_devices:
+                            self.exif_management_obj.saving_all_xmp_data(str(ruta_local_destino), gimbal_data, xmp_all_data)  # Se graban los datos en el archivo de destino.
+                            self.check_and_fix_xmp_data(carpeta_temporal, image_name, gimbal_data, xmp_all_data, progress_callback)
+                        almacen.publicar_en(ruta_local_destino, almacen.unir(output_folder, image_name))
+                else:
+                    img.save(os.path.join(output_folder, image_name), quality=quality, exif=exif)  # Comprimo la imagen grabando los datos exif original. Si no tiene, no da error. Sin optimize=True: ver process_one_image.
+                    # self.exif_management_obj.copy_xmp_data(os.path.join(input_folder,image_name),os.path.join(output_folder, image_name))  # Intento de grabar los datos xmp en el archivo comprimido.
+                    # no me fío mucho, pues algún archivo me ha dado error.
+                    img.close()
+                    if not aerotools_devices: # Comprobamos si no son de AEROTOOLS, con lo que grabamos los datos XMP en las imágenes al comprimir para no perder ningún dato. Si son de AEROTOOLS no tenemos dichos datos y no hace falta llamar a estas funciones.
+                        # Una sola escritura en vez de dos: cada `saving_*_in_xmp` reescribía el JPEG
+                        # entero, así que grabar gimbal y resto por separado costaba dos pasadas
+                        # completas sobre el fichero de destino. Ver `exif.saving_all_xmp_data`.
+                        self.exif_management_obj.saving_all_xmp_data(os.path.join(output_folder, image_name), gimbal_data, xmp_all_data)  # Se graban los datos en el archivo de destino.
+                        self.check_and_fix_xmp_data(output_folder,image_name, gimbal_data, xmp_all_data, progress_callback)
+
 
         except FileNotFoundError as f:
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self.organizer_logger.logger.warning(f"ERROR: No se encuentra la imagen {os.path.join(output_folder, image_name)} para que PIL la pueda abrir.")
-            progress_callback.emit("\nERROR: No se encuentra la imagen {0} para que PIL la pueda abrir.".format(os.path.join(output_folder, image_name)) + "\n")
+            self.organizer_logger.logger.warning(f"ERROR: No se encuentra la imagen {almacen.unir(output_folder, image_name)} para que PIL la pueda abrir.")
+            progress_callback.emit("\nERROR: No se encuentra la imagen {0} para que PIL la pueda abrir.".format(almacen.unir(output_folder, image_name)) + "\n")
             self.organizer_logger.logger.error(f.__str__)
             self.organizer_logger.logger.exception(f)
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
             self.error_compress += 1
-            self.images_error_compress.append(os.path.join(output_folder, image_name)) 
+            self.images_error_compress.append(almacen.unir(output_folder, image_name))
         except PIL.UnidentifiedImageError as u:
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self.organizer_logger.logger.warning(f"ERROR: La imagen {os.path.join(output_folder, image_name)} no puede ser abierta e identificada.")
-            progress_callback.emit("\nERROR: La imagen {0} no puede ser abierta e identificada.".format(os.path.join(output_folder, image_name)) + "\n")
+            self.organizer_logger.logger.warning(f"ERROR: La imagen {almacen.unir(output_folder, image_name)} no puede ser abierta e identificada.")
+            progress_callback.emit("\nERROR: La imagen {0} no puede ser abierta e identificada.".format(almacen.unir(output_folder, image_name)) + "\n")
             self.organizer_logger.logger.error(u.__str__)
             self.organizer_logger.logger.exception(u)
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self.error_compress += 1         
-            self.images_error_compress.append(os.path.join(output_folder, image_name)) 
+            self.error_compress += 1
+            self.images_error_compress.append(almacen.unir(output_folder, image_name))
         except ValueError as v:
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self.organizer_logger.logger.warning(f"ERROR: El formato de salida para la imagen {os.path.join(output_folder, image_name)} no ha sido identificado.")
-            progress_callback.emit("\nERROR: El formato de salida para la imagen {0} no ha sido identificado.".format(os.path.join(output_folder, image_name)) + "\n")
+            self.organizer_logger.logger.warning(f"ERROR: El formato de salida para la imagen {almacen.unir(output_folder, image_name)} no ha sido identificado.")
+            progress_callback.emit("\nERROR: El formato de salida para la imagen {0} no ha sido identificado.".format(almacen.unir(output_folder, image_name)) + "\n")
             self.organizer_logger.logger.error(v.__str__)
             self.organizer_logger.logger.exception(v)
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self.error_compress += 1         
-            self.images_error_compress.append(os.path.join(output_folder, image_name)) 
+            self.error_compress += 1
+            self.images_error_compress.append(almacen.unir(output_folder, image_name))
         except OSError as o:
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self.organizer_logger.logger.warning(f"ERROR: La imagen {os.path.join(output_folder, image_name)} no ha sido escrita.")
-            progress_callback.emit("\nERROR: Hay algún tipo de error con los datos de la imagen {0}.".format(os.path.join(output_folder, image_name)) + "\n")
+            self.organizer_logger.logger.warning(f"ERROR: La imagen {almacen.unir(output_folder, image_name)} no ha sido escrita.")
+            progress_callback.emit("\nERROR: Hay algún tipo de error con los datos de la imagen {0}.".format(almacen.unir(output_folder, image_name)) + "\n")
             self.organizer_logger.logger.error(o.__str__)
             self.organizer_logger.logger.exception(o)
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self.error_compress += 1         
-            self.images_error_compress.append(os.path.join(output_folder, image_name)) 
+            self.error_compress += 1
+            self.images_error_compress.append(almacen.unir(output_folder, image_name))
         except Exception as e:
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self.organizer_logger.logger.warning("ERROR: Hay algún tipo de error con los datos de la imagen {0}.".format(os.path.join(output_folder, image_name)))
-            progress_callback.emit("\nERROR: Hay algún tipo de error con los datos de la imagen {0}.".format(os.path.join(output_folder, image_name)) + "\n")
+            self.organizer_logger.logger.warning("ERROR: Hay algún tipo de error con los datos de la imagen {0}.".format(almacen.unir(output_folder, image_name)))
+            progress_callback.emit("\nERROR: Hay algún tipo de error con los datos de la imagen {0}.".format(almacen.unir(output_folder, image_name)) + "\n")
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
             self.error_compress += 1
-            self.images_error_compress.append(os.path.join(output_folder, image_name))
+            self.images_error_compress.append(almacen.unir(output_folder, image_name))
         finally:
             if img is not None and getattr(img, "fp", None) is not None:
                 img.close()
@@ -2350,9 +2429,15 @@ class SplitImages:
         progress_callback.emit("Analizando directorio: " + input_folder + "\n")
         
         self.split_images(input_folder, output_folder, mode, min_size, thermal_sufix, rgb_sufix, compress_checked, quality, progress_callback, rename, progress_bar, mismatch_hours, mismatch_minutes, extra_suffix)
-        for dir in next(os.walk(input_folder))[1]:
+        # `input_folder` puede ser una URI `gs://…`: en ese caso no hay `os.walk`
+        # y se listan las subcarpetas directas vía `Almacen` (un nivel por
+        # llamada, que es justo lo que hace esta función al recursar sobre sí
+        # misma). En local se deja el `os.walk` de siempre, sin tocar.
+        subcarpetas = (almacen.listar_subcarpetas(input_folder) if almacen.es_uri_gcs(input_folder)
+                       else next(os.walk(input_folder))[1])
+        for dir in subcarpetas:
             if not self.stop:
-                self.iterate_folders(os.path.join(input_folder,dir), output_folder, mode, min_size, thermal_sufix, rgb_sufix, compress_checked, quality, progress_callback, rename, progress_bar, mismatch_hours, mismatch_minutes, extra_suffix)
+                self.iterate_folders(almacen.unir(input_folder, dir), output_folder, mode, min_size, thermal_sufix, rgb_sufix, compress_checked, quality, progress_callback, rename, progress_bar, mismatch_hours, mismatch_minutes, extra_suffix)
         
     def split_images(self, input_folder: str, output_folder: str, mode: bool,  min_size: str, thermal_sufix: str, rgb_sufix: str,
                      compress_checked: bool, quality: int, progress_callback, rename: bool, progress_bar, mismatch_hours: int, mismatch_minutes: int, extra_suffix: bool = False,
@@ -2435,9 +2520,9 @@ class SplitImages:
         for image, error_str in result["errors"]:
             self.organizer_logger.logger.warning(f"ERROR: No se ha podido separar la imagen {image}: {error_str}")
             self.error_splitting_images += 1
-            self.images_error_splitting_images.append(os.path.join(input_folder, image))
+            self.images_error_splitting_images.append(almacen.unir(input_folder, image))
 
-    def nombre_destino(self, image: str, input_folder: str, rename: bool, mismatch_hours: int, mismatch_minutes: int) -> str:
+    def nombre_destino(self, image: str, input_folder: str, rename: bool, mismatch_hours: int, mismatch_minutes: int, ruta_local: "Path | None" = None) -> str:
         """
         Devuelve el nombre con el que se guardará la imagen, o "" si no hay renombrado.
 
@@ -2451,12 +2536,19 @@ class SplitImages:
         - input_folder - carpeta donde está la imagen.
         - rename - si es False se devuelve "" y la imagen conserva su nombre.
         - mismatch_hours / mismatch_minutes - desfase horario a aplicar al timestamp.
+        - ruta_local - origen YA resuelto a ruta local (ver `_origen_local_split`).
+          `exif.get_timestamp_from_image` abre el fichero con PIL, y un origen `gs://…`
+          sin resolver no es una ruta que PIL pueda abrir: el `FileNotFoundError`
+          resultante lo traga `exif.py` y devuelve None, desactivando el renombrado en
+          silencio. A None (por defecto) se compone `input_folder`+`image` como siempre,
+          válido solo para orígenes locales.
         """
         if not rename:
             # Si no lo queremos, se enviará un string vacío.
             return ""
         desfase = datetime.timedelta(hours=mismatch_hours, minutes=mismatch_minutes)
-        timestamp_image = self.exif_management_obj.get_timestamp_from_image(os.path.join(input_folder, image))
+        ruta_para_exif = str(ruta_local) if ruta_local is not None else os.path.join(input_folder, image)
+        timestamp_image = self.exif_management_obj.get_timestamp_from_image(ruta_para_exif)
         if timestamp_image is None:
             return ""
         # Obtenemos el nuevo nombre en el caso de querer renombrar el archivo
@@ -2471,14 +2563,18 @@ class SplitImages:
         es RGB/ZOOM (creada si no existe); en caso contrario, RGB.
         """
         if "_Z" in image_name:
-            dest = os.path.join(output_folder, "RGB", "ZOOM")
+            dest = almacen.unir(output_folder, "RGB", "ZOOM")
         else:
-            dest = os.path.join(output_folder, "RGB")
-        os.makedirs(dest, exist_ok=True)
+            dest = almacen.unir(output_folder, "RGB")
+        # En `gs://…` no hay directorios que crear (el prefijo aparece solo al
+        # subir el primer objeto); `makedirs` solo tiene sentido en local.
+        if not almacen.es_uri_gcs(output_folder):
+            os.makedirs(dest, exist_ok=True)
         return dest
 
     def split_image(self, image: str, input_folder: str, output_folder: str, mode_size: bool, min_size: str, thermal_sufix: str, rgb_sufix: str,
-                    compress_checked: bool, quality: int, new_name: str, rename: bool, progress_callback, extra_suffix: bool = False):
+                    compress_checked: bool, quality: int, new_name: str, rename: bool, progress_callback, extra_suffix: bool = False,
+                    ruta_local: "Path | None" = None):
         """
         Función que copia la imagen de entrada a la carpeta correspondiente y si es RGB y se quiere comprimir, se comprime con la calidad elegida en el GUI.
 
@@ -2495,24 +2591,46 @@ class SplitImages:
         - new_name - el nuevo nombre que se le dará a la imagen. Si es "", se asume que no se renombrará.
         - rename - si es True se lleva a cabo el renombrado de las imágenes. En caso contrario, no. No se usa actualmente.
         - extra_suffix - si es True indica que el sufijo rgb es el extra que se añade en el interfaz. En caso contrario, seguimos el flujo habitual con sufijo térmico y rgb.
-        """ 
+        - ruta_local - origen YA resuelto a ruta local (ver `_origen_local_split`), reutilizado
+          para leer el tamaño (modo `mode_size`) y pasado a `_copiar_split`/`compress_image` para
+          no volver a descargar el mismo objeto `gs://…`. A None (por defecto) se resuelve como
+          siempre en cada punto que lo necesite.
+        """
         # TODO: Posiblemente pueda encapsular algo más esta función, pues hay código repetido (cuando compruebo compress_checked)
+        # `nombre_salida` es el nombre de fichero real en destino: `new_name` si
+        # hay renombrado, o el propio `image` si no. Antes esto lo resolvía
+        # `_reflink_or_copy` a las bravas (si `new_name==""` el "destino" quedaba
+        # con `/` final, `os.path.isdir` daba True, y añadía `basename(src)`); en
+        # `gs://…` no hay directorios que detectar así, así que se calcula aquí
+        # de forma explícita y sirve igual para los dos backends.
+        nombre_salida = new_name if new_name else image
         if not extra_suffix:
             if mode_size is True:  # Diferenciamos RGB de térmicas por tamaño
                 self.organizer_logger.logger.debug("Dividiendo por tamaño")
                 double_min_size = float(min_size.replace(",","."))*1000000  # Transformamos el min_size de entrada, el cual es un string.
-                size_file = os.path.getsize(os.path.join(input_folder,image))
+                ruta_origen = almacen.unir(input_folder, image)
+                if ruta_local is not None:
+                    # Ya tenemos el origen resuelto (ver `split_one_image`): el tamaño se lee
+                    # del propio fichero local, sin tocar el almacén otra vez.
+                    size_file = os.path.getsize(ruta_local)
+                elif almacen.es_uri_gcs(input_folder):
+                    # Tamaño por METADATOS del blob, sin descargarlo (`Almacen.tamano`, vía
+                    # `almacen.tamano_de`). Cierra el antiguo `TODO 3790 F4`: aquí no había forma
+                    # de saber el tamaño sin bajar el objeto entero.
+                    size_file = almacen.tamano_de(ruta_origen)
+                else:
+                    size_file = os.path.getsize(os.path.join(input_folder,image))
                 if size_file > double_min_size:
                     # Siempre enviamos new_name, aunque sea vacío. La función se encargará de tratarlo de forma automática.
                     if compress_checked:
                         self.organizer_logger.logger.debug("Comprimiendo la imagen RGB")
-                        self.compress_image_obj.compress_image(image, input_folder,self._rgb_destination_folder(output_folder, image), quality, new_name, progress_callback=progress_callback)
+                        self.compress_image_obj.compress_image(image, input_folder,self._rgb_destination_folder(output_folder, image), quality, new_name, progress_callback=progress_callback, ruta_local=ruta_local)
                     else:
                         self.organizer_logger.logger.debug("Copiando la imagen RGB")
-                        _reflink_or_copy(os.path.join(input_folder, image),os.path.join(self._rgb_destination_folder(output_folder, image), new_name))
+                        _copiar_split(ruta_origen, almacen.unir(self._rgb_destination_folder(output_folder, image), nombre_salida), ruta_local=ruta_local)
                 else:
                     self.organizer_logger.logger.debug("Copiando la imagen térmica")  # Las imágenes térmicas no las comprimimos.
-                    _reflink_or_copy(os.path.join(input_folder, image),os.path.join(os.path.join(output_folder,"TERMICA"), new_name))
+                    _copiar_split(ruta_origen, almacen.unir(output_folder, "TERMICA", nombre_salida), ruta_local=ruta_local)
             elif mode_size is False:  # Diferenciamos RGB de térmicas por terminación
                 self.organizer_logger.logger.debug("Dividiendo por sufijo")
                 image_no_extension = image.rsplit( ".", 1 )[ 0 ]
@@ -2524,22 +2642,22 @@ class SplitImages:
                     image_no_extension = self.utils_obj.check_suffix_within_the_name(image_no_extension, thermal_sufix)
                 elif thermal_sufix == "":
                     image_no_extension = self.utils_obj.check_suffix_within_the_name(image_no_extension, rgb_sufix)
-                else:    
+                else:
                     image_no_extension = self.utils_obj.check_suffix_within_the_name(image_no_extension, rgb_sufix + "," + thermal_sufix)
 
                 # Las condiciones programadas se explican de la siguiente manera. Comprobamos que el sufijo no está vacío y, por lo tanto, tenemos en cuenta la terminación o,
                 # en el caso de estar vacío, la extensión del archivo no acaba con la extensión puesta al otro tipo de imágenes. De este modo, no se mezcla en un mismo directorio.
-                # En el elif, comprobaría lo mismo, pero para el otro tipo de imágenes. 
+                # En el elif, comprobaría lo mismo, pero para el otro tipo de imágenes.
                 if image_no_extension.endswith(tuple(rgb_sufix.rsplit(","))) and rgb_sufix != "" or (rgb_sufix == "" and not image_no_extension.endswith(tuple(thermal_sufix.rsplit(",")))):
                     if compress_checked:
                         self.organizer_logger.logger.debug("Comprimiendo la imagen RGB")
-                        self.compress_image_obj.compress_image(image, input_folder,self._rgb_destination_folder(output_folder, image), quality, new_name, progress_callback=progress_callback)
+                        self.compress_image_obj.compress_image(image, input_folder,self._rgb_destination_folder(output_folder, image), quality, new_name, progress_callback=progress_callback, ruta_local=ruta_local)
                     else:
                         self.organizer_logger.logger.debug("Copiando la imagen RGB")
-                        _reflink_or_copy(os.path.join(input_folder, image),os.path.join(self._rgb_destination_folder(output_folder, image), new_name))
+                        _copiar_split(almacen.unir(input_folder, image), almacen.unir(self._rgb_destination_folder(output_folder, image), nombre_salida), ruta_local=ruta_local)
                 elif image_no_extension.endswith(tuple(thermal_sufix.rsplit(","))) and thermal_sufix != "" or (thermal_sufix == "" and not image_no_extension.endswith(tuple(rgb_sufix.rsplit(",")))):
                     self.organizer_logger.logger.debug("Copiando la imagen térmica")  # Las imágenes térmicas no las comprimimos.
-                    _reflink_or_copy(os.path.join(input_folder, image),os.path.join(os.path.join(output_folder,"TERMICA"), new_name))
+                    _copiar_split(almacen.unir(input_folder, image), almacen.unir(output_folder, "TERMICA", nombre_salida), ruta_local=ruta_local)
                 else:
                     pass
         else:
@@ -2553,10 +2671,10 @@ class SplitImages:
             if image_no_extension.endswith(tuple(rgb_sufix.rsplit(","))) and rgb_sufix != "":
                 if compress_checked:
                     self.organizer_logger.logger.debug("Comprimiendo la imagen RGB Extra")
-                    self.compress_image_obj.compress_image(image, input_folder,os.path.join(output_folder,"RGB_Extra"), quality, new_name, progress_callback=progress_callback)
+                    self.compress_image_obj.compress_image(image, input_folder,almacen.unir(output_folder,"RGB_Extra"), quality, new_name, progress_callback=progress_callback, ruta_local=ruta_local)
                 else:
                     self.organizer_logger.logger.debug("Copiando la imagen RGB Extra")
-                    _reflink_or_copy(os.path.join(input_folder, image),os.path.join(os.path.join(output_folder,"RGB_Extra"), new_name))
+                    _copiar_split(almacen.unir(input_folder, image), almacen.unir(output_folder, "RGB_Extra", nombre_salida), ruta_local=ruta_local)
         
     def iterate_folders_for_DJI(self, input_folder: str, exiftool_exe:str, dji_utility: str, progress_callback, progress_bar, emissivity = 0.9, humidity = 50.0, auto_temp = False, up_threshold_temperature = 0, low_threshold_temperature = 500.0, rotate_90: bool = False, rotate_minus_90: bool = False, auto_rotate: bool = False, just_atom_selection = False, generate_gray_scale_images: bool = False, generate_colormap_images: bool = False) -> None:
         """

@@ -28,6 +28,7 @@ from atom_core.almacen import (
     listar_ficheros,
     listar_subcarpetas,
     publicar_en,
+    tamano_de,
     unir,
 )
 from atom_core.almacen_gcs import AlmacenGCS
@@ -63,6 +64,13 @@ class BlobFalso:
 
     def delete(self) -> None:
         del self.bucket.objetos[self.name]
+
+    def reload(self) -> None:
+        # Metadatos "reales" en este doble: el tamaño ya está disponible en
+        # `self.bucket.objetos` sin necesidad de bajarse el contenido.
+        if self.name not in self.bucket.objetos:
+            raise FileNotFoundError(self.name)
+        self.size = len(self.bucket.objetos[self.name])
 
 
 class BucketFalso:
@@ -297,3 +305,17 @@ def test_existe_ruta_gcs_carpeta_sin_objeto_propio():
     # prefijo: debe contar como que existe, igual que un directorio local.
     assert existe_ruta("gs://mi-bucket/raiz/sub") is True
     assert existe_ruta("gs://mi-bucket/raiz/no_existe") is False
+
+
+# --- tamano_de ---------------------------------------------------------------
+
+def test_tamano_de_local_igual_que_stat(tmp_path):
+    fichero = tmp_path / "a.txt"
+    fichero.write_bytes(b"doce_bytes.")
+    assert tamano_de(str(fichero)) == fichero.stat().st_size
+
+
+def test_tamano_de_gcs_lee_metadatos_sin_descargar():
+    bucket = _sembrar_almacen_gcs("mi-bucket")
+    bucket.objetos["raiz/a.txt"] = b"contenido de sobra"
+    assert tamano_de("gs://mi-bucket/raiz/a.txt") == len(b"contenido de sobra")
