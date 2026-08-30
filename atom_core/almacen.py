@@ -126,3 +126,166 @@ class AlmacenLocal:
 
     def borrar(self, ruta: str) -> None:
         self._ruta(ruta).unlink()
+
+
+# --- Capa de rutas URI-aware ------------------------------------------------
+#
+# El pipeline maneja `input_folder`/`output_folder` como strings sueltos y los
+# combina con `os.path.join`/`os.walk`/`os.listdir`/`shutil.copy2` a lo largo
+# de miles de líneas. Reescribir todo eso a `Almacen.listar`/`publicar`/etc de
+# golpe es demasiado cambio para una sola fase. Estas funciones son la rampa:
+# aceptan la MISMA string de siempre (una ruta de disco) o una URI `gs://…`, y
+# por debajo despachan al `Almacen` que corresponda. Así el pipeline puede irse
+# migrando llamada a llamada sin que cambie su forma de pasar rutas.
+
+_ESQUEMA_GCS = "gs://"
+
+# Un `Almacen` por raíz (bucket+prefijo o carpeta local), cacheado a nivel de
+# módulo. Es necesario porque `abrir_almacen` se llama una vez POR IMAGEN, y
+# dentro de un `ProcessPoolExecutor` cada proceso hijo debe construir el
+# cliente de GCS (y su pool de conexiones) una sola vez, no en cada llamada:
+# crearlo por fichero sería carísimo (handshake TLS + auth en cada uno) y es
+# innecesario, porque el propio SDK ya es seguro de reutilizar dentro de un
+# mismo proceso.
+_ALMACENES: dict[str, Almacen] = {}
+
+
+def _limpiar_cache_almacenes() -> None:
+    """Vacía la caché de `abrir_almacen`. Solo para tests: cada proceso real
+    (o hijo del pool) vive lo suficiente como para no necesitar limpiarla."""
+    _ALMACENES.clear()
+
+
+def es_uri_gcs(ruta: str) -> bool:
+    """True si `ruta` es una URI `gs://…` (esquema insensible a mayúsculas,
+    igual que el resto de esquemas de URI)."""
+    return str(ruta).lower().startswith(_ESQUEMA_GCS)
+
+
+def abrir_almacen(ruta: str) -> tuple[Almacen, str]:
+    """Traduce una ruta/URI del pipeline a `(almacen, prefijo_relativo)`.
+
+    `prefijo_relativo` es lo que queda de `ruta` una vez separada la raíz del
+    almacén (bucket, o carpeta local si `ruta` cae dentro de una ya vista);
+    ambos valores están pensados para pasarse tal cual a los métodos de
+    `Almacen`. La raíz se cachea por proceso (ver `_ALMACENES` arriba).
+    """
+    if es_uri_gcs(ruta):
+        resto = ruta[len(_ESQUEMA_GCS):].strip("/")
+        bucket, _sep, prefijo = resto.partition("/")
+        clave_cache = f"{_ESQUEMA_GCS}{bucket}"
+        almacen = _ALMACENES.get(clave_cache)
+        if almacen is None:
+            # Import perezoso: `almacen.py` debe seguir importable sin el SDK
+            # de Google (se usa también en el `.exe` de PyInstaller, que no lo
+            # incluye). Solo se paga el import al tocar de verdad una ruta gs://.
+            from atom_core.almacen_gcs import AlmacenGCS
+
+            almacen = AlmacenGCS(bucket)
+            _ALMACENES[clave_cache] = almacen
+        return almacen, _normalizar(prefijo)
+
+    raiz = str(ruta)
+    almacen = _ALMACENES.get(raiz)
+    if almacen is None:
+        almacen = AlmacenLocal(Path(raiz))
+        _ALMACENES[raiz] = almacen
+    return almacen, ""
+
+
+def unir(ruta: str, *partes: str) -> str:
+    """`os.path.join`, pero consciente del esquema: en `gs://` las rutas son
+    claves con `/` como separador siempre (incluso en Windows, donde
+    `os.path.join` metería `\\`), así que se concatenan a mano."""
+    if es_uri_gcs(ruta):
+        segmentos = [ruta.rstrip("/")] + [str(p).strip("/") for p in partes if str(p).strip("/")]
+        return "/".join(segmentos)
+    return os.path.join(ruta, *partes)
+
+
+@contextmanager
+def abrir_para_lectura(ruta: str):
+    """Cede una `Path` LOCAL legible con el contenido de `ruta`.
+
+    En local es la propia ruta (coste cero, igual que hoy); en `gs://` delega
+    en `Almacen.abrir_local`, que descarga a un temporal y lo limpia al salir
+    del bloque `with`."""
+    if es_uri_gcs(ruta):
+        almacen, prefijo = abrir_almacen(ruta)
+        with almacen.abrir_local(prefijo) as ruta_local:
+            yield ruta_local
+    else:
+        yield Path(ruta)
+
+
+def publicar_en(origen_local: "str | Path", destino: str) -> None:
+    """Deja el fichero local `origen_local` en `destino` (ruta o URI).
+
+    En local reutiliza `_reflink_or_copy` de `pipeline.py` (import perezoso:
+    `pipeline.py` importa medio mundo y `almacen.py` debe poder cargarse
+    suelto, p. ej. en tests) para conservar la copia CoW que ya usa el
+    escritorio; si esa función no está disponible cae a `shutil.copy2`, igual
+    que hacía el pipeline antes de tener reflink."""
+    if es_uri_gcs(destino):
+        almacen, prefijo = abrir_almacen(destino)
+        almacen.publicar(Path(origen_local), prefijo)
+        return
+
+    try:
+        from pipeline import _reflink_or_copy
+
+        _reflink_or_copy(str(origen_local), str(destino))
+    except ImportError:
+        destino_final = destino
+        if os.path.isdir(destino_final):
+            destino_final = os.path.join(destino_final, os.path.basename(str(origen_local)))
+        shutil.copy2(origen_local, destino_final)
+
+
+def listar_ficheros(ruta: str) -> list[str]:
+    """Basenames de los ficheros que cuelgan DIRECTAMENTE de `ruta` (no
+    recursivo), en orden alfabético."""
+    if es_uri_gcs(ruta):
+        almacen, prefijo = abrir_almacen(ruta)
+        vistos = set()
+        for relativo in almacen.listar(prefijo):
+            resto = relativo[len(prefijo):].strip("/") if prefijo else relativo
+            if resto and "/" not in resto:
+                vistos.add(resto)
+        return sorted(vistos)
+
+    return sorted(
+        nombre for nombre in os.listdir(ruta)
+        if os.path.isfile(os.path.join(ruta, nombre))
+    )
+
+
+def listar_subcarpetas(ruta: str) -> list[str]:
+    """Nombres de las subcarpetas DIRECTAS de `ruta` (no recursivo), en orden
+    alfabético."""
+    if es_uri_gcs(ruta):
+        almacen, prefijo = abrir_almacen(ruta)
+        vistos = set()
+        for relativo in almacen.listar(prefijo):
+            resto = relativo[len(prefijo):].strip("/") if prefijo else relativo
+            if "/" in resto:
+                vistos.add(resto.split("/", 1)[0])
+        return sorted(vistos)
+
+    return sorted(
+        nombre for nombre in os.listdir(ruta)
+        if os.path.isdir(os.path.join(ruta, nombre))
+    )
+
+
+def existe_ruta(ruta: str) -> bool:
+    """True si `ruta` (fichero o carpeta, local o `gs://…`) existe."""
+    if es_uri_gcs(ruta):
+        almacen, prefijo = abrir_almacen(ruta)
+        if almacen.existe(prefijo):
+            return True
+        # Una "carpeta" en GCS no es un objeto propio: existe si hay algo
+        # colgando de ese prefijo, igual que un directorio local existe sin
+        # necesidad de que haya un fichero con ese nombre exacto.
+        return bool(almacen.listar(prefijo))
+    return os.path.exists(ruta)
