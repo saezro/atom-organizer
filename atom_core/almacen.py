@@ -299,6 +299,16 @@ def existe_ruta(ruta: str) -> bool:
     return os.path.exists(ruta)
 
 
+def es_carpeta(ruta: str) -> bool:
+    """`os.path.isdir`, URI-aware. En `gs://…` no hay directorios reales:
+    "existe la carpeta" se traduce a "hay algo colgando de ese prefijo"
+    (`existe_ruta` ya contempla ese caso). En local usa `os.path.isdir`
+    exacto, para no confundir un fichero suelto con una carpeta."""
+    if es_uri_gcs(ruta):
+        return existe_ruta(ruta)
+    return os.path.isdir(ruta)
+
+
 @contextmanager
 def editar_en_sitio(ruta: str):
     """Cede una `Path` LOCAL para editarla IN-PLACE con un binario externo

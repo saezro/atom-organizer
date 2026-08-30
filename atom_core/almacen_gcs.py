@@ -108,7 +108,14 @@ class AlmacenGCS:
         os.close(descriptor)
         ruta_temporal = Path(nombre_temporal)
         try:
-            blob.download_to_filename(str(ruta_temporal))
+            try:
+                blob.download_to_filename(str(ruta_temporal))
+            except FileNotFoundError:
+                raise
+            except Exception as exc:
+                if _es_no_encontrado(exc):
+                    raise FileNotFoundError(ruta) from exc
+                raise
             yield ruta_temporal
         finally:
             ruta_temporal.unlink(missing_ok=True)
