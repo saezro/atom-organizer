@@ -42,6 +42,7 @@ from datetime import datetime
 
 import pandas as pd
 
+from atom_core import almacen
 from utils import OrganizerLogger, Utils
 
 # Separador de rutas dentro del string único que viaja como "estadillo" por
@@ -89,10 +90,17 @@ def _validar_columnas_esenciales(df: pd.DataFrame, ruta: str) -> None:
 def _read_dataframe(path: str) -> pd.DataFrame:
     """Lee el estadillo. Mirror del pipeline (CSV `;`) con fallback a Excel para
     que el modal informativo no reviente si el fichero es .xlsx/.xls."""
+    # La extensión se decide sobre la ruta ORIGINAL, no sobre el temporal: hoy
+    # `AlmacenGCS.abrir_local` le pone el mismo sufijo, pero eso es un detalle
+    # suyo y elegir el parser no debe depender de él.
     ext = os.path.splitext(path)[1].lower()
-    if ext in (".xlsx", ".xls"):
-        return pd.read_excel(path)
-    return pd.read_csv(path, sep=";")
+    # En local `abrir_para_lectura` cede la propia ruta (coste cero); en `gs://`
+    # descarga a un temporal que se limpia al salir del `with`, así que el
+    # DataFrame tiene que construirse DENTRO del bloque.
+    with almacen.abrir_para_lectura(path) as local:
+        if ext in (".xlsx", ".xls"):
+            return pd.read_excel(local)
+        return pd.read_csv(local, sep=";")
 
 
 # Extensiones candidatas a estadillo. El resto (fotos, logs, PDFs sueltos en
@@ -425,7 +433,11 @@ def read_estadillo_info(path: str | list[str]) -> dict:
     rutas = list(path) if isinstance(path, (list, tuple)) else desempaquetar_rutas(path)
     if not rutas:
         return {"error": f"No existe el estadillo: {path}"}
-    faltantes = [r for r in rutas if not os.path.isfile(r)]
+    # En local se conserva `isfile` exacto (un directorio NO es estadillo);
+    # en `gs://` no hay `isfile`, se pregunta al Almacen.
+    faltantes = [r for r in rutas
+                 if not (almacen.existe_ruta(r) if almacen.es_uri_gcs(r)
+                         else os.path.isfile(r))]
     if faltantes:
         return {"error": f"No existe el estadillo: {', '.join(faltantes)}"}
     try:

@@ -27,6 +27,7 @@ from atom_core.almacen import (
     existe_ruta,
     listar_ficheros,
     listar_subcarpetas,
+    nombre_de,
     publicar_en,
     tamano_de,
     unir,
@@ -319,3 +320,30 @@ def test_tamano_de_gcs_lee_metadatos_sin_descargar():
     bucket = _sembrar_almacen_gcs("mi-bucket")
     bucket.objetos["raiz/a.txt"] = b"contenido de sobra"
     assert tamano_de("gs://mi-bucket/raiz/a.txt") == len(b"contenido de sobra")
+
+
+# --- nombre_de -----------------------------------------------------------------
+#
+# Último segmento de una ruta, URI-aware: `Path(...).name` revienta con un
+# `str` (`AttributeError`, el bug real de `organize_cli.py`), y
+# `os.path.basename` deja `""` cuando la URI acaba en `/`. No requiere
+# ningún doble de GCS: es lógica de string pura, sin tocar `abrir_almacen`.
+
+def test_nombre_de_gcs_con_prefijo_multinivel():
+    assert nombre_de("gs://b/x/y") == "y"
+
+
+def test_nombre_de_gcs_con_barra_final_recorta_antes_de_partir():
+    assert nombre_de("gs://b/x/") == "x"
+
+
+def test_nombre_de_gcs_solo_bucket_devuelve_el_nombre_del_bucket():
+    assert nombre_de("gs://b") == "b"
+
+
+def test_nombre_de_local():
+    assert nombre_de("/home/a/b") == "b"
+
+
+def test_nombre_de_local_con_barra_final():
+    assert nombre_de("/home/a/b/") == "b"

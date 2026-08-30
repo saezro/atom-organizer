@@ -39,6 +39,7 @@ from pathlib import Path
 # segundos de imports pesados que sí cuesta `atom_core.organize` (numpy, PIL,
 # SDK térmico), que por eso se importa dentro de `main`.
 from atom_core import sharding
+from atom_core.almacen import abrir_almacen, es_uri_gcs, es_carpeta, existe_ruta, nombre_de
 
 # Segundos por imagen y etapa, medidos en v3.4.32 sobre ANTOLIN (2.516 imágenes,
 # 9,14 GB) con N=8 tareas. UN SOLO dataset: son un orden de magnitud, no una
@@ -89,7 +90,7 @@ def progreso_desde_stats(snapshot, *, final: bool = False):
     return cuerpo
 
 
-def _contar_imagenes(origen: Path) -> int:
+def _contar_imagenes(origen: "Path | str") -> int:
     """Cuenta imágenes bajo `origen` recursivamente con `os.scandir`.
 
     Nada de `glob`/`Path.rglob`: un vuelo son decenas de miles de ficheros y
@@ -101,6 +102,21 @@ def _contar_imagenes(origen: Path) -> int:
 
     exts = EXTS_IMAGEN
     total = 0
+    # En `gs://` no hay `scandir`: un unico `listar` recursivo del prefijo (una
+    # sola llamada paginada al SDK) sustituye al recorrido del arbol. Sin esto
+    # el `except` de abajo se lo tragaria y TODO run sobre GCS se quedaria sin
+    # ETA en silencio.
+    if es_uri_gcs(str(origen)):
+        try:
+            # `Almacen.listar` (no `listar_ficheros`, que es SOLO hijos
+            # directos) para igualar el recorrido recursivo del camino local:
+            # un vuelo cuelga de subcarpetas por PB, contar solo la raiz daria
+            # casi cero. Una sola llamada paginada al SDK, no un arbol.
+            almacen, prefijo = abrir_almacen(str(origen))
+            return sum(1 for r in almacen.listar(prefijo)
+                       if os.path.splitext(r)[1].lower() in exts)
+        except Exception:  # noqa: BLE001 - mismo fail-open que el camino local
+            return 0
     try:
         pendientes = [origen]
         while pendientes:
@@ -274,17 +290,29 @@ def main(argv: list[str] | None = None) -> int:
             args.shard_index if args.shard_index is not None else 0,
             args.shard_count if args.shard_count is not None else 1)
 
-    origen = Path(args.origen).expanduser().resolve()
-    destino = Path(args.destino).expanduser().resolve()
-    if not origen.is_dir():
+    # `gs://…` viaja como STRING TAL CUAL: `Path(...).resolve()` destroza el
+    # esquema (`<cwd>/gs:/bucket/x`). Las rutas locales conservan byte a byte
+    # el comportamiento de siempre (mismo `expanduser().resolve()`, mismo
+    # `is_dir`/`is_file`, mismo `mkdir`).
+    origen_es_gcs = es_uri_gcs(args.origen)
+    destino_es_gcs = es_uri_gcs(args.destino)
+    origen = args.origen if origen_es_gcs else Path(args.origen).expanduser().resolve()
+    destino = args.destino if destino_es_gcs else Path(args.destino).expanduser().resolve()
+    origen_existe = es_carpeta(origen) if origen_es_gcs else origen.is_dir()
+    if not origen_existe:
         print(f"error: la carpeta de origen no existe: {origen}", file=sys.stderr)
         return 2
-    faltantes_estadillo = [p for p in args.estadillo if not Path(p).expanduser().is_file()]
+    faltantes_estadillo = [
+        p for p in args.estadillo
+        if not (existe_ruta(p) if es_uri_gcs(p) else Path(p).expanduser().is_file())
+    ]
     if faltantes_estadillo:
         print(f"error: el estadillo no existe: {', '.join(faltantes_estadillo)}",
               file=sys.stderr)
         return 2
-    destino.mkdir(parents=True, exist_ok=True)
+    # En GCS no hay directorios: nada que crear de antemano.
+    if not destino_es_gcs:
+        destino.mkdir(parents=True, exist_ok=True)
 
     # Import aquí y no arriba: `atom_core.organize` arrastra el pipeline entero
     # (numpy, PIL, el SDK térmico). Si el usuario solo pidió `--help`, no tiene
@@ -365,7 +393,7 @@ def main(argv: list[str] | None = None) -> int:
                 "shard_index": shard_index,
             }
             extra_inicio = {k: v for k, v in extra_inicio.items() if v is not None}
-            reporter.iniciar(inspeccion=origen.name, etapa=args.etapa,
+            reporter.iniciar(inspeccion=nombre_de(str(origen)), etapa=args.etapa,
                               items_total=n_imagenes, **extra_inicio)
             # `iniciar` es fail-open por dentro: si la Suite no contestó, el run
             # no existe y todo lo demás sería no-op. Preguntarlo aquí es la
