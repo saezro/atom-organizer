@@ -2925,11 +2925,66 @@ class SplitImages:
             self.images_error_splitting_images.append(path)
 
     def _run_exif_batch(self, pairs, exiftool_exe, progress_callback=None):
-        """Copia los tags EXIF de todos los (src_jpg, dst_tiff) con UN solo proceso
-        exiftool -stay_open. Equivale a los N subprocess.run inline pero sin re-arrancar
-        el intérprete Perl por imagen (~5x)."""
+        """Copia los tags EXIF de todos los (src_jpg, dst_tiff) diferidos por
+        `convert_dji_image_to_tif` (`defer_exif=True`).
+
+        Camino 100% local (NINGÚN par con ruta `gs://…`): comportamiento
+        BYTE A BYTE el de siempre — UN solo proceso `exiftool -stay_open` con
+        un argfile para los N pares. Es una optimización deliberada (arrancar
+        exiftool por imagen es carísimo) y no se toca.
+
+        F4c-2: si algún par tiene una ruta `gs://…`, `pairs` ya no son rutas
+        locales válidas para exiftool -- hay que descargar el JPG y traer el
+        TIFF a un temporal, editarlo in-place, y republicarlo. Eso obliga a
+        procesar ESE par en solitario (`almacen.editar_en_sitio` exige tener
+        el fichero local). Se hace una invocación de exiftool por imagen en
+        ese caso: no se reutiliza `-stay_open` de verdad (habría que dejarlo
+        vivo entre pares y turnarle el argfile mientras se descarga/republica
+        cada TIFF antes del siguiente, lo que complica bastante el manejo de
+        errores por imagen sin ganar apenas frente al coste de descargar y
+        republicar el propio TIFF, que ya domina el tiempo de cada iteración).
+        Un fallo en UNA imagen se registra y NO aborta el resto del lote.
+        """
         if not pairs:
             return
+
+        if not any(almacen.es_uri_gcs(src) or almacen.es_uri_gcs(dst) for src, dst in pairs):
+            self._run_exif_batch_local(pairs, exiftool_exe, progress_callback)
+            return
+
+        exe = exiftool_exe if _is_windows() else external_tools.resolve_tool("exiftool")
+        fallos = 0
+        for src, dst in pairs:
+            try:
+                with almacen.abrir_para_lectura(src) as src_local:
+                    with almacen.editar_en_sitio(dst) as dst_local:
+                        if _is_windows():
+                            subproceso_exiftool = '"{0}" -tagsfromfile "{1}" "{2}" -overwrite_original_in_place'.format(
+                                exe, src_local, dst_local)
+                            result = subprocess.run(subproceso_exiftool)
+                        else:
+                            result = subprocess.run(
+                                [exe, "-tagsfromfile", str(src_local), str(dst_local),
+                                 "-overwrite_original_in_place"])
+                        if result.returncode != 0:
+                            raise RuntimeError(
+                                "exiftool devolvió código {0} para {1}".format(result.returncode, dst))
+            except Exception as e:
+                fallos += 1
+                self.organizer_logger.logger.error(
+                    "F4c-2: fallo aplicando EXIF diferido a {0} (origen {1}): {2}. "
+                    "Se omite esta imagen y se continúa con el resto del lote.".format(dst, src, e))
+                if progress_callback is not None:
+                    progress_callback.emit(
+                        "\nAviso: no se pudo aplicar el EXIF a {0}: {1}.\n".format(dst, e))
+        if fallos and progress_callback is not None:
+            progress_callback.emit(
+                "\n{0} imagen(es) del lote no recibieron su EXIF (ver log).\n".format(fallos))
+
+    def _run_exif_batch_local(self, pairs, exiftool_exe, progress_callback=None):
+        """Copia los tags EXIF de todos los (src_jpg, dst_tiff) con UN solo proceso
+        exiftool -stay_open. Equivale a los N subprocess.run inline pero sin re-arrancar
+        el intérprete Perl por imagen (~5x). SOLO rutas locales (ver `_run_exif_batch`)."""
         import tempfile
         argfile = None
         try:
@@ -3277,6 +3332,16 @@ class SplitImages:
         - low_threshold_temperature - Todos los valores por debajo de esta temperatura tendrán el valor mínimo de temperatura de la imagen térmica.
         - rotate_90 - booleano que indica que la imagen TIFF se rotará 90 grados en sentido de las agujas del reloj.
         - rotate_minus_90 - booleano que indica que la imagen TIFF se rotará 90 grados en sentido contrario a las agujas del reloj.
+
+        F4c-1: si `input_folder` u `output_folder` son `gs://…`, el JPG de
+        origen y TODAS las salidas (.raw, gris, colormap, tiff) se generan en
+        un directorio de STAGING LOCAL propio de esta llamada (un dir por
+        imagen, thread-safe con el pool de conversión), porque el conversor DJI
+        (dji_irp.exe / libdirp.so vía `_dji_measure_to_raw_linux`) y exiftool
+        exigen ficheros reales en disco. Al terminar se publican las salidas al
+        destino real y el staging se borra SIEMPRE (`finally`), incluso si algo
+        revienta a medio camino. Con rutas 100% locales el comportamiento es
+        BYTE A BYTE el de siempre: no se crea ningún temporal ni copia extra.
         """
 
         # self.organizer_logger.logger.debug("Seleccion_ATOM: {0}".format(just_atom_selection))
@@ -3299,239 +3364,309 @@ class SplitImages:
                 self.tiff_already_converted += 1
             return
 
-        raw_path = os.path.join(input_folder, image_name + ".raw")
-        # Resultado de la invocación al conversor. Se arrastra hasta el punto donde se
-        # abre el .raw: si el fichero no aparece PERO el conversor devolvió 0, el fallo
-        # es silencioso y sin este dato no hay forma de distinguirlo de un fallo ruidoso.
-        dji_rc = None
-        dji_salida = ""
 
-        # Radiografía del fichero ANTES de tocarlo el conversor. Cuando el SDK
-        # devuelve -16 ("create R-JPEG dirp handle failed") no dice si el problema
-        # es suyo o de la imagen que le llega, y sin esta línea no hay forma de
-        # distinguirlo desde el log — que es el único canal de diagnóstico, porque
-        # el usuario final no ejecuta nada por terminal. El hash permite además
-        # comparar el fichero de salida contra el original de la tarjeta sin
-        # pedirle nada al usuario. Es SOLO diagnóstico: no aborta la conversión,
-        # el conversor sigue teniendo la última palabra.
-        _rjpeg_info = rjpeg.inspect_rjpeg(os.path.join(input_folder, image_name))
-        _rjpeg_linea = rjpeg.describe(_rjpeg_info, image_name)
-        progress_callback.emit("\n{0}\n".format(_rjpeg_linea))
-        if not _rjpeg_info["ok"]:
-            self.organizer_logger.logger.error(_rjpeg_linea)
-
-        if _is_windows():
-            # dji_utility apunta a programas_externos/DJI/dji_irp.exe (carpeta única)
-            subproceso = '"{0}" -s "{1}" -a measure --humidity {2} --emissivity {3} --measurefmt float32 -o "{4}"'.format(
-                dji_utility, os.path.join(input_folder, image_name), humidity, emissivity, raw_path)
-            # Se captura el resultado: si dji_irp.exe falla, el único síntoma era un .raw
-            # que no aparece ("Posible error del conversor DJI") y el motivo real (DLL que
-            # falta, permisos, disco lleno, argumento rechazado) se perdía. No se aborta
-            # aquí: el flujo de abajo ya trata el .raw ausente.
+        # Staging local: SOLO si hace falta (input_folder u output_folder en
+        # gs://…). En local, disk_input_folder/disk_output_folder son los
+        # mismos de siempre -> cero temporales, cero copias, byte a byte el
+        # comportamiento de antes.
+        usa_staging = almacen.es_uri_gcs(input_folder) or almacen.es_uri_gcs(output_folder)
+        if usa_staging:
+            # F4c-3: con destino gs:// el EXIF NUNCA se difiere. Diferirlo abre una
+            # ventana en la que el TIFF queda publicado en el bucket SIN EXIF: si el
+            # proceso muere antes de `_run_exif_batch` (OOM, kill, eviction de Cloud
+            # Run) el `pending_exif` en memoria se pierde, y el skip de "TIFF ya
+            # existe" de arriba da por bueno ese TIFF en la reejecución -> pérdida
+            # SILENCIOSA Y PERMANENTE del EXIF. Aplicarlo aquí, en el staging local
+            # y antes de publicar, no cuesta nada: por gs:// `_run_exif_batch` ya
+            # invocaba exiftool imagen a imagen, así que no se pierde ningún batch.
+            defer_exif = False
+        disk_input_folder = input_folder
+        disk_output_folder = output_folder
+        staging_dir = None
+        if usa_staging:
+            staging_dir = tempfile.mkdtemp(prefix="dji_tif_")
+            disk_input_folder = staging_dir
+            disk_output_folder = staging_dir
+            # El mkdtemp/makedirs/descarga van ANTES del `try` de abajo, asi que su
+            # `finally` no los cubre: sin este guard, un fallo aqui (404, permisos,
+            # corte de red, disco lleno) deja el staging huerfano en /tmp -- que en
+            # Cloud Run es RAM.
             try:
-                proc = subprocess.run(
-                    subproceso,
-                    capture_output=True, text=True, errors="replace",
-                    # dji_irp.exe es un binario de CONSOLA y la app se congela sin
-                    # consola (atom_organizer_webview.spec: console=False), así que los
-                    # handles estándar que hereda son inválidos. capture_output ya cubre
-                    # stdout/stderr, pero stdin seguía heredándose: DEVNULL le da uno
-                    # válido en vez de un handle muerto.
-                    stdin=subprocess.DEVNULL,
-                    # cwd = carpeta del SDK. Es lo correcto (libdirp.dll lee
-                    # `libv_list.ini` por nombre relativo, o sea contra el CWD, para
-                    # saber qué libv_*.dll cargar), pero que quede claro que NO era la
-                    # causa del fallo de LA_ISLA, aunque el commit que lo introdujo lo
-                    # diera por hecho: con este cwd el SDK arranca bien y aun asi falla.
-                    # Log de la corrida del 2026-08-04 15:12 ya con 3.2.6:
-                    #     DIRP API version number : 0x13          <- el SDK carga OK
-                    #     ERROR: create R-JPEG dirp handle failed  <- y RECHAZA la imagen
-                    # es decir, dirp_create_from_rjpeg devuelve -16 (0xFFFFFFF0) sobre un
-                    # M2EA autodetectado correctamente. El problema esta en la imagen que
-                    # le llega, no en como se invoca. Sin cerrar: ver [[ATOM Organizer]].
-                    cwd=os.path.dirname(dji_utility) or None,
-                    creationflags=0x08000000,  # CREATE_NO_WINDOW: sin parpadeo de consola
-                )
-            except FileNotFoundError:
-                # El .exe no está donde se espera: instalación incompleta. Desde la
-                # unificación del SDK solo hay UNA ruta posible, así que no puede ser
-                # un selector de dron apuntando a una carpeta inexistente.
-                self.organizer_logger.logger.error(
-                    f"No se encuentra el conversor DJI en {dji_utility}. La conversión a TIFF no puede ejecutarse.")
-                progress_callback.emit(
-                    f"\nERROR: No se encuentra el conversor DJI en {dji_utility}.\n")
-                self._register_image_error(os.path.join(input_folder, image_name))
-                return
-            # El rc va con signo: sin esto el -16 del SDK salía como 4294967280.
-            dji_rc = rjpeg.rc_con_signo(proc.returncode)
-            dji_salida = rjpeg.resumir_salida_sdk(
-                (proc.stderr or proc.stdout or "").strip()[:300])
-            if dji_rc != 0:
-                self.organizer_logger.logger.error(
-                    f"El conversor DJI ha fallado con {os.path.join(input_folder, image_name)}: "
-                    f"código {dji_rc}. Salida: {dji_salida!r}")
-                # En la ruta webview el organizer_logger NO tiene handler de fichero
-                # (atom_core/organize.py, create_file_handler=False): lo que se escribe
-                # ahí no llega a ningún sitio. El único canal que acaba en el log de
-                # corrida en disco es progress_callback, así que el motivo va también
-                # por aquí o se pierde igual que antes.
-                progress_callback.emit(
-                    "\nEl conversor DJI ha fallado con {0}: código {1}. Salida: {2}\n".format(
-                        image_name, dji_rc, dji_salida or "(vacía)"))
-                # El -16 (0xFFFFFFF0) es `create R-JPEG dirp handle failed`: el SDK
-                # rechaza la imagen. Traducirlo a las dos únicas causas posibles
-                # ahorra la ronda de preguntas que costó el caso del 28/07.
-                if dji_rc == -16:
-                    if _rjpeg_info["ok"]:
-                        _causa = ("la imagen SÍ conserva su payload radiométrico ({0} bytes), "
-                                  "así que el fichero no es el problema: mira si un antivirus la "
-                                  "está bloqueando, si la ruta tiene permisos, o si falta alguna "
-                                  "DLL del SDK junto al conversor").format(_rjpeg_info["payload"])
-                    else:
-                        _causa = "la imagen llegó dañada al conversor: {0}".format(_rjpeg_info["motivo"])
-                    # Sin repetir la frase del SDK: ya va en la línea de arriba.
-                    progress_callback.emit(
-                        "  -> El SDK de DJI ha rechazado la imagen. Diagnóstico: {0}.\n".format(_causa))
+                if generate_gray_scale_images:
+                    os.makedirs(os.path.join(staging_dir, "Escala_de_grises"), exist_ok=True)
+                if generate_colormap_images:
+                    os.makedirs(os.path.join(staging_dir, "Color_gradiente"), exist_ok=True)
+                # Se conserva el `image_name` EXACTO: varias partes de abajo derivan
+                # el basename de la imagen, y el nombre aleatorio del temporal lo
+                # rompería.
+                with almacen.abrir_para_lectura(almacen.unir(input_folder, image_name)) as ruta_local:
+                    shutil.copy2(str(ruta_local), os.path.join(staging_dir, image_name))
+            except BaseException:
+                shutil.rmtree(staging_dir, ignore_errors=True)
+                raise
+
+        try:
+            raw_path = os.path.join(disk_input_folder, image_name + ".raw")
+            # Resultado de la invocación al conversor. Se arrastra hasta el punto donde se
+            # abre el .raw: si el fichero no aparece PERO el conversor devolvió 0, el fallo
+            # es silencioso y sin este dato no hay forma de distinguirlo de un fallo ruidoso.
+            dji_rc = None
+            dji_salida = ""
+
+            # Radiografía del fichero ANTES de tocarlo el conversor. Cuando el SDK
+            # devuelve -16 ("create R-JPEG dirp handle failed") no dice si el problema
+            # es suyo o de la imagen que le llega, y sin esta línea no hay forma de
+            # distinguirlo desde el log — que es el único canal de diagnóstico, porque
+            # el usuario final no ejecuta nada por terminal. El hash permite además
+            # comparar el fichero de salida contra el original de la tarjeta sin
+            # pedirle nada al usuario. Es SOLO diagnóstico: no aborta la conversión,
+            # el conversor sigue teniendo la última palabra.
+            _rjpeg_info = rjpeg.inspect_rjpeg(os.path.join(disk_input_folder, image_name))
+            _rjpeg_linea = rjpeg.describe(_rjpeg_info, image_name)
+            progress_callback.emit("\n{0}\n".format(_rjpeg_linea))
+            if not _rjpeg_info["ok"]:
+                self.organizer_logger.logger.error(_rjpeg_linea)
+
+            if _is_windows():
+                # dji_utility apunta a programas_externos/DJI/dji_irp.exe (carpeta única)
+                subproceso = '"{0}" -s "{1}" -a measure --humidity {2} --emissivity {3} --measurefmt float32 -o "{4}"'.format(
+                    dji_utility, os.path.join(disk_input_folder, image_name), humidity, emissivity, raw_path)
+                # Se captura el resultado: si dji_irp.exe falla, el único síntoma era un .raw
+                # que no aparece ("Posible error del conversor DJI") y el motivo real (DLL que
+                # falta, permisos, disco lleno, argumento rechazado) se perdía. No se aborta
+                # aquí: el flujo de abajo ya trata el .raw ausente.
+                try:
+                    proc = subprocess.run(
+                        subproceso,
+                        capture_output=True, text=True, errors="replace",
+                        # dji_irp.exe es un binario de CONSOLA y la app se congela sin
+                        # consola (atom_organizer_webview.spec: console=False), así que los
+                        # handles estándar que hereda son inválidos. capture_output ya cubre
+                        # stdout/stderr, pero stdin seguía heredándose: DEVNULL le da uno
+                        # válido en vez de un handle muerto.
+                        stdin=subprocess.DEVNULL,
+                        # cwd = carpeta del SDK. Es lo correcto (libdirp.dll lee
+                        # `libv_list.ini` por nombre relativo, o sea contra el CWD, para
+                        # saber qué libv_*.dll cargar), pero que quede claro que NO era la
+                        # causa del fallo de LA_ISLA, aunque el commit que lo introdujo lo
+                        # diera por hecho: con este cwd el SDK arranca bien y aun asi falla.
+                        # Log de la corrida del 2026-08-04 15:12 ya con 3.2.6:
+                        #     DIRP API version number : 0x13          <- el SDK carga OK
+                        #     ERROR: create R-JPEG dirp handle failed  <- y RECHAZA la imagen
+                        # es decir, dirp_create_from_rjpeg devuelve -16 (0xFFFFFFF0) sobre un
+                        # M2EA autodetectado correctamente. El problema esta en la imagen que
+                        # le llega, no en como se invoca. Sin cerrar: ver [[ATOM Organizer]].
+                        cwd=os.path.dirname(dji_utility) or None,
+                        creationflags=0x08000000,  # CREATE_NO_WINDOW: sin parpadeo de consola
+                    )
+                except FileNotFoundError:
+                    # El .exe no está donde se espera: instalación incompleta. Desde la
+                    # unificación del SDK solo hay UNA ruta posible, así que no puede ser
+                    # un selector de dron apuntando a una carpeta inexistente.
                     self.organizer_logger.logger.error(
-                        "SDK DJI rechaza {0}: {1}".format(image_name, _causa))
-        else:
-            # En Linux no hay ejecutable dji_irp: usamos libdirp.so vía ctypes.
-            # Las librerías del SDK viven junto al .exe teórico -> carpeta única del SDK.
-            lib_dir = os.path.dirname(dji_utility)
-            self._dji_measure_to_raw_linux(
-                os.path.join(input_folder, image_name), raw_path, humidity, emissivity, lib_dir)
-        try:
-            img = Image.open(os.path.join(input_folder, image_name))
-        except FileNotFoundError as f:
-            self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self.organizer_logger.logger.error(f"ERROR: No se encuentra la imagen {os.path.join(input_folder, image_name)} para que PIL la pueda abrir.")
-            progress_callback.emit(f"\nERROR: No se encuentra la imagen {os.path.join(input_folder, image_name)} para que PIL la pueda abrir.\n")
-            self.organizer_logger.logger.exception(f.__str__)
-            self.organizer_logger.logger.exception(f)
-            self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self._register_image_error(os.path.join(input_folder, image_name))
-            return 
-        except Exception as e:
-            self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self.organizer_logger.logger.error("ERROR: Hay algún tipo de error con los datos de la imagen {0}.".format(os.path.join(input_folder, image_name)))
-            progress_callback.emit("\nERROR: Hay algún tipo de error con los datos de la imagen {0}.\n".format(os.path.join(input_folder, image_name)))
-            self.organizer_logger.logger.exception(e.__str__)
-            self.organizer_logger.logger.exception(e)
-            self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self._register_image_error(os.path.join(input_folder, image_name))
-            return
-        
-        size = img.size
-        img.close()
-        self.organizer_logger.logger.info(f"Procesando imagen {os.path.join(input_folder, image_name)} con tamaño {size}")
-
-        # El código de debajo sería para probar con imageio
-        # imageio.imwrite(output_path, array, format='TIFF', exif=exif_data)
-        # exif_data = imageio.get_exif_data(input_path)
-
-        try:
-            f = open(os.path.join(input_folder, image_name + ".raw"), "rb")
-        except FileNotFoundError as file_not_found:
-            # Un .raw ausente con rc == 0 es un fallo SILENCIOSO (el conversor se dio
-            # por bueno sin escribir nada) y apunta a un sitio muy distinto que un
-            # rc != 0. Ese matiz es lo único que hay que decir aquí: si el rc no era
-            # cero, el error ya se reportó arriba con su causa, y repetir el volcado
-            # del SDK solo duplicaba el muro de texto.
-            if dji_rc in (None, 0):
-                _diag = "" if dji_rc is None else (
-                    " El conversor terminó con código 0 pero no escribió nada:"
-                    " fallo silencioso, no un rechazo de la imagen.")
+                        f"No se encuentra el conversor DJI en {dji_utility}. La conversión a TIFF no puede ejecutarse.")
+                    progress_callback.emit(
+                        f"\nERROR: No se encuentra el conversor DJI en {dji_utility}.\n")
+                    self._register_image_error(os.path.join(disk_input_folder, image_name))
+                    return
+                # El rc va con signo: sin esto el -16 del SDK salía como 4294967280.
+                dji_rc = rjpeg.rc_con_signo(proc.returncode)
+                dji_salida = rjpeg.resumir_salida_sdk(
+                    (proc.stderr or proc.stdout or "").strip()[:300])
+                if dji_rc != 0:
+                    self.organizer_logger.logger.error(
+                        f"El conversor DJI ha fallado con {os.path.join(disk_input_folder, image_name)}: "
+                        f"código {dji_rc}. Salida: {dji_salida!r}")
+                    # En la ruta webview el organizer_logger NO tiene handler de fichero
+                    # (atom_core/organize.py, create_file_handler=False): lo que se escribe
+                    # ahí no llega a ningún sitio. El único canal que acaba en el log de
+                    # corrida en disco es progress_callback, así que el motivo va también
+                    # por aquí o se pierde igual que antes.
+                    progress_callback.emit(
+                        "\nEl conversor DJI ha fallado con {0}: código {1}. Salida: {2}\n".format(
+                            image_name, dji_rc, dji_salida or "(vacía)"))
+                    # El -16 (0xFFFFFFF0) es `create R-JPEG dirp handle failed`: el SDK
+                    # rechaza la imagen. Traducirlo a las dos únicas causas posibles
+                    # ahorra la ronda de preguntas que costó el caso del 28/07.
+                    if dji_rc == -16:
+                        if _rjpeg_info["ok"]:
+                            _causa = ("la imagen SÍ conserva su payload radiométrico ({0} bytes), "
+                                      "así que el fichero no es el problema: mira si un antivirus la "
+                                      "está bloqueando, si la ruta tiene permisos, o si falta alguna "
+                                      "DLL del SDK junto al conversor").format(_rjpeg_info["payload"])
+                        else:
+                            _causa = "la imagen llegó dañada al conversor: {0}".format(_rjpeg_info["motivo"])
+                        # Sin repetir la frase del SDK: ya va en la línea de arriba.
+                        progress_callback.emit(
+                            "  -> El SDK de DJI ha rechazado la imagen. Diagnóstico: {0}.\n".format(_causa))
+                        self.organizer_logger.logger.error(
+                            "SDK DJI rechaza {0}: {1}".format(image_name, _causa))
             else:
-                _diag = " Causa ya indicada arriba (código {0}).".format(dji_rc)
-            progress_callback.emit("\nNo existe el archivo {0}. Posible error del conversor DJI.{1}\n".format(os.path.join(input_folder, image_name + ".raw"), _diag))
-            self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self.organizer_logger.logger.error(f"No existe el archivo {os.path.join(input_folder, image_name + '.raw')}. Posible error del conversor DJI.")
-            self.organizer_logger.logger.exception(file_not_found.__str__)
-            self.organizer_logger.logger.exception(file_not_found)
-            self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            # Se registra la IMAGEN, no el .raw: el .raw es un intermedio que nunca
-            # llegó a existir, y ponerlo en «Imágenes con error» mandaba al usuario a
-            # buscar un fichero inexistente en vez de a la térmica que falló.
-            self._register_image_error(os.path.join(input_folder, image_name))
-            return
+                # En Linux no hay ejecutable dji_irp: usamos libdirp.so vía ctypes.
+                # Las librerías del SDK viven junto al .exe teórico -> carpeta única del SDK.
+                lib_dir = os.path.dirname(dji_utility)
+                self._dji_measure_to_raw_linux(
+                    os.path.join(disk_input_folder, image_name), raw_path, humidity, emissivity, lib_dir)
+            try:
+                img = Image.open(os.path.join(disk_input_folder, image_name))
+            except FileNotFoundError as f:
+                self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
+                self.organizer_logger.logger.error(f"ERROR: No se encuentra la imagen {os.path.join(disk_input_folder, image_name)} para que PIL la pueda abrir.")
+                progress_callback.emit(f"\nERROR: No se encuentra la imagen {os.path.join(disk_input_folder, image_name)} para que PIL la pueda abrir.\n")
+                self.organizer_logger.logger.exception(f.__str__)
+                self.organizer_logger.logger.exception(f)
+                self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
+                self._register_image_error(os.path.join(disk_input_folder, image_name))
+                return 
+            except Exception as e:
+                self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
+                self.organizer_logger.logger.error("ERROR: Hay algún tipo de error con los datos de la imagen {0}.".format(os.path.join(disk_input_folder, image_name)))
+                progress_callback.emit("\nERROR: Hay algún tipo de error con los datos de la imagen {0}.\n".format(os.path.join(disk_input_folder, image_name)))
+                self.organizer_logger.logger.exception(e.__str__)
+                self.organizer_logger.logger.exception(e)
+                self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
+                self._register_image_error(os.path.join(disk_input_folder, image_name))
+                return
+        
+            size = img.size
+            img.close()
+            self.organizer_logger.logger.info(f"Procesando imagen {os.path.join(disk_input_folder, image_name)} con tamaño {size}")
 
-        data = f.read()
+            # El código de debajo sería para probar con imageio
+            # imageio.imwrite(output_path, array, format='TIFF', exif=exif_data)
+            # exif_data = imageio.get_exif_data(input_path)
 
-        # self.organizer_logger.logger.info("The length of the data is {0}".format(len(data)))
+            try:
+                f = open(os.path.join(disk_input_folder, image_name + ".raw"), "rb")
+            except FileNotFoundError as file_not_found:
+                # Un .raw ausente con rc == 0 es un fallo SILENCIOSO (el conversor se dio
+                # por bueno sin escribir nada) y apunta a un sitio muy distinto que un
+                # rc != 0. Ese matiz es lo único que hay que decir aquí: si el rc no era
+                # cero, el error ya se reportó arriba con su causa, y repetir el volcado
+                # del SDK solo duplicaba el muro de texto.
+                if dji_rc in (None, 0):
+                    _diag = "" if dji_rc is None else (
+                        " El conversor terminó con código 0 pero no escribió nada:"
+                        " fallo silencioso, no un rechazo de la imagen.")
+                else:
+                    _diag = " Causa ya indicada arriba (código {0}).".format(dji_rc)
+                progress_callback.emit("\nNo existe el archivo {0}. Posible error del conversor DJI.{1}\n".format(os.path.join(disk_input_folder, image_name + ".raw"), _diag))
+                self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
+                self.organizer_logger.logger.error(f"No existe el archivo {os.path.join(disk_input_folder, image_name + '.raw')}. Posible error del conversor DJI.")
+                self.organizer_logger.logger.exception(file_not_found.__str__)
+                self.organizer_logger.logger.exception(file_not_found)
+                self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
+                # Se registra la IMAGEN, no el .raw: el .raw es un intermedio que nunca
+                # llegó a existir, y ponerlo en «Imágenes con error» mandaba al usuario a
+                # buscar un fichero inexistente en vez de a la térmica que falló.
+                self._register_image_error(os.path.join(disk_input_folder, image_name))
+                return
 
-        # El .raw que escribe el SDK (--measurefmt float32) es un array plano de float32
-        # little-endian: np.frombuffer lo mapea sin recorrerlo. Antes esto era
-        # `np.array(struct.unpack("<N>f", data))`, que materializaba una tupla de 327.680
-        # objetos float de Python por imagen -- 20,5 ms de intérprete RETENIENDO EL GIL,
-        # que era lo que impedía que el pool de conversión escalase con los hilos.
-        # Medido: 20,46 -> 0,16 ms por imagen (128x), con el .astype ya incluido.
-        # El .astype(np.float64) reproduce el tipo que daba struct.unpack (floats de
-        # Python, doble precisión). NO es lo que fija el formato del .tiff: PIL guarda
-        # en modo 'F', que es float32, así que el fichero entregado era y sigue siendo
-        # float32 -- verificado por sha256 en el A/B de 60 térmicas reales. Lo que
-        # preserva es la ARITMÉTICA intermedia: los umbrales y la normalización de la
-        # escala de grises operaban en float64. Hace además el array escribible, que
-        # np.frombuffer por sí solo no da (devuelve una vista de solo lectura).
-        arr = np.frombuffer(data, dtype="<f4").astype(np.float64)
-        # 3.4.50: la forma se deduce del TAMANO REAL del .raw, no del tamano del JPG.
-        # El atajo anterior ("si el JPG es 1280x1024 el termico es 640x512") es cierto
-        # en la H20T (JPG reescalado) y FALSO en la H30T, que tiene termico real
-        # 1280x1024: ahi el SDK escribe 1.310.720 floats y el reshape a (512,640)
-        # reventaba imagen a imagen con "cannot reshape array of size 1310720 into
-        # shape (512,640)", dejando el vuelo entero sin TIFF (CLARE, 2026-08-21).
-        # Se reutiliza `resolucion_desde_raw` de rjpeg_a_tiff.py, que ya resolvia esto
-        # en el script standalone y tiene sus pruebas: JPG -> resoluciones DJI
-        # conocidas -> misma relacion de aspecto. No se duplica el criterio.
-        from rjpeg_a_tiff import resolucion_desde_raw
-        _ancho_t, _alto_t = resolucion_desde_raw(arr.size, size)
-        arr = arr.reshape(_alto_t, _ancho_t)
+            data = f.read()
 
-        # self.organizer_logger.logger.info("The size of the array is {0}".format(arr.size))
-        # self.organizer_logger.logger.info("The shape of the array is {0}".format(arr.shape))
-        # self.organizer_logger.logger.info("The max of the array is {0}".format(arr.max()))
-        # self.organizer_logger.logger.info("The min of the array is {0}".format(arr.min()))
+            # self.organizer_logger.logger.info("The length of the data is {0}".format(len(data)))
 
-        array_to_normalize = arr.copy()
-        if not auto_temp:
-            array_to_normalize[array_to_normalize > up_threshold_temperature] = up_threshold_temperature # replace all elements greater than up_threshold_temperature with up_threshold_temperature.
-            array_to_normalize[array_to_normalize < low_threshold_temperature] = low_threshold_temperature # replace all elements less than low_threshold_temperature with up_threshold_temperature.
+            # El .raw que escribe el SDK (--measurefmt float32) es un array plano de float32
+            # little-endian: np.frombuffer lo mapea sin recorrerlo. Antes esto era
+            # `np.array(struct.unpack("<N>f", data))`, que materializaba una tupla de 327.680
+            # objetos float de Python por imagen -- 20,5 ms de intérprete RETENIENDO EL GIL,
+            # que era lo que impedía que el pool de conversión escalase con los hilos.
+            # Medido: 20,46 -> 0,16 ms por imagen (128x), con el .astype ya incluido.
+            # El .astype(np.float64) reproduce el tipo que daba struct.unpack (floats de
+            # Python, doble precisión). NO es lo que fija el formato del .tiff: PIL guarda
+            # en modo 'F', que es float32, así que el fichero entregado era y sigue siendo
+            # float32 -- verificado por sha256 en el A/B de 60 térmicas reales. Lo que
+            # preserva es la ARITMÉTICA intermedia: los umbrales y la normalización de la
+            # escala de grises operaban en float64. Hace además el array escribible, que
+            # np.frombuffer por sí solo no da (devuelve una vista de solo lectura).
+            arr = np.frombuffer(data, dtype="<f4").astype(np.float64)
+            # 3.4.50: la forma se deduce del TAMANO REAL del .raw, no del tamano del JPG.
+            # El atajo anterior ("si el JPG es 1280x1024 el termico es 640x512") es cierto
+            # en la H20T (JPG reescalado) y FALSO en la H30T, que tiene termico real
+            # 1280x1024: ahi el SDK escribe 1.310.720 floats y el reshape a (512,640)
+            # reventaba imagen a imagen con "cannot reshape array of size 1310720 into
+            # shape (512,640)", dejando el vuelo entero sin TIFF (CLARE, 2026-08-21).
+            # Se reutiliza `resolucion_desde_raw` de rjpeg_a_tiff.py, que ya resolvia esto
+            # en el script standalone y tiene sus pruebas: JPG -> resoluciones DJI
+            # conocidas -> misma relacion de aspecto. No se duplica el criterio.
+            from rjpeg_a_tiff import resolucion_desde_raw
+            _ancho_t, _alto_t = resolucion_desde_raw(arr.size, size)
+            arr = arr.reshape(_alto_t, _ancho_t)
+
+            # self.organizer_logger.logger.info("The size of the array is {0}".format(arr.size))
+            # self.organizer_logger.logger.info("The shape of the array is {0}".format(arr.shape))
+            # self.organizer_logger.logger.info("The max of the array is {0}".format(arr.max()))
+            # self.organizer_logger.logger.info("The min of the array is {0}".format(arr.min()))
+
+            array_to_normalize = arr.copy()
+            if not auto_temp:
+                array_to_normalize[array_to_normalize > up_threshold_temperature] = up_threshold_temperature # replace all elements greater than up_threshold_temperature with up_threshold_temperature.
+                array_to_normalize[array_to_normalize < low_threshold_temperature] = low_threshold_temperature # replace all elements less than low_threshold_temperature with up_threshold_temperature.
     
-        degree = self.degree_de_giro(rotate_90, rotate_minus_90, auto_rotate, input_folder, progress_callback)
-        arr, array_to_normalize = self.rotar_arrays_termicos(arr, array_to_normalize, degree)
+            degree = self.degree_de_giro(rotate_90, rotate_minus_90, auto_rotate, input_folder, progress_callback)
+            arr, array_to_normalize = self.rotar_arrays_termicos(arr, array_to_normalize, degree)
 
-        if generate_gray_scale_images:
-            normalizedData = (array_to_normalize-np.min(array_to_normalize))/(np.max(array_to_normalize)-np.min(array_to_normalize))*255 # Normalizamos datos para grabar la imagen en escala de grises. Da igual si con auto_temp o no, ya que se ajusta a los datos del array.
-            normalizedData = normalizedData.astype(np.uint8)
-            im_normalized = Image.fromarray(normalizedData, 'L')
-            # La carpeta ya se pre-crea en convert_dji_images_to_tif, antes del pool.
-            # Llamar aquí a prepare_output_folder repetía un os.listdir() de la carpeta
-            # del vuelo -- con sus 1300+ ficheros dentro -- una vez POR IMAGEN, para
-            # comprobar algo que ya es cierto. Además era la llamada no thread-safe que
-            # obligó a pre-crearlas.
-            im_normalized.save(os.path.join(output_folder,"Escala_de_grises", image_name), format='JPEG')
+            if generate_gray_scale_images:
+                normalizedData = (array_to_normalize-np.min(array_to_normalize))/(np.max(array_to_normalize)-np.min(array_to_normalize))*255 # Normalizamos datos para grabar la imagen en escala de grises. Da igual si con auto_temp o no, ya que se ajusta a los datos del array.
+                normalizedData = normalizedData.astype(np.uint8)
+                im_normalized = Image.fromarray(normalizedData, 'L')
+                # La carpeta ya se pre-crea en convert_dji_images_to_tif, antes del pool.
+                # Llamar aquí a prepare_output_folder repetía un os.listdir() de la carpeta
+                # del vuelo -- con sus 1300+ ficheros dentro -- una vez POR IMAGEN, para
+                # comprobar algo que ya es cierto. Además era la llamada no thread-safe que
+                # obligó a pre-crearlas.
+                im_normalized.save(os.path.join(disk_output_folder,"Escala_de_grises", image_name), format='JPEG')
 
-        if generate_colormap_images:
-            rgb_colormap = apply_thermal_colormap(array_to_normalize, low_threshold_temperature, up_threshold_temperature)
-            Image.fromarray(rgb_colormap, 'RGB').save(os.path.join(output_folder, "Color_gradiente", image_name), format='JPEG')
+            if generate_colormap_images:
+                rgb_colormap = apply_thermal_colormap(array_to_normalize, low_threshold_temperature, up_threshold_temperature)
+                Image.fromarray(rgb_colormap, 'RGB').save(os.path.join(disk_output_folder, "Color_gradiente", image_name), format='JPEG')
 
-        im = Image.fromarray(arr)
-        # Buscar tiffinfo como parámetro para save.
-        im.save(os.path.join(output_folder, os.path.splitext(image_name)[0] + ".tiff"), format='TIFF')
-        f.close()
-        im.close()
-        # os.remove(os.path.join(input_folder, image_name + ".raw"))
-        # Intentamos eliminar el .raw de forma segura. En Windows puede dar PermissionError si
-        # otro proceso aún mantiene el fichero abierto, así que reintentamos varias veces.
-        self._safe_remove(os.path.join(input_folder, image_name + ".raw"), progress_callback)
-        src_exif = os.path.join(input_folder, image_name)
-        dst_exif = os.path.join(output_folder, os.path.splitext(image_name)[0] + ".tiff")
-        if defer_exif:
-            return (src_exif, dst_exif)
-        if _is_windows():
-            subproceso_exiftool = '"{0}" -tagsfromfile "{1}" "{2}" -overwrite_original_in_place'.format(exiftool_exe, src_exif, dst_exif)
-            subprocess.run(subproceso_exiftool)
-        else:
-            subprocess.run([external_tools.resolve_tool("exiftool"), "-tagsfromfile", src_exif, dst_exif, "-overwrite_original_in_place"])
+            im = Image.fromarray(arr)
+            # Buscar tiffinfo como parámetro para save.
+            im.save(os.path.join(disk_output_folder, os.path.splitext(image_name)[0] + ".tiff"), format='TIFF')
+            f.close()
+            im.close()
+            # os.remove(os.path.join(disk_input_folder, image_name + ".raw"))
+            # Intentamos eliminar el .raw de forma segura. En Windows puede dar PermissionError si
+            # otro proceso aún mantiene el fichero abierto, así que reintentamos varias veces.
+            self._safe_remove(os.path.join(disk_input_folder, image_name + ".raw"), progress_callback)
+            src_exif = os.path.join(disk_input_folder, image_name)
+            dst_exif = os.path.join(disk_output_folder, os.path.splitext(image_name)[0] + ".tiff")
+            if not defer_exif:
+                if _is_windows():
+                    subproceso_exiftool = '"{0}" -tagsfromfile "{1}" "{2}" -overwrite_original_in_place'.format(exiftool_exe, src_exif, dst_exif)
+                    subprocess.run(subproceso_exiftool)
+                else:
+                    subprocess.run([external_tools.resolve_tool("exiftool"), "-tagsfromfile", src_exif, dst_exif, "-overwrite_original_in_place"])
+
+            if usa_staging:
+                # Las salidas se publican SIEMPRE con el EXIF ya aplicado: arriba se
+                # fuerza `defer_exif = False` cuando hay staging, de modo que el TIFF
+                # nunca llega al bucket a medio hacer.
+                if generate_gray_scale_images:
+                    almacen.publicar_en(
+                        os.path.join(disk_output_folder, "Escala_de_grises", image_name),
+                        almacen.unir(output_folder, "Escala_de_grises", image_name))
+                if generate_colormap_images:
+                    almacen.publicar_en(
+                        os.path.join(disk_output_folder, "Color_gradiente", image_name),
+                        almacen.unir(output_folder, "Color_gradiente", image_name))
+                almacen.publicar_en(dst_exif, tiff_path)
+
+            if defer_exif:
+                # F4c-2: `src_exif`/`dst_exif` son rutas de STAGING (se borran en
+                # el `finally` de abajo). El par que necesita `_run_exif_batch`
+                # tiene que sobrevivir a esta función, así que se devuelven las
+                # rutas REALES: el JPG de origen tal cual llegó (`input_folder`)
+                # y `tiff_path`, que es donde ya quedó publicado el TIFF (arriba,
+                # dentro de `if usa_staging`) o donde se guardó directamente en
+                # el camino 100% local. En local coincide byte a byte con lo que
+                # devolvía antes (`disk_input_folder`/`disk_output_folder` ==
+                # `input_folder`/`output_folder`).
+                return (almacen.unir(input_folder, image_name), tiff_path)
+        finally:
+            if staging_dir is not None:
+                shutil.rmtree(staging_dir, ignore_errors=True)
 
     def _safe_remove(self, path: str, progress_callback=None, attempts: int = 5, delay: float = 0.5):
         """
