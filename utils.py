@@ -20,7 +20,7 @@ from pathlib import Path
 import pipeline
 from natsort import natsorted
 
-from atom_core.almacen import es_uri_gcs, listar_ficheros
+from atom_core.almacen import abrir_almacen, es_uri_gcs, listar_ficheros
 from rjpeg_a_tiff import EXTS_FUENTE, EXTS_IMAGEN
 
 
@@ -336,6 +336,12 @@ def safe_move(src: str, dest: str, modo: str = MODO_UNICO,
     if modo not in MODOS_DESTINO:
         raise ValueError(f"modo de destino desconocido: {modo!r}; esperaba uno de {MODOS_DESTINO}")
 
+    if es_uri_gcs(src) or es_uri_gcs(dest):
+        # Al menos un lado es `gs://…`: la ruta POSIX de abajo (os.replace,
+        # shutil.move) no aplica. Delega en la capa `atom_core.almacen`, sin
+        # tocar nada del camino local que sigue el resto de esta función.
+        return _safe_move_almacen(src, dest, modo, descartar_origen_si_existe)
+
     if modo == MODO_OBVIAR:
         if os.path.exists(dest):
             if descartar_origen_si_existe and os.path.abspath(src) != os.path.abspath(dest):
@@ -389,6 +395,96 @@ def safe_move(src: str, dest: str, modo: str = MODO_UNICO,
 
     try:
         shutil.move(src, destino_final)
+    except OSError as e:
+        raise OSError(f"Error moviendo '{src}' a '{destino_final}': {e}") from e
+    return destino_final
+
+
+def _unique_dest_almacen(dest: str) -> str:
+    """Igual que `unique_dest`, pero vía `existe_ruta` (funciona con `gs://…`
+    y con rutas locales por igual). `os.path.splitext` es seguro sobre una URI
+    `gs://…`: solo toca la extensión, no el separador."""
+    from atom_core.almacen import existe_ruta
+
+    if not existe_ruta(dest):
+        return dest
+    nombre, extension = os.path.splitext(dest)
+    contador = 1
+    nuevo_dest = f"{nombre}_{contador}{extension}"
+    while existe_ruta(nuevo_dest):
+        contador += 1
+        nuevo_dest = f"{nombre}_{contador}{extension}"
+    return nuevo_dest
+
+
+def _borrar_en_almacen(ruta: str) -> None:
+    """Borra `ruta` (local o `gs://…`) tolerando que ya no exista (otro shard
+    del mismo reparto puede haberla quitado ya), igual que hace el camino
+    local de `safe_move` con `os.remove`."""
+    from atom_core.almacen import abrir_almacen
+
+    almacen, prefijo = abrir_almacen(ruta)
+    try:
+        almacen.borrar(prefijo)
+    except FileNotFoundError:
+        pass
+
+
+def _safe_move_almacen(src: str, dest: str, modo: str, descartar_origen_si_existe: bool) -> str | None:
+    """Camino `gs://…` de `safe_move`: mismos modos y misma resolución de
+    colisión que el POSIX, pero por debajo de `atom_core.almacen`.
+
+    Decisión de semántica: si origen y destino resuelven al MISMO `Almacen`
+    (mismo bucket, o el mismo backend local vía `abrir_almacen`), se usa
+    `Almacen.mover` — un movimiento dentro del propio backend (rename de
+    blob en GCS, `os.replace` en local), sin pasar por un temporal. Si son
+    almacenes DISTINTOS (dos buckets distintos, o mezcla local↔`gs://`), no
+    hay operación atómica posible entre backends: se COPIA leyendo con
+    `abrir_para_lectura` (baja a un temporal local si hace falta) y
+    publicando con `publicar_en`, y el origen se borra solo DESPUÉS de que
+    esa escritura haya terminado con éxito. Si `publicar_en` lanza, el
+    origen queda intacto — perder una imagen por un fallo de red a medio
+    camino es inaceptable.
+    """
+    from atom_core.almacen import abrir_almacen, abrir_para_lectura, existe_ruta, publicar_en
+
+    if modo == MODO_OBVIAR:
+        if existe_ruta(dest):
+            if descartar_origen_si_existe:
+                almacen_src, prefijo_src = abrir_almacen(src)
+                almacen_dest, prefijo_dest = abrir_almacen(dest)
+                if not (almacen_src is almacen_dest and prefijo_src == prefijo_dest):
+                    _borrar_en_almacen(src)
+            return None
+        destino_final = dest
+    elif modo == MODO_SOBRESCRIBIR:
+        destino_final = dest
+        # `os.path.isdir` (el guardarraíl de la rama local contra pisar un
+        # directorio) no tiene equivalente en GCS: no hay directorios vacíos
+        # ni objetos "directorio", así que no se comprueba ahí. Sí se
+        # conserva para el lado local cuando el destino es una ruta normal.
+        if not es_uri_gcs(destino_final) and os.path.isdir(destino_final):
+            raise OSError(f"Error moviendo '{src}' a '{destino_final}': el destino es un directorio")
+    else:
+        destino_final = _unique_dest_almacen(dest)
+
+    almacen_src, prefijo_src = abrir_almacen(src)
+    almacen_dest, prefijo_dest = abrir_almacen(destino_final)
+
+    try:
+        if almacen_src is almacen_dest:
+            # Si origen y destino ya resuelven a la MISMA clave, no hay nada
+            # que mover: llamar a `.mover()` de todos modos es redundante y,
+            # sobre `AlmacenGCS`, sin este guardarrail el copy+delete internos
+            # podian borrar el propio objeto (ver el no-op ya añadido en
+            # `AlmacenGCS.mover`). Doble comprobación a propósito, igual que
+            # ya hace el modo `obviar` un poco más arriba.
+            if prefijo_src != prefijo_dest:
+                almacen_src.mover(prefijo_src, prefijo_dest)
+        else:
+            with abrir_para_lectura(src) as ruta_local:
+                publicar_en(ruta_local, destino_final)
+            _borrar_en_almacen(src)
     except OSError as e:
         raise OSError(f"Error moviendo '{src}' a '{destino_final}': {e}") from e
     return destino_final
@@ -743,6 +839,35 @@ class Utils:
         # a la Estructura de carpetas (que cuentan sobre output_folder).
         excluded_folders_set.add("SIN_ORDENAR")
         contador = 0
+        if es_uri_gcs(folder):
+            # `almacen.listar` es siempre recursivo (en GCS no hay "bajar de
+            # nivel": listar YA trae todo lo que cuelga del prefijo). Se
+            # reconstruyen aquí los mismos criterios que aplica el `os.walk` de
+            # abajo (exclusión de carpeta a CUALQUIER nivel, y `recursivo=False`
+            # cortando al primer nivel) filtrando por la profundidad del path
+            # relativo, en vez de por el recorrido del propio `os.walk`.
+            almacen, prefijo = abrir_almacen(folder)
+            for relativo in almacen.listar(prefijo):
+                resto = relativo[len(prefijo):].strip("/") if prefijo else relativo
+                if not resto:
+                    continue
+                partes = resto.split("/")
+                archivo = partes[-1]
+                directorios_intermedios = partes[:-1]
+                if excluded_folders_set & set(directorios_intermedios):
+                    continue
+                if not recursivo and directorios_intermedios:
+                    continue
+                if exclude_patterns and any(pattern in archivo for pattern in exclude_patterns):
+                    continue
+                if filtro_nombre is not None and not filtro_nombre(archivo):
+                    continue
+                if not tmc and os.path.splitext(archivo)[1].lower() in EXTS_IMAGEN:
+                    contador += 1
+                elif tmc and archivo.endswith(('tmc', 'TMC')):
+                    contador += 1
+            return contador
+
         for ruta, directorios, archivos in os.walk(folder):
             directorios[:] = [d for d in directorios if d not in excluded_folders_set]
             for archivo in archivos:
