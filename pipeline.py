@@ -33,6 +33,7 @@ import tempfile
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import contextlib
 from contextlib import contextmanager
 from pathlib import Path
 import time
@@ -762,60 +763,64 @@ class CompressImage:
         image_open = None
         crop_imagen_open = None
         try:
-            ruta_original = os.path.join(input_folder, image_name)
+            ruta_original = almacen.unir(input_folder, image_name)
             file_splitted = os.path.splitext(image_name)
             crop_image_name = file_splitted[0] + "_CROP" + file_splitted[1]
-            ruta_crop = os.path.join(input_folder, crop_image_name)
-            hay_crop = os.path.exists(ruta_crop)
+            ruta_crop = almacen.unir(input_folder, crop_image_name)
+            hay_crop = almacen.existe_ruta(ruta_crop)
 
-            # Guarda anti-doble-giro, la misma que ya protege a la térmica en
-            # `rotate_thermal_jpgs_in_place`: las RGB del dron salen apaisadas, así que
-            # una vertical solo puede venir de una pasada anterior sobre esta carpeta.
-            # Hace falta porque el criterio de giro es el gimbal yaw del XMP, que NO
-            # cambia al rotar los píxeles (se reescribe tal cual unas líneas más abajo):
-            # sin esto, relanzar el pipeline sobre un vuelo ya girado —el modo normal de
-            # recuperación, porque el Job de Cloud Run no reanuda por fases— lo deja a 180º.
-            # Se comprueba fichero a fichero y no por el estado del original: el par
-            # original/`_CROP` se guarda en dos escrituras distintas, y una caída entre
-            # ambas deja el original girado y el recorte pendiente.
-            girar_original = not self._ya_girada(ruta_original)
-            girar_crop = hay_crop and not self._ya_girada(ruta_crop)
-            if not girar_original and not girar_crop:
-                self.organizer_logger.logger.info(
-                    f"Ya estaba girada, se deja como está: {ruta_original}")
-                return hay_crop
+            with contextlib.ExitStack() as pila:
+                local_orig = pila.enter_context(almacen.editar_en_sitio(ruta_original, publicar_solo_si_cambia=True))
+                local_crop = pila.enter_context(almacen.editar_en_sitio(ruta_crop, publicar_solo_si_cambia=True)) if hay_crop else None
 
-            image_open = Image.open(ruta_original)
-            if girar_crop:
-                crop_imagen_open = Image.open(ruta_crop)
-            cropped_images = hay_crop
+                # Guarda anti-doble-giro, la misma que ya protege a la térmica en
+                # `rotate_thermal_jpgs_in_place`: las RGB del dron salen apaisadas, así que
+                # una vertical solo puede venir de una pasada anterior sobre esta carpeta.
+                # Hace falta porque el criterio de giro es el gimbal yaw del XMP, que NO
+                # cambia al rotar los píxeles (se reescribe tal cual unas líneas más abajo):
+                # sin esto, relanzar el pipeline sobre un vuelo ya girado —el modo normal de
+                # recuperación, porque el Job de Cloud Run no reanuda por fases— lo deja a 180º.
+                # Se comprueba fichero a fichero y no por el estado del original: el par
+                # original/`_CROP` se guarda en dos escrituras distintas, y una caída entre
+                # ambas deja el original girado y el recorte pendiente.
+                girar_original = not self._ya_girada(str(local_orig))
+                girar_crop = hay_crop and not self._ya_girada(str(local_crop))
+                if not girar_original and not girar_crop:
+                    self.organizer_logger.logger.info(
+                        f"Ya estaba girada, se deja como está: {ruta_original}")
+                    return hay_crop
 
-            exif = image_open.getexif()  # Obtengo los datos exif de la imagen original.
-            # self.organizer_logger.logger.debug("Exif size: " + str(len(exif.items())))
-            if girar_original:
-                image_open = image_open.transpose(degrees)  # Se gira la imagen mediante transpose para mantener las resoluciones correctamente. Si giramos normalmente, la imagen queda
-                # recortada.
-            if crop_imagen_open:
-                crop_imagen_open = crop_imagen_open.transpose(degrees)
+                image_open = Image.open(str(local_orig))
+                if girar_crop:
+                    crop_imagen_open = Image.open(str(local_crop))
+                cropped_images = hay_crop
 
-            gimbal_data = self.exif_management_obj.get_gimbal_yaw_pitch(ruta_original)  # Obtenemos los datos de gimbal del archivo antes de guardarlo.
-            xmp_all_data = self.exif_management_obj.get_xmp_data(ruta_original)  # Obtenemos el resto de datos xmp del archivo antes de guardarlo.
-            if girar_original:
-                # Sin optimize=True a propósito: en un JPEG de 48 MP cuesta un +68 % de tiempo de
-                # encode (0,306 s vs 0,182 s medidos) para ahorrar un 3-5 % de tamaño. Este fichero
-                # se vuelve a tocar después (conversión/compresión), no es el entregable final.
-                image_open.save(ruta_original, quality=quality, exif=exif)
-            image_open.close()
+                exif = image_open.getexif()  # Obtengo los datos exif de la imagen original.
+                # self.organizer_logger.logger.debug("Exif size: " + str(len(exif.items())))
+                if girar_original:
+                    image_open = image_open.transpose(degrees)  # Se gira la imagen mediante transpose para mantener las resoluciones correctamente. Si giramos normalmente, la imagen queda
+                    # recortada.
+                if crop_imagen_open:
+                    crop_imagen_open = crop_imagen_open.transpose(degrees)
 
-            if crop_imagen_open:
-                crop_imagen_open.save(ruta_crop, quality=quality)  # Sin optimize=True: ver el save del original.
-                crop_imagen_open.close()
+                gimbal_data = self.exif_management_obj.get_gimbal_yaw_pitch(str(local_orig))  # Obtenemos los datos de gimbal del archivo antes de guardarlo.
+                xmp_all_data = self.exif_management_obj.get_xmp_data(str(local_orig))  # Obtenemos el resto de datos xmp del archivo antes de guardarlo.
+                if girar_original:
+                    # Sin optimize=True a propósito: en un JPEG de 48 MP cuesta un +68 % de tiempo de
+                    # encode (0,306 s vs 0,182 s medidos) para ahorrar un 3-5 % de tamaño. Este fichero
+                    # se vuelve a tocar después (conversión/compresión), no es el entregable final.
+                    image_open.save(str(local_orig), quality=quality, exif=exif)
+                image_open.close()
 
-            if girar_original:
-                self.exif_management_obj.saving_all_xmp_data(ruta_original, gimbal_data, xmp_all_data)  # Se graban los datos en el mismo archivo de entrada, pero rotado, en una sola escritura.
+                if crop_imagen_open:
+                    crop_imagen_open.save(str(local_crop), quality=quality)  # Sin optimize=True: ver el save del original.
+                    crop_imagen_open.close()
 
-                self.check_and_fix_xmp_data(input_folder,image_name, gimbal_data, xmp_all_data, progress_callback)
-            return cropped_images
+                if girar_original:
+                    self.exif_management_obj.saving_all_xmp_data(str(local_orig), gimbal_data, xmp_all_data)  # Se graban los datos en el mismo archivo de entrada, pero rotado, en una sola escritura.
+
+                    self.check_and_fix_xmp_data(input_folder, image_name, gimbal_data, xmp_all_data, progress_callback, ruta_local=str(local_orig))
+                return cropped_images
         except FileNotFoundError as f:
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
             self.organizer_logger.logger.warning(f"ERROR: No se encuentra la imagen {os.path.join(output_folder, image_name)} para que PIL la pueda abrir.")
@@ -872,30 +877,34 @@ class CompressImage:
             if crop_imagen_open is not None and getattr(crop_imagen_open, "fp", None) is not None:
                 crop_imagen_open.close()
 
-    def check_and_fix_xmp_data(self, folder, image_name, gimbal_data, xmp_all_data, progress_callback) -> None:
+    def check_and_fix_xmp_data(self, folder, image_name, gimbal_data, xmp_all_data, progress_callback, *, ruta_local: str | None = None) -> None:
         """
         Función que encapsula la comprobación de la existencia de los datos xmp, y en caso de que no existan, intenta grabarlos un número de veces.
-        
+
         :param folder: carpeta en la que se encuentra la imagen a comprobar.
         :param image_name: nombre de la imagen a comprobar.
         :param gimbal_data: Los datos del gimbal.
         :param xmp_all_data: El resto de datos xmp.
         :param progress_callback: envío de mensajes a la ventana del log.
+        :param ruta_local: ruta local ya resuelta (p. ej. la que cede `almacen.editar_en_sitio`)
+            para no tener que reconstruirla a partir de `folder`/`image_name`, que puede ser un
+            prefijo `gs://…`. Si no se pasa, se construye como hasta ahora.
         """
+        ruta = ruta_local if ruta_local is not None else os.path.join(folder, image_name)
         # Comprobamos que los datos xmp están en el archivo comprimido
-        xmp_data_missing, list_of_missing_keys = self.exif_management_obj.check_xmp_data_using_pyexiv2(os.path.join(folder, image_name))
+        xmp_data_missing, list_of_missing_keys = self.exif_management_obj.check_xmp_data_using_pyexiv2(ruta)
         # Si no están, se intenta volver a grabarlos dos veces, y si no se puede se lanza un mensaje a la ventana de log.
         if xmp_data_missing:
             attempts = 2
             for i in range(1, attempts + 1):
-                self.exif_management_obj.saving_all_xmp_data(os.path.join(folder, image_name), gimbal_data, xmp_all_data)
-                xmp_data_missing, list_of_missing_keys = self.exif_management_obj.check_xmp_data_using_pyexiv2(os.path.join(folder, image_name))
+                self.exif_management_obj.saving_all_xmp_data(ruta, gimbal_data, xmp_all_data)
+                xmp_data_missing, list_of_missing_keys = self.exif_management_obj.check_xmp_data_using_pyexiv2(ruta)
                 if xmp_data_missing:
                     # progress_callback.emit(f"Attempt {i}")
                     continue
                 else:
                     return
-            progress_callback.emit(f"\nERROR: las claves {list_of_missing_keys} no están en la imagen comprimida {os.path.join(folder, image_name)}\n")
+            progress_callback.emit(f"\nERROR: las claves {list_of_missing_keys} no están en la imagen comprimida {ruta}\n")
 
 class GenStructFolder:
     """
