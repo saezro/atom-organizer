@@ -312,3 +312,53 @@ def test_xmp_gimbal_preservado_tras_girar_y_coincide_entre_backends(
     )
     assert _sha256(resultado_gcs) == _sha256(ruta_resultado_local.read_bytes()), (
         "local y gs:// deben producir el mismo fichero girado")
+
+
+# --- 5) El criterio de giro (lectura del yaw) también resuelve gs:// ----------
+
+def test_gen_thumbnails_and_rotate_lee_el_yaw_de_una_carpeta_en_gcs(
+    tmp_path, logger, make_dji_jpeg, monkeypatch
+):
+    """`gen_thumbnails_and_rotate` decide el giro leyendo el gimbal yaw de cada
+    imagen con `get_gimbal_yaw_pitch`, que acaba en un `open()` a pelo
+    (`exif.leer_bloque_xmp`). Con la carpeta en `gs://` hay que bajar la imagen
+    antes: sin eso reventaba con `FileNotFoundError: 'gs://…/PB1_V1/…JPG'` y
+    tumbaba la etapa post entera (operación 18 en producción, fase Rotación).
+
+    Se afirma sobre la DECISIÓN de giro, no sobre el objeto del bucket: el giro
+    lo hace `_rotate_images_batch` en un `ProcessPoolExecutor` con `spawn`, y el
+    proceso hijo no hereda el `AlmacenGCS` de prueba sembrado en `_ALMACENES`
+    (en producción sí construye el real). La paridad del giro en sí ya la cubren
+    los tests de `rotate_and_save` de este mismo fichero.
+    """
+    ruta_fuente = tmp_path / "fuente.JPG"
+    make_dji_jpeg(str(ruta_fuente), gimbal_yaw=-90.0)
+    bucket = _sembrar_almacen_gcs("bucket-yaw-rgb")
+    bucket.objetos["RGB/PB1/PB1_V1/DJI_0001.JPG"] = ruta_fuente.read_bytes()
+
+    llamadas = []
+    monkeypatch.setattr(
+        pipeline.GenStructFolder, "_rotate_images_batch",
+        lambda self, images, carpeta, giro, *a, **k: llamadas.append((list(images), carpeta, giro)),
+    )
+
+    obj = pipeline.GenStructFolder(logger)
+    obj.root_folder = str(tmp_path / "PLANTA")
+    obj.csvs_root_folder = str(tmp_path / "PLANTA" / "CSVs")
+    obj.total_images_number = 1
+    obj.current_image_number = 0
+    progreso = _noop_progress()
+
+    obj.gen_thumbnails_and_rotate(
+        "gs://bucket-yaw-rgb/RGB/PB1/PB1_V1", rgb_processing=True, max_error=0,
+        lim_max_270=-10, lim_min_270=-170, lim_max_90=170, lim_min_90=10,
+        progress_callback=progreso, progress_bar=progreso,
+    )
+
+    # Yaw -90 -> bucket "rotar 270" (ROTATE_90 de PIL, antihorario).
+    assert llamadas, "no se llegó a decidir el giro: el yaw no se pudo leer de gs://"
+    imagenes, carpeta, giro = llamadas[0]
+    assert imagenes == ["DJI_0001.JPG"]
+    assert carpeta == "gs://bucket-yaw-rgb/RGB/PB1/PB1_V1"
+    assert giro == Image.ROTATE_90
+    assert obj.giros_por_vuelo["PB1_V1"]["grados"] == 270

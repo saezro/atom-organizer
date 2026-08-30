@@ -1968,7 +1968,13 @@ class GenStructFolder:
                 progress_callback.emit("\nProcesando {0} imágenes en el directorio {1}".format(len(images), input_folder) + "\n") # Se envía información al iniciar el procesado de un directorio solo si hay imágenes.
                 self.organizer_logger.logger.info(f"Procesando el directorio: {input_folder}.")
                 for index, image in enumerate(images):
-                    gimbal_yaw = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder,image))[0]
+                    # `get_gimbal_yaw_pitch` acaba en `leer_bloque_xmp`, que hace
+                    # `open()` a pelo: con `input_folder` en `gs://` hay que bajar
+                    # la imagen antes, igual que hace `_leer_exif` en la fase de
+                    # metadatos. En local `abrir_para_lectura` cede la misma ruta
+                    # sin copiar nada, así que el escritorio no paga nada.
+                    with almacen.abrir_para_lectura(almacen.unir(input_folder, image)) as ruta_local:
+                        gimbal_yaw = self.exif_management_obj.get_gimbal_yaw_pitch(str(ruta_local))[0]
                     if lim_max_90 > float(gimbal_yaw) > lim_min_90:
                         rotate_90 = rotate_90 + 1  # Para contar el número de imágenes que rotamos 90º
                     elif lim_min_270 < float(gimbal_yaw) < lim_max_270:
