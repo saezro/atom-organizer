@@ -286,6 +286,18 @@ def listar_subcarpetas(ruta: str) -> list[str]:
     )
 
 
+def nombre_de(ruta: str) -> str:
+    """Ultimo segmento de `ruta`, URI-aware. `Path(...).name` revienta con un
+    `str` y `os.path.basename` deja `''` si la URI acaba en `/`, asi que aqui
+    se recorta la barra final antes de partir. Para `gs://bucket` a secas
+    devuelve el nombre del bucket, que es lo unico que identifica esa raiz."""
+    limpia = ruta.rstrip("/")
+    if es_uri_gcs(ruta):
+        limpia = limpia[len(_ESQUEMA_GCS):]
+        return limpia.rsplit("/", 1)[-1]
+    return Path(limpia).name
+
+
 def existe_ruta(ruta: str) -> bool:
     """True si `ruta` (fichero o carpeta, local o `gs://…`) existe."""
     if es_uri_gcs(ruta):

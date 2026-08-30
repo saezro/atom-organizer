@@ -4,12 +4,13 @@ docstring de `atom_core/almacen_gcs.py` y de `atom_core/cloud_upload.py`). Este
 fichero fija dos cosas:
 
 1. Que el paquete entero (`pipeline`, `utils`, `atom_core.phases`,
-   `atom_core.organize`, `atom_core.almacen`, `atom_core.almacen_gcs`...) sigue
-   siendo IMPORTABLE, y que la ruta LOCAL de `atom_core.almacen` funciona de
-   punta a punta, con `google-cloud-storage` AUSENTE de verdad -no solo "no
-   instalado en este venv por casualidad": se bloquea con un meta path finder
-   que hace fallar cualquier `import google...`, para que el test siga
-   protegiendo esto aunque algún día ese venv sí lo tenga.
+   `atom_core.organize`, `atom_core.estadillo`, `organize_cli`,
+   `atom_core.almacen`, `atom_core.almacen_gcs`...) sigue siendo IMPORTABLE, y
+   que la ruta LOCAL de `atom_core.almacen` funciona de punta a punta, con
+   `google-cloud-storage` AUSENTE de verdad -no solo "no instalado en este
+   venv por casualidad": se bloquea con un meta path finder que hace fallar
+   cualquier `import google...`, para que el test siga protegiendo esto
+   aunque algún día ese venv sí lo tenga.
 2. Que con una ruta LOCAL no se construye NINGÚN cliente/objeto `AlmacenGCS`:
    la rama `gs://` no se toca para nada cuando el pipeline corre en el
    escritorio de un cliente sobre su propio disco.
@@ -76,6 +77,8 @@ import pipeline  # noqa: F401  (arrastra atom_core.almacen, utils, sharding...)
 import utils  # noqa: F401
 import atom_core.phases  # noqa: F401
 import atom_core.organize  # noqa: F401
+import atom_core.estadillo  # noqa: F401
+import organize_cli  # noqa: F401
 import atom_core.almacen as almacen
 import atom_core.almacen_gcs  # noqa: F401  (el MÓDULO se importa sin problema: el
                                # SDK solo se toca dentro de AlmacenGCS.__init__)
