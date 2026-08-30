@@ -2,8 +2,10 @@ import os
 import re
 import math
 import shutil
+import tempfile
 import datetime
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import PIL
@@ -14,6 +16,10 @@ import exifread
 import pyexiv2
 import utils
 from atom_core import sharding
+from atom_core.almacen import (
+    es_uri_gcs, existe_ruta, es_carpeta, listar_subcarpetas, listar_ficheros,
+    abrir_para_lectura, publicar_en, unir,
+)
 from geopy import distance
 from geopy.point import Point
 
@@ -743,11 +749,33 @@ class MetaLocation:
         La poda tiene que hacerse in-place sobre `dirnames` (así funciona os.walk)
         y por eso no vale con filtrar lo que sale: sin esto se bajaría a `CSVs`,
         donde vive un csv por vuelo y ninguna imagen, y cada uno contaría como
-        una discrepancia."""
+        una discrepancia.
+
+        Local: `os.walk` tal cual, sin tocar (paridad exacta con el comportamiento
+        de siempre). `gs://…`: no existe `os.walk` sobre un bucket, así que se
+        compone con `_walk_gcs`, que aplica la MISMA poda antes de yield y de
+        bajar a cada subcarpeta."""
         for raiz in raices:
+            if es_uri_gcs(raiz):
+                yield from MetaLocation._walk_gcs(raiz, excluded_folders)
+                continue
             for dirpath, dirnames, filenames in os.walk(raiz):
                 dirnames[:] = [d for d in dirnames if d not in excluded_folders]
                 yield dirpath, dirnames, filenames
+
+    @staticmethod
+    def _walk_gcs(raiz: str, excluded_folders: set[str]):
+        """Equivalente top-down de `os.walk` para `gs://…`, compuesto con
+        `listar_subcarpetas`/`listar_ficheros` (un bucket no tiene `os.walk`
+        real). Misma poda que el camino local: las carpetas excluidas se quitan
+        de `subcarpetas` ANTES de yield y de recursar en ellas."""
+        if not existe_ruta(raiz):
+            return
+        subcarpetas = [d for d in listar_subcarpetas(raiz) if d not in excluded_folders]
+        filenames = listar_ficheros(raiz)
+        yield raiz, subcarpetas, filenames
+        for sub in subcarpetas:
+            yield from MetaLocation._walk_gcs(unir(raiz, sub), excluded_folders)
 
     def checking_results_meta_location(self, input_folder: str, progress_callback, progress_summarize, only_pb: list[str] | None = None) -> dict:
         """
@@ -775,15 +803,15 @@ class MetaLocation:
         results = {}
         errors = []
 
-        if not os.path.exists(input_folder):
+        if not existe_ruta(input_folder):
             self.organizer_logger.logger.warning(f"La carpeta de entrada no existe: {input_folder}")
             return results
 
         raices = [input_folder]
         if only_pb is not None:
-            raices = [sharding.ruta_de_relativo(os.path.join(input_folder, sub), rel)
+            raices = [sharding.ruta_de_relativo(unir(input_folder, sub), rel)
                       for sub in ("RGB", "TERMICA", "RGB_Extra") for rel in only_pb
-                      if os.path.isdir(sharding.ruta_de_relativo(os.path.join(input_folder, sub), rel))]
+                      if es_carpeta(sharding.ruta_de_relativo(unir(input_folder, sub), rel))]
 
         excluded_folders = {"CSVs", "ESTADILLOS", "MINIATURAS"}
         for dirpath, dirnames, filenames in self._walk_varias(raices, excluded_folders):
@@ -792,9 +820,9 @@ class MetaLocation:
                 continue
 
             for csv_file in csv_files:
-                csv_path = os.path.join(dirpath, csv_file)
+                csv_path = unir(dirpath, csv_file)
                 try:
-                    with open(csv_path, "r", encoding="utf-8") as fh:
+                    with abrir_para_lectura(csv_path) as ruta_local, open(ruta_local, "r", encoding="utf-8") as fh:
                         csv_lines = sum(1 for line in fh if line.strip())
                 except Exception as e:
                     self.organizer_logger.logger.error(f"Error al leer '{csv_path}': {e}")
@@ -933,14 +961,24 @@ class MetaLocation:
         # el bucle de abajo, que sí depende del orden (`check_gimbal_yaw_pitch_values`
         # corrige cada fila mirando su vecina), consume los resultados ya cacheados.
         def _leer_exif(image: str):
-            ruta = os.path.join(input_folder, image)
+            ruta = unir(input_folder, image)
+            # `leerLatitudLongitudAltitud_exif_DJI` gestiona `gs://…` por su cuenta
+            # (su propio `abrir_para_lectura`) y necesita la ruta ORIGINAL para
+            # derivar el nombre de la imagen vía `os.path.basename(pathImagen)`;
+            # pasarle aquí el temporal local rompería ese nombre, así que se le
+            # sigue pasando `ruta` tal cual.
             coords = self.leerLatitudLongitudAltitud_exif_DJI(ruta, progress_callback)
             if coords is None:
                 return None, None, None
-            # Una sola lectura del bloque XMP para los dos parsers, en vez de dos.
-            bloque = leer_bloque_xmp(ruta)
-            gimbal = self.exif_management_obj.get_gimbal_yaw_pitch(ruta, bloque_xmp=bloque)
-            xmp_data = self.exif_management_obj.get_xmp_data(ruta, bloque_xmp=bloque)
+            # `leer_bloque_xmp`/`get_gimbal_yaw_pitch`/`get_xmp_data` sí abren el
+            # fichero a pelo (no son URI-aware), así que se descarga aquí UNA sola
+            # vez a un temporal local y se reutiliza esa `Path` (como str) para las
+            # tres llamadas, en vez de una lectura del bloque XMP para los dos
+            # parsers, en vez de dos.
+            with abrir_para_lectura(ruta) as ruta_local:
+                bloque = leer_bloque_xmp(str(ruta_local))
+                gimbal = self.exif_management_obj.get_gimbal_yaw_pitch(str(ruta_local), bloque_xmp=bloque)
+                xmp_data = self.exif_management_obj.get_xmp_data(str(ruta_local), bloque_xmp=bloque)
             return coords, gimbal, xmp_data
 
         if images and not self.stop:
@@ -987,13 +1025,37 @@ class MetaLocation:
             # df = self.shuffle_csv(df)
             df = self.reorder_csv_from_date(df)
             # self.organizer_logger.logger.info(df)
-            csv_generado = os.path.join(input_folder, os.path.basename(input_folder) + "_" + filename)
-            df.to_csv(csv_generado, sep = ",", header=False, index=False)
-            # Copia única. Antes esto era un `for file in os.listdir(...)` que, por cada
-            # .csv encontrado en la carpeta, copiaba SIEMPRE el mismo fichero al mismo
-            # destino: el resultado era idéntico, pero se repetía la copia N veces (y
-            # sobre gcsfuse cada una es una subida completa a GCS).
-            shutil.copy2(csv_generado, csv_folder)
+            nombre_csv = os.path.basename(input_folder) + "_" + filename
+            csv_generado = unir(input_folder, nombre_csv)
+            if es_uri_gcs(input_folder):
+                # No se puede escribir directamente sobre `gs://…`: se vuelca a
+                # un temporal local y se publica en ambos destinos desde ahí.
+                descriptor, nombre_temporal = tempfile.mkstemp(suffix=".csv")
+                os.close(descriptor)
+                ruta_temporal = Path(nombre_temporal)
+                try:
+                    df.to_csv(ruta_temporal, sep = ",", header=False, index=False)
+                    publicar_en(ruta_temporal, csv_generado)
+                    # Copia única. Antes esto era un `for file in os.listdir(...)` que, por cada
+                    # .csv encontrado en la carpeta, copiaba SIEMPRE el mismo fichero al mismo
+                    # destino: el resultado era idéntico, pero se repetía la copia N veces (y
+                    # sobre gcsfuse cada una es una subida completa a GCS).
+                    # `publicar_en` con destino `gs://…` NO detecta "es una carpeta" como sí
+                    # hace en local (un bucket no tiene directorios reales): hay que componer
+                    # la clave completa a mano SIEMPRE, sin dar por hecho que `csv_folder`
+                    # comparte esquema con `input_folder` (si divergieran, el CSV se
+                    # publicaría con el nombre aleatorio del temporal).
+                    destino_csv_folder = unir(csv_folder, nombre_csv)
+                    publicar_en(ruta_temporal, destino_csv_folder)
+                finally:
+                    ruta_temporal.unlink(missing_ok=True)
+            else:
+                df.to_csv(csv_generado, sep = ",", header=False, index=False)
+                # Copia única. Antes esto era un `for file in os.listdir(...)` que, por cada
+                # .csv encontrado en la carpeta, copiaba SIEMPRE el mismo fichero al mismo
+                # destino: el resultado era idéntico, pero se repetía la copia N veces (y
+                # sobre gcsfuse cada una es una subida completa a GCS).
+                shutil.copy2(csv_generado, csv_folder)
 
         # El location.csv NO se copia a la carpeta del vuelo térmico: describe las imágenes
         # RGB (`_W`) y en `TERMICA/<PBX>/<PBX_VXX>/` es un duplicado byte a byte del que ya
@@ -1021,9 +1083,10 @@ class MetaLocation:
         # self.organizer_logger.logger.info(f"Directorio de entrada: {input_folder}")
 
         self.gen_meta_location(input_folder, filename, progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance)
-        for dir in next(os.walk(input_folder))[1]:
+        subcarpetas = listar_subcarpetas(input_folder) if es_uri_gcs(input_folder) else next(os.walk(input_folder))[1]
+        for dir in subcarpetas:
             if not self.stop:
-                self.iterate_folders(os.path.join(input_folder,dir), filename, progress_callback, progress_bar,csv_folder, flight_height, calculate_proyected_distance)
+                self.iterate_folders(unir(input_folder, dir), filename, progress_callback, progress_bar,csv_folder, flight_height, calculate_proyected_distance)
 
     def check_input_folder_and_iterate(self, input_folder: str, progress_callback, progress_bar, csv_folder: str, flight_height: float, calculate_proyected_distance: bool, only_pb: list[str] | None = None) -> bool:
         """
@@ -1041,7 +1104,10 @@ class MetaLocation:
           paralelas sin que ninguna pise el trabajo de otra (ver atom_core/sharding).
           A None (por defecto) el comportamiento es el de siempre.
         """
-        list_dir = os.listdir(input_folder)
+        if es_uri_gcs(input_folder):
+            list_dir = listar_subcarpetas(input_folder) + listar_ficheros(input_folder)
+        else:
+            list_dir = os.listdir(input_folder)
 
         if "TERMICA" not in list_dir or "RGB" not in list_dir:  # Comprobamos que existen las carpetas TEMICA y RGB para poder generar los archivos.
             self.organizer_logger.logger.info("No se encuentran los directorios TERMICA y RGB")
@@ -1049,13 +1115,13 @@ class MetaLocation:
             return False
         else:
             def _raices(sub: str) -> list[str]:
-                base = os.path.join(input_folder, sub)
+                base = unir(input_folder, sub)
                 if only_pb is None:
                     return [base]
                 # `iterate_folders` es recursiva y no mira dónde arranca el árbol,
                 # así que empezar en el vuelo hace el mismo trabajo sobre menos carpetas.
                 return [sharding.ruta_de_relativo(base, rel) for rel in only_pb
-                        if os.path.isdir(sharding.ruta_de_relativo(base, rel))]
+                        if es_carpeta(sharding.ruta_de_relativo(base, rel))]
 
             for raiz in _raices("RGB"):
                 self.iterate_folders(raiz, "location.csv", progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance)
@@ -1078,12 +1144,15 @@ class MetaLocation:
         """
         try:
             # TODO: Podríamos mover esta función a exif_management
-            # Abrimos la imagen
-            img = PIL.Image.open(pathImagen)
-            # Obtenemos el exif de la foto
-            datos_exif = img.getexif()
-            # Cerramos la imagen
-            img.close()
+            # Abrimos la imagen. Local: la propia ruta, coste cero (paridad exacta
+            # con el `PIL.Image.open(pathImagen)` de siempre). `gs://…`: descarga
+            # a un temporal (`abrir_para_lectura`), lo lee, y lo limpia al salir.
+            with abrir_para_lectura(pathImagen) as ruta_local:
+                img = PIL.Image.open(ruta_local)
+                # Obtenemos el exif de la foto
+                datos_exif = img.getexif()
+                # Cerramos la imagen
+                img.close()
             if len(datos_exif) > 0:  # Comprobamos si hay datos exif en la imagen. Si no hay, la función devuelve un None.
                 # Leemos las coordenadas de la foto del exif
                 coordenadas = datos_exif.get_ifd(34853)

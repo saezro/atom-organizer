@@ -98,6 +98,11 @@ def _reflink_or_copy(src: str, dst: str) -> None:
             shutil.copystat(src, dst)
             _REFLINK_SOPORTADO = True
             return
+        except FileNotFoundError:
+            # Un origen ausente no dice nada sobre si el FS soporta reflink (es
+            # subclase de OSError y si no se corta aquí, cae al except de abajo
+            # y desactiva el reflink para todo el resto del run).
+            raise
         except OSError:
             # reflink no soportado (cross-device, FS sin CoW, gcsfuse…): limpiamos
             # el dst a medias, lo anotamos para no volver a intentarlo y usamos la
@@ -1675,9 +1680,9 @@ class GenStructFolder:
                 f"-90 in ({lim_min_270}, {lim_max_270}), max_error={max_error}.")
             progress_callback.emit(aviso)
 
-        list_dir = os.listdir(input_folder)
+        list_dir = almacen.listar_subcarpetas(input_folder)
         self.root_folder = input_folder  # Almacenamos el input_folder, que puede ser cualquiera.
-        self.csvs_root_folder = os.path.join(self.root_folder, "CSVs") # Almacenamos el path de CSVs, donde vive el criterio de giro.
+        self.csvs_root_folder = almacen.unir(self.root_folder, "CSVs") # Almacenamos el path de CSVs, donde vive el criterio de giro.
 
         # Recorremos las carpetas del parámetro folders_to_check, para saber si es RGB o no (TERMICA).
         #
@@ -1705,11 +1710,11 @@ class GenStructFolder:
             # criterio de giro) se han fijado arriba a la raíz de verdad, así que el
             # resultado es idéntico.
             if only_pb is None:
-                raices = [os.path.join(input_folder, folder)]
+                raices = [almacen.unir(input_folder, folder)]
             else:
-                base = os.path.join(input_folder, folder)
+                base = almacen.unir(input_folder, folder)
                 raices = [sharding.ruta_de_relativo(base, rel) for rel in only_pb
-                          if os.path.isdir(sharding.ruta_de_relativo(base, rel))]
+                          if almacen.es_carpeta(sharding.ruta_de_relativo(base, rel))]
             for raiz in raices:
                 if rotation_mode_auto:
                     self.gen_thumbnails_and_rotate(raiz, rgb_processing, max_error, lim_max_270, lim_min_270, lim_max_90, lim_min_90, progress_callback, progress_bar)
@@ -1733,7 +1738,7 @@ class GenStructFolder:
             else:
                 raices_fallback = [
                     sharding.ruta_de_relativo(input_folder, rel) for rel in only_pb
-                    if os.path.isdir(sharding.ruta_de_relativo(input_folder, rel))
+                    if almacen.es_carpeta(sharding.ruta_de_relativo(input_folder, rel))
                 ]
             for raiz in raices_fallback:
                 if rotation_mode_auto:
@@ -1761,13 +1766,15 @@ class GenStructFolder:
         el mismo dato, no una versión nueva. Ese versionado sí tiene sentido para imágenes
         distintas que colisionan de nombre, no aquí.
         """
-        os.makedirs(self.csvs_root_folder, exist_ok=True)
+        if not almacen.es_uri_gcs(self.csvs_root_folder):
+            os.makedirs(self.csvs_root_folder, exist_ok=True)
         rgb_dir = input_folder.replace("TERMICA", "RGB")
         rgb_file = file.replace("meta", "location")
-        for origen, destino in ((os.path.join(input_folder, file), os.path.join(self.csvs_root_folder, os.path.basename(file))),
-                                (os.path.join(rgb_dir, rgb_file), os.path.join(self.csvs_root_folder, os.path.basename(rgb_file)))):
+        for origen, destino in ((almacen.unir(input_folder, file), almacen.unir(self.csvs_root_folder, os.path.basename(file))),
+                                (almacen.unir(rgb_dir, rgb_file), almacen.unir(self.csvs_root_folder, os.path.basename(rgb_file)))):
             try:
-                shutil.copy2(origen, destino)
+                with almacen.abrir_para_lectura(origen) as ruta_local:
+                    almacen.publicar_en(ruta_local, destino)
             except FileNotFoundError:
                 pass
 
@@ -1786,20 +1793,20 @@ class GenStructFolder:
         así que un vuelo con más de un CSV repetía la copia del location tantas veces como
         CSVs hubiera.
         """
-        for file in os.listdir(input_folder):
+        for file in almacen.listar_ficheros(input_folder):
             if not file.endswith(".csv") or "meta" not in file:
                 continue
             # Sustituimos en el input folder TERMICA por RGB, pues tendría que ser el mismo directorio, pero cambiando sólo esa parte.
             # Para el archivo es lo mismo, pero meta por location.
             rgb_dir = input_folder.replace("TERMICA", "RGB")
             rgb_file = file.replace("meta", "location")
-            self._warn_if_flight_csv_missing(os.path.join(input_folder, file), "meta.csv", progress_callback)
-            self._warn_if_flight_csv_missing(os.path.join(rgb_dir, rgb_file), "location.csv", progress_callback)
+            self._warn_if_flight_csv_missing(almacen.unir(input_folder, file), "meta.csv", progress_callback)
+            self._warn_if_flight_csv_missing(almacen.unir(rgb_dir, rgb_file), "location.csv", progress_callback)
             self.copy_flight_csvs_to_csvs_folder(input_folder, file)
 
     def _warn_if_flight_csv_missing(self, path: str, nombre: str, progress_callback) -> None:
         """Registra el error si el meta/location del vuelo no existe en `path`."""
-        if os.path.exists(path):
+        if almacen.existe_ruta(path):
             return
         self.organizer_logger.logger.info('------------------------------------------------------------------------------------------------------')
         self.organizer_logger.logger.info(f"ERROR: No se ha encontrado el archivo {nombre}")
@@ -1823,7 +1830,7 @@ class GenStructFolder:
             return self.compress_image_obj.rotate_and_save(image, input_folder, degrees, _ROTATION_JPEG_QUALITY, progress_callback)
 
         file_splitted = os.path.splitext(image)
-        return os.path.exists(os.path.join(input_folder, file_splitted[0] + "_CROP" + file_splitted[1]))
+        return almacen.existe_ruta(almacen.unir(input_folder, file_splitted[0] + "_CROP" + file_splitted[1]))
 
     def _rotate_images_batch(self, images: list[str], input_folder: str, degrees, rgb_processing: bool, progress_callback, progress_bar) -> None:
         """
@@ -1900,11 +1907,24 @@ class GenStructFolder:
         CSVs que el usuario sí consume (meta, location), así que va apartado en una
         subcarpeta interna.
         """
-        criterio_folder = os.path.join(self.csvs_root_folder, utils.CRITERIO_DIRNAME)
-        os.makedirs(criterio_folder, exist_ok=True)
+        criterio_folder = almacen.unir(self.csvs_root_folder, utils.CRITERIO_DIRNAME)
+        if not almacen.es_uri_gcs(criterio_folder):
+            os.makedirs(criterio_folder, exist_ok=True)
         self.utils_obj.hide_folder_on_windows(criterio_folder)
-        df_videofiles.to_csv(os.path.join(criterio_folder, os.path.basename(input_folder) + "_Videofiles.csv"),
-                             sep=",", header=True, index=False)
+        nombre_csv = os.path.basename(input_folder) + "_Videofiles.csv"
+        # No se puede escribir directamente sobre `gs://…`: se vuelca a un temporal
+        # local y se publica desde ahí, con el destino ya compuesto (nombre completo,
+        # no el directorio) porque `publicar_en` sobre `gs://…` no conserva el
+        # basename si se le pasa una "carpeta" (mismo patrón que `gen_meta_location`
+        # en exif.py).
+        descriptor, nombre_temporal = tempfile.mkstemp(suffix=".csv")
+        os.close(descriptor)
+        ruta_temporal = Path(nombre_temporal)
+        try:
+            df_videofiles.to_csv(ruta_temporal, sep=",", header=True, index=False)
+            almacen.publicar_en(ruta_temporal, almacen.unir(criterio_folder, nombre_csv))
+        finally:
+            ruta_temporal.unlink(missing_ok=True)
 
     def gen_thumbnails_and_rotate(self, input_folder: str, rgb_processing: bool, max_error: int, lim_max_270: int, lim_min_270: int, lim_max_90: int, lim_min_90: int, progress_callback, progress_bar) -> None:
         """
@@ -2010,7 +2030,7 @@ class GenStructFolder:
                         self.send_progress_to_bar(progress_bar, progress_callback)
                         file_splitted = os.path.splitext(image)
                         crop_image_name = file_splitted[0] + "_CROP" + file_splitted[1]
-                        if os.path.exists(os.path.join(input_folder, crop_image_name)):
+                        if almacen.existe_ruta(almacen.unir(input_folder, crop_image_name)):
                             self.send_progress_to_bar(progress_bar, progress_callback) # Si hay imágenes recortadas, contamos una más. Lo hago diferente aquí porque no estoy llamando a rotate_and_save
                         
                         # gimbal_yaw = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder,image))[0]
@@ -2038,12 +2058,16 @@ class GenStructFolder:
                 return  # En este caso cortamos la recursividad para este directorio, porque si no, seguiría buscando en el directorio creado,
                     # por lo que volvería a crear otro dentro y así sucesivamente.
 
-        for dir in next(os.walk(input_folder))[1]:
+        if almacen.es_uri_gcs(input_folder):
+            subdirs = almacen.listar_subcarpetas(input_folder)
+        else:
+            subdirs = next(os.walk(input_folder))[1]
+        for dir in subdirs:
             if not self.stop and dir not in ("MINIATURAS", "CSVs"):  # Comprobamos que no queremos parar el proceso. Si se para en medio de un procesado, acaba de procesarse ese directorio.
                 # MINIATURAS ya no se genera, pero se sigue excluyendo: una carpeta procesada por
                 # una versión anterior la tiene, y sus subcarpetas `PBX_VXX_miniaturas` casan con
                 # el patrón `PB*_V*` y se reprocesarían.
-                self.gen_thumbnails_and_rotate(os.path.join(input_folder,dir), rgb_processing, max_error, lim_max_270, lim_min_270, lim_max_90, lim_min_90, progress_callback, progress_bar)  # Volvemos a llamar recursivamente a la función para los demás directorios.
+                self.gen_thumbnails_and_rotate(almacen.unir(input_folder,dir), rgb_processing, max_error, lim_max_270, lim_min_270, lim_max_90, lim_min_90, progress_callback, progress_bar)  # Volvemos a llamar recursivamente a la función para los demás directorios.
 
     def gen_thumbnails_and_rotate_manual(self, input_folder: str, rgb_processing: bool, rotation_value_90: bool, progress_callback, progress_bar):
         """
@@ -2096,9 +2120,13 @@ class GenStructFolder:
                 return  # En este caso cortamos la recursividad para este directorio, porque si no, seguiría buscando en el directorio creado,
                     # por lo que volvería a crear otro dentro y así sucesivamente.
 
-        for dir in next(os.walk(input_folder))[1]:
+        if almacen.es_uri_gcs(input_folder):
+            subdirs = almacen.listar_subcarpetas(input_folder)
+        else:
+            subdirs = next(os.walk(input_folder))[1]
+        for dir in subdirs:
             if not self.stop and dir not in ("MINIATURAS", "CSVs"):  # Comprobamos que no queremos parar el proceso. Si se para en medio de un procesado, acaba de procesarse ese directorio.
-                self.gen_thumbnails_and_rotate_manual(os.path.join(input_folder,dir), rgb_processing, rotation_value_90, progress_callback, progress_bar)  # Volvemos a llamar recursivamente a la función para los demás directorios.
+                self.gen_thumbnails_and_rotate_manual(almacen.unir(input_folder,dir), rgb_processing, rotation_value_90, progress_callback, progress_bar)  # Volvemos a llamar recursivamente a la función para los demás directorios.
 
     def iterate_folders_and_rename(self, input_folder: str, progress_callback, progress_bar, desfase_horas: int = 0, desfase_minutos: int = 0) -> None:
         """
@@ -2356,14 +2384,14 @@ class SplitImages:
         results = {}
         errors = []
 
-        if not os.path.exists(input_folder):
+        if not almacen.existe_ruta(input_folder):
             self.organizer_logger.logger.warning(f"La carpeta de entrada no existe: {input_folder}")
             return results
 
         try:
             pb_folders = sorted([
-                d for d in os.listdir(input_folder)
-                if d.startswith("PB") and os.path.isdir(os.path.join(input_folder, d))
+                d for d in almacen.listar_subcarpetas(input_folder)
+                if d.startswith("PB")
             ])
         except Exception as e:
             self.organizer_logger.logger.error(f"Error al listar '{input_folder}': {e}")
@@ -2383,12 +2411,9 @@ class SplitImages:
             return results
 
         for pb_folder in pb_folders:
-            pb_folder_path = os.path.join(input_folder, pb_folder)
+            pb_folder_path = almacen.unir(input_folder, pb_folder)
             try:
-                subfolders = sorted([
-                    d for d in os.listdir(pb_folder_path)
-                    if os.path.isdir(os.path.join(pb_folder_path, d))
-                ])
+                subfolders = sorted(almacen.listar_subcarpetas(pb_folder_path))
             except Exception as e:
                 self.organizer_logger.logger.error(f"Error al listar '{pb_folder_path}': {e}")
                 continue
@@ -2396,9 +2421,9 @@ class SplitImages:
             for subfolder in subfolders:
                 if seleccion is not None and not sharding.seleccion_incluye(seleccion, pb_folder, subfolder):
                     continue
-                subfolder_path = os.path.join(pb_folder_path, subfolder)
+                subfolder_path = almacen.unir(pb_folder_path, subfolder)
                 try:
-                    all_files = os.listdir(subfolder_path)
+                    all_files = almacen.listar_ficheros(subfolder_path)
                 except Exception as e:
                     self.organizer_logger.logger.error(f"Error al listar '{subfolder_path}': {e}")
                     continue
@@ -2752,9 +2777,13 @@ class SplitImages:
             "\nGiro del TIFF: auto={0} 90={1} -90={2}\n".format(
                 auto_rotate, rotate_90, rotate_minus_90))
         self.convert_dji_images_to_tif(input_folder, exiftool_exe, dji_utility, progress_callback, progress_bar, emissivity, humidity, auto_temp, up_threshold_temperature, low_threshold_temperature, rotate_90, rotate_minus_90, auto_rotate, just_atom_selection, generate_gray_scale_images, generate_colormap_images)
-        for dir in next(os.walk(input_folder))[1]:
+        if almacen.es_uri_gcs(input_folder):
+            subdirs = almacen.listar_subcarpetas(input_folder)
+        else:
+            subdirs = next(os.walk(input_folder))[1]
+        for dir in subdirs:
             if not self.stop:
-                self.iterate_folders_for_DJI(os.path.join(input_folder,dir), exiftool_exe, dji_utility, progress_callback, progress_bar, emissivity, humidity, auto_temp, up_threshold_temperature, low_threshold_temperature, rotate_90, rotate_minus_90, auto_rotate, just_atom_selection, generate_gray_scale_images, generate_colormap_images)
+                self.iterate_folders_for_DJI(almacen.unir(input_folder,dir), exiftool_exe, dji_utility, progress_callback, progress_bar, emissivity, humidity, auto_temp, up_threshold_temperature, low_threshold_temperature, rotate_90, rotate_minus_90, auto_rotate, just_atom_selection, generate_gray_scale_images, generate_colormap_images)
 
     def convert_dji_images_to_tif(self, input_folder: str, exiftool_exe:str, dji_utility: str, progress_callback, progress_bar, emissivity: float = 0.9, humidity: float = 50.0, auto_temp = False, up_threshold_temperature = 0, low_threshold_temperature = 500.0, rotate_90: bool = False, rotate_minus_90: bool = False, auto_rotate: bool = False, just_atom_selection = False, generate_gray_scale_images: bool = False, generate_colormap_images: bool = False):
         """
@@ -3154,16 +3183,16 @@ class SplitImages:
 
         root_folder = input_folder.split("TERMICA")[0].rstrip("/\\")
         csv_name = pb_v_name + "_Videofiles.csv"
-        csvs_folder = os.path.join(root_folder, "CSVs")
+        csvs_folder = almacen.unir(root_folder, "CSVs")
         candidatos = (
-            os.path.join(csvs_folder, utils.CRITERIO_DIRNAME, csv_name),                           # Actual: CSVs/_criterio/.
-            os.path.join(csvs_folder, csv_name),                                                   # v3.4.2-v3.4.4: CSVs/ plano.
-            os.path.join(csvs_folder, pb_v_name, csv_name),                                        # v3.4.0-v3.4.1: subcarpeta por vuelo.
-            os.path.join(root_folder, "MINIATURAS", pb_v_name + "_miniaturas", csv_name),          # Legacy: las carpetas antiguas sí llevaban el sufijo _miniaturas.
+            almacen.unir(csvs_folder, utils.CRITERIO_DIRNAME, csv_name),                           # Actual: CSVs/_criterio/.
+            almacen.unir(csvs_folder, csv_name),                                                   # v3.4.2-v3.4.4: CSVs/ plano.
+            almacen.unir(csvs_folder, pb_v_name, csv_name),                                        # v3.4.0-v3.4.1: subcarpeta por vuelo.
+            almacen.unir(root_folder, "MINIATURAS", pb_v_name + "_miniaturas", csv_name),          # Legacy: las carpetas antiguas sí llevaban el sufijo _miniaturas.
         )
         criterio_path = candidatos[0]
         for candidato in candidatos:
-            if os.path.exists(candidato):
+            if almacen.existe_ruta(candidato):
                 criterio_path = candidato  # Carpeta procesada por una versión anterior: el criterio sigue donde lo dejó.
                 break
         try:
@@ -3260,8 +3289,8 @@ class SplitImages:
         # rechaza (dji_rc != 0) y el FileNotFoundError posterior del .raw que
         # nunca se escribió infla el contador de errores del resumen sin que haya
         # nada roto: el TIFF bueno de la pasada anterior sigue intacto.
-        tiff_path = os.path.join(output_folder, os.path.splitext(image_name)[0] + ".tiff")
-        if os.path.exists(tiff_path) and os.path.getsize(tiff_path) > 0:
+        tiff_path = almacen.unir(output_folder, os.path.splitext(image_name)[0] + ".tiff")
+        if almacen.existe_ruta(tiff_path) and almacen.tamano_de(tiff_path) > 0:
             self.organizer_logger.logger.info(
                 f"{image_name}: el TIFF ya existe ({tiff_path}), se omite la conversión.")
             progress_callback.emit(
@@ -3631,14 +3660,14 @@ class RGBCropping:
         """
         results = {}
 
-        if not os.path.exists(input_folder):
+        if not almacen.existe_ruta(input_folder):
             self.organizer_logger.logger.warning(f"La carpeta RGB no existe en: {input_folder}")
             return results
 
         try:
             pb_folders = sorted([
-                d for d in os.listdir(input_folder)
-                if d.startswith("PB") and os.path.isdir(os.path.join(input_folder, d))
+                d for d in almacen.listar_subcarpetas(input_folder)
+                if d.startswith("PB")
             ])
         except Exception as e:
             self.organizer_logger.logger.error(f"Error al listar la carpeta RGB '{input_folder}': {e}")
@@ -3656,12 +3685,9 @@ class RGBCropping:
 
         errors = []
         for pb_folder in pb_folders:
-            pb_folder_path = os.path.join(input_folder, pb_folder)
+            pb_folder_path = almacen.unir(input_folder, pb_folder)
             try:
-                subfolders = sorted([
-                    d for d in os.listdir(pb_folder_path)
-                    if os.path.isdir(os.path.join(pb_folder_path, d))
-                ])
+                subfolders = sorted(almacen.listar_subcarpetas(pb_folder_path))
             except Exception as e:
                 self.organizer_logger.logger.error(f"Error al listar '{pb_folder_path}': {e}")
                 continue
@@ -3669,7 +3695,7 @@ class RGBCropping:
             for subfolder in subfolders:
                 if seleccion is not None and not sharding.seleccion_incluye(seleccion, pb_folder, subfolder):
                     continue
-                subfolder_path = os.path.join(pb_folder_path, subfolder)
+                subfolder_path = almacen.unir(pb_folder_path, subfolder)
                 try:
                     all_images = self.utils_obj.get_images_from_dir(subfolder_path)
                 except Exception as e:
@@ -3734,9 +3760,13 @@ class RGBCropping:
             return
         
         self.crop_centered_images(input_folder, progress_callback, progress_bar, percentage_cropping_dict, percentage_cropping_auto, percentage_cropping_manual)
-        for dir in next(os.walk(input_folder))[1]:
+        if almacen.es_uri_gcs(input_folder):
+            subdirs = almacen.listar_subcarpetas(input_folder)
+        else:
+            subdirs = next(os.walk(input_folder))[1]
+        for dir in subdirs:
             if not self.stop:
-                self.iterate_folders_for_rgb_cropping(os.path.join(input_folder,dir), progress_callback, progress_bar, percentage_cropping_dict, percentage_cropping_auto, percentage_cropping_manual)
+                self.iterate_folders_for_rgb_cropping(almacen.unir(input_folder,dir), progress_callback, progress_bar, percentage_cropping_dict, percentage_cropping_auto, percentage_cropping_manual)
 
     def crop_centered_images(self,input_folder: str, progress_callback, progress_bar, percentage_cropping_dict, percentage_cropping_auto:bool = True, percentage_cropping_manual: int = 0) -> None:
         """

@@ -309,7 +309,7 @@ class PipelinePhasesMixin:
             self.new_log_gui.enable_process()
 
             self.utils_obj.prepare_output_folder(cfg.input_folder, ["CSVs"])
-            csv_folder = os.path.join(cfg.input_folder, "CSVs")
+            csv_folder = unir(cfg.input_folder, "CSVs")
             if cfg.mode_meta:
                 self.meta_location_obj.iterate_folders(cfg.input_folder, "meta.csv", progress_callback, progress_bar, csv_folder, cfg.flight_height, cfg.calculate_proyected_distance)
             elif cfg.mode_location:
@@ -605,7 +605,7 @@ class PipelinePhasesMixin:
                 progress_summarize.emit("---> SUBPROCESO: GENERACIÓN DE LOS ARCHIVOS META Y LOCATION.")
 
                 self.utils_obj.prepare_output_folder(cfg.output_folder, ["CSVs"])
-                csv_folder = os.path.join(cfg.output_folder, "CSVs")
+                csv_folder = unir(cfg.output_folder, "CSVs")
 
                 if mis_pbs is None:
                     self.meta_location_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.output_folder, exclude_patterns=["_CROP"])
