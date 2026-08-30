@@ -235,6 +235,44 @@ def test_publicar_en_gcs_sube_al_prefijo_correcto(tmp_path):
     assert bucket.objetos["carpeta/destino.txt"] == b"hola"
 
 
+def test_publicar_en_admite_origen_en_gcs(tmp_path):
+    """El origen ya no es siempre local: desde 3790 F5 el Job recibe el
+    estadillo como `gs://…` y `gen_folder_struct` lo publica en ESTADILLOS/ del
+    destino. Pasarlo por `Path()` colapsaba `gs://` a `gs:/` y acababa
+    abriéndolo como fichero local -> `FileNotFoundError: 'gs:/bucket/…'`, que es
+    exactamente lo que tumbó el shard 0 de la etapa struct en producción."""
+    bucket = _sembrar_almacen_gcs("mi-bucket")
+    bucket.objetos["SUBIDAS/ESTADILLOS/e.csv"] = b"pb;vuelo\n1;1\n"
+    publicar_en("gs://mi-bucket/SUBIDAS/ESTADILLOS/e.csv",
+                "gs://mi-bucket/SALIDA/ESTADILLOS/e.csv")
+    assert bucket.objetos["SALIDA/ESTADILLOS/e.csv"] == b"pb;vuelo\n1;1\n"
+    # No destructivo: publicar es copiar, el original sigue en su sitio.
+    assert "SUBIDAS/ESTADILLOS/e.csv" in bucket.objetos
+
+
+def test_publicar_en_admite_origen_en_gcs_con_destino_local(tmp_path):
+    """El caso simétrico: rollback a destino LOCAL (`/gcs/...` por gcsfuse, o
+    el escritorio) con el estadillo todavía en `gs://`. Mismo colapso de la
+    doble barra si el origen no se resuelve antes de copiar."""
+    bucket = _sembrar_almacen_gcs("mi-bucket")
+    bucket.objetos["SUBIDAS/e.csv"] = b"contenido"
+    destino = tmp_path / "e.csv"
+    publicar_en("gs://mi-bucket/SUBIDAS/e.csv", str(destino))
+    assert destino.read_bytes() == b"contenido"
+
+
+def test_publicar_en_origen_gcs_a_carpeta_local_conserva_el_nombre(tmp_path):
+    """Con destino CARPETA, el nombre lo pone el origen. Al resolver una URI se
+    pasa por un temporal `tmpXXXXXX.csv`, así que el nombre final hay que
+    fijarlo desde la URI o el fichero acabaría llamándose como el temporal."""
+    bucket = _sembrar_almacen_gcs("mi-bucket")
+    bucket.objetos["SUBIDAS/e.csv"] = b"contenido"
+    carpeta = tmp_path / "carpeta"
+    carpeta.mkdir()
+    publicar_en("gs://mi-bucket/SUBIDAS/e.csv", str(carpeta))
+    assert (carpeta / "e.csv").read_bytes() == b"contenido"
+
+
 # --- listar_ficheros / listar_subcarpetas ---------------------------------------
 
 def test_listar_ficheros_local_no_recursivo_y_ordenado(tmp_path):
