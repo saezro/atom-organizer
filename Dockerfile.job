@@ -35,6 +35,14 @@ WORKDIR /app
 COPY requirements-server.txt ./
 RUN pip install --no-cache-dir -r requirements-server.txt
 
+# `google-cloud-storage` va SOLO aquí, no en requirements-server.txt: el
+# escritorio (PyInstaller) y la Raspberry Pi comparten ese fichero y el SDK no
+# debe entrar en el bundle — los .spec lo excluyen y
+# `tests/test_escritorio_sin_sdk.py` lo vigila. El Job es el único entorno que
+# habla `gs://` (AlmacenGCS), y desde 3790 F5 lo necesita de verdad: sin él,
+# `abrir_almacen()` aborta con ImportError en la primera ruta gs://.
+RUN pip install --no-cache-dir google-cloud-storage==3.13.1
+
 COPY atom_core/ ./atom_core/
 COPY config/ ./config/
 # pipeline.py y exif.py son módulos sueltos en la raíz, no paquetes. gui.py y
