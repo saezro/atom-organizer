@@ -23,6 +23,23 @@ def _normalizar(ruta: str) -> str:
     return str(ruta).replace("\\", "/").strip("/")
 
 
+def _es_no_encontrado(exc: BaseException) -> bool:
+    """True si `exc` es el "no existe" que lanza el SDK real de GCS al borrar
+    un objeto que ya no está (`google.api_core.exceptions.NotFound`), NO un
+    `FileNotFoundError` de Python. Import perezoso: el módulo `google` solo
+    lo trae la imagen del Cloud Run Job, igual que en el constructor. Si el
+    SDK no está instalado (tests, escritorio sin GCS) no se puede hacer el
+    `isinstance`, así que se recurre al nombre de la clase — es lo único que
+    un doble de pruebas puede imitar sin arrastrar la dependencia real."""
+    try:
+        from google.api_core.exceptions import NotFound
+    except ImportError:
+        NotFound = None
+    if NotFound is not None and isinstance(exc, NotFound):
+        return True
+    return type(exc).__name__ == "NotFound"
+
+
 class AlmacenGCS:
     """`Almacen` sobre un bucket GCS, vía `google-cloud-storage`.
 
@@ -63,9 +80,17 @@ class AlmacenGCS:
 
     def listar(self, prefijo: str) -> list[str]:
         clave = self._clave(prefijo)
+        # `list_blobs(prefix=clave)` filtra por prefijo LITERAL de texto: pedir
+        # ".../PB1" devuelve TAMBIÉN ".../PB10/..." (ambas empiezan por "PB1").
+        # Sin cortar por frontera de segmento, `listar_subcarpetas` se inventa
+        # una subcarpeta "0" (de recortar "PB10/foo") y consumidores como
+        # `vuelos_del_destino`/`contar_imagenes_or_tmc` mezclan PBs distintos.
+        # Filtrar aquí, después del `list_blobs`, para arreglarlo una vez para
+        # todos los consumidores sin tocar el ahorro de red del prefijo real.
         encontradas = [
             self._relativa(blob.name)
             for blob in self.bucket.list_blobs(prefix=clave)
+            if not clave or blob.name == clave or blob.name.startswith(clave + "/")
         ]
         return sorted(encontradas)
 
@@ -93,13 +118,29 @@ class AlmacenGCS:
         blob.upload_from_filename(str(ruta_local))
 
     def mover(self, origen: str, destino: str) -> None:
-        blob_origen = self.bucket.blob(self._clave(origen))
-        self.bucket.copy_blob(blob_origen, self.bucket, self._clave(destino))
+        clave_origen = self._clave(origen)
+        clave_destino = self._clave(destino)
+        if clave_origen == clave_destino:
+            # Origen y destino son la MISMA clave: un no-op. Si se ejecutara
+            # el copy_blob+delete de todos modos, el `delete()` borraría el
+            # objeto recién "copiado" sobre sí mismo y el fichero desaparecería
+            # sin dejar rastro (a diferencia de `os.replace`, que es atómico
+            # en el camino local y no tiene este problema).
+            return
+        blob_origen = self.bucket.blob(clave_origen)
+        self.bucket.copy_blob(blob_origen, self.bucket, clave_destino)
         blob_origen.delete()
 
     def borrar(self, ruta: str) -> None:
         blob = self.bucket.blob(self._clave(ruta))
-        blob.delete()
+        try:
+            blob.delete()
+        except FileNotFoundError:
+            raise
+        except Exception as exc:
+            if _es_no_encontrado(exc):
+                raise FileNotFoundError(ruta) from exc
+            raise
 
     def tamano(self, ruta: str) -> int:
         """Tamaño en bytes leído de los METADATOS del blob (`reload()`), sin

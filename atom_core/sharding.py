@@ -44,7 +44,7 @@ from __future__ import annotations
 import os
 import zlib
 
-from atom_core.almacen import es_uri_gcs, listar_subcarpetas, unir
+from atom_core.almacen import es_uri_gcs, existe_ruta, listar_subcarpetas, unir
 
 ETAPAS = ("todo", "split", "struct", "post")
 
@@ -254,6 +254,19 @@ def pbs_del_destino(destino: str, subcarpetas=("RGB", "TERMICA", "RGB_Extra")) -
     correspondencia PB→tarea de la que dependen los `checking_*` acotados.
     """
     nombres = set()
+    if es_uri_gcs(destino):
+        # `listar_subcarpetas` ya solo devuelve nombres con contenido debajo
+        # (en GCS no existen directorios vacíos: no hay nada que filtrar con
+        # un `isdir` aparte, a diferencia del camino local de abajo).
+        for sub in subcarpetas:
+            ruta = unir(destino, sub)
+            if not existe_ruta(ruta):
+                continue
+            for d in listar_subcarpetas(ruta):
+                if d.startswith("PB"):
+                    nombres.add(d)
+        return sorted(nombres)
+
     for sub in subcarpetas:
         ruta = os.path.join(destino, sub)
         if not os.path.isdir(ruta):
@@ -285,6 +298,22 @@ def vuelos_del_destino(destino: str, subcarpetas=("RGB", "TERMICA", "RGB_Extra")
     perderlo del reparto.
     """
     rutas = set()
+    if es_uri_gcs(destino):
+        # Igual que en `pbs_del_destino`: sin directorios vacíos en GCS, un
+        # `PB` "sin subcarpetas" (rama `else` de abajo) es justo el caso en
+        # que hay blobs colgando directo de `sub/PBx/`, sin un nivel más.
+        for pb in pbs_del_destino(destino, subcarpetas):
+            for sub in subcarpetas:
+                pb_path = unir(destino, sub, pb)
+                if not existe_ruta(pb_path):
+                    continue
+                hijos = listar_subcarpetas(pb_path)
+                if hijos:
+                    rutas.update(f"{pb}/{d}" for d in hijos)
+                else:
+                    rutas.add(pb)
+        return sorted(rutas)
+
     for pb in pbs_del_destino(destino, subcarpetas):
         for sub in subcarpetas:
             pb_path = os.path.join(destino, sub, pb)
@@ -317,6 +346,14 @@ def peso_de_ruta(destino: str, relativo: str, contar,
     `post`, donde las fases caras (TIF sobre todo) escalan con el número de
     imágenes térmicas."""
     total = 0
+    if es_uri_gcs(destino):
+        partes_relativo = str(relativo).replace("\\", "/").strip("/").split("/")
+        for sub in subcarpetas:
+            ruta = unir(unir(destino, sub), *partes_relativo)
+            if existe_ruta(ruta):
+                total += contar(ruta)
+        return total
+
     for sub in subcarpetas:
         ruta = ruta_de_relativo(os.path.join(destino, sub), relativo)
         if os.path.isdir(ruta):
