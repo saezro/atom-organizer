@@ -3050,6 +3050,21 @@ class SplitImages:
                 "Conversor térmico Linux falló (rc={0}) en {1}: {2}".format(
                     result.returncode, image_path, (result.stderr or "").strip()))
 
+    def _recorrer_arbol_termica(self, folder: str):
+        """Recorre el árbol de `folder` como `os.walk` TOP-DOWN (la propia
+        carpeta antes que sus subcarpetas): en local se deja el `os.walk` de
+        siempre, para no arriesgar ningún cambio de orden en el camino que ya
+        usan a diario el escritorio y la Raspberry Pi; en `gs://…` no hay
+        directorios reales, así que se recorre recursivamente con
+        `almacen.listar_subcarpetas`."""
+        if almacen.es_uri_gcs(folder):
+            yield folder
+            for sub in almacen.listar_subcarpetas(folder):
+                yield from self._recorrer_arbol_termica(almacen.unir(folder, sub))
+        else:
+            for ruta, _, _ in os.walk(folder):
+                yield ruta
+
     def rotate_thermal_jpgs_in_place(self, input_folder: str, progress_callback, progress_bar,
                                      rotate_90: bool = False, rotate_minus_90: bool = False,
                                      auto_rotate: bool = False) -> int:
@@ -3087,13 +3102,13 @@ class SplitImages:
                 "\nNo se giran los JPG térmicos: el modo de giro del TIFF está en «Sin giro» "
                 "(rotate_90=False, rotate_minus_90=False, auto=False).\n")
             return 0  # sin criterio de giro no hay nada que hacer
-        if not os.path.isdir(input_folder):
+        if not almacen.es_carpeta(input_folder):
             self.organizer_logger.logger.warning(
                 f"No se pueden girar los JPG térmicos: no existe {input_folder}")
             return 0
 
         giradas = 0
-        for ruta, _, _ in os.walk(input_folder):
+        for ruta in self._recorrer_arbol_termica(input_folder):
             if self.stop:
                 break
             if os.path.basename(ruta) in ("Escala_de_grises", "Color_gradiente"):
@@ -3133,30 +3148,25 @@ class SplitImages:
                 f"Imágenes térmicas giradas en su sitio: {giradas}.")
         return giradas
 
-    def _rotate_one_thermal_jpg_in_place(self, folder: str, image_name: str, transpose: int,
-                                         progress_callback) -> int:
-        """Gira una térmica sobre sí misma. Devuelve 1 si se giró, 0 si se omitió o falló.
+    def _girar_termica_local(self, ruta_local: Path, transpose: int) -> str:
+        """Gira EN SITIO el fichero LOCAL `ruta_local` (ya sea el original en
+        disco o el temporal descargado por `almacen.editar_en_sitio`).
 
-        Aísla los fallos por imagen igual que el resto del pipeline: una foto
-        corrupta no puede tumbar el vuelo entero, y menos en un paso que corre
-        DESPUÉS de que lo importante (el TIFF) ya esté en disco.
-
-        Se escribe a un temporal y se reemplaza con `os.replace` (atómico): si el
-        guardado se corta a medias, la térmica original sigue entera en su sitio en
-        vez de quedar truncada. Con el giro in-place esto ya no es un derivado
-        descartable — es el único fichero que queda.
-        """
-        origen = os.path.join(folder, image_name)
-        temporal = origen + ".rot.tmp"
+        Se escribe a un temporal `.rot.tmp` junto a él y se reemplaza con
+        `os.replace` (atómico): si el guardado se corta a medias, `ruta_local`
+        sigue entero en vez de quedar truncado. Devuelve `"girada"` o
+        `"ya_girada"` (idempotencia); cualquier fallo se limpia (borra el
+        `.rot.tmp` si llegó a crearse) y se relanza SIN capturar, para que
+        quien tenga a `ruta_local` dentro de un `with editar_en_sitio(...)`
+        (backend `gs://…`) vea la excepción y NO publique nada."""
+        temporal = Path(str(ruta_local) + ".rot.tmp")
         try:
-            with Image.open(origen) as image_open:
+            with Image.open(ruta_local) as image_open:
                 if image_open.height > image_open.width:
                     # Las térmicas DJI son apaisadas de fábrica (640x512): si esta ya
                     # viene vertical, es que se giró en una pasada anterior sobre la
                     # misma carpeta. Volver a girarla la dejaría a 180º.
-                    self.organizer_logger.logger.info(
-                        f"Ya estaba girada, se deja como está: {origen}")
-                    return 0
+                    return "ya_girada"
                 # El EXIF se arrastra: lleva la geolocalización y la fecha, que es
                 # justo lo que se consulta luego sobre estas fotos.
                 exif = image_open.info.get("exif")
@@ -3168,14 +3178,36 @@ class SplitImages:
                     girada.save(temporal, format="JPEG", quality=95, exif=exif)
                 else:
                     girada.save(temporal, format="JPEG", quality=95)
-            os.replace(temporal, origen)
-            return 1
-        except Exception as e:
-            if os.path.exists(temporal):
+            os.replace(temporal, ruta_local)
+            return "girada"
+        except Exception:
+            if temporal.exists():
                 try:
-                    os.remove(temporal)
+                    temporal.unlink()
                 except OSError:
                     pass
+            raise
+
+    def _rotate_one_thermal_jpg_in_place(self, folder: str, image_name: str, transpose: int,
+                                         progress_callback) -> int:
+        """Gira una térmica sobre sí misma. Devuelve 1 si se giró, 0 si se omitió o falló.
+
+        Aísla los fallos por imagen igual que el resto del pipeline: una foto
+        corrupta no puede tumbar el vuelo entero, y menos en un paso que corre
+        DESPUÉS de que lo importante (el TIFF) ya esté en disco.
+
+        El giro entero corre DENTRO de `almacen.editar_en_sitio(origen)`: en
+        local `ruta_local` es la propia `origen` (coste cero, mismo `.rot.tmp`
+        + `os.replace` de siempre); en `gs://…` se descarga una vez, se gira
+        igual en local, y `editar_en_sitio` solo republica si el bloque
+        termina SIN excepción — por eso `_girar_termica_local` relanza en vez
+        de tragarse el fallo aquí dentro.
+        """
+        origen = almacen.unir(folder, image_name)
+        try:
+            with almacen.editar_en_sitio(origen, publicar_solo_si_cambia=True) as ruta_local:
+                resultado = self._girar_termica_local(ruta_local, transpose)
+        except Exception as e:
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
             self.organizer_logger.logger.error(
                 "ERROR: no se pudo girar la imagen térmica {0}: {1}".format(origen, e))
@@ -3185,6 +3217,12 @@ class SplitImages:
                 "ERROR: no se pudo girar la imagen térmica {0}.\n".format(origen))
             self._register_image_error(origen)
             return 0
+
+        if resultado == "ya_girada":
+            self.organizer_logger.logger.info(
+                f"Ya estaba girada, se deja como está: {origen}")
+            return 0
+        return 1
 
     def read_auto_rotate_degree(self, input_folder: str, progress_callback) -> int:
         """Criterio de giro AUTO de un vuelo, MEMOIZADO por carpeta.
