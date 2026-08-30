@@ -1152,10 +1152,12 @@ class GenStructFolder:
         # todas por igual.
         if shard_index == 0:
             if almacen.es_uri_gcs(output_folder):
-                # Destino en GCS: el origen del estadillo sigue siendo un fichero
-                # LOCAL (viene del disco/subida, no de un bucket), así que no hay
-                # "son el mismo fichero" que comprobar con abspath -> siempre se
-                # publica. La colisión de nombre se resuelve igual que en local,
+                # Destino en GCS: el origen del estadillo puede ser local (el
+                # escritorio) o `gs://` (el Job desde 3790 F5, que lo recibe ya
+                # como URI); en ninguno de los dos casos hay "son el mismo
+                # fichero" que comprobar con abspath -> siempre se publica, y
+                # `publicar_en` resuelve el esquema del origen si lo trae.
+                # La colisión de nombre se resuelve igual que en local,
                 # pero contra `existe_ruta`/`publicar_en` en vez de `pathlib`.
                 for ruta in rutas_estadillo:
                     nombre_estadillo = os.path.basename(ruta)

@@ -12,4 +12,4 @@ Se propaga a:
   - el chequeo de actualizaciones en runtime (atom_core/updater.py)
 """
 
-__version__ = "3.4.64"
+__version__ = "3.4.65"

@@ -227,13 +227,34 @@ def abrir_para_lectura(ruta: str):
 
 
 def publicar_en(origen_local: "str | Path", destino: str) -> None:
-    """Deja el fichero local `origen_local` en `destino` (ruta o URI).
+    """Deja el fichero `origen_local` en `destino` (ruta o URI).
+
+    El origen es normalmente local (el nombre lo dice), pero desde 3790 F5 el
+    Job recibe el estadillo como `gs://…` y `gen_folder_struct` lo publica en
+    `ESTADILLOS/` del destino: si viene con esquema hay que resolverlo ANTES de
+    tocarlo con `Path`/`shutil`, que colapsan `gs://` a `gs:/` y acaban
+    abriéndolo como fichero local (`FileNotFoundError: 'gs:/bucket/…'`).
 
     En local reutiliza `_reflink_or_copy` de `pipeline.py` (import perezoso:
     `pipeline.py` importa medio mundo y `almacen.py` debe poder cargarse
     suelto, p. ej. en tests) para conservar la copia CoW que ya usa el
     escritorio; si esa función no está disponible cae a `shutil.copy2`, igual
     que hacía el pipeline antes de tener reflink."""
+    if es_uri_gcs(str(origen_local)):
+        # Se baja a un temporal (que `abrir_para_lectura` limpia al salir del
+        # `with`) y se reentra por el camino de siempre, así el destino -local
+        # o gs://- no necesita saber nada de esto.
+        #
+        # El temporal se llama `tmpXXXXXX.csv`, no como el objeto de origen: si
+        # el destino es una CARPETA local hay que fijar el nombre final aquí, o
+        # el fichero acabaría publicado con el nombre aleatorio del temporal.
+        destino_final = destino
+        if not es_uri_gcs(destino) and os.path.isdir(destino):
+            destino_final = os.path.join(destino, nombre_de(str(origen_local)))
+        with abrir_para_lectura(str(origen_local)) as ruta_local:
+            publicar_en(ruta_local, destino_final)
+        return
+
     if es_uri_gcs(destino):
         almacen, prefijo = abrir_almacen(destino)
         almacen.publicar(Path(origen_local), prefijo)
