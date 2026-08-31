@@ -216,7 +216,25 @@ def process_one_image(path: str, cfg: ImageProcessConfig) -> str:
     --------
     La ruta de salida (cfg.output_path).
     """
-    img = Image.open(path)
+    # Función de MÓDULO ejecutada en un proceso hijo `spawn`: no hereda el registro
+    # `_ALMACENES` del padre, pero eso no importa aquí porque solo se le pasan
+    # strings (path/cfg.output_path) y se reimporta `atom_core.almacen` dentro del
+    # propio proceso hijo al construirse este módulo (import de cabecera de fichero).
+    #
+    # El `with` de `abrir_para_lectura` envuelve TODO el procesado, no solo el
+    # `Image.open`: PIL abre de forma perezosa (solo lee la cabecera) y no carga
+    # los píxeles hasta `crop`/`transpose`/`save`, así que el temporal local no
+    # puede borrarse (fin del `with`) antes de que esas operaciones se ejecuten.
+    with almacen.abrir_para_lectura(path) as ruta_local:
+        img = Image.open(str(ruta_local))
+        _procesar_y_guardar_imagen(img, cfg)
+    return cfg.output_path
+
+
+def _procesar_y_guardar_imagen(img: Image.Image, cfg: ImageProcessConfig) -> None:
+    """Aplica crop/rotate y guarda `img` en `cfg.output_path`. Extraída de
+    `process_one_image` solo para que el `with almacen.abrir_para_lectura(...)` de
+    arriba pueda envolver el procesado entero sin anidar más el cuerpo."""
     try:
         exif = img.getexif()
         if cfg.crop_box is not None and cfg.crop_centered_pct is not None:
@@ -237,10 +255,19 @@ def process_one_image(path: str, cfg: ImageProcessConfig) -> str:
         # frente a 118 ms) y solo recorta un 6,5 % de tamaño. No cambia un solo píxel —
         # optimize solo recalcula las tablas de Huffman, no recuantiza— así que sale del
         # camino caliente. Mismo criterio que los saves de la fase 5 desde la 3.4.10.
-        img.save(cfg.output_path, quality=cfg.quality, exif=exif)
+        if almacen.es_uri_gcs(cfg.output_path):
+            # Staging por imagen, nunca el shard entero: se guarda a un temporal local
+            # con la MISMA extensión que cfg.output_path (PIL elige el formato por
+            # extensión) y se publica en el almacén; el temporal se limpia siempre.
+            extension = os.path.splitext(cfg.output_path)[1]
+            with tempfile.TemporaryDirectory() as carpeta_temporal:
+                ruta_temporal = os.path.join(carpeta_temporal, "salida" + extension)
+                img.save(ruta_temporal, quality=cfg.quality, exif=exif)
+                almacen.publicar_en(ruta_temporal, cfg.output_path)
+        else:
+            img.save(cfg.output_path, quality=cfg.quality, exif=exif)
     finally:
         img.close()
-    return cfg.output_path
 
 
 # --- Rotación en paralelo (fase 5) -------------------------------------------
@@ -3996,11 +4023,15 @@ class RGBCropping:
             valid_items = []  # (image, crop_centered_pct fraccional 0-1) de las imágenes con porcentaje resuelto correctamente.
             for image in images:
                 if percentage_cropping_auto:
-                    model = self.exif_management_obj.get_model(os.path.join(input_folder, image), progress_callback)
+                    ruta_imagen = almacen.unir(input_folder, image)
+                    # get_model necesita una ruta de fichero REAL (abre con open() a pelo):
+                    # sobre gs:// hay que bajarla primero a un temporal local.
+                    with almacen.abrir_para_lectura(ruta_imagen) as ruta_local:
+                        model = self.exif_management_obj.get_model(str(ruta_local), progress_callback)
                     if model is None:
                         _advance_progress()
                         self.error_rgb_cropping += 1
-                        self.images_error_rgb_cropping.append(os.path.join(input_folder, image))
+                        self.images_error_rgb_cropping.append(ruta_imagen)
                         continue
                     final_percentage = self.get_percentage_by_model(model.strip('\x00'), percentage_cropping_dict)
                 else:
@@ -4009,10 +4040,11 @@ class RGBCropping:
 
             def _worker_args_fn(item):
                 image, pct = item
-                file_splitted = os.path.splitext(os.path.join(input_folder, image))
+                ruta_imagen = almacen.unir(input_folder, image)
+                file_splitted = os.path.splitext(ruta_imagen)
                 output_path = file_splitted[0] + "_CROP" + file_splitted[1]
                 return (
-                    os.path.join(input_folder, image),
+                    ruta_imagen,
                     ImageProcessConfig(output_path=output_path, crop_centered_pct=pct),
                 )
 
@@ -4021,7 +4053,7 @@ class RGBCropping:
 
             result = utils.run_batch(valid_items, process_one_image, _worker_args_fn, on_progress=_on_progress)
             for (image, _pct), error_str in result["errors"]:
-                image_full_path = os.path.join(input_folder, image)
+                image_full_path = almacen.unir(input_folder, image)
                 self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
                 self.organizer_logger.logger.error(f"ERROR: No se ha podido recortar la imagen {image_full_path}: {error_str}")
                 progress_callback.emit(f"ERROR: No se ha podido recortar la imagen {image_full_path}: {error_str}")
@@ -4051,7 +4083,7 @@ class RGBCropping:
             ValueError: Si el tamaño del recorte es mayor que la imagen original
         """
         # image = Image.open(os.path.join(input_folder, image_name))
-        image_full_path = os.path.join(input_folder, image_name)
+        image_full_path = almacen.unir(input_folder, image_name)
         try:
             image = Image.open(image_full_path)
         except FileNotFoundError as f:
@@ -4083,7 +4115,10 @@ class RGBCropping:
             # self.organizer_logger.logger.info(f"La imagen es: {image_name}")
 
             if percentage_cropping_auto:
-                model = self.exif_management_obj.get_model(image_full_path, progress_callback)
+                # get_model necesita una ruta de fichero REAL (abre con open() a pelo):
+                # sobre gs:// hay que bajarla primero a un temporal local.
+                with almacen.abrir_para_lectura(image_full_path) as ruta_local:
+                    model = self.exif_management_obj.get_model(str(ruta_local), progress_callback)
                 if model is None:
                     return None
                 # self.organizer_logger.logger.info(f"El modelo es: {model}")
