@@ -69,8 +69,12 @@ describe('SUBIR AL BUCKET · elegir la carpeta del vuelo', () => {
     const user = userEvent.setup()
     render(<App />)
 
-    // «Carpeta del vuelo» es el primer paso de Trabajo (pestaña activa por
-    // defecto): el botón «Elegir…» de ahí es el primero de la pantalla.
+    // La app arranca en «Inicio»: hay que entrar a «Trabajo» antes de que
+    // aparezca «Carpeta del vuelo», su primer paso.
+    await user.click(await screen.findByRole('tab', { name: 'Trabajo' }))
+
+    // «Carpeta del vuelo» es el primer paso de Trabajo: el botón «Elegir…»
+    // de ahí es el primero de la pantalla.
     const elegirBotones = await screen.findAllByRole('button', { name: /elegir/i })
     await user.click(elegirBotones[0])
 

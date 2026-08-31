@@ -13,13 +13,20 @@ import FileField from './FileField'
 import cloudUploadConfirmando from './trabajo/cloudUploadConfirmando'
 import TrabajoScreen from './trabajo/TrabajoScreen'
 import HerramientasScreen from './HerramientasScreen'
+import HomeScreen from './HomeScreen.jsx'
+import { useSesion } from './sesion/useSesion.js'
+import PantallaEntrada from './sesion/PantallaEntrada.jsx'
+import MenuCuenta from './MenuCuenta.jsx'
 import './App.css'
 
 // De cinco pestañas a tres: «Organizar»/«SUBIR AL BUCKET» se funden en
 // «Trabajo» (TrabajoScreen elige el destino) y «AEROTOOLS»/«OTROS EQUIPOS» en
 // «Herramientas» (HerramientasScreen las apila). El icono de ajustes es un
 // SVG inline (NavIcon ya trae el trazo 'config'), nunca un carácter/emoji.
+// «Inicio» va primera: es la puerta de entrada (HomeScreen) antes de elegir
+// destino en Trabajo.
 export const NAV = [
+  { id: 'home', label: 'Inicio', corto: 'Inicio' },
   { id: 'trabajo', label: 'Trabajo', corto: 'Trabajo' },
   { id: 'herramientas', label: 'Herramientas', corto: 'Herramientas' },
   { id: 'config', label: 'Ajustes', corto: 'Ajustes' },
@@ -133,8 +140,20 @@ function anexarLog(lineas, texto) {
 
 function App() {
   const [ready, setReady] = useState(false)
-  const [section, setSection] = useState('trabajo')
+  const [section, setSection] = useState('home')
   const [running, setRunning] = useState(false)
+
+  // Sesión (cuenta Google o invitado): gatea toda la UI de escritorio, salvo
+  // el kiosco de la Pi (ver comprobación `!kiosco` más abajo, ese modo no
+  // pasa por aquí). `useSesion` no hace polling, solo se refresca al montar
+  // y tras entrar/salir.
+  const { cargando: sesionCargando, entrado, cuenta, invitado, error: sesionError, entrarConGoogle, entrarSinCuenta, salir } = useSesion()
+
+  // Destino preseleccionado al llegar a «Trabajo» desde una card de
+  // `HomeScreen` (organizar → local, subir en crudo → bucket). `null` cuando
+  // se entra por la pestaña «Trabajo» del nav directamente: mismo
+  // comportamiento de hoy, sin card elegida.
+  const [destinoInicial, setDestinoInicial] = useState(null)
 
   // Confirmación de primer frame pintado (render_confirmar). Si Python no
   // recibe esta señal, el siguiente arranque asume pantalla negra y degrada
@@ -583,6 +602,29 @@ function App() {
         }
       : null
 
+  // Puerta de entrada: sin sesión (ni Google ni invitado) no se pinta la UI de
+  // escritorio. Va DESPUÉS de todos los hooks — en particular del efecto de
+  // `api.renderConfirmar()`, que debe dispararse también aquí: si esa
+  // confirmación no llega, el arranque siguiente degrada a rasterizado
+  // software y la app va lenta (ver `atom_core/render_state.py`).
+  // El kiosco no pasa por el gate: es un panel táctil sin teclado.
+  if (!kiosco && !entrado) {
+    // Mientras se resuelve `cloudStatus` no se pinta nada: si hay cuenta
+    // vinculada, enseñar la pantalla de entrada y quitarla acto seguido es un
+    // parpadeo en cada arranque.
+    if (sesionCargando) return <div className="app" />
+    return (
+      <div className="app">
+        <PantallaEntrada
+          onGoogle={entrarConGoogle}
+          onInvitado={entrarSinCuenta}
+          cargando={sesionCargando}
+          error={sesionError}
+        />
+      </div>
+    )
+  }
+
   return (
     // `app-kiosco` marca el modo kiosco en la RAIZ, no en cada pantalla: asi la
     // regla anti-seleccion de texto cubre tambien lo que se monta fuera de
@@ -606,6 +648,12 @@ function App() {
             <span className="atom">ATOM</span> <span className="org">ORGANIZER</span>
           </h1>
           {version && <span className="ver">v{version}</span>}
+          <MenuCuenta
+            cuenta={cuenta}
+            invitado={invitado}
+            onAjustes={() => setSection('config')}
+            onSalir={salir}
+          />
           {/* El kiosco es un callejón sin salida táctil (el avatar ya no
               abre nada): sin este botón, en la Pi no habría forma de volver
               a él desde la UI completa, porque Chromium arranca en modo
@@ -629,7 +677,12 @@ function App() {
             <button
               key={n.id}
               className={'seg-btn' + (section === n.id ? ' active' : '')}
-              onClick={() => setSection(n.id)}
+              onClick={() => {
+                setSection(n.id)
+                // Pulsar «Trabajo» directamente (no una card de Inicio) vuelve
+                // al comportamiento de siempre: sin destino preelegido.
+                if (n.id === 'trabajo') setDestinoInicial(null)
+              }}
               title={n.label}
               aria-label={n.label}
               role="tab"
@@ -670,12 +723,28 @@ function App() {
               onRunTask={(task, params) => run(task, params, null)}
             />
           </KioskGuard>
+        ) : section === 'home' ? (
+          <HomeScreen
+            onElegir={(id) => {
+              if (id === 'organizar') {
+                setDestinoInicial('local')
+                setSection('trabajo')
+              } else if (id === 'subir') {
+                setDestinoInicial('bucket')
+                setSection('trabajo')
+              } else if (id === 'herramientas') {
+                setSection('herramientas')
+              }
+            }}
+          />
         ) : section === 'trabajo' ? (
           <TrabajoScreen
+            key={destinoInicial || 'sin-destino'}
             ready={ready}
             running={running}
             onRun={run}
             onCloudStatusChange={setKioskCloudStatus}
+            destinoInicial={destinoInicial}
           />
         ) : section === 'herramientas' ? (
           <HerramientasScreen running={running} onRun={run} />

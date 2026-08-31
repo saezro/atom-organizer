@@ -11,12 +11,15 @@ const DESTINOS = [
   { id: 'nube', titulo: 'Subir y organizar en la nube', detalle: 'Se suben y ATOM las organiza sin ocupar este ordenador.' },
 ]
 
-export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChange }) {
+// `destinoInicial` llega desde las cards de «Inicio» (organizar → 'local',
+// subir en crudo → 'bucket'). App.jsx remonta el componente con `key`, así que
+// basta con usarlo como valor inicial del state.
+export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChange, destinoInicial = null }) {
   const [carpeta, setCarpeta] = useState('')
   const [prefijo, setPrefijo] = useState('')
   const [elegida, setElegida] = useState(null)
   const [estadillo, setEstadillo] = useState({ rutas: [], listo: false, subiendo: false, subir: async () => {} })
-  const [destino, setDestino] = useState(null)
+  const [destino, setDestino] = useState(destinoInicial)
   // Subida en curso dentro de `PanelSubida` (login/preparación/subida en
   // hilo). El original (`BucketScreen`) tenía `busy`/`uploading` en el mismo
   // componente que carpeta/inspección/estadillo y los sumaba todos a un único

@@ -62,6 +62,9 @@ describe('BucketScreen · cerrar sesión', () => {
     window.addEventListener('unhandledrejection', onError)
 
     render(<App />)
+    // La app arranca en «Inicio»: hay que entrar a «Trabajo» antes de que
+    // aparezca «Carpeta del vuelo».
+    fireEvent.click(await screen.findByRole('tab', { name: 'Trabajo' }))
     fireEvent.click((await screen.findAllByRole('button', { name: /elegir/i }))[0])
     fireEvent.click(await screen.findByText('Subir al bucket'))
     fireEvent.click(await screen.findByText(/Cerrar sesión/i))
