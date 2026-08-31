@@ -88,4 +88,38 @@ describe('useSesion', () => {
     expect(result.current.cuenta).toBeNull()
     expect(localStorage.getItem(CLAVE)).toBeNull()
   })
+
+  // Regresión: el gate de `App.jsx` no pinta nada mientras `cargando`, así que
+  // un `cloudStatus` que no vuelve (bridge sin inyectar, red colgada) dejaba
+  // la app en negro para siempre, sin ni siquiera poder entrar sin cuenta.
+  it('si cloudStatus no responde deja de cargar y ofrece entrar', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    cloudStatusMock.mockImplementation(() => new Promise(() => {}))
+    const { result } = renderHook(() => useSesion())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7000)
+    })
+    expect(result.current.cargando).toBe(false)
+    expect(result.current.entrado).toBe(false)
+    expect(result.current.error).toBeTruthy()
+    vi.useRealTimers()
+  })
+
+  // Misma trampa con el login: si se cierra la ventana de Google a medias,
+  // `cloudLogin` puede no resolver nunca.
+  it('si cloudLogin no responde deja de cargar en vez de colgarse', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    cloudLoginMock.mockImplementation(() => new Promise(() => {}))
+    const { result } = renderHook(() => useSesion())
+    await waitFor(() => expect(result.current.cargando).toBe(false))
+    act(() => {
+      result.current.entrarConGoogle()
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(130000)
+    })
+    expect(result.current.cargando).toBe(false)
+    expect(result.current.error).toBeTruthy()
+    vi.useRealTimers()
+  })
 })

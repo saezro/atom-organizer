@@ -652,7 +652,13 @@ function App() {
             cuenta={cuenta}
             invitado={invitado}
             onAjustes={() => setSection('config')}
-            onSalir={salir}
+            onSalir={() => {
+              // Volver a entrar debe aterrizar en «Inicio», no en la pantalla
+              // en la que se cerró sesión.
+              setSection('home')
+              setDestinoInicial(null)
+              salir()
+            }}
           />
           {/* El kiosco es un callejón sin salida táctil (el avatar ya no
               abre nada): sin este botón, en la Pi no habría forma de volver
