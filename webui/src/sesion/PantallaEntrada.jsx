@@ -18,11 +18,13 @@ export default function PantallaEntrada({ onGoogle, onInvitado, cargando, error 
         >
           Entrar con Google
         </button>
+        {/* Nunca se deshabilita: es la salida cuando el login de Google se
+            queda a medias (ventana de consentimiento cerrada, red caída).
+            Sin cuenta se puede trabajar en local igual. */}
         <button
           type="button"
           className="btn-ghost entrada-btn"
           onClick={onInvitado}
-          disabled={cargando}
         >
           Entrar sin cuenta
         </button>
