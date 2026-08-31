@@ -76,6 +76,10 @@ describe('App: sincroniza kioskCloudStatus tras logout en PanelSubida (R2)', () 
     const user = userEvent.setup()
     const { rerender } = render(<App />)
 
+    // La app arranca en «Inicio»: hay que entrar a «Trabajo» antes de que
+    // aparezcan «Carpeta del vuelo» y los destinos.
+    await user.click(await screen.findByRole('tab', { name: 'Trabajo' }))
+
     // Carpeta del vuelo → destino «Subir al bucket» → PanelSubida montado.
     const elegirBotones = await screen.findAllByRole('button', { name: /elegir/i })
     await user.click(elegirBotones[0])
@@ -87,6 +91,12 @@ describe('App: sincroniza kioskCloudStatus tras logout en PanelSubida (R2)', () 
     // no rompería, así que la única forma de confirmar que hace algo es
     // observar su efecto, más abajo).
     await waitFor(() => expect(api.cloudStatus).toHaveBeenCalled())
+    // La puerta de entrada (`useSesion`) también llama a `cloudStatus` al
+    // montar `App`, además de `PanelSubida`: el número absoluto de llamadas
+    // hasta aquí no es relevante para lo que prueba este test, solo que el
+    // logout dispare EXACTAMENTE una llamada más (el `refresh()` de
+    // `PanelSubida`).
+    const llamadasAntesDeLogout = api.cloudStatus.mock.calls.length
 
     // Logout: dispara `refresh()` → `api.cloudStatus()` (ahora sin sesión) →
     // `onCloudStatusChange(s)`. Si `App.jsx` no lo cableara a
@@ -94,7 +104,9 @@ describe('App: sincroniza kioskCloudStatus tras logout en PanelSubida (R2)', () 
     // `kioskCloudStatus` inicial (`null`, sin estado).
     await user.click(await screen.findByText(/Cerrar sesión/i))
     await waitFor(() => expect(api.cloudLogout).toHaveBeenCalled())
-    await waitFor(() => expect(api.cloudStatus).toHaveBeenCalledTimes(2))
+    await waitFor(() =>
+      expect(api.cloudStatus).toHaveBeenCalledTimes(llamadasAntesDeLogout + 1)
+    )
 
     // Único camino de vuelta al kiosco: sin remontar `App`, sin volver a
     // pedir `cloudStatus` a mano. `isServerMode()` se lee en cada render de

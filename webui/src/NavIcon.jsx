@@ -2,6 +2,8 @@
 // react-dom, y meter `react-icons` por cinco iconos engorda el bundle que va
 // empaquetado dentro del ejecutable.
 const TRAZOS = {
+  // Inicio: casa de trazo simple, mismo lenguaje que el resto de la nav.
+  home: 'M3 10.5L12 3l9 7.5V20a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1z',
   organizar: 'M3 7h18M3 12h18M3 17h12',
   bucket: 'M12 3v12m0 0l-4-4m4 4l4-4M4 19h16',
   aerotools: 'M12 2l9 6-9 6-9-6 9-6zm0 12l9-6M3 8l9 6',

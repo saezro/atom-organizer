@@ -26,15 +26,18 @@ vi.mock('./bridge', () => ({
 const App = (await import('./App')).default
 
 describe('Navegación', () => {
-  it('tiene exactamente tres pestañas', async () => {
+  it('tiene exactamente cuatro pestañas', async () => {
     render(<App />)
     const tabs = await screen.findAllByRole('tab')
-    expect(tabs).toHaveLength(3)
+    expect(tabs).toHaveLength(4)
   })
 
-  it('arranca en Trabajo', async () => {
+  it('arranca en Inicio', async () => {
     render(<App />)
-    expect(await screen.findByText('Carpeta del vuelo')).toBeTruthy()
+    expect(await screen.findByText('Organizar')).toBeTruthy()
+    expect(screen.getByText('Subir en crudo')).toBeTruthy()
+    expect(screen.getByText('Herramientas extra')).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Inicio' })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('Herramientas agrupa las dos pantallas de herramientas', async () => {

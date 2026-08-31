@@ -102,6 +102,10 @@ const emitirPlanOk = () =>
 async function irAEstadilloConFichero(user) {
   render(<App />)
 
+  // La app arranca en «Inicio»: hay que entrar a «Trabajo» antes de que
+  // aparezca «Carpeta del vuelo».
+  await user.click(await screen.findByRole('tab', { name: 'Trabajo' }))
+
   // «Carpeta del vuelo»: primer paso de Trabajo, primer botón «Elegir…».
   const elegirCarpetaBotones = await screen.findAllByRole('button', { name: /elegir/i })
   await user.click(elegirCarpetaBotones[0])
