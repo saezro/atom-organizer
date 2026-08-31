@@ -35,12 +35,43 @@ def test_decidir_auto_con_pendiente_degrada_y_suma_fallo():
     assert nuevo["fallos"] == 1
 
 
-def test_decidir_auto_con_fallos_previos_se_queda_en_software():
+def test_decidir_auto_con_un_fallo_previo_reintenta_gpu():
+    # Un fallo suelto no condena: el siguiente arranque vuelve a intentar GPU.
     estado = {"modo": "auto", "pendiente": False, "fallos": 1}
+    usar_gpu, nuevo, motivo = render_state.decidir(estado)
+    assert usar_gpu is True
+    assert nuevo["pendiente"] is True
+
+
+def test_decidir_auto_con_fallos_por_encima_del_umbral_se_queda_en_software():
+    estado = {"modo": "auto", "pendiente": False, "fallos": render_state.UMBRAL_FALLOS}
     usar_gpu, nuevo, motivo = render_state.decidir(estado)
     assert usar_gpu is False
     assert nuevo["pendiente"] is False
-    assert nuevo["fallos"] == 1
+    assert nuevo["fallos"] == render_state.UMBRAL_FALLOS
+    assert nuevo["arranques_sw"] == 1
+
+
+def test_decidir_dos_fallos_seguidos_degrada():
+    estado = {"modo": "auto", "pendiente": True, "fallos": 1}
+    usar_gpu, nuevo, motivo = render_state.decidir(estado)
+    assert usar_gpu is False
+    assert nuevo["fallos"] == render_state.UMBRAL_FALLOS
+    assert nuevo["arranques_sw"] == 0
+
+
+def test_decidir_degradado_reintenta_gpu_tras_reintento_cada_arranques():
+    estado = {
+        "modo": "auto",
+        "pendiente": False,
+        "fallos": render_state.UMBRAL_FALLOS,
+        "arranques_sw": render_state.REINTENTO_CADA - 1,
+    }
+    usar_gpu, nuevo, motivo = render_state.decidir(estado)
+    assert usar_gpu is True
+    assert nuevo["pendiente"] is True
+    assert nuevo["fallos"] == 0
+    assert nuevo["arranques_sw"] == 0
 
 
 def test_decidir_modo_gpu_fuerza_gpu_pese_a_pendiente_y_fallos():
@@ -113,16 +144,26 @@ def test_leer_json_con_tipos_o_modo_invalido_devuelve_estado_inicial(_ruta_aisla
 
 
 def test_leer_json_valido_lo_devuelve():
-    estado = {"modo": "gpu", "pendiente": True, "fallos": 3}
+    estado = {"modo": "gpu", "pendiente": True, "fallos": 3, "arranques_sw": 5}
     assert render_state.guardar(estado) is True
     assert render_state.leer() == estado
+
+
+def test_leer_json_antiguo_sin_arranques_sw_da_default_cero(_ruta_aislada):
+    _ruta_aislada.parent.mkdir(parents=True, exist_ok=True)
+    datos = {"modo": "auto", "pendiente": False, "fallos": 2}
+    _ruta_aislada.write_text(json.dumps(datos), encoding="utf-8")
+    estado = render_state.leer()
+    assert estado["arranques_sw"] == 0
+    assert estado["modo"] == "auto"
+    assert estado["fallos"] == 2
 
 
 # --- guardar() ---------------------------------------------------------
 
 
 def test_guardar_y_leer_round_trip():
-    estado = {"modo": "software", "pendiente": False, "fallos": 1}
+    estado = {"modo": "software", "pendiente": False, "fallos": 1, "arranques_sw": 3}
     assert render_state.guardar(estado) is True
     assert render_state.leer() == estado
 
@@ -146,7 +187,7 @@ def test_guardar_devuelve_false_si_ruta_inescribible(tmp_path, monkeypatch):
 # --- ciclo completo de arranques ----------------------------------------
 
 
-def test_ciclo_arranque_gpu_no_confirmado_degrada_a_software():
+def test_ciclo_un_solo_fallo_no_degrada_reintenta_gpu():
     # Arranque 1: estado inicial, decide GPU y persiste el marcador pendiente.
     estado = dict(render_state.ESTADO_INICIAL)
     usar_gpu, estado, motivo = render_state.decidir(estado)
@@ -155,15 +196,79 @@ def test_ciclo_arranque_gpu_no_confirmado_degrada_a_software():
 
     # La ventana nunca llama a confirmar_render() (pantalla negra): no se toca el fichero.
 
-    # Arranque 2: lee el pendiente sin confirmar, degrada a software y suma un fallo.
+    # Arranque 2: lee el pendiente sin confirmar, suma un fallo pero NO degrada aún.
     estado = render_state.leer()
     usar_gpu, estado, motivo = render_state.decidir(estado)
     assert usar_gpu is False
     assert estado["fallos"] == 1
     assert render_state.guardar(estado) is True
 
-    # Arranque 3: con fallos>=1 se queda en software de forma permanente.
+    # Arranque 3: con un solo fallo previo (por debajo del umbral) se reintenta GPU.
+    estado = render_state.leer()
+    usar_gpu, estado, motivo = render_state.decidir(estado)
+    assert usar_gpu is True
+    assert estado["pendiente"] is True
+
+
+def test_ciclo_dos_fallos_seguidos_degrada_a_software():
+    # Arranque 1: GPU, pendiente.
+    estado = dict(render_state.ESTADO_INICIAL)
+    usar_gpu, estado, motivo = render_state.decidir(estado)
+    assert usar_gpu is True
+    assert render_state.guardar(estado) is True
+
+    # Arranque 2: pendiente sin confirmar -> fallos=1, por debajo del umbral, este
+    # arranque cae a software pero deja la puerta abierta al siguiente con GPU.
     estado = render_state.leer()
     usar_gpu, estado, motivo = render_state.decidir(estado)
     assert usar_gpu is False
     assert estado["fallos"] == 1
+    assert render_state.guardar(estado) is True
+
+    # Arranque 3: con un solo fallo previo (por debajo del umbral) se reintenta GPU,
+    # pero de nuevo no se confirma (pantalla negra otra vez).
+    estado = render_state.leer()
+    usar_gpu, estado, motivo = render_state.decidir(estado)
+    assert usar_gpu is True
+    assert estado["pendiente"] is True
+    assert render_state.guardar(estado) is True
+
+    # Arranque 4: de nuevo pendiente sin confirmar -> fallos=2, alcanza el umbral y degrada.
+    estado = render_state.leer()
+    usar_gpu, estado, motivo = render_state.decidir(estado)
+    assert usar_gpu is False
+    assert estado["fallos"] == render_state.UMBRAL_FALLOS
+    assert render_state.guardar(estado) is True
+
+    # Arranque 5: ya degradado, se queda en software.
+    estado = render_state.leer()
+    usar_gpu, estado, motivo = render_state.decidir(estado)
+    assert usar_gpu is False
+    assert estado["fallos"] == render_state.UMBRAL_FALLOS
+
+
+def test_ciclo_degradado_reintenta_gpu_tras_reintento_cada_arranques():
+    estado = {
+        "modo": "auto",
+        "pendiente": False,
+        "fallos": render_state.UMBRAL_FALLOS,
+        "arranques_sw": 0,
+    }
+    assert render_state.guardar(estado) is True
+
+    # Los REINTENTO_CADA - 1 primeros arranques se quedan en software.
+    for _ in range(render_state.REINTENTO_CADA - 1):
+        estado = render_state.leer()
+        usar_gpu, estado, motivo = render_state.decidir(estado)
+        assert usar_gpu is False
+        assert render_state.guardar(estado) is True
+
+    assert estado["arranques_sw"] == render_state.REINTENTO_CADA - 1
+
+    # El arranque REINTENTO_CADA reintenta GPU y resetea el contador.
+    estado = render_state.leer()
+    usar_gpu, estado, motivo = render_state.decidir(estado)
+    assert usar_gpu is True
+    assert estado["pendiente"] is True
+    assert estado["fallos"] == 0
+    assert estado["arranques_sw"] == 0
