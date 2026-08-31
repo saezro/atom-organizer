@@ -30,7 +30,14 @@ import re
 import external_tools as config
 import utils
 from atom_core import sharding
-from atom_core.almacen import es_uri_gcs, existe_ruta, unir
+from atom_core.almacen import (
+    abrir_para_lectura,
+    es_uri_gcs,
+    existe_ruta,
+    listar_ficheros,
+    listar_subcarpetas,
+    unir,
+)
 from external_tools import resource_path
 from utils import (
     CompressRgbsConfig,
@@ -60,6 +67,23 @@ def _existe_carpeta(ruta: str) -> bool:
     if es_uri_gcs(ruta):
         return existe_ruta(ruta)
     return os.path.isdir(ruta)
+
+
+def _primera_imagen_almacen(carpeta: str) -> "str | None":
+    """Primera imagen (extensión en `EXTS_IMAGEN`) bajo `carpeta`, en `gs://…`.
+
+    Recorre top-down (ficheros del propio nivel antes que subcarpetas, en
+    orden alfabético — mismo criterio que `os.walk`) y CORTA en cuanto
+    encuentra una: solo hace falta una muestra para identificar el dron, y
+    cada `listar_*` es una llamada a la API del bucket."""
+    for nombre in listar_ficheros(carpeta):
+        if os.path.splitext(nombre)[1].lower() in EXTS_IMAGEN:
+            return unir(carpeta, nombre)
+    for sub in listar_subcarpetas(carpeta):
+        encontrada = _primera_imagen_almacen(unir(carpeta, sub))
+        if encontrada:
+            return encontrada
+    return None
 
 
 class PipelinePhasesMixin:
@@ -577,11 +601,11 @@ class PipelinePhasesMixin:
                     self.rgb_cropping_obj.iterate_folders_for_rgb_cropping(rgb_root, progress_callback, progress_bar, self.config_obj.percentage_by_models, cfg.cropping_mode_auto, cfg.crop_percentage)
                 else:
                     self.rgb_cropping_obj.total_images_number = sum(
-                        self.utils_obj.contar_imagenes_or_tmc(os.path.join(rgb_root, pb))
-                        for pb in mis_pbs if os.path.isdir(os.path.join(rgb_root, pb)))
+                        self.utils_obj.contar_imagenes_or_tmc(unir(rgb_root, pb))
+                        for pb in mis_pbs if _existe_carpeta(unir(rgb_root, pb)))
                     for pb in mis_pbs:
-                        pb_path = os.path.join(rgb_root, pb)
-                        if os.path.isdir(pb_path):
+                        pb_path = unir(rgb_root, pb)
+                        if _existe_carpeta(pb_path):
                             self.rgb_cropping_obj.iterate_folders_for_rgb_cropping(pb_path, progress_callback, progress_bar, self.config_obj.percentage_by_models, cfg.cropping_mode_auto, cfg.crop_percentage)
 
                 # La verificación se acota a MIS PBs: las otras tareas están
@@ -611,9 +635,9 @@ class PipelinePhasesMixin:
                     self.meta_location_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.output_folder, exclude_patterns=["_CROP"])
                 else:
                     self.meta_location_obj.total_images_number = sum(
-                        self.utils_obj.contar_imagenes_or_tmc(os.path.join(cfg.output_folder, sub, pb), exclude_patterns=["_CROP"])
+                        self.utils_obj.contar_imagenes_or_tmc(unir(cfg.output_folder, sub, pb), exclude_patterns=["_CROP"])
                         for sub in ("RGB", "TERMICA", "RGB_Extra") for pb in mis_pbs
-                        if os.path.isdir(os.path.join(cfg.output_folder, sub, pb)))
+                        if _existe_carpeta(unir(cfg.output_folder, sub, pb)))
 
                 # Los CSV van todos a `destino/CSVs`, compartido por las N tareas,
                 # pero el nombre de cada uno lleva el prefijo `PBx_Vy`: PBs
@@ -1158,17 +1182,24 @@ class PipelinePhasesMixin:
         def _norm(s):
             return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
 
-        for root, _dirs, files in os.walk(termica_folder):
-            for name in files:
-                if os.path.splitext(name)[1].lower() in EXTS_IMAGEN:
-                    sample = os.path.join(root, name)
+        if es_uri_gcs(termica_folder):
+            sample = _primera_imagen_almacen(termica_folder)
+        else:
+            for root, _dirs, files in os.walk(termica_folder):
+                for name in files:
+                    if os.path.splitext(name)[1].lower() in EXTS_IMAGEN:
+                        sample = os.path.join(root, name)
+                        break
+                if sample:
                     break
-            if sample:
-                break
         if not sample:
             progress_callback.emit("AVISO: no se encontró imagen térmica de muestra para identificar el dron.\n")
         else:
-            model = self.meta_location_obj.exif_management_obj.get_model(sample, progress_callback)
+            if es_uri_gcs(sample):
+                with abrir_para_lectura(sample) as ruta_local:
+                    model = self.meta_location_obj.exif_management_obj.get_model(str(ruta_local), progress_callback)
+            else:
+                model = self.meta_location_obj.exif_management_obj.get_model(sample, progress_callback)
             model = (model or "").strip("\x00").strip()
             detected_model = model
             if model and _norm(model) in modelos_conocidos:
