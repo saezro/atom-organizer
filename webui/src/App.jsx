@@ -157,7 +157,7 @@ function App() {
   // el kiosco de la Pi (ver comprobación `!kiosco` más abajo, ese modo no
   // pasa por aquí). `useSesion` no hace polling, solo se refresca al montar
   // y tras entrar/salir.
-  const { cargando: sesionCargando, entrado, cuenta, invitado, error: sesionError, entrarConGoogle, entrarSinCuenta, salir } = useSesion()
+  const { cargando: sesionCargando, entrado, cuenta, invitado, error: sesionError, entrarConGoogle, entrarSinCuenta, salir, refrescar: refrescarSesion } = useSesion()
 
   // Destino preseleccionado al llegar a «Trabajo» desde una card de
   // `HomeScreen` (organizar → local, subir en crudo → bucket). `null` cuando
@@ -639,11 +639,17 @@ function App() {
     if (sesionCargando) return <div className="app" />
     return (
       <div className="app">
+        {/* `onPerfilActivado` es obligatorio en la práctica: sin ella, activar
+            un perfil guardado caía en el `window.location.reload()` de
+            PantallaEntrada, el ÚNICO camino de entrada que remonta la webview
+            entera en vez de seguir en el mismo proceso JS. Con `refrescar` la
+            sesión se recoge en sitio, igual que en el login normal. */}
         <PantallaEntrada
           onGoogle={entrarConGoogle}
           onInvitado={entrarSinCuenta}
           cargando={sesionCargando}
           error={sesionError}
+          onPerfilActivado={refrescarSesion}
         />
       </div>
     )
