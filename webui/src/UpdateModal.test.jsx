@@ -5,6 +5,7 @@ vi.mock('./bridge', () => ({
   api: {
     downloadUpdate: vi.fn().mockResolvedValue({ started: true }),
     installUpdate: vi.fn().mockResolvedValue({ ok: true }),
+    getUltimoUpdate: vi.fn().mockResolvedValue(null),
   },
   onUpdate: (h) => {
     const w = (e) => h(e.detail)
@@ -56,5 +57,31 @@ describe('UpdateModal', () => {
     disponible()
     emitir({ kind: 'downloaded' })
     expect(await screen.findByText(/no se pudo/i)).toBeTruthy()
+  })
+
+  // Login tardío: el chequeo automático (3 s) puede haber disparado
+  // `atom:update` antes de que este modal existiera. Al montarse debe rescatar
+  // ese aviso consultando el bridge, sin que llegue un segundo evento.
+  it('pinta el aviso con el update cacheado del bridge, sin que se emita el evento', async () => {
+    const { api } = await import('./bridge')
+    api.getUltimoUpdate.mockResolvedValueOnce({
+      kind: 'available',
+      data: { latest: '3.4.62', current: '3.4.61', can_install: true, asset_url: 'u', asset_size: 10 },
+    })
+
+    render(<UpdateModal />)
+
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+    expect(screen.getByText(/v3\.4\.62/)).toBeTruthy()
+  })
+
+  it('con caché a null no muestra nada', async () => {
+    const { api } = await import('./bridge')
+    api.getUltimoUpdate.mockResolvedValueOnce(null)
+
+    render(<UpdateModal />)
+
+    await waitFor(() => expect(api.getUltimoUpdate).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 })

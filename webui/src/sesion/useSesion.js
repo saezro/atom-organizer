@@ -44,6 +44,10 @@ export function useSesion() {
   const [cuenta, setCuenta] = useState(null)
   const [invitado, setInvitado] = useState(false)
   const [error, setError] = useState(null)
+  // Perfiles guardados en este equipo (selector tipo Netflix de la pantalla
+  // de entrada). Aparte de `cuenta`/`invitado` (la sesión ACTIVA): esto es la
+  // lista de sesiones que se podrían activar.
+  const [perfiles, setPerfiles] = useState([])
 
   // Desuscripción del `atom:cloud` de un login en curso. Vive en un ref (no
   // en el closure del callback) para poder cortarla también al desmontar el
@@ -78,8 +82,21 @@ export function useSesion() {
     }
   }, [])
 
+  // Lista de perfiles guardados. Fail-soft: si el bridge no expone el método
+  // (build vieja) o falla, se queda en `[]` y la pantalla de entrada cae al
+  // camino de siempre (dos botones) en vez de romper el arranque.
+  const cargarPerfiles = useCallback(async () => {
+    try {
+      const lista = await api.listarPerfiles()
+      setPerfiles(Array.isArray(lista) ? lista : [])
+    } catch {
+      setPerfiles([])
+    }
+  }, [])
+
   useEffect(() => {
     refrescar()
+    cargarPerfiles()
     // Solo al montar: nada de polling en reposo.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -145,6 +162,33 @@ export function useSesion() {
     escribirInvitado(true)
   }, [])
 
+  // Activa un perfil guardado sin pasar por el consentimiento de Google si
+  // la credencial sigue viva. Decisión explícita del dueño del producto: si
+  // `ok:false` (o la llamada lanza), se relanza `entrarConGoogle()` EN
+  // SILENCIO — sin mensaje de error ni confirmación — porque para el usuario
+  // es solo "pedirle que se loguee otra vez", no un fallo que explicar.
+  const entrarConPerfil = useCallback(async (email) => {
+    try {
+      const respuesta = await api.activarPerfil(email)
+      if (respuesta && respuesta.ok) {
+        await refrescar()
+        return
+      }
+    } catch {
+      // credencial caducada / bridge sin el método: cae al login normal.
+    }
+    await entrarConGoogle()
+  }, [refrescar, entrarConGoogle])
+
+  const quitarPerfil = useCallback(async (email) => {
+    try {
+      await api.borrarPerfil(email)
+    } catch (e) {
+      setError(String(e?.message || e))
+    }
+    await cargarPerfiles()
+  }, [cargarPerfiles])
+
   const salir = useCallback(async () => {
     setError(null)
     if (cuenta) {
@@ -169,5 +213,9 @@ export function useSesion() {
     entrarSinCuenta,
     salir,
     refrescar,
+    perfiles,
+    cargarPerfiles,
+    entrarConPerfil,
+    quitarPerfil,
   }
 }

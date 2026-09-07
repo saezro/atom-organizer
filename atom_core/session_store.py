@@ -46,9 +46,11 @@ from . import secret_box
 __all__ = [
     "SessionStore",
     "Sesion",
+    "Perfil",
     "STORE_NAME",
     "LEGACY_STORE_NAME",
     "protector_por_defecto",
+    "EMAIL_INVITADO",
 ]
 
 STORE_NAME = "session.db"
@@ -56,6 +58,12 @@ LEGACY_STORE_NAME = "google_auth.json"
 KEYFILE_NAME = "session.key"
 
 ESQUEMA = 1
+
+# Email fijo del perfil invitado: no tiene cuenta de Google, así que no hay
+# email real que usar como clave primaria de `perfiles`. Se reserva esta
+# constante para que la pantalla de entrada (y el resto del código) lo
+# reconozcan sin adivinar el literal en varios sitios.
+EMAIL_INVITADO = "invitado"
 
 # Ata cada secreto a su sitio: un BLOB de la fila de sesión no se puede recolocar
 # en otra columna/tabla sin que el MAC lo delate.
@@ -84,6 +92,26 @@ class Sesion:
     # Nombre del usuario de Google (o de la Suite en modo broker). Igual que
     # `picture`: no es secreto, se guarda solo para no perderlo al reiniciar.
     nombre: str = ""
+
+
+@dataclass
+class Perfil:
+    """Un usuario recordado en la pantalla de entrada tipo Netflix.
+
+    Es el catálogo (`perfiles`), no la sesión activa (`sesion`): puede haber
+    varios perfiles guardados pero solo uno activo a la vez. Por eso nunca se
+    expone `refresh_token` en claro aquí -este dataclass es lo que se pinta en
+    pantalla-, solo si hay o no credencial (`tiene_credencial`).
+    """
+
+    email: str
+    tiene_credencial: bool
+    backend: str
+    modo: str = "google"
+    picture: str = ""
+    nombre: str = ""
+    creado_en: float = 0.0
+    ultimo_uso: float = 0.0
 
 
 # --------------------------------------------------------------------------
@@ -292,8 +320,54 @@ class SessionStore:
                     raise
         con.execute("CREATE TABLE IF NOT EXISTS meta (clave TEXT PRIMARY KEY, valor TEXT)")
         con.execute("INSERT OR IGNORE INTO meta VALUES ('esquema', ?)", (str(ESQUEMA),))
+        # `perfiles`: el catálogo de usuarios recordados para la pantalla de
+        # entrada tipo Netflix. No sustituye a `sesion` -que sigue siendo la
+        # sesión ACTIVA y la usa todo el código existente sin cambios-, es una
+        # capa por encima. `refresh_cifrado` es NULLABLE porque el perfil
+        # invitado no tiene credencial que guardar.
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS perfiles (
+                email           TEXT PRIMARY KEY,
+                refresh_cifrado BLOB,
+                backend         TEXT NOT NULL,
+                modo            TEXT NOT NULL DEFAULT 'google',
+                picture         TEXT NOT NULL DEFAULT '',
+                nombre          TEXT NOT NULL DEFAULT '',
+                creado_en       REAL NOT NULL,
+                ultimo_uso      REAL NOT NULL
+            )""")
         con.commit()
         return con
+
+    def _migrar_sesion_activa_a_perfiles(self, con: sqlite3.Connection) -> None:
+        """Si hay una sesión activa cuyo email no está aún en `perfiles`, la
+        copia. Así un usuario que ya tenía sesión guardada antes de que
+        existiera el catálogo aparece como perfil sin volver a loguearse -sin
+        tocar ni borrar nunca la fila de `sesion`."""
+        fila = con.execute(
+            "SELECT email, refresh_cifrado, backend, creado_en, actualizado_en, "
+            "modo, picture, nombre FROM sesion WHERE id = 1").fetchone()
+        if fila is None:
+            return
+        email = fila[0]
+        if not email:
+            # Sin email no hay clave primaria de `perfiles` con la que
+            # identificar este perfil (caso `broker` antiguo, por ejemplo).
+            return
+        ya_existe = con.execute(
+            "SELECT 1 FROM perfiles WHERE email = ?", (email,)).fetchone()
+        if ya_existe:
+            return
+        (_, refresh_cifrado, backend, creado_en, actualizado_en,
+         modo, picture, nombre) = fila
+        con.execute("""
+            INSERT INTO perfiles (email, refresh_cifrado, backend, modo,
+                                  picture, nombre, creado_en, ultimo_uso)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(email) DO NOTHING
+        """, (email, refresh_cifrado, backend, modo or "google",
+              picture or "", nombre or "", creado_en, actualizado_en))
+        con.commit()
 
     # -- API --------------------------------------------------------------
     def leer(self) -> Sesion | None:
@@ -430,6 +504,139 @@ class SessionStore:
             pass
         finally:
             con.close()
+
+    # -- perfiles (catálogo de usuarios recordados) ------------------------
+    def listar_perfiles(self) -> list[Perfil]:
+        """Los perfiles guardados, más recientes primero.
+
+        Antes de listar, migra la sesión activa a `perfiles` si hace falta
+        (ver `_migrar_sesion_activa_a_perfiles`): así una BD que solo conocía
+        la sesión de toda la vida ya muestra un perfil sin que el usuario
+        tenga que volver a entrar. No se devuelve el `refresh_token`: esto es
+        solo para pintar la pantalla de entrada, no para operar con la
+        credencial.
+        """
+        if not self.db_path.exists():
+            return []
+        try:
+            con = self._conectar()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            return []
+        try:
+            self._migrar_sesion_activa_a_perfiles(con)
+            filas = con.execute(
+                "SELECT email, refresh_cifrado, backend, modo, picture, "
+                "nombre, creado_en, ultimo_uso FROM perfiles "
+                "ORDER BY ultimo_uso DESC").fetchall()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            return []
+        finally:
+            con.close()
+
+        perfiles = []
+        for (email, refresh_cifrado, backend, modo, picture, nombre,
+             creado_en, ultimo_uso) in filas:
+            perfiles.append(Perfil(
+                email=email,
+                tiene_credencial=refresh_cifrado is not None,
+                backend=backend,
+                modo=modo or "google",
+                picture=picture or "",
+                nombre=nombre or "",
+                creado_en=creado_en,
+                ultimo_uso=ultimo_uso,
+            ))
+        return perfiles
+
+    def guardar_perfil(self, email: str, refresh_token: str | None = None, *,
+                        modo: str = "google", picture: str = "",
+                        nombre: str = "") -> None:
+        """Alta o actualización de un perfil del catálogo (upsert por email).
+
+        `refresh_token=None` guarda el perfil sin credencial -es el caso del
+        invitado, o de un perfil que se ha quedado sin sesión pero se quiere
+        seguir mostrando en la pantalla de entrada-. Cuando hay token, se
+        cifra con el mismo protector que usa `guardar()`.
+        """
+        if not email:
+            raise ValueError("un perfil necesita email")
+        cifrado = (self.protector.proteger(refresh_token.encode("utf-8"))
+                   if refresh_token else None)
+        ahora = time.time()
+        con = self._conectar()
+        try:
+            con.execute("""
+                INSERT INTO perfiles (email, refresh_cifrado, backend, modo,
+                                      picture, nombre, creado_en, ultimo_uso)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(email) DO UPDATE SET
+                    refresh_cifrado = excluded.refresh_cifrado,
+                    backend = excluded.backend,
+                    modo = excluded.modo,
+                    picture = excluded.picture,
+                    nombre = excluded.nombre,
+                    ultimo_uso = excluded.ultimo_uso
+            """, (email, cifrado, self.protector.nombre, modo,
+                  picture or "", nombre or "", ahora, ahora))
+            con.commit()
+        finally:
+            con.close()
+
+    def activar_perfil(self, email: str) -> bool:
+        """Convierte un perfil del catálogo en la sesión activa.
+
+        Reutiliza `guardar()` para no duplicar la lógica de cifrado/columnas
+        de `sesion`. Devuelve `False` -sin tocar la sesión activa- si el
+        perfil no existe o su credencial no se puede descifrar en este
+        equipo (perfil copiado de otra máquina, keyfile perdido...).
+        """
+        con = self._conectar()
+        try:
+            self._migrar_sesion_activa_a_perfiles(con)
+            fila = con.execute(
+                "SELECT refresh_cifrado, modo, picture, nombre FROM perfiles "
+                "WHERE email = ?", (email,)).fetchone()
+        finally:
+            con.close()
+        if fila is None:
+            return False
+        refresh_cifrado, modo, picture, nombre = fila
+        if refresh_cifrado is None:
+            # Perfil sin credencial (invitado): no hay nada que activar como
+            # sesión de Google/broker en `sesion`.
+            return False
+        try:
+            refresh = self.protector.desproteger(bytes(refresh_cifrado)).decode("utf-8")
+        except Exception:  # noqa: BLE001 - descifrar es lo que puede fallar aquí
+            return False
+        self.guardar(email, refresh, modo=modo or "google",
+                     picture=picture or "", nombre=nombre or "")
+        con = self._conectar()
+        try:
+            con.execute("UPDATE perfiles SET ultimo_uso = ? WHERE email = ?",
+                        (time.time(), email))
+            con.commit()
+        finally:
+            con.close()
+        return True
+
+    def borrar_perfil(self, email: str) -> None:
+        """Quita un perfil del catálogo.
+
+        Si es además el perfil activo (el email coincide con el de `sesion`),
+        borra también la sesión activa: dejarla viva sería una sesión
+        utilizable sin perfil del que colgar en la pantalla de entrada.
+        """
+        con = self._conectar()
+        try:
+            fila_activa = con.execute(
+                "SELECT email FROM sesion WHERE id = 1").fetchone()
+            con.execute("DELETE FROM perfiles WHERE email = ?", (email,))
+            con.commit()
+        finally:
+            con.close()
+        if fila_activa is not None and fila_activa[0] == email:
+            self.borrar()
 
     # -- migración desde el JSON en claro ---------------------------------
     def importar_legacy(self, json_path: Path) -> bool:

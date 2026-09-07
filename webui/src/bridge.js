@@ -236,6 +236,10 @@ export const api = {
   checkUpdate: () => call('check_update'),
   downloadUpdate: (url, size) => call('download_update', url, size ?? 0),
   installUpdate: (path) => call('install_update', path ?? null),
+  // Último aviso "hay versión nueva" cacheado del chequeo automático de
+  // arranque, o null. El modal que llega tarde (tras el login) lo consulta al
+  // montarse por si el evento `atom:update` ya se disparó al vacío.
+  getUltimoUpdate: () => call('get_ultimo_update'),
   // Subida al bucket «datos para organizar». cloudStatus devuelve
   // {configured, logged_in, email, bucket, help?}; cloudLogin abre el navegador
   // y responde por el evento `atom:cloud`; cloudPrepare {ok, prefix, files,
@@ -341,6 +345,18 @@ export const api = {
   logsListar: () => call('logs_listar'),
   logsLeer: (nombre) => call('logs_leer', nombre),
   logsCarpeta: () => call('logs_carpeta'),
+  // Selector de perfiles tipo Netflix en la pantalla de entrada: varias
+  // cuentas Google (o el invitado) pueden haber iniciado sesión antes en este
+  // mismo equipo, y el backend recuerda su credencial para no repetir el
+  // consentimiento de Google en cada cambio de usuario. listarPerfiles
+  // devuelve [{email, nombre, picture, modo, tiene_credencial}] (picture ya
+  // resuelta como data URI, o ''). activarPerfil intenta reusar la
+  // credencial guardada: {ok:true} si sigue sirviendo, {ok:false} si ha
+  // caducado (la UI debe caer a un login de Google normal). borrarPerfil
+  // olvida el perfil (y su credencial) del equipo.
+  listarPerfiles: () => call('listar_perfiles'),
+  activarPerfil: (email) => call('activar_perfil', email),
+  borrarPerfil: (email) => call('borrar_perfil', email),
 }
 
 // Python empuja progreso del pipeline con:

@@ -424,7 +424,15 @@ class PipelinePhasesMixin:
 
                 self.utils_obj.prepare_output_folder(cfg.output_folder, ["RGB", "TERMICA"])
                 if mis_imagenes_origen is None:
+                    # `contar_imagenes_or_tmc` recorre el árbol entero del origen
+                    # sin emitir nada: en orígenes grandes es un tramo mudo largo
+                    # y el modal parece colgado. Se avisa antes/después por el
+                    # mismo canal (`progress_callback`) que usan las líneas de
+                    # arriba de este mismo bloque.
+                    progress_callback.emit("Contando imágenes del origen...\n")
                     self.split_images_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.input_folder)
+                    progress_callback.emit(
+                        f"Total de imágenes a procesar: {self.split_images_obj.total_images_number}\n")
                     self.split_images_obj.iterate_folders(cfg.input_folder, cfg.output_folder,
                     cfg.choose_mode_size, cfg.max_size, cfg.end_thermo_files,
                     cfg.end_rgb_files, cfg.compress_rgb, cfg.compress_level,

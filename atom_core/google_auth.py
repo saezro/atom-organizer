@@ -290,10 +290,25 @@ class GoogleAuth:
     def _save(self) -> None:
         if not self._refresh_token:
             return
-        self._store.guardar(self._identity.email if self._identity else None,
-                            self._refresh_token, modo=self._modo,
-                            picture=self._identity.picture if self._identity else "",
-                            nombre=self._identity.nombre if self._identity else "")
+        email = self._identity.email if self._identity else None
+        picture = self._identity.picture if self._identity else ""
+        nombre = self._identity.nombre if self._identity else ""
+        self._store.guardar(email, self._refresh_token, modo=self._modo,
+                            picture=picture, nombre=nombre)
+        # Además de la sesión activa, se da de alta/actualiza el perfil en el
+        # catálogo (pantalla de entrada tipo Netflix): sin esto, un login
+        # nuevo no aparecería para "cambiar de cuenta" hasta que alguien
+        # tocara `listar_perfiles` con otra vía de alta. Solo si hay email:
+        # sin él no hay clave primaria en `perfiles`. Envuelto a conciencia -
+        # un fallo del catálogo no puede tirar un login que por lo demás
+        # funcionó y ya dejó la sesión activa guardada arriba.
+        if email:
+            try:
+                self._store.guardar_perfil(email, self._refresh_token,
+                                           modo=self._modo, picture=picture,
+                                           nombre=nombre)
+            except Exception:  # noqa: BLE001 - el catálogo es secundario a la sesión
+                pass
 
     def _olvidar_local(self) -> None:
         """Tira la sesión de memoria y de disco. No habla con Google."""
