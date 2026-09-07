@@ -14,10 +14,20 @@ import cloudUploadConfirmando from './trabajo/cloudUploadConfirmando'
 import TrabajoScreen from './trabajo/TrabajoScreen'
 import HerramientasScreen from './HerramientasScreen'
 import HomeScreen from './HomeScreen.jsx'
+import HistorialRuns from './logs/HistorialRuns.jsx'
 import { useSesion } from './sesion/useSesion.js'
 import PantallaEntrada from './sesion/PantallaEntrada.jsx'
 import MenuCuenta from './MenuCuenta.jsx'
 import './App.css'
+import { conPlazo } from './plazo'
+
+// Plazos de las llamadas que mandan una pantalla completa. Generosos a
+// propósito: no son el límite del trabajo (organizar tarda lo que tarde, y el
+// progreso llega por eventos), sino el límite de la RESPUESTA a "empieza" y a
+// "léeme la cabecera del estadillo". Si vencen, algo va mal de verdad y más
+// vale decirlo que dejar al operador mirando un modal mudo.
+const ESPERA_ARRANQUE_MS = 25000
+const ESPERA_ESTADILLO_MS = 60000
 
 // De cinco pestañas a tres: «Organizar»/«SUBIR AL BUCKET» se funden en
 // «Trabajo» (TrabajoScreen elige el destino) y «AEROTOOLS»/«OTROS EQUIPOS» en
@@ -419,7 +429,14 @@ function App() {
     if (task === 'split_images' && estadillos.length) {
       setPreflight({ loading: true, info: null, task, params, advanced })
       try {
-        const infos = await Promise.all(estadillos.map((p) => api.readEstadilloInfo(p)))
+        // `read_estadillo_info` lee el CSV en el hilo del bridge: si el fichero
+        // está bloqueado (abierto en Excel) o es enorme, no vuelve y el modal se
+        // queda en "loading" sin decir nada. Con plazo, el operador ve el motivo.
+        const infos = await conPlazo(
+          Promise.all(estadillos.map((p) => api.readEstadilloInfo(p))),
+          ESPERA_ESTADILLO_MS,
+          'No se pudo leer el estadillo (¿lo tienes abierto en Excel?). Ciérralo y vuelve a intentarlo.'
+        )
         const info = mergeEstadilloInfos(estadillos, infos)
         setPreflight((p) => (p ? { ...p, loading: false, info } : p))
       } catch (e) {
@@ -448,14 +465,21 @@ function App() {
       : params
     ;(async () => {
       try {
-        const res = await api.runTask(task, sendParams, advanced)
+        // Con plazo: si el bridge se queda colgado, `runTask` no resuelve nunca
+        // y el modal se quedaba en "Preparando…" sin botón para salir.
+        const res = await conPlazo(
+          api.runTask(task, sendParams, advanced),
+          ESPERA_ARRANQUE_MS,
+          'El programa no respondió al arrancar el proceso. No se ha organizado nada: ' +
+            'cierra este aviso y vuelve a intentarlo.'
+        )
         if (res && res.started === false) {
           setRunning(false)
           setFinished({ ok: false, msg: res.reason || 'No se pudo iniciar.' })
         }
       } catch (e) {
         setRunning(false)
-        setFinished({ ok: false, msg: String(e) })
+        setFinished({ ok: false, msg: e?.message ? e.message : String(e) })
       }
     })()
   }
@@ -796,6 +820,11 @@ function App() {
 }
 
 function ConfigScreen({ ready }) {
+  // Historial de procesos: sustituye el contenido de la card por
+  // `HistorialRuns` en vez de abrir un modal — mismo patrón que el resto de
+  // Ajustes (pantalla completa, no popups), y así no interfiere con
+  // ProgressModal/el flujo de organizar.
+  const [verHistorial, setVerHistorial] = useState(false)
   const [ruta, setRuta] = useState('')
   const [models, setModels] = useState([]) // [{model, pct}]
   const [mName, setMName] = useState('')
@@ -898,9 +927,28 @@ function ConfigScreen({ ready }) {
     }
   }
 
+  if (verHistorial) {
+    return (
+      <div className="card">
+        <h2 className="card-title">Historial de procesos</h2>
+        <HistorialRuns onVolver={() => setVerHistorial(false)} />
+      </div>
+    )
+  }
+
   return (
     <div className="card">
       <h2 className="card-title">Configuración</h2>
+
+      <div className="field">
+        <span className="field-label">Diagnóstico</span>
+        <button type="button" className="btn-ghost" onClick={() => setVerHistorial(true)}>
+          Ver historial de procesos
+        </button>
+        <span className="field-hint">
+          Runs anteriores del organizador, agrupados por planta, con sus logs y errores.
+        </span>
+      </div>
 
       <FileField
         label="Ruta de ThermoViewer.exe"

@@ -35,6 +35,28 @@ describe('MenuCuenta', () => {
     expect(screen.queryByTestId('cuenta-menu')).toBeNull()
   })
 
+  // Regresión: sin `picture` (sesiones antiguas sin esa columna) o si la
+  // imagen de lh3.googleusercontent.com no carga, debe verse la inicial en
+  // vez de un hueco vacío.
+  it('sin picture pinta la inicial en vez de un <img>', () => {
+    render(<MenuCuenta cuenta={{ email: 'ana@aerotools.es', nombre: 'Ana', picture: null }} invitado={false} onAjustes={() => {}} onSalir={() => {}} />)
+    const avatar = screen.getByTestId('cuenta-avatar')
+    expect(avatar.querySelector('img')).toBeNull()
+    expect(avatar).toHaveTextContent('A')
+  })
+
+  it('si la <img> del avatar falla al cargar, cae a la inicial', () => {
+    render(<MenuCuenta cuenta={{ email: 'ana@aerotools.es', nombre: 'Ana', picture: 'http://x/pic.png' }} invitado={false} onAjustes={() => {}} onSalir={() => {}} />)
+    const avatar = screen.getByTestId('cuenta-avatar')
+    const img = avatar.querySelector('img')
+    expect(img).not.toBeNull()
+
+    fireEvent.error(img)
+
+    expect(avatar.querySelector('img')).toBeNull()
+    expect(avatar).toHaveTextContent('A')
+  })
+
   it('se cierra con Escape y con clic fuera', () => {
     render(<MenuCuenta cuenta={{ email: 'a@b.es' }} invitado={false} onAjustes={() => {}} onSalir={() => {}} />)
     const avatar = screen.getByTestId('cuenta-avatar')
