@@ -240,6 +240,10 @@ export const api = {
   // arranque, o null. El modal que llega tarde (tras el login) lo consulta al
   // montarse por si el evento `atom:update` ya se disparó al vacío.
   getUltimoUpdate: () => call('get_ultimo_update'),
+  // Resultado del ultimo chequeo automatico, INCLUIDOS los fallos: {ok, error?,
+  // current, latest, update_available, cuando} o {pendiente:true} si aun no ha
+  // corrido ninguno. Es lo unico que permite ver por que el updater no avisa.
+  estadoUpdate: () => call('estado_update'),
   // Subida al bucket «datos para organizar». cloudStatus devuelve
   // {configured, logged_in, email, bucket, help?}; cloudLogin abre el navegador
   // y responde por el evento `atom:cloud`; cloudPrepare {ok, prefix, files,

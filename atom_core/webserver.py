@@ -31,7 +31,7 @@ METODOS_EXPUESTOS = frozenset({
     "read_config", "write_config",
     "render_estado", "render_confirmar", "render_set_modo",
     "app_version", "check_update", "download_update", "install_update",
-    "start_update_check", "get_ultimo_update",
+    "start_update_check", "get_ultimo_update", "estado_update",
     "cloud_status", "cloud_verify", "cloud_login", "cloud_logout",
     "cloud_pair_start", "cloud_pair_poll",
     "cloud_inspecciones", "cloud_prepare", "cloud_prepare_start", "cloud_upload", "cloud_organizar",

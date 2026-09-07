@@ -18,6 +18,7 @@ Puntos importantes:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import re
@@ -29,6 +30,8 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 REPO = "saezro/atom-organizer"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
@@ -71,25 +74,43 @@ def _get_json(url: str) -> dict:
 
 
 def check() -> dict:
-    """Consulta la última release ESTABLE. No lanza: devuelve {ok: False, error}."""
+    """Consulta la última release ESTABLE. No lanza: devuelve {ok: False, error}.
+
+    Todo camino queda en el log: este chequeo corre solo, sin nadie mirando, y
+    hasta la v3.4.76 un fallo aquí (red, proxy, 403 por rate limit de GitHub) se
+    perdía sin dejar rastro — la app simplemente no avisaba nunca y no había
+    forma de saber por qué. El log del run es el único sitio donde mirarlo.
+    """
     local = current_version()
     try:
         data = _get_json(API_LATEST)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             # Aún no hay ninguna release estable (todas pre-release)
+            logger.info("updater: sin releases estables (404); versión local %s", local)
             return {"ok": True, "update_available": False, "current": local,
                     "latest": local, "reason": "sin releases estables"}
+        logger.warning("updater: GitHub respondió HTTP %s al consultar la última release", exc.code)
         return {"ok": False, "error": f"HTTP {exc.code} al consultar GitHub"}
     except Exception as exc:  # red caída, DNS, proxy corporativo…
+        logger.warning("updater: no se pudo comprobar la última versión: %s", exc)
         return {"ok": False, "error": f"No se pudo comprobar: {exc}"}
 
     latest = (data.get("tag_name") or "").lstrip("v")
     asset = next((a for a in data.get("assets", []) if ASSET_RE.match(a.get("name", ""))), None)
 
+    hay_nueva = bool(latest) and is_newer(latest, local)
+    if hay_nueva and asset is None:
+        # Release publicada pero sin instalador adjunto: el aviso saldrá igual,
+        # pero sin poder instalar. Merece log porque apunta a un CI a medias.
+        logger.warning("updater: la release %s no trae instalador que case con %s",
+                       latest, ASSET_RE.pattern)
+    logger.info("updater: local %s, última publicada %s → %s",
+                local, latest or "?", "hay actualización" if hay_nueva else "al día")
+
     return {
         "ok": True,
-        "update_available": bool(latest) and is_newer(latest, local),
+        "update_available": hay_nueva,
         "current": local,
         "latest": latest,
         "notes": (data.get("body") or "").strip()[:4000],

@@ -819,6 +819,17 @@ function App() {
   )
 }
 
+// Traduce el resultado del updater a una frase. Los fallos se DICEN (antes se
+// perdían en silencio y la app parecía estar al día cuando en realidad no había
+// podido ni preguntar).
+function textoUpdate(upd) {
+  if (!upd) return 'Comprobando la última versión publicada…'
+  if (upd.pendiente) return 'Aún no se ha comprobado; se hace solo a los pocos segundos de abrir.'
+  if (!upd.ok) return `No se pudo comprobar: ${upd.error || 'error desconocido'}`
+  if (upd.update_available) return `Hay una versión nueva: ${upd.latest} (tienes la ${upd.current}).`
+  return `Estás en la última versión (${upd.current}).`
+}
+
 function ConfigScreen({ ready }) {
   // Historial de procesos: sustituye el contenido de la card por
   // `HistorialRuns` en vez de abrir un modal — mismo patrón que el resto de
@@ -831,6 +842,31 @@ function ConfigScreen({ ready }) {
   const [mPct, setMPct] = useState('')
   const [loaded, setLoaded] = useState(false)
   const [saved, setSaved] = useState(null) // null | {ok, msg}
+
+  // Estado del updater. Antes no había NINGUNA forma de ver por qué el aviso de
+  // versión nueva no aparecía: el chequeo corre solo y se tragaba los errores.
+  const [upd, setUpd] = useState(null)            // null | {pendiente} | resultado de check
+  const [buscandoUpd, setBuscandoUpd] = useState(false)
+
+  useEffect(() => {
+    if (!ready) return
+    // `estado_update` no está en METODOS_REMOTOS (el cliente remoto no lo ve):
+    // si no existe se dice, en vez de dejar el texto colgado en «Comprobando…».
+    Promise.resolve(api.estadoUpdate?.())
+      .then((r) => setUpd(r ?? { ok: false, error: 'no disponible en este modo' }))
+      .catch((e) => setUpd({ ok: false, error: String(e) }))
+  }, [ready])
+
+  async function buscarUpdate() {
+    setBuscandoUpd(true)
+    try {
+      setUpd(await api.checkUpdate())
+    } catch (e) {
+      setUpd({ ok: false, error: String(e) })
+    } finally {
+      setBuscandoUpd(false)
+    }
+  }
 
   // Aceleración gráfica (render_estado/render_set_modo). No va por
   // readConfig/writeConfig: es un ajuste propio del shell (WebView2/Qt), no
@@ -948,6 +984,20 @@ function ConfigScreen({ ready }) {
         <span className="field-hint">
           Runs anteriores del organizador, agrupados por planta, con sus logs y errores.
         </span>
+      </div>
+
+      <div className="field">
+        <span className="field-label">Actualizaciones</span>
+        <button
+          type="button"
+          className="btn-ghost"
+          aria-label="Buscar actualizaciones ahora"
+          disabled={buscandoUpd}
+          onClick={buscarUpdate}
+        >
+          {buscandoUpd ? 'Comprobando…' : 'Buscar actualizaciones'}
+        </button>
+        <span className="field-hint">{textoUpdate(upd)}</span>
       </div>
 
       <FileField

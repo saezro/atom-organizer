@@ -35,6 +35,16 @@ pyexiv2_datas, pyexiv2_binaries, pyexiv2_hidden = collect_all('pyexiv2')
 # alguien vuelve a degradar la version, el .exe sigue trayendo las DLL.
 numpy_datas, numpy_binaries, numpy_hidden = collect_all('numpy')
 
+# pandas 3.x tiene el MISMO problema que numpy y por la misma razon: sus C-extensions
+# (`pandas._libs.*`, en especial `pandas._libs.tslibs.*`) se cargan entre si por la C-API
+# y el hook generico no las recoge todas. Cuando falta una, el primer `import pandas`
+# revienta a medias y el SIGUIENTE import del mismo proceso ve el modulo ya registrado
+# en sys.modules pero incompleto -> "partially initialized module 'pandas' has no
+# attribute '_pandas_datetime_CAPI' (most likely due to a circular import)". Ese mensaje
+# enmascara el fallo real (la extension que no se empaqueto), por eso desorienta tanto.
+# Roto en la v3.4.75, con el mismo origen que el numpy de la v3.4.74.
+pandas_datas, pandas_binaries, pandas_hidden = collect_all('pandas')
+
 # CAUSA RAÍZ del 'ModuleNotFoundError: No module named exiv2api' al leer el estadillo
 # (v3.9, solo Windows): pyexiv2/lib/__init__.py carga en RUNTIME el binario nativo que
 # vive junto a él (ctypes.CDLL(<lib>/exiv2.dll) + import de exiv2api). collect_all() no
@@ -89,14 +99,14 @@ for _d in _vc_dlls:
 a = Analysis(
     ['app_webview.py'],
     pathex=[],
-    binaries=pyexiv2_binaries + vcruntime_binaries + numpy_binaries,
+    binaries=pyexiv2_binaries + vcruntime_binaries + numpy_binaries + pandas_binaries,
     datas=[
         ('webui/dist', 'webui/dist'),          # UI React buildeada (npm run build)
         ('config/Config.ini', 'config'),
         ('Logo_atom_uas_horizonta-02.png', '.'),
         ('assets', 'assets'),                  # atom-icon.svg, check.svg, dot.svg, fonts/ (los referencia gui.py)
         ('programas_externos', 'programas_externos'),
-    ] + pyexiv2_datas + mpl_datas + webview_datas + pyexiv2_native + numpy_datas,
+    ] + pyexiv2_datas + mpl_datas + webview_datas + pyexiv2_native + numpy_datas + pandas_datas,
     hiddenimports=[
         'pyexiv2', 'ipaddress',
         'version', 'atom_core.updater',   # updater: import perezoso desde app_webview
@@ -112,7 +122,7 @@ a = Analysis(
         'pythoncom', 'pywintypes', 'win32gui', 'win32con',
         'win32com', 'win32com.shell',
         'win32comext.shell', 'win32comext.shell.shell', 'win32comext.shell.shellcon',
-    ] + pyexiv2_hidden + numpy_hidden,
+    ] + pyexiv2_hidden + numpy_hidden + pandas_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
