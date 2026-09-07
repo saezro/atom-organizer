@@ -71,6 +71,12 @@ Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Crear un acceso directo en el escritorio"; GroupDescription: "Accesos directos:"
 
+[InstallDelete]
+; Sin esto quedan assets huérfanos de la versión anterior en webui\dist\assets
+; (Vite los nombra por hash) y el instalador solo sobrescribe por nombre.
+Type: filesandordirs; Name: "{app}\webui\dist"
+Type: filesandordirs; Name: "{app}\_internal\webui\dist"
+
 [Files]
 ; Todo el onedir de PyInstaller (incluye _internal\ con Qt, pyexiv2, programas_externos…)
 Source: "..\..\dist\ATOM-Organizer\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
