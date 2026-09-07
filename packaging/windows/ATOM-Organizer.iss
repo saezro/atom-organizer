@@ -49,8 +49,9 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\..\dist\installer
 OutputBaseFilename=ATOM-Organizer-Setup-v{#MyTag}
-Compression=lzma2/max
-SolidCompression=yes
+; lzma2/fast + sin solid: compilar el instalador bajaba de ~3 min a ~1 min a cambio de un .exe algo mayor.
+Compression=lzma2/fast
+SolidCompression=no
 WizardStyle=modern
 ; Cierra la app en marcha (y la reabre) al actualizar
 CloseApplications=yes
