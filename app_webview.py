@@ -39,6 +39,7 @@ from atom_core.credencial import (
 from atom_core.event_sink import WebviewSink
 from atom_core.google_auth import AuthError
 from atom_core import pin_kiosco
+from atom_core import precarga
 from atom_core import render_state, window_state
 
 logger = logging.getLogger(__name__)
@@ -562,6 +563,9 @@ class Api:
         dron(es), nº de vuelos y franjas horarias. Sincrónico (no arranca hilo);
         `atom_core.estadillo` solo usa pandas + utils (no arrastra gui/PySide)."""
         try:
+            # El candado de `precargar_pandas` serializa el primer import de pandas
+            # con el resto de hilos (ver atom_core/precarga.py).
+            precarga.precargar_pandas()
             from atom_core.estadillo import read_estadillo_info
             return read_estadillo_info(path)
         except Exception as exc:  # noqa: BLE001 — se reenvía al front
@@ -577,6 +581,9 @@ class Api:
         mano): `{"rutas": [], "n_estadillos": 0, "info": None, "error": None}`.
         """
         try:
+            # El candado de `precargar_pandas` serializa el primer import de pandas
+            # con el resto de hilos (ver atom_core/precarga.py).
+            precarga.precargar_pandas()
             from atom_core.estadillo import detectar_estadillos, read_estadillo_info
             detectado = detectar_estadillos(carpeta)
             rutas = detectado["rutas"]
@@ -596,6 +603,9 @@ class Api:
 
         def worker() -> None:
             try:
+                # El candado de `precargar_pandas` serializa el primer import de pandas
+                # con el resto de hilos (ver atom_core/precarga.py).
+                precarga.precargar_pandas()
                 from atom_core.estadillo import detectar_estadillos, read_estadillo_info
                 detectado = detectar_estadillos(carpeta)
                 rutas = detectado["rutas"]
@@ -2217,6 +2227,9 @@ class Api:
             # empaquetó, un DLL del SDK ausente) mataba el hilo en silencio: ni un
             # evento para el front, `_running` clavado en True para siempre y el
             # modal en "Preparando…" sin forma de salir. Ahora se reporta.
+            # El candado de `precargar_pandas` serializa el primer import de pandas
+            # con el resto de hilos (ver atom_core/precarga.py).
+            precarga.precargar_pandas()
             from atom_core.organize import run_task
 
             run_task(task, params, emit, advanced or None)
@@ -2945,6 +2958,97 @@ def _comprobar_al_arrancar(api: Api) -> None:
     threading.Thread(target=_ciclo_comprobacion_arranque, args=(api,), daemon=True).start()
 
 
+# Nivel por defecto del log de aplicación, sobreescribible con ATOM_LOG_LEVEL.
+NIVEL_LOG_POR_DEFECTO = logging.INFO
+
+# Cuánto se deja crecer el log de aplicación antes de rotar, y cuántas copias se
+# guardan. 2 MiB × 3 son suficientes para varias sesiones y no engordan el perfil
+# del usuario, que es donde vive (%APPDATA%\ATOM-Organizer\Logs).
+LOG_APP_BYTES_MAX = 2 * 1024 * 1024
+LOG_APP_COPIAS = 3
+LOG_APP_NOMBRE = "atom-organizer-app.log"
+
+
+def _nivel_log() -> int:
+    """Nivel efectivo del log, leído de ATOM_LOG_LEVEL con caída al default."""
+    nivel = getattr(logging, os.environ.get("ATOM_LOG_LEVEL", "").upper(), None)
+    return nivel if isinstance(nivel, int) else NIVEL_LOG_POR_DEFECTO
+
+
+def configurar_log_a_fichero(nivel: int | None = None) -> str | None:
+    """Engancha un fichero de log al logger raíz. Devuelve la ruta, o None.
+
+    PORQUÉ: hasta ahora `logging.basicConfig` SOLO corría en el camino
+    `--server` (el kiosco de la Pi). En el .exe de Windows, que es windowed y
+    no tiene consola, el logger raíz no tenía ni un handler: todo
+    `logger.exception(...)` se tiraba a la basura. Por eso, cuando organizar
+    reventaba, no había traceback que pedirle al usuario — solo el mensaje
+    corto del modal, que además viene enmascarado (ver atom_core/precarga.py).
+
+    Va en un try/except amplio a propósito: quedarse sin log es malo, pero no
+    arrancar es peor. Si la carpeta no es escribible, la app abre igual.
+    """
+    from logging.handlers import RotatingFileHandler
+
+    try:
+        from external_tools import user_log_dir
+
+        carpeta = user_log_dir()
+        os.makedirs(carpeta, exist_ok=True)
+        ruta = os.path.join(carpeta, LOG_APP_NOMBRE)
+        raiz = logging.getLogger()
+        # Idempotente: dos llamadas (o un test que reimporta) no deben apilar
+        # handlers y duplicar cada línea del log.
+        for h in raiz.handlers:
+            if isinstance(h, RotatingFileHandler) and getattr(h, "atom_log_app", False):
+                return ruta
+        handler = RotatingFileHandler(
+            ruta, maxBytes=LOG_APP_BYTES_MAX, backupCount=LOG_APP_COPIAS,
+            encoding="utf-8",
+        )
+        handler.atom_log_app = True
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        raiz.addHandler(handler)
+        efectivo = _nivel_log() if nivel is None else nivel
+        if raiz.level == logging.NOTSET or raiz.level > efectivo:
+            raiz.setLevel(efectivo)
+        return ruta
+    except Exception:  # noqa: BLE001 — sin log se sigue arrancando
+        return None
+
+
+def instalar_capturas_de_excepcion() -> None:
+    """Manda al log lo que muere fuera de un try: hilos y hilo principal.
+
+    Los hilos daemon de la app (`_run_task_worker`, el worker de estadillos,
+    los de red) ya capturan lo suyo, pero cualquier excepción que se escape de
+    un hilo NUEVO desaparecía sin dejar rastro: `threading` la imprime en
+    stderr, y en una app windowed stderr no va a ninguna parte.
+    """
+    anterior_sys = sys.excepthook
+
+    def _sys_hook(tipo, valor, tb):
+        logging.getLogger("atom.excepthook").error(
+            "Excepción no capturada en el hilo principal", exc_info=(tipo, valor, tb)
+        )
+        anterior_sys(tipo, valor, tb)
+
+    sys.excepthook = _sys_hook
+
+    def _hilo_hook(args):
+        if args.exc_type is SystemExit:
+            return
+        logging.getLogger("atom.excepthook").error(
+            "Excepción no capturada en el hilo %s",
+            getattr(args.thread, "name", "?"),
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    threading.excepthook = _hilo_hook
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="ATOM Organizer (UI React/pywebview)")
     parser.add_argument(
@@ -2988,6 +3092,13 @@ def main() -> None:
             level=nivel,
             format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         )
+        # Además de stderr, a fichero: en la Pi el servicio puede perder el
+        # journal, y el log de la app es lo único que queda de un arranque roto.
+        configurar_log_a_fichero(nivel)
+        instalar_capturas_de_excepcion()
+        # En el hilo principal y antes de que `servir` levante nada: ver
+        # atom_core/precarga.py.
+        precarga.precargar_en_arranque()
 
         api = Api(broker=True)
         sink = QueueSink()
@@ -2995,6 +3106,18 @@ def main() -> None:
         _comprobar_al_arrancar(api)
         servir(api, str(DIST_INDEX.parent), args.host, args.port, sink)
         return
+
+    # LO PRIMERO del camino con ventana: el .exe es windowed y sin esto no hay
+    # ningún handler en el logger raíz, o sea que ningún fallo deja rastro.
+    _ruta_log = configurar_log_a_fichero()
+    instalar_capturas_de_excepcion()
+    logger.info("ATOM Organizer v%s arrancando (log: %s)",
+                _app_version_for_title(), _ruta_log or "sin fichero")
+
+    # Precarga de pandas en el HILO PRINCIPAL, antes de que exista ningún hilo
+    # (`_comprobar_al_arrancar`, el worker del pipeline, el de estadillos). El
+    # porqué completo, en atom_core/precarga.py.
+    precarga.precargar_en_arranque()
 
     try:
         webview = _import_webview()
