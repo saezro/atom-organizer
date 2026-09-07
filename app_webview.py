@@ -43,6 +43,10 @@ from atom_core import render_state, window_state
 
 logger = logging.getLogger(__name__)
 
+# Cada cuanto se reconsulta GitHub buscando version nueva (segundos). 30 min:
+# suficiente para enterarse el mismo dia sin gastar el rate limit anonimo de la API.
+INTERVALO_CHEQUEO_UPDATE = 1800.0
+
 # SSID del hotspot de configuracion de la Pi. Lo usan tanto el propio hotspot
 # como el listado de redes, que debe excluirlo de las redes conectables.
 _AP_SSID = "ATOM-Organizer"
@@ -302,6 +306,9 @@ class Api:
         # mientras el usuario no ha entrado, así que el evento `atom:update`
         # puede emitirse al vacío; esto le da algo que consultar al montarse.
         self._ultimo_update: dict | None = None
+        # Resultado crudo del ultimo chequeo de actualizacion (incluidos los
+        # fallos), para poder mirarlo desde Ajustes en vez de perderlo en silencio.
+        self._ultimo_chequeo: dict | None = None
         # Subida al bucket (ver más abajo). `_auth` se crea perezoso: sin él, el
         # arranque tendría que leer el fichero de credenciales aunque nadie vaya
         # a subir nada en toda la sesión.
@@ -775,22 +782,51 @@ class Api:
             return
         self._sink.dispatch("atom:update", detail)
 
-    def start_update_check(self, delay: float = 3.0) -> None:
+    def start_update_check(self, delay: float = 3.0,
+                           intervalo: float = INTERVALO_CHEQUEO_UPDATE) -> None:
         """Chequeo automático diferido tras el arranque (como el migrador: 3 s),
-        para no competir con la carga de la UI. Silencioso si no hay novedad o
-        si no hay red."""
+        para no competir con la carga de la UI, y REPETIDO cada `intervalo`.
+
+        La repetición no es un lujo: hasta la v3.4.76 esto era un disparo único, así
+        que quien dejaba la app abierta (lo normal en una jornada de organizado) no
+        se enteraba jamás de una versión publicada esa misma mañana — había que
+        cerrar y reabrir. El intervalo es largo a propósito: es una llamada HTTP a
+        GitHub, que aplica rate limit por IP a las peticiones sin token.
+
+        Silencioso si no hay novedad o si no hay red; el resultado crudo del último
+        intento queda en `self._ultimo_chequeo` para poder verlo desde Ajustes."""
         def worker() -> None:
             time.sleep(delay)
-            try:
-                res = self.check_update()
-            except Exception as exc:  # noqa: BLE001 — nunca romper el arranque
-                res = {"ok": False, "error": str(exc)}
-            if res.get("ok") and res.get("update_available"):
-                detail = {"kind": "available", "data": res}
-                self._ultimo_update = detail
-                self._push_update(detail)
+            avisado: str | None = None   # versión ya empujada, para no repetir el aviso
+            while True:
+                try:
+                    res = self.check_update()
+                except Exception as exc:  # noqa: BLE001 — nunca romper el arranque
+                    res = {"ok": False, "error": str(exc)}
+                self._ultimo_chequeo = {**res, "cuando": time.time()}
+                if res.get("ok") and res.get("update_available"):
+                    latest = res.get("latest")
+                    # Un solo aviso por versión: el modal ya está montado y el
+                    # usuario decide; re-empujarlo cada media hora sería acoso.
+                    if latest != avisado:
+                        avisado = latest
+                        detail = {"kind": "available", "data": res}
+                        self._ultimo_update = detail
+                        self._push_update(detail)
+                if not intervalo or intervalo <= 0:
+                    return          # intervalo 0 → disparo único (tests)
+                time.sleep(intervalo)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def estado_update(self) -> dict:
+        """Resultado del último chequeo de actualización, para el botón de Ajustes.
+
+        Devuelve `{pendiente: True}` si aún no ha corrido ninguno (los primeros
+        segundos tras arrancar), en vez de mentir diciendo que está al día."""
+        if self._ultimo_chequeo is None:
+            return {"pendiente": True}
+        return self._ultimo_chequeo
 
     def get_ultimo_update(self) -> dict | None:
         """Último aviso de actualización disponible, o None si no hay ninguno.
