@@ -44,6 +44,7 @@ METODOS_EXPUESTOS = frozenset({
     "red_ap_estado", "red_ap_activar", "red_ap_desactivar",
     "disco_estado",
     "pin_estado", "pin_fijar", "pin_verificar", "pin_cambiar",
+    "logs_listar", "logs_leer", "logs_carpeta",
 })
 
 # Subconjunto alcanzable por un cliente REMOTO (el movil por el hotspot). El

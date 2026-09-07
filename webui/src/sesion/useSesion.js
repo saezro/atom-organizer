@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
-import { api } from '../bridge.js'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { api, onCloud } from '../bridge.js'
+import { conPlazo } from '../plazo'
 
 // Clave de localStorage para la sesión "sin cuenta" (invitado). Se persiste
 // aparte de `cloud_status`: un invitado no tiene token de Google, así que el
@@ -38,20 +39,16 @@ function escribirInvitado(valor) {
 // aparece y el usuario puede al menos entrar sin cuenta y trabajar en local.
 const ESPERA_ESTADO_MS = 6000
 
-function conPlazo(promesa, ms) {
-  return Promise.race([
-    promesa,
-    new Promise((_, rechazar) =>
-      setTimeout(() => rechazar(new Error('El programa tardó demasiado en responder.')), ms)
-    ),
-  ])
-}
-
 export function useSesion() {
   const [cargando, setCargando] = useState(true)
   const [cuenta, setCuenta] = useState(null)
   const [invitado, setInvitado] = useState(false)
   const [error, setError] = useState(null)
+
+  // Desuscripción del `atom:cloud` de un login en curso. Vive en un ref (no
+  // en el closure del callback) para poder cortarla también al desmontar el
+  // hook, no solo al terminar la espera.
+  const offLoginRef = useRef(null)
 
   const refrescar = useCallback(async () => {
     setCargando(true)
@@ -87,19 +84,57 @@ export function useSesion() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Si el hook se desmonta con un login en curso (navegación fuera de la
+  // pantalla de entrada), no dejar el listener de `atom:cloud` colgado.
+  useEffect(() => {
+    return () => {
+      offLoginRef.current?.()
+      offLoginRef.current = null
+    }
+  }, [])
+
   const entrarConGoogle = useCallback(async () => {
     setError(null)
     setCargando(true)
     try {
+      // `cloud_login` es fire-and-forget: la promesa resuelve en cuanto se
+      // lanza el hilo, mucho antes de que el usuario complete el
+      // consentimiento en el navegador. El resultado real llega después por
+      // el evento `atom:cloud` (`kind:'login'`), así que hay que suscribirse
+      // ANTES de lanzar la llamada (por si el hilo tardara menos que este
+      // `await`) y esperar a que llegue para refrescar el estado.
+      const esperaLogin = new Promise((resolve) => {
+        offLoginRef.current = onCloud((d) => {
+          if (d.kind !== 'login') return
+          offLoginRef.current?.()
+          offLoginRef.current = null
+          resolve(d)
+        })
+      })
+
       // Sin plazo el usuario queda atrapado: si cierra la ventana de Google a
-      // medias, `cloudLogin` no resuelve nunca y la pantalla de entrada se
+      // medias, el evento de login no llega nunca y la pantalla de entrada se
       // quedaría con los botones inertes. Se da margen de sobra (2 min) para
       // completar el consentimiento de verdad.
-      await conPlazo(api.cloudLogin(), 120000)
+      const respuesta = await conPlazo(api.cloudLogin(), 120000)
+      if (!respuesta || respuesta.started !== true) {
+        // Fallo inmediato (login ya en curso, falta configuración, equipo
+        // emparejado por QR sin navegador...): no habrá evento de login que
+        // esperar.
+        throw new Error(String(respuesta?.error || respuesta?.reason || 'No se pudo iniciar sesión.'))
+      }
+
+      const evento = await conPlazo(esperaLogin, 120000)
+      if (evento && evento.ok === false) {
+        throw new Error(String(evento.text || 'No se pudo iniciar sesión.'))
+      }
       await refrescar()
     } catch (e) {
       setError(String(e?.message || e))
       setCargando(false)
+    } finally {
+      offLoginRef.current?.()
+      offLoginRef.current = null
     }
   }, [refrescar])
 

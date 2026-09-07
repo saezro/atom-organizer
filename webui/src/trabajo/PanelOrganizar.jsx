@@ -48,7 +48,16 @@ export default function PanelOrganizar({ origen, estadillos, ready, running, onR
     })
     ;(async () => {
       await api.analisisReset()
-      if (vivo) api.detectSuffixesStart(origen)
+      if (!vivo) return
+      // Si el análisis no llega a arrancar (el flag `_analizando` sigue tomado
+      // por un escaneo anterior) la caja de sufijos se quedaba en 0, muda y sin
+      // explicación. Se dice, que es la diferencia entre "no detecta nada" y
+      // "no ha llegado a mirar".
+      const res = await api.detectSuffixesStart(origen)
+      if (vivo && res && res.started === false) {
+        setEscaneados(0)
+        setDetected({ ok: false, error: res.reason || 'No se pudo analizar la carpeta.' })
+      }
     })()
     return () => { vivo = false; off() }
   }, [origen])

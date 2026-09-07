@@ -132,13 +132,13 @@ export default function ProgressModal({
         )}
 
         <div className="pm-actions">
-          <button
-            type="button"
-            className="btn-run pm-close"
-            disabled={!finished}
-            onClick={onClose}
-          >
-            {finished ? 'Cerrar' : 'Procesando…'}
+          {/* El cierre NUNCA se bloquea. Antes estaba `disabled` hasta que
+              llegara `done`/`error`, así que si el backend dejaba de emitir
+              (transporte roto, hilo muerto) el operador se quedaba encerrado en
+              un modal mudo y tenía que matar la aplicación. Mientras corre, el
+              botón avisa de que el proceso sigue por su cuenta. */}
+          <button type="button" className="btn-run pm-close" onClick={onClose}>
+            {finished ? 'Cerrar' : 'Cerrar (el proceso sigue en segundo plano)'}
           </button>
         </div>
       </div>

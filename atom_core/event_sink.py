@@ -9,8 +9,11 @@ cual de los dos esta.
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import threading
+
+logger = logging.getLogger(__name__)
 
 
 class EventSink:
@@ -33,8 +36,14 @@ class WebviewSink(EventSink):
     def _run(self, js: str) -> None:
         try:
             self._window.evaluate_js(js)
-        except Exception:
-            pass  # ventana cerrada a mitad de proceso
+        except Exception as exc:  # noqa: BLE001 — perder un evento no puede tumbar el pipeline
+            # Se traga a propósito (lo normal es la ventana cerrada a mitad de
+            # proceso), pero NUNCA en silencio: si el transporte se rompe, el
+            # front deja de recibir progreso y el modal se queda mudo en
+            # "Preparando…" sin que quede rastro de por qué. Al log, que es lo
+            # que se le pide al usuario cuando reporta un cuelgue.
+            logger.warning("no se pudo entregar el evento a la ventana (%s): %s",
+                           type(exc).__name__, exc)
 
     def dispatch(self, event: str, detail: dict) -> None:
         self._run(f"window.dispatchEvent(new CustomEvent({json.dumps(event)},"

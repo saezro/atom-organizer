@@ -13,7 +13,9 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
+import datetime
 import glob
 import importlib
 import json
@@ -21,6 +23,7 @@ import logging
 import multiprocessing
 import os
 import platform
+import re
 import subprocess
 import sys
 import threading
@@ -126,6 +129,97 @@ def _disco_externo() -> str | None:
     if validos:
         return sorted(validos)[0]
     return None
+
+
+_NOMBRE_LOG_RUN = re.compile(r"^atom-organizer-run_(\d{8})_(\d{6})_pid(\d+)\.log$")
+_CABECERA_LOG_RUN = re.compile(r"^\[run\] version=(\S+) pid=\d+ task=(\S+) ctx=(\{.*\})\s*$")
+
+
+def _resumir_log_run(ruta: str, nombre: str, match_nombre: "re.Match") -> dict | None:
+    """Resumen de UN log de corrida para el Historial de procesos, leído línea
+    a línea (nunca `read()` completo: estos ficheros pueden llevar miles de
+    líneas de `[log]` por corrida larga y solo hace falta la cabecera, el
+    nombre de planta, el recuento de `[error]` y si hubo `[done]`).
+
+    Devuelve None si el fichero no se puede ni siquiera `stat()`-ear; el resto
+    de fallos (cabecera rara, `ctx`/`[done]` no parseables) degradan campo a
+    campo, no hacen saltar todo el resumen — un log parcialmente ilegible
+    sigue siendo mejor que ninguno en la lista.
+    """
+    try:
+        st = os.stat(ruta)
+    except OSError:
+        return None
+
+    try:
+        fecha = datetime.datetime.strptime(
+            match_nombre.group(1) + match_nombre.group(2), "%Y%m%d%H%M%S"
+        ).isoformat()
+    except ValueError:
+        fecha = datetime.datetime.fromtimestamp(st.st_mtime).isoformat()
+
+    version = task = origen = destino = estadillo = ""
+    planta = ""
+    errores = 0
+    done_visto = False
+    duracion = None
+    try:
+        with open(ruta, "r", encoding="utf-8", errors="replace") as f:
+            for linea in f:
+                linea = linea.rstrip("\n")
+                if linea.startswith("[run] "):
+                    cab = _CABECERA_LOG_RUN.match(linea)
+                    if cab:
+                        version, task, ctx_txt = cab.group(1), cab.group(2), cab.group(3)
+                        try:
+                            ctx = ast.literal_eval(ctx_txt)
+                        except (ValueError, SyntaxError):
+                            ctx = {}
+                        if isinstance(ctx, dict):
+                            origen = str(ctx.get("origen") or "")
+                            destino = str(ctx.get("destino") or "")
+                            estadillo = str(ctx.get("estadillo") or "")
+                elif linea.startswith("[plant] ") and not planta:
+                    planta = linea[len("[plant] "):].strip()
+                elif linea.startswith("[error]"):
+                    errores += 1
+                elif linea.startswith("[done] "):
+                    done_visto = True
+                    try:
+                        payload = ast.literal_eval(linea[len("[done] "):].strip())
+                        if isinstance(payload, dict):
+                            duracion = payload.get("elapsed")
+                    except (ValueError, SyntaxError):
+                        pass
+    except OSError:
+        return None
+
+    if not planta and destino:
+        planta = os.path.basename(str(destino).rstrip("/\\"))
+
+    # incompleto = ni [done] ni [error]: la corrida se quedó a medias (el
+    # proceso murió/se cerró la app) y no hay forma de saber si acabó bien.
+    if errores > 0:
+        estado = "error"
+    elif done_visto:
+        estado = "ok"
+    else:
+        estado = "incompleto"
+
+    return {
+        "nombre": nombre,
+        "fecha": fecha,
+        "planta": planta,
+        "task": task,
+        "origen": origen,
+        "destino": destino,
+        "estadillo": estadillo,
+        "version": version,
+        "bytes": st.st_size,
+        "errores": errores,
+        "estado": estado,
+        "duracion": duracion,
+    }
 
 
 # Diálogo de carpeta MODERNO en Windows (IFileOpenDialog + FOS_PICKFOLDERS): el del
@@ -1952,9 +2046,14 @@ class Api:
     def run_task(self, task: str, params: dict, advanced: dict | None = None) -> dict:
         """Arranca un task del pipeline en un hilo aparte. Devuelve al instante;
         el progreso llega a React por eventos `atom:progress`."""
-        # Solo para refrescar el indicador de estado de la nube: organizar es
-        # 100 % local y debe funcionar siempre, con o sin credencial.
-        self.cloud_asegurar_estado()
+        # El refresco del indicador de la nube va en SU PROPIO hilo, nunca aquí:
+        # `cloud_asegurar_estado` hace red (refresh del token contra Google, 30 s
+        # de plazo, y el lock de GoogleAuth puede estar tomado por la comprobación
+        # de arranque). Llamarla en línea bloqueaba el hilo del bridge Qt, así que
+        # `run_task` no llegaba a devolver: la promesa del front no resolvía nunca
+        # y el modal se quedaba en "Preparando…" para siempre, sin un solo evento.
+        # Organizar es 100 % local y no depende de esta respuesta para nada.
+        threading.Thread(target=self._cloud_estado_en_segundo_plano, daemon=True).start()
         if self._running:
             return {"started": False, "reason": "Ya hay un proceso en curso."}
         self._running = True
@@ -1963,11 +2062,14 @@ class Api:
         ).start()
         return {"started": True}
 
-    def _run_task_worker(self, task: str, params: dict, advanced: dict | None) -> None:
-        # Import perezoso: atom_core arrastra gui.py/PySide → no lo cargamos al
-        # abrir la ventana, solo al primer run.
-        from atom_core.organize import run_task
+    def _cloud_estado_en_segundo_plano(self) -> None:
+        """Refresca el indicador de credencial sin bloquear a quien lo pidió."""
+        try:
+            self.cloud_asegurar_estado()
+        except Exception as exc:  # noqa: BLE001 — el indicador es cortesía, no requisito
+            logger.warning("cloud_asegurar_estado en segundo plano falló: %s", exc)
 
+    def _run_task_worker(self, task: str, params: dict, advanced: dict | None) -> None:
         def emit(kind: str, payload) -> None:
             detail = {"kind": kind}
             if kind == "progress":
@@ -1979,7 +2081,18 @@ class Api:
             self._push(detail)
 
         try:
+            # Import perezoso: atom_core arrastra gui.py/PySide → no lo cargamos
+            # al abrir la ventana, solo al primer run. Va DENTRO del try porque
+            # estando fuera un fallo aquí (una dependencia que PyInstaller no
+            # empaquetó, un DLL del SDK ausente) mataba el hilo en silencio: ni un
+            # evento para el front, `_running` clavado en True para siempre y el
+            # modal en "Preparando…" sin forma de salir. Ahora se reporta.
+            from atom_core.organize import run_task
+
             run_task(task, params, emit, advanced or None)
+        except Exception as exc:  # noqa: BLE001 — el front tiene que enterarse SIEMPRE
+            logger.exception("El task %s murió antes de poder informar", task)
+            emit("error", f"{type(exc).__name__}: {exc}")
         finally:
             self._running = False
             # Sin esto, lo que quedara en el buffer cuando el pipeline deja de
@@ -2161,6 +2274,106 @@ class Api:
             return {"ok": True, "conectado": _disco_externo() is not None}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    # ---- historial de procesos (logs de corrida de organize.run_task) -----
+    def logs_listar(self) -> dict:
+        """Resumen de los runs anteriores para la pantalla «Historial de
+        procesos»: uno por fichero `atom-organizer-run_*.log` de
+        `user_log_dir()`, más recientes primero. No lee ningún fichero
+        entero (ver `_resumir_log_run`), así que es seguro llamarlo aunque
+        haya cientos de corridas acumuladas."""
+        try:
+            from external_tools import user_log_dir
+            carpeta = user_log_dir()
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "runs": []}
+        if not os.path.isdir(carpeta):
+            return {"ok": True, "runs": []}
+        try:
+            nombres = os.listdir(carpeta)
+        except OSError as exc:
+            return {"ok": False, "error": str(exc), "runs": []}
+        runs = []
+        for nombre in nombres:
+            m = _NOMBRE_LOG_RUN.match(nombre)
+            if not m:
+                continue
+            try:
+                resumen = _resumir_log_run(os.path.join(carpeta, nombre), nombre, m)
+            except Exception:
+                continue  # log corrupto/ilegible: se salta, no rompe el listado
+            if resumen is not None:
+                runs.append(resumen)
+        runs.sort(key=lambda r: r["fecha"], reverse=True)
+        return {"ok": True, "runs": runs[:200]}
+
+    def logs_leer(self, nombre: str) -> dict:
+        """Contenido de un log de corrida concreto.
+
+        SEGURIDAD: `nombre` viaja desde el front (y, en modo servidor, desde
+        un cliente HTTP), así que se valida como basename puro — nada de
+        separadores de ruta ni `..` — y además se comprueba que la ruta
+        resuelta cae DENTRO de `user_log_dir()`. Sin esto, un nombre como
+        `../../Config.ini` o una ruta absoluta dejaría leer cualquier
+        fichero del disco del usuario.
+        """
+        try:
+            from external_tools import user_log_dir
+            carpeta = user_log_dir()
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        nombre = str(nombre or "")
+        if (not nombre or "/" in nombre or "\\" in nombre or nombre in (".", "..")
+                or os.path.basename(nombre) != nombre):
+            return {"ok": False, "error": "Nombre de log no válido."}
+
+        # `realpath` (no `abspath`): resuelve symlinks ANTES de comprobar la
+        # contención, si no un enlace con nombre válido dentro de la carpeta
+        # serviría el contenido de cualquier fichero del disco.
+        carpeta_abs = os.path.realpath(carpeta)
+        ruta = os.path.realpath(os.path.join(carpeta_abs, nombre))
+        try:
+            dentro = os.path.commonpath([ruta, carpeta_abs]) == carpeta_abs
+        except ValueError:  # unidades distintas en Windows
+            dentro = False
+        if not dentro or not os.path.isfile(ruta):
+            return {"ok": False, "error": "No se encontró ese log."}
+
+        # Fichero grande: solo la COLA (1 MB), que es lo que interesa ante un
+        # fallo — el principio ya se ve en el resumen de logs_listar.
+        _LIMITE = 1024 * 1024
+        try:
+            tam = os.path.getsize(ruta)
+            with open(ruta, "rb") as f:
+                if tam > _LIMITE:
+                    f.seek(-_LIMITE, os.SEEK_END)
+                    f.readline()  # descarta la línea partida por el seek
+                    crudo = f.read()
+                    truncado = True
+                else:
+                    crudo = f.read()
+                    truncado = False
+            return {
+                "ok": True,
+                "texto": crudo.decode("utf-8", errors="replace"),
+                "truncado": truncado,
+                "bytes": tam,
+            }
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def logs_carpeta(self) -> dict:
+        """Ruta de la carpeta de logs (`user_log_dir()`), para que el usuario
+        pueda ir a buscarla a mano (p. ej. para adjuntarla a un correo de
+        soporte)."""
+        try:
+            from external_tools import user_log_dir
+            carpeta = user_log_dir()
+            os.makedirs(carpeta, exist_ok=True)
+            return {"ok": True, "ruta": carpeta}
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     def _wifi_en_uso(self) -> tuple[str, int | None]:
         """(ssid, senal 0-100) de la wifi en uso, sin forzar escaneo."""

@@ -331,6 +331,16 @@ export const api = {
   // discoEstado devuelve {ok, conectado: bool} | {ok:false, error}. Consumido
   // por `BarraEstado.jsx`.
   discoEstado: () => call('disco_estado'),
+  // Historial de procesos (`logs/HistorialRuns.jsx`). logsListar devuelve
+  // {ok, runs:[{nombre, fecha, planta, task, origen, destino, estadillo,
+  // version, bytes, errores, estado: 'ok'|'error'|'incompleto', duracion}],
+  // error?} — sin volcar ningún log entero. logsLeer(nombre) devuelve
+  // {ok, texto, truncado, bytes} | {ok:false, error} — `nombre` DEBE ser el
+  // basename tal cual lo devolvió logsListar (el backend rechaza rutas).
+  // logsCarpeta devuelve {ok, ruta} | {ok:false, error}.
+  logsListar: () => call('logs_listar'),
+  logsLeer: (nombre) => call('logs_leer', nombre),
+  logsCarpeta: () => call('logs_carpeta'),
 }
 
 // Python empuja progreso del pipeline con:

@@ -11,6 +11,13 @@ vi.mock('../bridge.js', () => ({
     cloudLogin: (...args) => cloudLoginMock(...args),
     cloudLogout: (...args) => cloudLogoutMock(...args),
   },
+  // Réplica fiel del real: escucha `atom:cloud` en window, así los tests
+  // simulan el evento con `window.dispatchEvent(new CustomEvent(...))`.
+  onCloud: (handler) => {
+    const wrapped = (e) => handler(e.detail)
+    window.addEventListener('atom:cloud', wrapped)
+    return () => window.removeEventListener('atom:cloud', wrapped)
+  },
 }))
 
 import { useSesion } from './useSesion.js'
@@ -121,5 +128,72 @@ describe('useSesion', () => {
     expect(result.current.cargando).toBe(false)
     expect(result.current.error).toBeTruthy()
     vi.useRealTimers()
+  })
+
+  // Regresión: `cloudLogin` resuelve en cuanto se lanza el hilo (fire-and-
+  // forget), mucho antes de que el usuario termine el consentimiento en el
+  // navegador. Antes de este fix, `entrarConGoogle` refrescaba justo ahí y el
+  // `cloudStatus` todavía daba `logged_in:false`, obligando a un segundo
+  // clic. Debe quedarse cargando hasta el evento `atom:cloud` de `kind:'login'`.
+  it('entrarConGoogle espera el evento atom:cloud antes de refrescar (sin segundo clic)', async () => {
+    const { result } = renderHook(() => useSesion())
+    await waitFor(() => expect(result.current.cargando).toBe(false))
+
+    // Mientras no llega el evento, cloudStatus todavía diría logged_in=false
+    // (como en el bug real: el navegador aún no ha cerrado el consentimiento).
+    cloudStatusMock.mockResolvedValue({ ok: true, configured: true, logged_in: false })
+
+    act(() => {
+      result.current.entrarConGoogle()
+    })
+
+    await waitFor(() => expect(cloudLoginMock).toHaveBeenCalledTimes(1))
+    // Sigue cargando: el `atom:cloud` de login todavía no ha llegado.
+    expect(result.current.cargando).toBe(true)
+    expect(result.current.entrado).toBe(false)
+
+    // Ahora sí llega el consentimiento: cloudStatus pasa a logged_in=true y
+    // el backend emite el evento de login.
+    cloudStatusMock.mockResolvedValue({
+      ok: true,
+      configured: true,
+      logged_in: true,
+      email: 'user@example.com',
+      nombre: 'Usuario',
+      picture: null,
+    })
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('atom:cloud', { detail: { kind: 'login', ok: true, email: 'user@example.com' } })
+      )
+    })
+
+    await waitFor(() => expect(result.current.cargando).toBe(false))
+    expect(result.current.entrado).toBe(true)
+    expect(result.current.cuenta?.email).toBe('user@example.com')
+  })
+
+  // El evento de login también puede traer un fallo (consentimiento
+  // cancelado, error de red durante el intercambio de token...). Debe
+  // reflejarse como error, no dejar la pantalla cargando para siempre.
+  it('entrarConGoogle refleja el error si el evento atom:cloud de login trae ok:false', async () => {
+    const { result } = renderHook(() => useSesion())
+    await waitFor(() => expect(result.current.cargando).toBe(false))
+
+    act(() => {
+      result.current.entrarConGoogle()
+    })
+    await waitFor(() => expect(cloudLoginMock).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('atom:cloud', { detail: { kind: 'login', ok: false, text: 'Consentimiento cancelado.' } })
+      )
+    })
+
+    await waitFor(() => expect(result.current.cargando).toBe(false))
+    expect(result.current.entrado).toBe(false)
+    expect(result.current.error).toBe('Consentimiento cancelado.')
   })
 })

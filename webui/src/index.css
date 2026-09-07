@@ -63,6 +63,14 @@
   box-sizing: border-box;
 }
 
+/* Red de seguridad: 100vw no descuenta el ancho de la barra de scroll
+   vertical, así que cualquier elemento a ancho de viewport puede desbordar
+   unos px por la derecha. */
+html,
+body {
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
