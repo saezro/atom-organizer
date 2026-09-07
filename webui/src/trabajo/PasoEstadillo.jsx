@@ -7,7 +7,7 @@ import EstadilloField from '../EstadilloField'
 // (`estadCheck`) antes de poder subir: el resumen se invalida en cuanto
 // cambia la lista de ficheros, para no subir con un resumen que ya no
 // corresponde a la selección.
-export default function PasoEstadillo({ prefijo, disabled, onEstado }) {
+export default function PasoEstadillo({ prefijo, carpeta, disabled, onEstado }) {
   const [estadRutas, setEstadRutas] = useState([])
   const [estadCheck, setEstadCheck] = useState(null) // null | {ok, error, vuelos_detectados, filas_con_problemas}
   const [estadComprobando, setEstadComprobando] = useState(false)
@@ -28,6 +28,9 @@ export default function PasoEstadillo({ prefijo, disabled, onEstado }) {
   // que saberlo de memoria.
   const [omitirEstadillo, setOmitirEstadillo] = useState(false)
   const [estadPrevio, setEstadPrevio] = useState(null) // null | {existe, error, _prefijo}
+  // Resultado de la autodetección en la carpeta del vuelo, solo para el
+  // rótulo: null (silencio) | {estado:'buscando'|'encontrado'|'nada', n}.
+  const [autoDeteccion, setAutoDeteccion] = useState(null)
   // Puente entre el `await` de `subirEstadilloEsperando` y el evento
   // `atom:cloud` (`scope: 'estadillo'`) que trae el resultado real: la llamada
   // a `estadillo_subir` solo devuelve `{started}`, así que la promesa se
@@ -49,6 +52,19 @@ export default function PasoEstadillo({ prefijo, disabled, onEstado }) {
   // todavía) y solo hacerlo cuando el operador cambia de inspección de
   // verdad.
   const prefijoAnteriorRef = useRef(prefijo)
+  // Clave `carpeta|prefijo` para la que ya corrió la autodetección. Una sola
+  // pasada por combinación: si el operador borra a mano lo detectado no se lo
+  // volvemos a poner, y si cambia de inspección (que vacía la selección)
+  // vuelve a detectarse.
+  const autoDeteccionRef = useRef(null)
+  // La autodetección resuelve de forma asíncrona y su efecto no reacciona ni
+  // a `estadRutas` ni a `omitirEstadillo` (relanzarlo con cada cambio de
+  // selección sería un bucle). Estas refs le dan el valor VIGENTE al aplicar,
+  // no el que hubiera en el closure cuando arrancó la búsqueda.
+  const rutasRef = useRef(estadRutas)
+  rutasRef.current = estadRutas
+  const omitirRef = useRef(omitirEstadillo)
+  omitirRef.current = omitirEstadillo
 
   function cambiarEstadRutas(next) {
     setEstadRutas(next)
@@ -94,8 +110,54 @@ export default function PasoEstadillo({ prefijo, disabled, onEstado }) {
     // con «omitir estadillo» heredado.
     setEstadPrevio(null)
     autoOmitAplicadoRef.current = null
+    // El rótulo de la detección anterior habla de una selección que se acaba
+    // de vaciar; la detección se relanza sola porque su clave lleva `prefijo`.
+    setAutoDeteccion(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefijo])
+
+  // Autodetección: el estadillo casi siempre viaja dentro de la propia
+  // carpeta del vuelo, así que en cuanto hay carpeta se busca ahí y se
+  // rellena solo el selector. El selector manual y «subir sin estadillo»
+  // siguen ahí como fallback: `detectar_estadillos` exige columnas válidas y
+  // no acierta siempre (carpetas sin estadillo, ficheros con otro formato).
+  useEffect(() => {
+    if (!carpeta || !prefijo) return
+    const clave = `${carpeta}|${prefijo}`
+    if (autoDeteccionRef.current === clave) return
+    autoDeteccionRef.current = clave
+    let cancelado = false
+    setAutoDeteccion({ estado: 'buscando' })
+    ;(async () => {
+      try {
+        const r = await api.estadillosDetectar(carpeta)
+        if (cancelado) return
+        const rutas = Array.isArray(r?.rutas) ? r.rutas : []
+        // No pisar una decisión ya tomada mientras la búsqueda estaba en
+        // vuelo: ni ficheros elegidos a mano, ni una resubida que el
+        // auto-marcado de `estadPrevio` acaba de eximir de estadillo. En ese
+        // caso ni siquiera se informa, para no contradecir lo que ya se ve.
+        if (omitirRef.current || rutasRef.current.length > 0) {
+          setAutoDeteccion(null)
+          return
+        }
+        if (r?.error || rutas.length === 0) {
+          setAutoDeteccion({ estado: 'nada' })
+          return
+        }
+        cambiarEstadRutas(rutas)
+        setAutoDeteccion({ estado: 'encontrado', n: rutas.length })
+      } catch {
+        // Fail-open: si la detección falla se sigue pudiendo elegir a mano,
+        // que es exactamente lo que se hacía antes de que existiera.
+        if (!cancelado) setAutoDeteccion({ estado: 'nada' })
+      }
+    })()
+    return () => {
+      cancelado = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [carpeta, prefijo])
 
   // Detecta si la inspección elegida ya tiene un estadillo subido en el
   // bucket, para auto-marcar «omitir estadillo» en una resubida y cambiar la
@@ -307,6 +369,20 @@ export default function PasoEstadillo({ prefijo, disabled, onEstado }) {
         />
         <span>{estadPrevio?.existe ? 'Ya subí el estadillo de esta inspección' : 'Subir sin estadillo'}</span>
       </label>
+      {autoDeteccion?.estado === 'buscando' && (
+        <span className="field-hint">Buscando el estadillo en la carpeta del vuelo…</span>
+      )}
+      {autoDeteccion?.estado === 'encontrado' && (
+        <span className="field-hint hint-ok">
+          Estadillo detectado en la carpeta del vuelo
+          {autoDeteccion.n > 1 ? ` (${autoDeteccion.n} ficheros)` : ''}
+        </span>
+      )}
+      {autoDeteccion?.estado === 'nada' && (
+        <span className="field-hint">
+          No se ha encontrado ningún estadillo en la carpeta del vuelo; elígelo a mano.
+        </span>
+      )}
       {estadComprobando && <span className="field-hint">Comprobando el estadillo…</span>}
       {estadCheck?.ok && (
         <span className="field-hint hint-ok">

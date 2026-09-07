@@ -6,6 +6,7 @@ vi.mock('../bridge', () => ({
     estadilloValidar: vi.fn(),
     estadilloSubir: vi.fn(),
     estadilloExistente: vi.fn(),
+    estadillosDetectar: vi.fn(),
     pickFile: vi.fn(),
   },
   onCloud: (h) => {
@@ -35,6 +36,7 @@ async function elegirEstadillo(ruta = '/home/saez/Descargas/estadillo.xlsx') {
 beforeEach(() => {
   vi.clearAllMocks()
   api.estadilloExistente.mockResolvedValue({ existe: false })
+  api.estadillosDetectar.mockResolvedValue({ rutas: [] })
 })
 
 describe('PasoEstadillo', () => {
@@ -148,5 +150,53 @@ describe('PasoEstadillo', () => {
     emitirCloud({ scope: 'estadillo', kind: 'error', error: 'formato inválido' })
     expect(await screen.findByText(/formato inválido/)).toBeTruthy()
     await waitFor(() => expect(estado.subiendo).toBe(false))
+  })
+
+  it('autodetecta el estadillo de la carpeta del vuelo y rellena el selector', async () => {
+    api.estadillosDetectar.mockResolvedValue({ rutas: ['/vuelo/estadillo.xlsx'], n_estadillos: 1 })
+    api.estadilloValidar.mockResolvedValue({ ok: true, vuelos_detectados: 1 })
+    let estado = null
+    render(
+      <PasoEstadillo
+        prefijo="ACME--P--2026--T"
+        carpeta="/vuelo"
+        onEstado={(e) => { estado = e }}
+      />)
+    await waitFor(() => expect(api.estadillosDetectar).toHaveBeenCalledWith('/vuelo'))
+    expect(await screen.findByText(/estadillo detectado en la carpeta del vuelo/i)).toBeTruthy()
+    await waitFor(() => expect(estado.rutas).toEqual(['/vuelo/estadillo.xlsx']))
+  })
+
+  it('sin estadillo detectado muestra el aviso de «no encontrado» y deja el selector vacío', async () => {
+    api.estadillosDetectar.mockResolvedValue({ rutas: [] })
+    let estado = null
+    render(
+      <PasoEstadillo
+        prefijo="ACME--P--2026--T"
+        carpeta="/vuelo"
+        onEstado={(e) => { estado = e }}
+      />)
+    expect(
+      await screen.findByText(/no se ha encontrado ningún estadillo en la carpeta del vuelo/i)
+    ).toBeTruthy()
+    await waitFor(() => expect(estado.rutas).toEqual([]))
+  })
+
+  it('si estadillosDetectar rechaza, no explota y muestra el aviso de «no encontrado»', async () => {
+    api.estadillosDetectar.mockRejectedValue(new Error('fallo de red'))
+    render(
+      <PasoEstadillo prefijo="ACME--P--2026--T" carpeta="/vuelo" onEstado={vi.fn()} />)
+    expect(
+      await screen.findByText(/no se ha encontrado ningún estadillo en la carpeta del vuelo/i)
+    ).toBeTruthy()
+  })
+
+  it('sin prop carpeta no llama a estadillosDetectar', async () => {
+    let estado = null
+    render(
+      <PasoEstadillo prefijo="ACME--P--2026--T" onEstado={(e) => { estado = e }} />)
+    await waitFor(() => expect(estado).toBeTruthy())
+    await act(async () => { await Promise.resolve() })
+    expect(api.estadillosDetectar).not.toHaveBeenCalled()
   })
 })

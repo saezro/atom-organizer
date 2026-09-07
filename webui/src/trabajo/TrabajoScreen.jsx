@@ -46,7 +46,12 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
         disabled={ocupado || estadillo.subiendo}
         reloadToken={inspeccionReloadToken}
       />
-      <PasoEstadillo prefijo={prefijo} disabled={ocupado} onEstado={setEstadillo} />
+      <PasoEstadillo
+        prefijo={prefijo}
+        carpeta={carpeta}
+        disabled={ocupado}
+        onEstado={setEstadillo}
+      />
 
       {/* Los destinos se ven SIEMPRE, deshabilitados hasta que haya carpeta:
           si solo aparecían al elegirla, no se entendía que organizar fuese
