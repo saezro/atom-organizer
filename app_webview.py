@@ -25,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 from atom_core import cola_subidas
@@ -2514,7 +2515,12 @@ def resolve_target(dev: bool) -> str:
             f"[app_webview] Falta el build del front: {DIST_INDEX}\n"
             "Ejecuta:  cd webui && npm run build   (o usa --dev con npm run dev)"
         )
-    return str(DIST_INDEX)
+    # El perfil de QtWebEngine persiste entre versiones y, con la misma URL,
+    # puede servir el index.html cacheado tras una actualización in-place.
+    # La query cambia la URL en cada versión sin cambiar el origin (localStorage
+    # y sesión se conservan).
+    version = urllib.parse.quote(_app_version_for_title())
+    return f"{DIST_INDEX.resolve().as_uri()}?v={version}"
 
 
 def _app_version_for_title() -> str:
