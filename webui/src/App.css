@@ -3058,6 +3058,11 @@ html.kiosk-modo body * {
 .entrada-avatar {
   width: 5.5rem;
   height: 5.5rem;
+  /* Es un <button>: sin este padding:0 el UA le mete el suyo por defecto y la
+     foto queda encajada con margen en vez de llenar el círculo (igual que en
+     .cuenta-avatar, que sí lo declaraba). */
+  padding: 0;
+  background: none;
   border-radius: 50%;
   border: 0.0625rem solid rgba(255, 255, 255, 0.15);
   display: flex;
@@ -3075,7 +3080,10 @@ html.kiosk-modo body * {
 .entrada-avatar-img {
   width: 100%;
   height: 100%;
+  /* Flex item: sin flex-shrink:0 el contenedor puede encogerlo y dejar hueco. */
+  flex-shrink: 0;
   object-fit: cover;
+  border-radius: 50%;
 }
 .entrada-avatar-inicial {
   font-size: var(--fs-md, 1rem);
