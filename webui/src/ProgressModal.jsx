@@ -61,13 +61,15 @@ export default function ProgressModal({
         <ul className="pm-phases">
           {phases.length === 0 && (
             <li className="pm-phase pm-active">
-              <span className="pm-ico">●</span>
+              <span className="pm-ico pm-ico-spin">●</span>
               <span className="pm-name">Preparando…</span>
             </li>
           )}
           {phases.map((p, i) => (
             <li key={i} className={'pm-phase pm-' + p.status}>
-              <span className="pm-ico">{ICON[p.status]}</span>
+              <span className={'pm-ico' + (p.status === 'active' ? ' pm-ico-spin' : '')}>
+                {ICON[p.status]}
+              </span>
               <span className="pm-name">{p.name}</span>
               {/* Tiempo de la fase (visible en cuanto se cierra). */}
               {p.duration != null && (
@@ -80,7 +82,12 @@ export default function ProgressModal({
                 <>
                   <div className="pm-sub">
                     <div className="pm-bar">
-                      <div className="pm-bar-fill" style={{ width: `${progress}%` }} />
+                      <div
+                        className={
+                          'pm-bar-fill' + (progress === 0 ? ' pm-bar-fill-indeterminate' : '')
+                        }
+                        style={progress > 0 ? { width: `${progress}%` } : undefined}
+                      />
                     </div>
                     <span className="pm-pct">{progress}%</span>
                   </div>

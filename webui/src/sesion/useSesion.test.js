@@ -4,12 +4,16 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 const cloudStatusMock = vi.fn()
 const cloudLoginMock = vi.fn()
 const cloudLogoutMock = vi.fn()
+const listarPerfilesMock = vi.fn()
 
 vi.mock('../bridge.js', () => ({
   api: {
     cloudStatus: (...args) => cloudStatusMock(...args),
     cloudLogin: (...args) => cloudLoginMock(...args),
     cloudLogout: (...args) => cloudLogoutMock(...args),
+    // Se ejerce en PantallaEntrada.test.jsx, no aquí: el hook solo necesita
+    // no romperse si el bridge la expone (fail-soft ya cubierto si no).
+    listarPerfiles: (...args) => listarPerfilesMock(...args),
   },
   // Réplica fiel del real: escucha `atom:cloud` en window, así los tests
   // simulan el evento con `window.dispatchEvent(new CustomEvent(...))`.
@@ -28,10 +32,12 @@ beforeEach(() => {
   cloudStatusMock.mockReset()
   cloudLoginMock.mockReset()
   cloudLogoutMock.mockReset()
+  listarPerfilesMock.mockReset()
   localStorage.clear()
   cloudStatusMock.mockResolvedValue({ ok: true, configured: true, logged_in: false })
   cloudLoginMock.mockResolvedValue({ started: true })
   cloudLogoutMock.mockResolvedValue({ ok: true })
+  listarPerfilesMock.mockResolvedValue([])
 })
 
 describe('useSesion', () => {

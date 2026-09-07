@@ -27,6 +27,20 @@ export default function UpdateModal() {
     else if (d.kind === 'error') { setError(d.text || 'Error desconocido'); setPhase('error') }
   }), [])
 
+  // El chequeo automático corre a los 3 s del arranque, antes de que el
+  // usuario haya pasado el login (este modal no está montado aún y el evento
+  // `atom:update` se pierde). Al montarse se consulta el último aviso
+  // cacheado por si ya pasó.
+  useEffect(() => {
+    if (!api.getUltimoUpdate) return
+    let cancelado = false
+    api.getUltimoUpdate().then((d) => {
+      if (cancelado || !d) return
+      if (d.kind === 'available') { setInfo(d.data); setPhase('available') }
+    }).catch(() => {})
+    return () => { cancelado = true }
+  }, [])
+
   // Un solo clic: en cuanto la descarga termina se instala sola. El segundo
   // botón obligaba a Daniel a volver a la app para rematar la actualización.
   useEffect(() => {

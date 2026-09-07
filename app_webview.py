@@ -297,6 +297,11 @@ class Api:
         self._running = False
         self._downloading = False
         self._update_path: str | None = None
+        # Último aviso "hay versión nueva" del chequeo automático (ver
+        # `start_update_check`). El modal (`UpdateModal.jsx`) no está montado
+        # mientras el usuario no ha entrado, así que el evento `atom:update`
+        # puede emitirse al vacío; esto le da algo que consultar al montarse.
+        self._ultimo_update: dict | None = None
         # Subida al bucket (ver más abajo). `_auth` se crea perezoso: sin él, el
         # arranque tendría que leer el fichero de credenciales aunque nadie vaya
         # a subir nada en toda la sesión.
@@ -306,6 +311,10 @@ class Api:
         # propio store para no depender de que haya credencial configurada.
         self._pin_store = None
         self._pin_intentos = pin_kiosco.ControlIntentos()
+        # Store propio del catálogo de perfiles (pantalla de entrada tipo
+        # Netflix). Mismo motivo que `_pin_store`: perezoso, y con su propio
+        # atributo para que los tests puedan sustituirlo sin tocar `_auth`.
+        self._perfiles_store = None
         # `broker`: modo Raspberry Pi (`main()`, rama `--server`). Sin cliente
         # OAuth propio, `_get_auth` construye un `GoogleAuth` broker_only en
         # vez de devolver `None`. El escritorio (Windows) nunca pasa esto:
@@ -777,9 +786,18 @@ class Api:
             except Exception as exc:  # noqa: BLE001 — nunca romper el arranque
                 res = {"ok": False, "error": str(exc)}
             if res.get("ok") and res.get("update_available"):
-                self._push_update({"kind": "available", "data": res})
+                detail = {"kind": "available", "data": res}
+                self._ultimo_update = detail
+                self._push_update(detail)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def get_ultimo_update(self) -> dict | None:
+        """Último aviso de actualización disponible, o None si no hay ninguno.
+
+        Para el modal que se monta tarde (tras el login): el chequeo automático
+        ya pudo haber pasado y disparado `atom:update` al vacío."""
+        return self._ultimo_update
 
     # ---- subida al bucket «datos para organizar» ---------------------------
     # Cuenta de Google del operador + IAM del bucket. La app no lleva ninguna
@@ -961,6 +979,82 @@ class Api:
         self._credencial.invalidar("Se cerro la sesion en este equipo.")
         self._olvidar_pin()
         return {"ok": True}
+
+    # ---- catálogo de perfiles (pantalla de entrada tipo Netflix) -----------
+    # No confundir con `_get_auth`/`_credencial`, que hablan de LA sesión
+    # activa: esto es la lista de cuentas recordadas en este equipo, para
+    # poder cambiar de una a otra sin repetir el consentimiento de Google.
+    def _store_perfiles(self):
+        """SessionStore propio de los perfiles. Perezoso: los tests lo sustituyen."""
+        if self._perfiles_store is None:
+            from atom_core.google_auth import STORE_NAME, user_data_dir
+            from atom_core.session_store import SessionStore
+
+            self._perfiles_store = SessionStore(user_data_dir() / STORE_NAME)
+        return self._perfiles_store
+
+    def listar_perfiles(self) -> list[dict]:
+        """Perfiles guardados para la pantalla de entrada, con el avatar ya
+        resuelto a `data:` URI.
+
+        La foto no puede ser la URL cruda de Google: esta pantalla se pinta
+        ANTES de que exista sesión activa (no hay token con el que reintentar
+        un 429) y el WebView de Windows falla contra `googleusercontent.com`
+        con cierta frecuencia. Por eso se pasa por `avatar_cache`, que cachea
+        en disco y nunca lanza. Todo el método va envuelto: un fallo aquí no
+        puede dejar la pantalla de entrada en negro.
+        """
+        try:
+            from atom_core import avatar_cache
+            from atom_core.google_auth import user_data_dir
+
+            dir_datos = user_data_dir()
+            perfiles = self._store_perfiles().listar_perfiles()
+            resultado = []
+            for p in perfiles:
+                picture = (avatar_cache.obtener(p.picture, p.email, dir_datos)
+                           if p.picture else "")
+                resultado.append({
+                    "email": p.email,
+                    "nombre": p.nombre,
+                    "picture": picture,
+                    "modo": p.modo,
+                    "tiene_credencial": p.tiene_credencial,
+                })
+            # Purga avatares de perfiles ya borrados: sin esto la caché crece
+            # sin límite con cada cuenta que alguna vez inició sesión aquí.
+            avatar_cache.limpiar(dir_datos, {p.email for p in perfiles})
+            return resultado
+        except Exception as exc:  # noqa: BLE001 - nunca tumbar la pantalla de entrada
+            logger.warning("listar_perfiles: no se pudo leer el catálogo: %s", exc)
+            return []
+
+    def activar_perfil(self, email: str) -> dict:
+        """Convierte un perfil del catálogo en la sesión activa."""
+        try:
+            ok = self._store_perfiles().activar_perfil(email)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("activar_perfil: fallo al activar %s: %s", email, exc)
+            return {"ok": False}
+        if ok:
+            # `_get_auth` cachea el `GoogleAuth` en `self._auth`: si no se
+            # invalida aquí, la app seguiría operando con la credencial de la
+            # cuenta anterior hasta reiniciar, aunque la BD ya apunte a otra.
+            self._auth = None
+        return {"ok": ok}
+
+    def borrar_perfil(self, email: str) -> None:
+        """Quita un perfil del catálogo (y su sesión activa, si lo era)."""
+        try:
+            self._store_perfiles().borrar_perfil(email)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("borrar_perfil: fallo al borrar %s: %s", email, exc)
+            return
+        # `borrar_perfil` del store ya borra la sesión activa si coincide;
+        # invalidamos el `GoogleAuth` cacheado por la misma razón que en
+        # `activar_perfil`, para no seguir operando con una credencial que
+        # el catálogo ya no reconoce.
+        self._auth = None
 
     def _store_pin(self):
         """SessionStore propio del PIN. Perezoso: los tests lo sustituyen."""

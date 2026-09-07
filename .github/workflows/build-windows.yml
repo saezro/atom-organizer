@@ -19,7 +19,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller==5.13.2
+          # Sin reinstalar PyInstaller: manda el pin de requirements.txt (ver release.yml).
 
       - name: Build (PyInstaller onedir)
         run: pyinstaller --clean --noconfirm atom_organizer.spec

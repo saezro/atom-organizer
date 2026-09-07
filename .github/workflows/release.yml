@@ -175,7 +175,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-webview.txt
-          pip install pyinstaller==6.6.0
+          # NO reinstalar PyInstaller aqui: manda el pin de requirements.txt
+          # (6.22.2 + pyinstaller-hooks-contrib 2026.6). El 6.6.0 que habia
+          # fijado desde la v3.4.32 degradaba esa version y sus hooks son
+          # anteriores a numpy 2.x: no recogian las DLL de numpy.libs, asi que
+          # el .exe petaba con "DLL load failed while importing
+          # _multiarray_umath" en cuanto el pipeline importaba numpy (v3.4.73).
       # El tag manda, pero la versión que la app enseña (y con la que compara al
       # buscar actualizaciones) sale de version.py: si no coinciden, el updater
       # ofrecería una actualización ya instalada en bucle. Se falla aquí.
