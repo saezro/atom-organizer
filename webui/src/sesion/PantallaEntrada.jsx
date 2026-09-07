@@ -62,12 +62,12 @@ function TilePerfil({ perfil, editando, onEntrar, onQuitar }) {
 // Netflix (activar sin repetir el consentimiento de Google); sin perfiles se
 // mantiene el arranque limpio de siempre: dos botones.
 //
-// `onPerfilActivado` es opcional: `App.jsx` no se toca en este cambio, así
-// que no hay forma de que se entere de una activación hecha aquí dentro (el
-// hook `useSesion` que sostiene `cuenta`/`entrado` vive en `App.jsx`, no
-// aquí). Sin esa prop, la única forma de que la app recoja la sesión recién
-// activada es recargar: el WebView vuelve a montar todo y `useSesion` lee el
-// `cloud_status` ya bueno.
+// `onPerfilActivado` la pasa `App.jsx` (cableada a `useSesion().refrescar`):
+// el hook que sostiene `cuenta`/`entrado` vive allí, no aquí. La recarga del
+// `else` es solo la red de seguridad para un montaje sin la prop (un test, un
+// shell viejo): remonta la webview entera para que `useSesion` relea el
+// `cloud_status`, y es el único camino de entrada que hace eso — por eso NO
+// debe ser el habitual.
 export default function PantallaEntrada({ onGoogle, onInvitado, cargando, error, onPerfilActivado }) {
   const [perfiles, setPerfiles] = useState(null) // null = aún sin respuesta
   const [editando, setEditando] = useState(false)
