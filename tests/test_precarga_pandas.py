@@ -23,6 +23,29 @@ def _estado_limpio():
     precarga._pandas_listo = previo
 
 
+@pytest.fixture
+def _pandas_intacto():
+    """Restaura los `pandas*` REALES que la purga borra de `sys.modules`.
+
+    `_purgar_pandas_de_sys_modules` no distingue entre el pandas de mentira que
+    monta el test y los ~150 submódulos de verdad ya cargados. Si esos no vuelven
+    a su sitio, un `import pandas.io.parsers` posterior reejecuta la inicialización
+    de las C-extensions ya cargadas y el intérprete se cae con segfault (se llevó
+    por delante a tests/test_reparto_struct.py).
+    """
+    import sys
+
+    previo = {
+        nombre: modulo
+        for nombre, modulo in sys.modules.items()
+        if nombre == "pandas" or nombre.startswith("pandas.")
+    }
+    yield
+    for nombre in [m for m in sys.modules if m == "pandas" or m.startswith("pandas.")]:
+        sys.modules.pop(nombre, None)
+    sys.modules.update(previo)
+
+
 def test_precargar_deja_pandas_importado():
     precarga.precargar_pandas()
     import sys
@@ -93,3 +116,91 @@ def test_precargar_en_arranque_registra_el_traceback_y_no_propaga(monkeypatch, c
     with caplog.at_level(logging.ERROR, logger="atom_core.precarga"):
         precarga.precargar_en_arranque()  # no debe propagar
     assert "DLL load failed" in caplog.text
+
+
+def test_neutralizar_pytz_sin_version_lo_apaga(monkeypatch):
+    """Un pytz importable pero mutilado (sin `__version__`) se anula."""
+    import sys
+    import types
+
+    pytz_falso = types.ModuleType("pytz")
+    monkeypatch.setitem(sys.modules, "pytz", pytz_falso)
+
+    precarga._neutralizar_pytz_sin_version()
+
+    assert sys.modules["pytz"] is None
+
+
+def test_neutralizar_pytz_con_version_no_lo_toca(monkeypatch):
+    """Si el pytz presente SÍ tiene `__version__`, se deja tal cual."""
+    import sys
+    import types
+
+    pytz_bueno = types.ModuleType("pytz")
+    pytz_bueno.__version__ = "2024.1"
+    monkeypatch.setitem(sys.modules, "pytz", pytz_bueno)
+
+    precarga._neutralizar_pytz_sin_version()
+
+    assert sys.modules["pytz"] is pytz_bueno
+
+
+def test_neutralizar_pytz_sin_pytz_instalado_no_revienta(monkeypatch):
+    """Si `import pytz` falla (no está instalado), la función no hace nada."""
+    import sys
+
+    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+
+    def import_sin_pytz(nombre, *args, **kwargs):
+        if nombre == "pytz":
+            raise ImportError("No module named 'pytz'")
+        return real_import(nombre, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "pytz", raising=False)
+    monkeypatch.setattr("builtins.__import__", import_sin_pytz)
+
+    precarga._neutralizar_pytz_sin_version()  # no debe lanzar
+
+    assert "pytz" not in sys.modules
+
+
+def test_purgar_borra_pandas_y_respeta_pandas_otro(monkeypatch, _pandas_intacto):
+    """Purga `pandas` y `pandas.algo`, pero NO toca `pandas_otro` (otro namespace)."""
+    import sys
+    import types
+
+    fake_pandas = types.ModuleType("pandas")
+    fake_pandas_algo = types.ModuleType("pandas.algo")
+    fake_pandas_otro = types.ModuleType("pandas_otro")
+    monkeypatch.setitem(sys.modules, "pandas", fake_pandas)
+    monkeypatch.setitem(sys.modules, "pandas.algo", fake_pandas_algo)
+    monkeypatch.setitem(sys.modules, "pandas_otro", fake_pandas_otro)
+
+    precarga._purgar_pandas_de_sys_modules()
+
+    assert "pandas" not in sys.modules
+    assert "pandas.algo" not in sys.modules
+    assert sys.modules["pandas_otro"] is fake_pandas_otro
+
+
+def test_precargar_propaga_y_purga_si_import_pandas_falla(monkeypatch, _pandas_intacto):
+    """Si `import pandas` revienta, la excepción se propaga, no queda ningún
+    `pandas*` a medias en sys.modules y `_pandas_listo` sigue False: el
+    siguiente intento vuelve a intentar el import de verdad."""
+    import builtins
+    import sys
+
+    real_import = builtins.__import__
+
+    def import_que_revienta(nombre, *args, **kwargs):
+        if nombre == "pandas":
+            raise ImportError("boom simulado")
+        return real_import(nombre, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", import_que_revienta)
+    with pytest.raises(ImportError, match="boom simulado"):
+        precarga.precargar_pandas()
+    assert not any(
+        nombre == "pandas" or nombre.startswith("pandas.") for nombre in sys.modules
+    )
+    assert precarga._pandas_listo is False

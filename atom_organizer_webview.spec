@@ -45,6 +45,25 @@ numpy_datas, numpy_binaries, numpy_hidden = collect_all('numpy')
 # Roto en la v3.4.75, con el mismo origen que el numpy de la v3.4.74.
 pandas_datas, pandas_binaries, pandas_hidden = collect_all('pandas')
 
+# CAUSA RAÍZ CONFIRMADA del `_pandas_datetime_CAPI` (log del .exe v3.4.77, con el
+# traceback real por fin en fichero):
+#
+#     ImportError: Can't determine version for pytz
+#
+# pandas 3 no depende de pytz, pero `pandas._libs.tslibs.timezones` lo pide con
+# `import_optional_dependency("pytz")`, y esa función llama a `get_version(module)`
+# FUERA del try/except del import: basta con que `import pytz` funcione y el módulo no
+# exponga `__version__` para que el import de pandas muera, por muy "opcional" que sea la
+# dependencia. En el bundle ocurría exactamente eso: `import pytz` resolvía, pero sin el
+# módulo real detrás. pandas quedaba a medias en sys.modules y el import SIGUIENTE daba
+# el `_pandas_datetime_CAPI`, que es el síntoma y no la causa.
+#
+# En Linux no se ve porque allí pytz no está instalado: el import falla limpio, pandas lo
+# trata como ausente y tira de `zoneinfo`. Por eso el AppImage nunca se rompió.
+#
+# collect_all fuerza el pytz COMPLETO (módulo + su zoneinfo) dentro del .exe.
+pytz_datas, pytz_binaries, pytz_hidden = collect_all('pytz')
+
 # CAUSA RAÍZ del 'ModuleNotFoundError: No module named exiv2api' al leer el estadillo
 # (v3.9, solo Windows): pyexiv2/lib/__init__.py carga en RUNTIME el binario nativo que
 # vive junto a él (ctypes.CDLL(<lib>/exiv2.dll) + import de exiv2api). collect_all() no
@@ -99,14 +118,14 @@ for _d in _vc_dlls:
 a = Analysis(
     ['app_webview.py'],
     pathex=[],
-    binaries=pyexiv2_binaries + vcruntime_binaries + numpy_binaries + pandas_binaries,
+    binaries=pyexiv2_binaries + vcruntime_binaries + numpy_binaries + pandas_binaries + pytz_binaries,
     datas=[
         ('webui/dist', 'webui/dist'),          # UI React buildeada (npm run build)
         ('config/Config.ini', 'config'),
         ('Logo_atom_uas_horizonta-02.png', '.'),
         ('assets', 'assets'),                  # atom-icon.svg, check.svg, dot.svg, fonts/ (los referencia gui.py)
         ('programas_externos', 'programas_externos'),
-    ] + pyexiv2_datas + mpl_datas + webview_datas + pyexiv2_native + numpy_datas + pandas_datas,
+    ] + pyexiv2_datas + mpl_datas + webview_datas + pyexiv2_native + numpy_datas + pandas_datas + pytz_datas,
     hiddenimports=[
         'pyexiv2', 'ipaddress',
         'version', 'atom_core.updater',   # updater: import perezoso desde app_webview
@@ -122,7 +141,7 @@ a = Analysis(
         'pythoncom', 'pywintypes', 'win32gui', 'win32con',
         'win32com', 'win32com.shell',
         'win32comext.shell', 'win32comext.shell.shell', 'win32comext.shell.shellcon',
-    ] + pyexiv2_hidden + numpy_hidden + pandas_hidden,
+    ] + pyexiv2_hidden + numpy_hidden + pandas_hidden + pytz_hidden + ['pytz'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
