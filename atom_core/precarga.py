@@ -2,43 +2,51 @@
 
 PORQUÉ EXISTE ESTE MÓDULO
 -------------------------
-El fallo que persigue es el que rompió `Organizar completo` en las v3.4.75 y
-v3.4.76 del .exe de Windows:
+El fallo que persigue es el que rompió `Organizar completo` en las v3.4.75 a
+v3.4.77 del .exe de Windows:
 
     AttributeError: partially initialized module 'pandas' has no attribute
     '_pandas_datetime_CAPI' (most likely due to a circular import)
 
-Ese mensaje NO habla del sitio donde está el problema. Sale siempre que un
-`import pandas` deja el módulo a medias en `sys.modules` y alguien lo vuelve a
-importar después. Puede quedar a medias por dos motivos distintos:
+Ese mensaje NUNCA habla del sitio donde está el problema: es lo que sale cuando
+un `import pandas` deja el módulo a medias en `sys.modules` y alguien lo vuelve
+a importar después. Es el síntoma; la causa está en el PRIMER import, el que
+falló y cuyo traceback se perdía porque en el camino con ventana el logger raíz
+no tenía handler.
 
-  1. Una C-extension que el empaquetado no trajo (lo que se atacó en la
-     v3.4.76 con `collect_all('pandas')` en el .spec). El error REAL —un
-     `ImportError: DLL load failed`— se pierde: lo tapa el import siguiente.
-  2. Dos hilos disparando el PRIMER import de pandas a la vez. En la app pasa:
-     el hilo de `_run_task_worker` importa `atom_core.organize` (→ pipeline →
-     pandas) mientras el hilo de `estadillos_detectar_start` importa
-     `atom_core.estadillo` (→ pandas). CPython serializa por módulo, pero al
-     detectar una posible espera cruzada devuelve el módulo A MEDIAS en vez de
-     bloquear, que es exactamente este AttributeError.
+CAUSA RAÍZ CONFIRMADA (log del .exe v3.4.77)
+--------------------------------------------
+    ImportError: Can't determine version for pytz
 
-La precarga ataca las dos a la vez, y por eso se hace en el hilo principal
-NADA MÁS ARRANCAR, antes de que exista ningún hilo:
+pandas 3 no depende de pytz, pero `pandas._libs.tslibs.timezones` lo pide con
+`import_optional_dependency("pytz")` y esa función llama a `get_version(module)`
+FUERA del try/except del import. O sea: que la dependencia sea "opcional" solo
+cubre el caso de que NO esté. Si `import pytz` funciona pero el módulo no expone
+`__version__`, pandas revienta. En el bundle de Windows pasaba exactamente eso:
+`import pytz` resolvía sin el módulo real detrás. En Linux no se ve porque allí
+pytz no está instalado, el import falla limpio y pandas tira de `zoneinfo`.
 
-  - Elimina el caso 2 por construcción: cuando los hilos corren, pandas ya
-    está entero en `sys.modules` y ninguno dispara un primer import.
-  - Desenmascara el caso 1: si al empaquetado le falta una DLL, el fallo
-    ocurre al arrancar, en un import limpio y sin nadie que lo tape, así que
-    el traceback que queda en el log es el de verdad (`DLL load failed while
-    importing ...`) y no el `_pandas_datetime_CAPI` que despista.
+El arreglo de empaquetado (pytz pineado en requirements.txt y `collect_all('pytz')`
+en el .spec) va aparte. Aquí se ataca lo mismo desde el runtime, para que la app
+no vuelva a quedar inservible si el bundle se degrada:
 
-El `Lock` es el cinturón además de los tirantes: si alguna ruta de código
-llega antes que la precarga (tests, modo servidor, un entry point futuro), los
-imports diferidos siguen serializados entre sí.
+  - `_neutralizar_pytz_sin_version()`: si pytz está pero está mutilado, se pone
+    `sys.modules['pytz'] = None`, que hace que el siguiente `import pytz` lance
+    ImportError. Es justo el caso que pandas SÍ sabe manejar.
+  - Si aun así el import de pandas falla, se purga `pandas*` de `sys.modules`
+    para que el siguiente intento vuelva a dar el error REAL en vez del
+    `_pandas_datetime_CAPI` que despista.
+  - La precarga corre en el hilo principal nada más arrancar, así que cuando
+    existan hilos pandas ya está entero y ninguno dispara un primer import.
+
+El `Lock` es el cinturón además de los tirantes: si alguna ruta de código llega
+antes que la precarga (tests, modo servidor, un entry point futuro), los imports
+diferidos siguen serializados entre sí.
 """
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 
 logger = logging.getLogger(__name__)
@@ -47,6 +55,34 @@ logger = logging.getLogger(__name__)
 # import pesado", no un módulo concreto.
 _candado = threading.Lock()
 _pandas_listo = False
+
+
+def _neutralizar_pytz_sin_version() -> None:
+    """Deja fuera de juego un pytz importable pero sin `__version__`.
+
+    `sys.modules['pytz'] = None` hace que el import siguiente lance ImportError,
+    que es el único desenlace que `import_optional_dependency` sabe tragarse.
+    """
+    try:
+        import pytz  # noqa: PLC0415 — comprobación deliberadamente perezosa
+    except Exception:  # noqa: BLE001 — ausente o roto: pandas lo trata como opcional
+        return
+    if getattr(pytz, "__version__", None) is None:
+        sys.modules["pytz"] = None  # type: ignore[assignment]
+        logger.warning(
+            "pytz está presente pero sin `__version__` (bundle degradado): se "
+            "neutraliza para que pandas lo trate como ausente y use zoneinfo."
+        )
+
+
+def _purgar_pandas_de_sys_modules() -> None:
+    """Borra los `pandas*` a medias tras un import fallido.
+
+    Sin esto, el segundo intento no ve el error real: ve el módulo incompleto ya
+    registrado y lanza el `_pandas_datetime_CAPI`.
+    """
+    for nombre in [m for m in sys.modules if m == "pandas" or m.startswith("pandas.")]:
+        sys.modules.pop(nombre, None)
 
 
 def precargar_pandas() -> None:
@@ -60,7 +96,12 @@ def precargar_pandas() -> None:
     with _candado:
         if _pandas_listo:
             return
-        import pandas  # noqa: F401  — el efecto buscado es el import en sí
+        _neutralizar_pytz_sin_version()
+        try:
+            import pandas  # noqa: F401  — el efecto buscado es el import en sí
+        except BaseException:
+            _purgar_pandas_de_sys_modules()
+            raise
         _pandas_listo = True
 
 

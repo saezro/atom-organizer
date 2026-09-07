@@ -59,6 +59,15 @@ PySide6-Addons==6.11.2
 PySide6-Essentials==6.11.2
 PySide6==6.11.2
 python-dateutil==2.9.0.post0
+# pandas 3 NO depende de pytz, pero `pandas._libs.tslibs.timezones` lo pide con
+# import_optional_dependency("pytz") y esa función llama a get_version() FUERA del
+# try/except: si `import pytz` funciona pero el módulo no expone `__version__`,
+# revienta con "Can't determine version for pytz" aunque la dependencia sea opcional.
+# En el .exe pasaba justo eso (quedaba un `pytz/` sin el módulo real dentro del bundle),
+# el import de pandas moría a medias y el siguiente daba el críptico
+# `_pandas_datetime_CAPI`. Se pinea pytz explícito para que en el bundle haya un pytz
+# COMPLETO y con `__version__`. Ver v3.4.78.
+pytz==2026.3
 pywin32-ctypes==0.2.3
 pywin32==312
 pyzmq==27.1.0
