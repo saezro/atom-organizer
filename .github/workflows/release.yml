@@ -66,6 +66,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -97,7 +98,7 @@ jobs:
         run: python -m pytest tests/ -q --ignore=tests/test_dark_theme.py
 
   build-linux:
-    needs: [meta, checks]
+    needs: [meta]
     # Era ubuntu-22.04, por construir contra la glibc más vieja posible y que el
     # AppImage corriera en cualquier sitio. Esa imagen ya no se sirve: los dos
     # intentos de v3.4.22 murieron sin ejecutar un solo paso ("The job was not
@@ -110,6 +111,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -146,13 +148,20 @@ jobs:
           if-no-files-found: error
 
   build-windows:
-    needs: [meta, checks]
+    needs: [meta]
     runs-on: windows-latest
     steps:
+      - name: Excluir el workspace de Defender
+        # PyInstaller copia miles de ficheros de Qt/QtWebEngine y Defender los escanea
+        # uno a uno: sin esta exclusion el paso tarda ~40% mas.
+        shell: pwsh
+        run: Add-MpPreference -ExclusionPath "${{ github.workspace }}", "$env:RUNNER_TEMP"
+        continue-on-error: true
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -212,7 +221,7 @@ jobs:
   # el workflow queda en rojo pero la release de escritorio se publica igual.
   # Bloquear el .exe por un problema de GCP sería cambiar un fallo por otro.
   imagen-job:
-    needs: [meta, checks]
+    needs: [meta]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -306,7 +315,9 @@ jobs:
           echo "Job atom-organizer-pipeline -> $VER"
 
   release:
-    needs: [meta, build-linux, build-windows]
+    # incluye `checks`: los builds ahora arrancan en paralelo con los tests, pero
+    # no se publica nada si los tests fallan.
+    needs: [meta, checks, build-linux, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
