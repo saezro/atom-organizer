@@ -174,6 +174,29 @@ class Manifiesto:
     def todas(self) -> list[sqlite3.Row]:
         return list(self._conexion().execute("SELECT * FROM imagenes ORDER BY id"))
 
+    def colisiones_ruta_salida_original(self) -> list[sqlite3.Row]:
+        """Destinos (`ruta_salida_original`) en los que dos o más imágenes de
+        ORIGEN distinto resuelven al MISMO fichero final.
+
+        `ruta_origen` es UNIQUE (arriba), pero nada obliga a que
+        `ruta_salida_original` lo sea: dos imágenes distintas pueden acabar
+        con el mismo nombre calculado. El `os.replace` final de `apply.py` es
+        atómico pero silencioso -- la segunda escritura pisa a la primera sin
+        error ni aviso -- así que esta es la única forma de que el run se dé
+        cuenta y avise. Una sola consulta agregada al cerrar el organizado,
+        no una comprobación por fila en el bucle caliente del apply.
+
+        Devuelve filas `(ruta_salida_original, total)` para cada destino con
+        más de una imagen apuntando a él; lista vacía si no hay colisiones.
+        """
+        return list(
+            self._conexion().execute(
+                "SELECT ruta_salida_original, COUNT(*) AS total FROM imagenes "
+                "GROUP BY ruta_salida_original HAVING COUNT(*) > 1 "
+                "ORDER BY ruta_salida_original"
+            )
+        )
+
     def cerrar(self) -> None:
         conexion = getattr(self._local, "conexion", None)
         if conexion is not None:
