@@ -11,11 +11,12 @@ Dobles a mano (`_PipelineDePrueba`, `_ExifDePrueba`, `_Signal`), nunca
 `unittest.mock`: el estilo de la casa, ver `tests/test_etapas_pipeline.py`.
 """
 import datetime as dt
+import json
 import os
 
 import pytest
 
-from atom_core.indice import ErrorColisionEstadillo, construir_indice
+from atom_core.indice import STATS_INDICE_PREFIX, ErrorColisionEstadillo, construir_indice
 from atom_core.manifiesto import Manifiesto
 from utils import SplitImagesConfig
 
@@ -56,7 +57,9 @@ class _PipelineDePrueba:
         return self._ventanas[(fecha, horaInicio, horaFinal)]
 
     def nombre_destino(self, image, input_folder, rename, mismatch_hours,
-                       mismatch_minutes, ruta_local=None):
+                       mismatch_minutes, ruta_local=None, timestamp=None):
+        # `timestamp` lo pasa `indice._construir_fila` para que el real no
+        # tenga que releer el EXIF: el doble solo tiene que aceptarlo.
         self.nombres_pedidos.append(image)
         if not rename:
             return ""
@@ -374,6 +377,41 @@ def test_pct_recorte_sale_del_modelo(tmp_path):
     fila_manual = manifiesto_manual.todas()[0]
     assert fila_manual["pct_recorte"] == 35.0
     manifiesto_manual.cerrar()
+
+
+def test_emite_stats_marker_con_desglose_rgb_extra_separado(tmp_path):
+    """El modal de progreso necesita el desglose del índice por tipo (ver
+    LEDGER-metricas-progreso.md): `RGB_Extra` cuenta APARTE de `RGB` aunque
+    el apply trate a ambos igual (`indice.TIPOS_RGB`). Si aquí se fundieran,
+    el modal no podría mostrar cuántas imágenes van por el tercer grupo de
+    sufijos — justo lo que pide el ledger."""
+    _escribir_estadillo(tmp_path / "estadillo.csv", [
+        ("1", "1", "2024:06:01", "10:00:00", "10:10:00"),
+    ])
+    cfg = _cfg(tmp_path, end_rgb_extra_files="_E")
+    ruta_rgb = _crear_imagen(cfg.input_folder, "DJI_0001_D.JPG")
+    ruta_extra = _crear_imagen(cfg.input_folder, "DJI_0002_E.JPG")
+    ruta_termica = _crear_imagen(cfg.input_folder, "DJI_0003_T.JPG")
+
+    inicio = dt.datetime(2024, 6, 1, 10, 0, 0)
+    fin = dt.datetime(2024, 6, 1, 10, 10, 0)
+    ventanas = {("2024:06:01", "10:00:00", "10:10:00"): (inicio, fin)}
+    pipeline = _PipelineDePrueba(ventanas)
+    ts = dt.datetime(2024, 6, 1, 10, 5, 0)
+    exif = _ExifDePrueba(timestamps={ruta_rgb: ts, ruta_extra: ts, ruta_termica: ts})
+    manifiesto = _manifiesto(tmp_path)
+    psum = _Signal()
+
+    construir_indice(cfg, pipeline, exif, manifiesto, _Signal(), _Signal(), psum)
+
+    marcadores = [m for m in psum.mensajes if str(m).startswith(STATS_INDICE_PREFIX)]
+    assert len(marcadores) == 1, "el índice debe emitir el desglose UNA sola vez, al cerrar"
+    payload = json.loads(marcadores[0][len(STATS_INDICE_PREFIX):])
+    assert payload == {
+        "fase": "Índice", "total": 3, "rgb": 1, "termica": 1, "rgb_extra": 1,
+        "sin_asignar": 0, "sin_timestamp": 0, "vuelos": 1,
+    }
+    manifiesto.cerrar()
 
 
 def test_el_indice_no_escribe_ninguna_imagen(tmp_path):

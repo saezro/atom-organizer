@@ -18,6 +18,7 @@ escribe directo a su carpeta final. Lo que estos tests sujetan:
 """
 import datetime as dt
 import hashlib
+import threading
 import types
 
 import piexif
@@ -72,6 +73,33 @@ def _pipeline_doble(imagen=None):
         _procesar_y_guardar_imagen=pipeline_real._procesar_y_guardar_imagen,
         _ROTATION_JPEG_QUALITY=pipeline_real._ROTATION_JPEG_QUALITY,
     )
+
+
+class _ControladorFalso:
+    """Doble mínimo de `ControladorAdaptativo`: un número de trabajadores fijo
+    (sin historial ni ventanas), suficiente para forzar un aforo pequeño y
+    determinista en el camino paralelo de `aplicar_rgb`."""
+
+    def __init__(self, trabajadores):
+        self.trabajadores = trabajadores
+        self.maximo = trabajadores
+
+    def registrar(self, mb):
+        pass
+
+    def revisar(self):
+        pass
+
+
+class _ManifiestoQueRevientaAlMarcarHecha(Manifiesto):
+    """Doble sobre un `Manifiesto` real: `marcar_hecha` revienta SIEMPRE
+    (simula sqlite ocupada tras agotar el `busy_timeout`), todo lo demás se
+    delega intacto a la clase real. No hace falta que sea picklable: en el
+    camino paralelo el manifiesto solo vive en el hilo padre — nunca se envía
+    al `ProcessPoolExecutor`, eso es cosa de `_trabajo_fila`."""
+
+    def marcar_hecha(self, id_fila, verificacion):
+        raise RuntimeError("sqlite ocupada (simulado)")
 
 
 def _cfg(**overrides):
@@ -316,3 +344,56 @@ def test_el_origen_queda_intacto(tmp_path, make_dji_jpeg):
 
     hash_despues = hashlib.sha256(origen.read_bytes()).hexdigest()
     assert hash_antes == hash_despues
+
+
+def test_camino_paralelo_no_se_cuelga_si_marcar_hecha_revienta_siempre(
+    tmp_path, make_dji_jpeg
+):
+    """Regresión: antes del fix, `aforo.liberar()` en `_al_terminar` vivía
+    FUERA del `finally` que envuelve a `_cerrar_fila`. Si `marcar_hecha`
+    reventaba (sqlite ocupada, busy_timeout agotado) el permiso del aforo
+    nunca volvía al semáforo, y con trabajadores pequeño (2) la 3ª fila se
+    bloqueaba para siempre en `aforo.adquirir()` — el run quedaba colgado sin
+    ningún traceback visible (`ProcessPoolExecutor` se traga las excepciones
+    de un callback, solo las loguea).
+
+    Con el fix, `aforo.liberar()` va en el `finally` de `_al_terminar`: el
+    permiso vuelve al semáforo pase lo que pase en `_cerrar_fila`, y
+    `aplicar_rgb` termina igual aunque TODAS las filas revienten al
+    marcarse (el fallo de `marcar_hecha` aborta el contaje de esa fila —
+    no llega a incrementar ni `hecho` ni `fallido`, porque ocurre antes de
+    esa línea en `_cerrar_fila` — pero nunca cuelga el run).
+    """
+    manifiesto = _ManifiestoQueRevientaAlMarcarHecha(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+
+    filas = []
+    for indice in range(6):
+        origen = tmp_path / "origen" / f"DJI_{indice:04d}.JPG"
+        origen.parent.mkdir(exist_ok=True)
+        make_dji_jpeg(str(origen))
+        filas.append(
+            _fila_manifiesto(origen, tmp_path / "salida" / f"DJI_{indice:04d}.JPG")
+        )
+    manifiesto.insertar_muchas(filas)
+
+    controlador = _ControladorFalso(trabajadores=2)
+    resultado = {}
+
+    def _lanzar():
+        resultado["valor"] = apply.aplicar_rgb(
+            manifiesto, _cfg(), pipeline_real,
+            _SignalFalsa(), _SignalFalsa(), _SignalFalsa(),
+            controlador=controlador,
+        )
+
+    hilo = threading.Thread(target=_lanzar, daemon=True)
+    hilo.start()
+    hilo.join(timeout=60)
+
+    assert not hilo.is_alive(), "aplicar_rgb se colgó: el aforo perdió permisos"
+    # El apply de cada fila SÍ tuvo éxito (solo revienta el `marcar_hecha` de
+    # bookkeeping, antes de incrementar ningún contador): lo que sujeta este
+    # test es que el hilo termina solo, no los contadores.
+    assert resultado["valor"] == {"hecho": 0, "fallido": 0}
+    manifiesto.cerrar()

@@ -2677,7 +2677,7 @@ class SplitImages:
             self.error_splitting_images += 1
             self.images_error_splitting_images.append(almacen.unir(input_folder, image))
 
-    def nombre_destino(self, image: str, input_folder: str, rename: bool, mismatch_hours: int, mismatch_minutes: int, ruta_local: "Path | None" = None) -> str:
+    def nombre_destino(self, image: str, input_folder: str, rename: bool, mismatch_hours: int, mismatch_minutes: int, ruta_local: "Path | None" = None, timestamp=None) -> str:
         """
         Devuelve el nombre con el que se guardará la imagen, o "" si no hay renombrado.
 
@@ -2697,13 +2697,22 @@ class SplitImages:
           resultante lo traga `exif.py` y devuelve None, desactivando el renombrado en
           silencio. A None (por defecto) se compone `input_folder`+`image` como siempre,
           válido solo para orígenes locales.
+        - timestamp - el `get_timestamp_from_image` de esta imagen si QUIEN LLAMA YA LO
+          TIENE leído. El motor plan->apply lee el EXIF de todas las imágenes una vez, en
+          paralelo (`indice._leer_metadatos`), y luego construye las filas: sin este
+          parámetro esta función volvía a abrir cada fichero con PIL para releer el MISMO
+          dato, en serie y mono-hilo, una segunda pasada EXIF completa sobre el dataset.
+          A None se lee del fichero, como siempre (motor viejo y llamadas sueltas).
         """
         if not rename:
             # Si no lo queremos, se enviará un string vacío.
             return ""
         desfase = datetime.timedelta(hours=mismatch_hours, minutes=mismatch_minutes)
-        ruta_para_exif = str(ruta_local) if ruta_local is not None else os.path.join(input_folder, image)
-        timestamp_image = self.exif_management_obj.get_timestamp_from_image(ruta_para_exif)
+        if timestamp is not None:
+            timestamp_image = timestamp
+        else:
+            ruta_para_exif = str(ruta_local) if ruta_local is not None else os.path.join(input_folder, image)
+            timestamp_image = self.exif_management_obj.get_timestamp_from_image(ruta_para_exif)
         if timestamp_image is None:
             return ""
         # Obtenemos el nuevo nombre en el caso de querer renombrar el archivo
