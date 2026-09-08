@@ -35,6 +35,14 @@ NOMBRE_CARPETA_RGB_EXTRA = "RGB_Extra"
 # de ningún vuelo del estadillo.
 NOMBRE_CARPETA_SIN_ORDENAR = "SIN_ORDENAR"
 
+# Tipos que reciben tratamiento de RGB (compresión + recorte): además de
+# "RGB", el tercer grupo de sufijos ("RGB_Extra") corre por el MISMO camino
+# en el motor viejo -`iterate_folders_for_rgb_cropping` (pipeline.py:4003)
+# recorre todo el árbol de salida salvo `TERMICA`, y `iterate_folders`
+# (pipeline.py:2829) comprime "RGB_Extra" con el mismo flag `compress_checked`
+# que "RGB"-. Solo "TERMICA" queda fuera de este conjunto.
+TIPOS_RGB = frozenset({"RGB", NOMBRE_CARPETA_RGB_EXTRA})
+
 
 class ErrorColisionEstadillo(Exception):
     """Se han fusionado estadillos con el mismo (PB, vuelo) y fechas
@@ -271,11 +279,14 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
 
 
 def _pct_recorte(dato: _MetadatosImagen, tipo: str, cfg, pipeline) -> float | None:
-    """El % de recorte solo aplica a RGB (el recorte centrado es cosa de
-    `RGBCropping`, nunca de la térmica). Sale de `Config.ini` vía
-    `get_percentage_by_model` cuando el modo es automático; en manual, el
-    valor de la interfaz (`cfg.crop_percentage`) manda sin mirar el modelo."""
-    if tipo != "RGB" or not cfg.cropping_rgb:
+    """El % de recorte aplica a RGB y RGB_Extra (el recorte centrado es cosa
+    de `RGBCropping`, nunca de la térmica; ver `TIPOS_RGB`:
+    `iterate_folders_for_rgb_cropping`, pipeline.py:4003, recorre TODO el
+    árbol de salida salvo `TERMICA`, así que RGB_Extra se recorta igual que
+    RGB). Sale de `Config.ini` vía `get_percentage_by_model` cuando el modo
+    es automático; en manual, el valor de la interfaz (`cfg.crop_percentage`)
+    manda sin mirar el modelo."""
+    if tipo not in TIPOS_RGB or not cfg.cropping_rgb:
         return None
     if cfg.cropping_mode_auto:
         if not dato.modelo:
@@ -322,7 +333,10 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
         raiz, _ext = os.path.splitext(nombre_final)
         ruta_salida_tiff = almacen.unir(carpeta_destino, f"{raiz}.tif")
 
-    comprime = bool(cfg.compress_rgb) if tipo == "RGB" else False
+    # RGB_Extra comprime con el MISMO flag que RGB (`Pipeline.iterate_folders`,
+    # pipeline.py:2829: `compress_checked` es el único condicional, sin
+    # distinguir el tercer grupo de sufijos del segundo). Ver `TIPOS_RGB`.
+    comprime = bool(cfg.compress_rgb) if tipo in TIPOS_RGB else False
 
     return FilaManifiesto(
         ruta_origen=dato.ruta,
@@ -359,7 +373,7 @@ def construir_indice(
 
     Devuelve `{"total", "unassigned", "sin_timestamp", "vuelos"}`.
     """
-    progress_summarize.emit("---> SUBPROCESO: Índice del organizado")
+    progress_summarize.emit("---> SUBPROCESO: Índice")
 
     rutas_estadillo = estadillo_mod.desempaquetar_rutas(cfg.estad)
     estadillo_df = estadillo_mod.combinar_estadillos(rutas_estadillo)

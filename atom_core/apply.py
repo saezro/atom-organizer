@@ -26,6 +26,7 @@ from typing import Any, Mapping
 
 import external_tools
 import pipeline
+from atom_core import indice as indice_mod
 
 #: MB que se le presupone a un item de RGB para el reporte al controlador
 #: adaptativo. Si no se puede leer el tamaño real del origen (p. ej. se
@@ -208,9 +209,18 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
     dict con "hecho" y "fallido": cuántas filas de RGB acabaron en cada
     estado en esta pasada.
     """
-    progress_summarize.emit("---> SUBPROCESO: Escritura de imágenes RGB")
+    progress_summarize.emit("---> SUBPROCESO: Imágenes RGB")
 
-    filas = [dict(fila) for fila in manifiesto.pendientes() if fila["tipo"] == "RGB"]
+    # `RGB_Extra` cuenta como RGB aquí: en el motor viejo
+    # `iterate_folders_for_rgb_cropping` (pipeline.py:4003) recorre TODO el
+    # árbol de salida salvo `TERMICA`, así que las imágenes del tercer grupo
+    # de sufijos también se comprimen/recortan igual que las RGB normales
+    # (`Pipeline.iterate_folders`, pipeline.py:2829, comparte el mismo flag
+    # `compress_checked`). Dejarlas fuera de este filtro las dejaría
+    # 'pendiente' para siempre y `cierre.verificar` las reportaría como run
+    # interrumpido sin haberlo estado.
+    filas = [dict(fila) for fila in manifiesto.pendientes()
+            if fila["tipo"] in indice_mod.TIPOS_RGB]
     resultado = {"hecho": 0, "fallido": 0}
     total = len(filas)
     if total == 0:

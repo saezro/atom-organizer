@@ -20,6 +20,12 @@ from typing import Iterable
 
 ESTADOS = ("pendiente", "en_curso", "hecho", "fallido")
 
+# Carpeta donde el organizado deja su manifiesto, colgando de `output_folder`.
+# Vive dentro del destino a propósito (es lo que permite reanudar un run muerto
+# sobre la MISMA salida), así que todo lo que recorra o cuente el árbol
+# entregado tiene que ignorarla: no es una imagen, es fontanería del motor.
+NOMBRE_CARPETA_MANIFIESTO = ".organizado"
+
 _ESQUEMA = """
 CREATE TABLE IF NOT EXISTS imagenes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
