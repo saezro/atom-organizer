@@ -1286,6 +1286,25 @@ def max_io_workers() -> int:
     return int(os.environ.get("ATOM_IO_WORKERS", "0") or 0) or min(32, (os.cpu_count() or 4) * 4)
 
 
+def arranque_io() -> int:
+    """Con cuántos trabajadores ARRANCA una fase I/O-bound (hilos que esperan a
+    un proceso externo, como la conversión térmica).
+
+    No usa `workers_para_lote`: esa función dimensiona por RAM contando
+    `MB_POR_WORKER` por trabajador porque piensa en PROCESOS que decodifican
+    imágenes de 48 MP (la fase RGB). Un hilo que solo espera a `dji_irp` no
+    ocupa esa memoria, así que ese cálculo deja la fase arrancando muy por
+    debajo de lo que la máquina aguanta (medido: arranca en ~7 con techo 32).
+
+    El doble de núcleos es el arranque habitual para trabajo I/O-bound: hay
+    que solapar más esperas que núcleos, pero cada tarea lanza un proceso
+    externo que SÍ consume CPU, así que no se arranca directamente en el techo
+    de `max_io_workers`. A partir de ahí manda el `ControladorAdaptativo`, que
+    sube o baja según el throughput real.
+    """
+    return max(1, min(max_io_workers(), (os.cpu_count() or 4) * 2))
+
+
 def _memoria_disponible_mb():
     """
     RAM disponible en MB, o None si no se puede averiguar.

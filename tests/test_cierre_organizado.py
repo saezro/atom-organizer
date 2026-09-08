@@ -279,3 +279,29 @@ def test_las_filas_pendientes_se_reportan(tmp_path):
     assert len(problemas) == 1
     assert "pendiente" in problemas[0]
     manifiesto.cerrar()
+
+
+def test_las_filas_fallidas_se_reportan(tmp_path):
+    """Una imagen que revienta al girar/convertir queda 'fallido'
+    (`manifiesto.marcar_fallida`). Si `verificar` no la reporta, el run se da
+    por bueno sin haberla procesado y se borra la única vía de reproceso."""
+    destino = tmp_path / "destino"
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    manifiesto.insertar_muchas([
+        _fila_rgb(destino, "/origen/A.JPG", "PB1", "V01"),
+        _fila_rgb(destino, "/origen/B.JPG", "PB1", "V01"),
+    ])
+    filas = manifiesto.todas()
+    _crear_fichero(filas[0]["ruta_salida_original"])
+    manifiesto.marcar_hecha(filas[0]["id"], verificacion="ok")
+    manifiesto.marcar_fallida(filas[1]["id"], "error al girar la imagen")
+
+    cfg = _cfg(destino)
+    problemas = verificar(manifiesto, cfg)
+
+    assert len(problemas) == 1
+    assert "fallaron" in problemas[0]
+    assert filas[1]["ruta_origen"] in problemas[0]
+    assert "error al girar la imagen" in problemas[0]
+    manifiesto.cerrar()
