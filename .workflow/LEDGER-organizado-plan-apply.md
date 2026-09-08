@@ -10,6 +10,7 @@
 - **Prioridad nº1 de Rodrigo: la corrección de la salida.** TIFF siempre bien girados y con TODOS sus metadatos; RGB siempre comprimida y recortada; todo girado como debe. La velocidad es secundaria a esto.
 - Secciones de diseño aprobadas en bloque ("dale a todo").
 - Datos de KL19 (nº imágenes, desglose por fase) y log de Inno del autoupdater: pendientes, no bloquean el diseño (solo la estimación de ganancia).
+- **Calidad al girar una RGB (2026-09-08)**: se replica el criterio del motor viejo (`_ROTATION_JPEG_QUALITY = 40`), NO se mejora. Decisión expresa de Rodrigo.
 
 ## Requisitos
 
@@ -18,7 +19,7 @@
 - [ ] TIFF girados con el mismo criterio que su JPG (hoy la fase 7 depende del CSV de la 6; en el nuevo motor ambos leen el manifiesto).
 - [ ] TIFF con todos sus metadatos: EXIF/XMP copiados del origen (GPS, timestamp, yaw, modelo) vía `exiftool -stay_open`.
 - [ ] RGB: compresión + recorte + rotación aplicados en un ÚNICO decode, escritos directos a la carpeta final (original y `_CROP`).
-- [ ] Numeración `New Name` secuencial dentro del vuelo, idéntica al motor viejo.
+- [ ] Nombre de salida idéntico al motor viejo: `AAAAMMDD_HHMMSS_<original>` vía `Pipeline.nombre_destino`. (Corregido 2026-09-08: NO es numeración secuencial; eso es solo la clave del CSV de criterio de giro.)
 - [ ] Se conservan las 12 dependencias globales inventariadas (yaw, % recorte por modelo, ventana horaria, colisiones PB+vuelo, cuadres de conteo).
 
 ### Motor
@@ -33,12 +34,13 @@
 - [ ] Verificaciones cruzadas reescritas como manifiesto-vs-disco.
 
 ### Validación
+- [x] `tools/comparar_organizados.py` + tests (commit `7ccc6de`): árbol, TIFF byte a byte, JPG por píxeles con tolerancia de recompresión + EXIF normalizado, CSV fila a fila.
 - [ ] Comparación motor viejo vs nuevo sobre una planta real: árbol idéntico (rutas + nombres) y contenido equivalente (TIFF radiométrico byte a byte; RGB por hash de píxeles + EXIF normalizado).
 - [ ] `pytest` verde y `cd webui && npx vitest run` verde.
 - [ ] Sin regresión en el modal de progreso (métricas MB/s + CPU por fase de v3.4.80).
 
 ### Entregables
-- [ ] Spec en `docs/superpowers/specs/2026-09-08-organizado-plan-apply-design.md`, commiteada y revisada por Rodrigo.
+- [x] Spec en `docs/superpowers/specs/2026-09-08-organizado-plan-apply-design.md`, commiteada y revisada por Rodrigo.
 - [ ] Plan con `superpowers:writing-plans`.
 - [ ] Ejecución subagent-driven.
 - [ ] NO deploy a main sin OK expreso de Rodrigo.

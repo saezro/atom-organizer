@@ -17,7 +17,7 @@
 
 ### Índice (plan)
 - Una sola pasada de EXIF/XMP sobre el origen con pool de I/O; cruce con el estadillo.
-- Resuelve EN MEMORIA, sin tocar píxeles: vuelo destino, consenso de yaw de la carpeta `PBx_Vy`, % de recorte según modelo, nombre nuevo (`New Name` secuencial por vuelo), si comprime, y ruta final de cada salida (original, `_CROP`, `.tiff`).
+- Resuelve EN MEMORIA, sin tocar píxeles: vuelo destino, consenso de yaw de la carpeta `PBx_Vy`, % de recorte según modelo, nombre nuevo (`AAAAMMDD_HHMMSS_<original>` vía `Pipeline.nombre_destino`, `pipeline.py:2680`; cadena vacía si no se renombra o falta el timestamp EXIF), si comprime, y ruta final de cada salida (original, `_CROP`, `.tiff`).
 - Produce un manifiesto persistido en disco: una fila por imagen.
 - Ventajas: idempotencia, reanudación, plan inspeccionable antes de tocar nada.
 
@@ -35,6 +35,15 @@
   - `csv_lines == image_count` (hoy `exif.py:780-864`).
   - `total_images_number == current_image_number` al cierre (hoy repetido por fase).
 
+## Correcciones tras leer el código (2026-09-08)
+
+1. **El `New Name` NO es una numeración secuencial por vuelo.** La spec y el ledger lo decían mal. El nombre final de salida lo decide `Pipeline.nombre_destino` (`pipeline.py:2680`) y es `AAAAMMDD_HHMMSS_<nombre_original>` a partir del `DateTimeOriginal` más el desfase; devuelve `""` (no renombrar) si `rename=False` o si no hay timestamp EXIF. La numeración `<PBx_Vy>_0001.JPG` (`pipeline.py:2078-2189`) es **solo la clave de fila del CSV de criterio de giro**, no un nombre de fichero entregado.
+2. **El % de recorte no está hardcodeado por modelo**: sale de `Config.ini`, sección `[percentage_by_models]`, cargado en `external_tools.py:240` y consultado por `Pipeline.get_percentage_by_model` (`pipeline.py:4206`) normalizando el modelo a mayúsculas. Solo aplica si `percentage_cropping_auto=True`; si no, manda `percentage_cropping_manual`.
+3. **Ya existe un decode único parcial**: `_procesar_y_guardar_imagen` (`pipeline.py:234`) aplica recorte y giro sobre el mismo objeto abierto y guarda una sola vez, con `ImageProcessConfig` (`pipeline.py:189-197`). El apply nuevo **reutiliza esa función**, no escribe otra.
+4. **Calidad al girar**: hoy una RGB girada se re-encodea con `_ROTATION_JPEG_QUALITY = 40` hardcodeado (`pipeline.py:280-283`), pisando la calidad de la interfaz. **Decisión de Rodrigo (2026-09-08): replicar el criterio del motor viejo, no mejorarlo por sorpresa.** El apply usa calidad 40 cuando la fila lleva giro y `cfg.compress_level` cuando no. Consecuencia para la validación: el motor viejo llega a ese 40 tras un encode previo a calidad de compresión (doble pérdida) y el nuevo lo hace de una sola vez, así que los píxeles de las RGB **giradas** diferirán algo más que los de las no giradas. La Tarea 8 calibra la tolerancia con datos reales y documenta el resultado.
+5. **Ángulos de giro posibles: 0, 90 y 270** (`read_auto_rotate_degree`, `pipeline.py:3308`). Nunca 180. Si falta el CSV de criterio, devuelve 0 sin reventar.
+6. **Inconsistencia de casing detectada**: `RGB_Extra` (`pipeline.py:2829`) vs `RGB_extra` (`pipeline.py:1377`). En NTFS no se nota; en el bucket sí. El índice fija UN solo nombre y la Tarea 3 documenta cuál.
+
 ## Manifiesto (esquema)
 - Formato: SQLite en modo WAL, no JSONL. El apply actualiza estado por fila desde varios procesos concurrentes; JSONL no soporta esas actualizaciones concurrentes sin corromperse ni permite consultar "qué queda pendiente" sin releer todo.
 - Columnas mínimas:
@@ -48,7 +57,7 @@
 | modelo | para % de recorte |
 | pb | del estadillo |
 | vuelo | asignado por ventana horaria |
-| nombre_nuevo | `New Name` secuencial por vuelo |
+| nombre_nuevo | nombre de salida ya resuelto (`AAAAMMDD_HHMMSS_<original>`), vacío si no se renombra |
 | angulo_giro | ángulo definitivo (consenso yaw de `PBx_Vy`) |
 | pct_recorte | según modelo |
 | comprime | sí/no |
