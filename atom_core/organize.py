@@ -44,6 +44,7 @@ import exif as meta_location
 import pipeline
 import utils
 from atom_core.progress_stats import StatsTracker
+from atom_core.medicion_recursos import MedidorRecursos
 from atom_core.phases import PipelinePhasesMixin
 from atom_core.sharding import ETAPAS, normalizar_shard
 from utils import (
@@ -632,6 +633,12 @@ def run_task(
               "cur_errors": 0, "total_errors": 0, "total_warnings": 0}
         _ERR_COUNT_RE = re.compile(r"[Hh]a habido (\d+) error")
 
+        # Medición de disco/CPU por fase (ver atom_core.medicion_recursos): se
+        # arranca aquí y se para SIEMPRE en el `finally` de abajo, tanto si el
+        # run acaba bien como si error/cancelación cortan a mitad.
+        medidor = MedidorRecursos()
+        medidor.iniciar()
+
         def _scan_errors(text: str) -> None:
             m = _ERR_COUNT_RE.search(text)
             if m:
@@ -649,8 +656,12 @@ def run_task(
         def _close_phase(idx: int) -> dict:
             start = _t["phase_start"]
             dur = (datetime.now() - start).total_seconds() if start else 0.0
-            return {"index": idx, "duration": round(dur, 1),
-                    "errors": _t["cur_errors"]}
+            resultado = {"index": idx, "duration": round(dur, 1),
+                         "errors": _t["cur_errors"]}
+            recursos = medidor.cerrar_fase()
+            if recursos is not None:
+                resultado["recursos"] = recursos
+            return resultado
 
         # Estadísticas en vivo (imágenes analizadas, RGB vs térmica, rotaciones).
         # Se derivan del texto que el pipeline ya emite; ver progress_stats.
@@ -684,6 +695,7 @@ def run_task(
                     prev = _close_phase(idx - 1)
                 _t["phase_start"] = datetime.now()
                 _t["cur_errors"] = 0
+                medidor.abrir_fase()
                 if idx - 1 < len(plan_names):
                     name = plan_names[idx - 1]
                 else:  # fase dinámica (tasks sin plan predefinido)
@@ -762,13 +774,19 @@ def run_task(
             _status = "warning"
         else:
             _status = "ok"
-        emit("done", {
+        payload_done = {
             "status": _status,
             "errors": _t["total_errors"],
             "warnings": _t["total_warnings"],
             "elapsed": elapsed,
             "last": last,
-        })
+        }
+        # Agregado de disco/CPU de TODO el run: es lo que alimenta la línea de
+        # veredicto del modal ("Cuello de botella: disco").
+        recursos_totales = medidor.resumen_total()
+        if recursos_totales is not None:
+            payload_done["recursos_totales"] = recursos_totales
+        emit("done", payload_done)
     except Exception as exc:  # noqa: BLE001 — se reenvía al front
         # Best-effort: los vuelos ya girados antes del fallo siguen siendo dato
         # útil. `_emit_giros` puede no estar definida aún si petó muy arriba, de
@@ -780,6 +798,11 @@ def run_task(
         emit("error", f"{type(exc).__name__}: {exc}")
         emit("log", traceback.format_exc())
     finally:
+        # El medidor puede no existir si el fallo fue antes de crearlo.
+        try:
+            medidor.detener()
+        except Exception:
+            pass
         if _run_log is not None:
             try:
                 _run_log.close()

@@ -126,6 +126,7 @@ function advancePhases(prev, data) {
         status: closed.errors > 0 ? 'error' : 'done',
         duration: closed.duration,
         errors: closed.errors,
+        recursos: closed.recursos || null,
       }
     }
     if (i < index - 1) return { ...p, status: p.status === 'error' ? 'error' : 'done' }
@@ -193,6 +194,9 @@ function App() {
   const [stats, setStats] = useState(null)
   const [detail, setDetail] = useState([]) // log crudo (colapsable)
   const [finished, setFinished] = useState(null) // null | {ok, msg}
+  // Recursos (disco/CPU) acumulados de todo el run, del evento `done`.
+  // null cuando el backend no los manda o no hay veredicto.
+  const [recursosTotales, setRecursosTotales] = useState(null)
 
   // Modal PREVIO (info del estadillo). null | {loading, info, task, params, advanced}
   const [preflight, setPreflight] = useState(null)
@@ -382,6 +386,7 @@ function App() {
           setRunning(false)
           const info = d.data || null
           const closed = info && info.last
+          setRecursosTotales((info && info.recursos_totales) || null)
           setPhases((prev) =>
             prev.map((p, i) => {
               if (closed && i === closed.index - 1) {
@@ -390,6 +395,7 @@ function App() {
                   status: closed.errors > 0 ? 'error' : 'done',
                   duration: closed.duration,
                   errors: closed.errors,
+                  recursos: closed.recursos || null,
                 }
               }
               // Fases que nunca corrieron o seguían activas: cerrar como
@@ -455,6 +461,7 @@ function App() {
     setStats(null)
     setDetail([])
     setFinished(null)
+    setRecursosTotales(null)
     setModalOpen(true)
     setRunning(true)
     // `estadillo` viaja como array por toda la UI (así es como se arma el
@@ -806,6 +813,7 @@ function App() {
           stats={stats}
           detail={detail}
           finished={finished}
+          recursosTotales={recursosTotales}
           onClose={() => setModalOpen(false)}
         />
       )}
