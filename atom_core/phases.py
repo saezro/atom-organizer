@@ -26,9 +26,14 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import tempfile
 
 import external_tools as config
+import pipeline
 import utils
+from atom_core import cierre as cierre_mod
+from atom_core import indice as indice_mod
 from atom_core import sharding
 from atom_core.almacen import (
     abrir_para_lectura,
@@ -38,6 +43,8 @@ from atom_core.almacen import (
     listar_subcarpetas,
     unir,
 )
+from atom_core.apply import aplicar_rgb, aplicar_termicas
+from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO
 from external_tools import resource_path
 from utils import (
     CompressRgbsConfig,
@@ -84,6 +91,36 @@ def _primera_imagen_almacen(carpeta: str) -> "str | None":
         if encontrada:
             return encontrada
     return None
+
+
+class _PipelineAdaptadorPlanApply:
+    """Adapta el host (`gen_struct_folder_obj`/`split_images_obj`/
+    `rgb_cropping_obj`/`config_obj`) al pequeño contrato que
+    `atom_core.indice.construir_indice` espera de su parámetro `pipeline`:
+    4 métodos puros repartidos en 3 clases del motor viejo + el diccionario
+    de `Config.ini`. No existe una sola clase que agrupe ya esas 4 funciones
+    —cada una vive donde el motor viejo la fue dejando—, así que este
+    adaptador es solo una fachada de delegación: no decide nada por su
+    cuenta, no reimplementa ningún criterio."""
+
+    def __init__(self, host: "PipelinePhasesMixin") -> None:
+        self._host = host
+
+    def ventana_horaria_vuelo(self, *args, **kwargs):
+        return self._host.gen_struct_folder_obj.ventana_horaria_vuelo(*args, **kwargs)
+
+    def read_auto_rotate_degree(self, *args, **kwargs):
+        return self._host.split_images_obj.read_auto_rotate_degree(*args, **kwargs)
+
+    def nombre_destino(self, *args, **kwargs):
+        return self._host.split_images_obj.nombre_destino(*args, **kwargs)
+
+    def get_percentage_by_model(self, *args, **kwargs):
+        return self._host.rgb_cropping_obj.get_percentage_by_model(*args, **kwargs)
+
+    @property
+    def percentage_by_models(self):
+        return self._host.config_obj.percentage_by_models
 
 
 class PipelinePhasesMixin:
@@ -910,6 +947,94 @@ class PipelinePhasesMixin:
         
         processing_time = self.utils_obj.logging_time(progress_callback, processing_time, False)
         return processing_time
+
+    def organizar_plan_apply(self, cfg: SplitImagesConfig, progress_callback, progress_bar,
+                             progress_summarize) -> None:
+        """Motor de organizado índice -> manifiesto SQLite -> apply -> cierre.
+
+        Sustituye a `split_images` (motor viejo de 7 fases, arriba en este
+        mismo fichero) con la MISMA firma, para no tocar el llamante
+        (`atom_core.organize.run_task`). `split_images` sigue definido pero
+        YA NO SE INVOCA desde aquí: se retira en la Tarea 8, cuando la
+        validación contra planta real haya pasado.
+
+        Secuencia fija, todo sobre el MISMO manifiesto:
+          `Manifiesto.crear_esquema()` -> `reabrir_huerfanas()` (recupera
+          filas que quedaron 'en_curso' porque un run anterior murió a
+          mitad) -> `construir_indice(...)` (única pasada de metadatos,
+          decide todo) -> `aplicar_rgb(...)` -> `aplicar_termicas(...)` ->
+          `emitir_csvs(...)` -> `verificar(...)`.
+
+        Si `verificar` devuelve problemas se emiten por `progress_callback`,
+        uno por línea, y el run termina EN AVISO: un run con imágenes mal
+        escritas o a medias no puede quedar en silencio como si fuera un
+        run correcto.
+
+        El manifiesto SQLite vive en un directorio temporal, fuera de
+        El manifiesto SQLite vive en `<output_folder>/.organizado/manifiesto.db`,
+        una RUTA DETERMINISTA a propósito: es lo que hace posible la
+        reanudación. Si el run muere a mitad, el fichero sobrevive y la
+        siguiente corrida sobre el MISMO destino lo reabre, recupera las filas
+        que quedaron `en_curso` (`reabrir_huerfanas`) y salta las que ya están
+        hechas. Con un directorio temporal aleatorio —como estaba antes— eso
+        era imposible por construcción: el run siguiente creaba otro tempdir y
+        no encontraba nada, así que `reabrir_huerfanas` no podía dispararse
+        jamás.
+
+        Por eso el borrado NO es incondicional: la carpeta `.organizado` solo
+        se elimina tras un cierre limpio (sin excepción y sin problemas en
+        `verificar`). Si algo falló, se conserva para reanudar. El `cerrar()`
+        del SQLite sí va siempre en el `finally`.
+        """
+        self.organizer_logger_obj.logger.info("###################################################################")
+        self.organizer_logger_obj.logger.info("PROCESO: ORGANIZAR (motor índice -> manifiesto -> apply -> cierre)")
+        self.organizer_logger_obj.logger.info("###################################################################")
+
+        adaptador = _PipelineAdaptadorPlanApply(self)
+        carpeta_manifiesto = os.path.join(cfg.output_folder, NOMBRE_CARPETA_MANIFIESTO)
+        os.makedirs(carpeta_manifiesto, exist_ok=True)
+        manifiesto = Manifiesto(os.path.join(carpeta_manifiesto, "manifiesto.db"))
+        cierre_limpio = False
+        try:
+            manifiesto.crear_esquema()
+            reabiertas = manifiesto.reabrir_huerfanas()
+            if reabiertas:
+                progress_callback.emit(
+                    f"\n{reabiertas} imagen(es) quedaron a medias en un run anterior; "
+                    "se reintentan en esta corrida.\n")
+
+            indice_mod.construir_indice(
+                cfg, adaptador, self.split_images_obj.exif_management_obj, manifiesto,
+                progress_callback, progress_bar, progress_summarize)
+
+            aplicar_rgb(manifiesto, cfg, pipeline, progress_callback, progress_bar,
+                       progress_summarize)
+
+            aplicar_termicas(manifiesto, cfg, self.split_images_obj, progress_callback,
+                            progress_bar, progress_summarize)
+
+            progress_summarize.emit("---> SUBPROCESO: Cierre")
+            cierre_mod.emitir_csvs(manifiesto, cfg, progress_callback)
+            problemas = cierre_mod.verificar(manifiesto, cfg)
+            progress_bar.emit(100)
+            if problemas:
+                progress_callback.emit(
+                    f"\nHA HABIDO AVISOS: el cierre encontró {len(problemas)} "
+                    "problema(s) al verificar el manifiesto contra disco:\n")
+                for problema in problemas:
+                    progress_callback.emit(f"  - {problema}\n")
+                self.organizer_logger_obj.logger.warning(
+                    "Cierre con %d problema(s): %s", len(problemas), problemas)
+            else:
+                progress_callback.emit("\nOrganizado completado sin problemas.\n")
+                cierre_limpio = True
+        finally:
+            manifiesto.cerrar()
+            # Solo se tira el manifiesto si el organizado cerró limpio. Si hubo
+            # excepción o `verificar` encontró problemas, se queda en disco para
+            # que la siguiente corrida reanude en vez de repetirlo todo.
+            if cierre_limpio:
+                shutil.rmtree(carpeta_manifiesto, ignore_errors=True)
 
     def rename_images(self, cfg: RenameImagesConfig, progress_callback, progress_bar, progress_summarize):
         """Función que renombra las imágenes que se encuentran en la carpeta elegida

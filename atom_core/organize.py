@@ -47,6 +47,7 @@ from atom_core.progress_stats import StatsTracker
 from atom_core.medicion_recursos import MedidorRecursos
 from atom_core.phases import PipelinePhasesMixin
 from atom_core.sharding import ETAPAS, normalizar_shard
+from atom_core.manifiesto import NOMBRE_CARPETA_MANIFIESTO
 from utils import (
     ROTATION_MIN_AGREEMENT_PCT,
     ROTATION_YAW_MARGIN,
@@ -283,19 +284,25 @@ def _default_split_config(params: dict) -> SplitImagesConfig:
 # Secuencia canónica de las 7 fases de `split_images` (mismo ORDEN en que
 # gui.py emite `progress_summarize.emit("---> SUBPROCESO: ...")`). Cada entrada:
 # (etapa a la que pertenece, condición sobre la cfg, nombre legible para el
-# modal). El orden aquí DEBE coincidir con el orden de emisión en
-# gui.py:2124/2146/2168/2192/2216/2239/2293.
+# modal).
 #
-# La etapa es la que decide el reparto entre tareas (ver atom_core/sharding):
-# `split` y `post` se abren en N tareas paralelas, `struct` va en una sola.
+# Desde la Tarea 7 (motor índice -> manifiesto -> apply -> cierre,
+# `atom_core.phases.organizar_plan_apply`) son SIEMPRE estas 4, SIEMPRE
+# activas y en este orden — `organizar_plan_apply` no reparte por etapa
+# (`split`/`struct`/`post` es sharding del motor VIEJO, `atom_core/sharding`;
+# el motor nuevo no lo usa todavía). Los nombres tienen que coincidir letra a
+# letra, con tilde, con los `progress_summarize.emit("---> SUBPROCESO: ...")`
+# de `atom_core.indice.construir_indice`, `atom_core.apply.aplicar_rgb`,
+# `atom_core.apply.aplicar_termicas` y `atom_core.phases.organizar_plan_apply`
+# (este último para "Cierre", que no emite su propio módulo): si no coinciden,
+# `MedidorRecursos.abrir_fase` sigue funcionando igualmente (no filtra por
+# nombre), pero el modal mostraría un nombre de fase distinto al que de verdad
+# corrió.
 _SPLIT_PHASES = (
-    ("split", lambda c: True, "Separación RGB / térmica"),
-    ("split", lambda c: bool(getattr(c, "end_rgb_extra_files", "")), "Carpeta RGB_EXTRA"),
-    ("struct", lambda c: bool(getattr(c, "organize_images", False)), "Estructura de carpetas"),
-    ("post", lambda c: bool(getattr(c, "cropping_rgb", False)), "Recorte RGB"),
-    ("post", lambda c: bool(getattr(c, "gen_meta_location", False)), "Meta y geolocalización"),
-    ("post", lambda c: bool(getattr(c, "gen_thumbnails", False)), "Rotación"),
-    ("post", lambda c: bool(getattr(c, "convert_to_tif", False)), "Convertir a TIF"),
+    ("split", lambda c: True, "Índice"),
+    ("split", lambda c: True, "Imágenes RGB"),
+    ("split", lambda c: True, "Conversión térmica"),
+    ("split", lambda c: True, "Cierre"),
 )
 
 _PHASE_PREFIX = "---> SUBPROCESO:"
@@ -326,7 +333,12 @@ def _derive_plant(params: dict) -> str:
 # ---- registro de tasks -------------------------------------------------------
 # task -> (nombre de método en HeadlessHost, dataclass de config o None si custom)
 _TASKS = {
-    "split_images": ("split_images", None),  # config custom (_default_split_config)
+    # config custom (_default_split_config). El método real es
+    # `organizar_plan_apply` (motor índice -> manifiesto -> apply -> cierre,
+    # Tarea 7): `split_images` (motor viejo de 7 fases) sigue definido en
+    # `atom_core/phases.py` pero ya no se invoca desde aquí — se retira en
+    # la Tarea 8, tras validar contra planta real.
+    "split_images": ("organizar_plan_apply", None),
     "gen_meta_location": ("gen_meta_location", GenMetaLocationConfig),
     "compress_image": ("call_to_compress_image", CompressRgbsConfig),
     "gen_thumbnails": ("gen_thumbnails", GenThumbnailsConfig),
@@ -583,6 +595,23 @@ def run_task(
                  "post, todas con N tareas.")
             return
 
+        # El motor nuevo de organizado (`organizar_plan_apply`, Tarea 7) TODAVÍA
+        # no sabe repartirse: a diferencia de `split_images`, no mira
+        # `shard_index`/`shard_count`, así que las N tareas harían el organizado
+        # ENTERO —índice, apply y cierre— sobre el MISMO `output_folder`, a la
+        # vez. Eso no es "más lento": es trabajo multiplicado por N y varias
+        # tareas escribiendo los mismos destinos en paralelo. Se rechaza en
+        # claro en vez de dejarlo correr mal en silencio; el reparto llega en la
+        # Tarea 8, cuando el manifiesto se filtre por shard.
+        if task == "split_images" and shard_count > 1:
+            emit("error",
+                 f"El organizado no se puede repartir todavía (llegan {shard_count} "
+                 "tareas). El motor nuevo (índice -> manifiesto -> apply -> cierre) "
+                 "aún no soporta el reparto entre varias tareas: las "
+                 f"{shard_count} harían el trabajo entero sobre la misma carpeta de "
+                 "salida a la vez. Lanza el organizado con --shard-count 1.")
+            return
+
         # Guarda: la carpeta de SALIDA debe estar vacía (decisión de Cas
         # 2026-07-22). Si tiene residuos de una corrida previa, la separación no
         # parte de cero: `unique_dest` genera duplicados `_1/_2` y el recorte
@@ -600,7 +629,13 @@ def run_task(
         if task == "split_images":
             _out = getattr(cfg, "output_folder", "")
             _guard_activo = (etapa in ("todo", "split")) and shard_count == 1
-            if _guard_activo and _out and os.path.isdir(_out) and os.listdir(_out):
+            # `.organizado/` NO cuenta como residuo: es el manifiesto que el
+            # motor deja aposta cuando un run muere a mitad, y es justo lo que
+            # permite reanudar. Si lo contáramos, el guard abortaría la corrida
+            # siguiente y la reanudación sería inalcanzable en la práctica.
+            _restos = [n for n in (os.listdir(_out) if _out and os.path.isdir(_out) else [])
+                       if n != NOMBRE_CARPETA_MANIFIESTO]
+            if _guard_activo and _restos:
                 emit("error", "La carpeta de salida no está vacía: "
                               f"\"{_out}\". Vacíala o elige una carpeta vacía "
                               "antes de organizar (una corrida sobre residuos "

@@ -229,14 +229,20 @@ def test_el_selector_de_dron_se_resuelve_tambien_en_etapa_post(monkeypatch):
 # --- el checklist que ve el usuario cuenta sobre su etapa --------------------
 
 def test_el_plan_de_fases_se_filtra_por_etapa():
+    """Desde la Tarea 7 el checklist del modal es el del motor plan-apply
+    (`atom_core.phases.organizar_plan_apply`, cableado en `_TASKS["split_images"]`),
+    no el de `split_images` (motor viejo, que sigue definido pero ya no se
+    invoca desde `run_task`). El troceado por etapa `split`/`struct`/`post`
+    era sharding del motor VIEJO (`atom_core/sharding`); el motor nuevo
+    todavía no lo usa, así que las 4 fases van siempre bajo la etiqueta
+    `split` y siempre activas — `struct`/`post` no tienen nada que aportar."""
     cfg = _cfg()
     assert _active_split_phases(cfg, "todo") == [
-        "Separación RGB / térmica", "Estructura de carpetas", "Recorte RGB",
-        "Meta y geolocalización", "Rotación", "Convertir a TIF"]
-    assert _active_split_phases(cfg, "split") == ["Separación RGB / térmica"]
-    assert _active_split_phases(cfg, "struct") == ["Estructura de carpetas"]
-    assert _active_split_phases(cfg, "post") == [
-        "Recorte RGB", "Meta y geolocalización", "Rotación", "Convertir a TIF"]
+        "Índice", "Imágenes RGB", "Conversión térmica", "Cierre"]
+    assert _active_split_phases(cfg, "split") == [
+        "Índice", "Imágenes RGB", "Conversión térmica", "Cierre"]
+    assert _active_split_phases(cfg, "struct") == []
+    assert _active_split_phases(cfg, "post") == []
 
 
 def test_el_plan_por_defecto_es_el_de_siempre():
@@ -246,8 +252,14 @@ def test_el_plan_por_defecto_es_el_de_siempre():
 
 
 def test_el_plan_respeta_los_flags_apagados():
+    """El motor plan-apply no condiciona sus 4 fases a flags de la cfg (a
+    diferencia del motor viejo, donde `convert_to_tif=False` quitaba
+    "Convertir a TIF" del checklist): índice, apply RGB, apply térmicas y
+    cierre corren siempre — cada uno decide internamente si hay algo pendiente
+    de su tipo (p. ej. `aplicar_termicas` con 0 filas TERMICA es un no-op)."""
     cfg = _cfg(convert_to_tif=False, cropping_rgb=False)
-    assert _active_split_phases(cfg, "post") == ["Meta y geolocalización", "Rotación"]
+    assert _active_split_phases(cfg, "todo") == [
+        "Índice", "Imágenes RGB", "Conversión térmica", "Cierre"]
 
 
 # --- el reparto llega hasta las llamadas del pipeline ------------------------

@@ -47,11 +47,21 @@ def test_etapa_desconocida_se_rechaza():
 
 
 @pytest.mark.parametrize("etapa", ["split", "struct", "post"])
-def test_las_etapas_repartibles_admiten_shard(etapa, tmp_path):
-    """No debe salir el error de reparto: solo `todo` está vetado.
+def test_el_organizado_rechaza_el_reparto_mientras_el_motor_nuevo_no_lo_soporte(etapa, tmp_path):
+    """Ninguna etapa admite reparto en el organizado, ni siquiera las que el
+    motor VIEJO sí repartía.
 
-    `struct` entró en esta lista en v3.4.31, cuando pasó a repartirse por imagen
-    (hash del nombre) en vez de por vuelo del estadillo."""
+    Hasta la Tarea 7, `split_images` (motor viejo de 7 fases) miraba
+    `shard_index`/`shard_count` y se repartía el trabajo por imagen; solo
+    `todo` estaba vetado, y `struct` entró como repartible en v3.4.31.
+    Ahora `_TASKS["split_images"]` apunta a `organizar_plan_apply` (motor
+    índice -> manifiesto -> apply -> cierre), que NO lee esos dos valores.
+
+    Sin este guard las N tareas ejecutarían el organizado ENTERO sobre el
+    mismo `output_folder` a la vez: trabajo multiplicado por N y varias
+    escribiendo los mismos destinos en paralelo. Fallar en claro es la única
+    salida honesta mientras el manifiesto no se filtre por shard (Tarea 8);
+    cuando eso llegue, este test vuelve a afirmar lo contrario."""
     eventos, emit = _emisor()
     origen = tmp_path / "origen"
     origen.mkdir()
@@ -59,7 +69,8 @@ def test_las_etapas_repartibles_admiten_shard(etapa, tmp_path):
                       {"origen": str(origen), "destino": str(tmp_path / "destino"),
                        "etapa": etapa, "shard_index": 1, "shard_count": 4},
                       emit)
-    assert not [e for e in _errores(eventos) if "no se puede repartir" in e]
+    assert [e for e in _errores(eventos) if "no se puede repartir todavía" in e], \
+        "el organizado aceptó un reparto que el motor nuevo no sabe hacer"
 
 
 def test_el_guard_de_carpeta_vacia_sigue_activo_sin_reparto(tmp_path):

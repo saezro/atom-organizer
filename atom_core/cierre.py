@@ -23,6 +23,7 @@ import pandas as pd
 
 import utils
 from atom_core.almacen import abrir_para_lectura, es_uri_gcs, existe_ruta, publicar_en, tamano_de, unir
+from atom_core.indice import TIPOS_RGB
 
 # Columnas exactas del CSV de criterio de giro que hoy escribe
 # `Pipeline.write_videofiles_csv` (pipeline.py:1972). El giro/TIFF térmico lee
@@ -250,8 +251,13 @@ def verificar(manifiesto, cfg) -> list[str]:
 
         # 2. crop_count == non_crop_count (hoy pipeline.py:3900-3960): cada RGB
         # original produce un `_CROP` hermano cuando el recorte está activo.
+        # `RGB_Extra` (`TIPOS_RGB`) cuenta aquí igual que RGB: en el motor
+        # viejo `iterate_folders_for_rgb_cropping` recorre TODO el árbol de
+        # salida salvo `TERMICA`, así que el tercer grupo de sufijos también
+        # se recorta — dejarlo fuera de esta cuenta escondería un desajuste
+        # real detrás de la verificación.
         if cfg.cropping_rgb:
-            rgb = [fila for fila in filas_vuelo if fila["tipo"] == "RGB"]
+            rgb = [fila for fila in filas_vuelo if fila["tipo"] in TIPOS_RGB]
             if rgb:
                 non_crop_count = len(rgb)
                 crop_count = sum(1 for fila in rgb if fila["ruta_salida_crop"])
