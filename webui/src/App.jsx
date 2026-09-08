@@ -130,7 +130,7 @@ function advancePhases(prev, data) {
       }
     }
     if (i < index - 1) return { ...p, status: p.status === 'error' ? 'error' : 'done' }
-    if (i === index - 1) return { ...p, status: 'active', name: p.name || name }
+    if (i === index - 1) return { ...p, status: 'active', name: p.name || name, startedAt: Date.now() }
     return p
   })
 }

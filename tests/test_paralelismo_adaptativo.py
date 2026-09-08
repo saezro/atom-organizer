@@ -25,10 +25,24 @@ def _medicion(trabajadores=4, completados=100, segundos=10.0, mb_procesados=500.
 
 def test_sube_si_el_rendimiento_mejora():
     """Mientras añadir trabajadores dé más imágenes por segundo, hay que seguir
-    subiendo: es el caso de un SSD infrautilizado."""
+    subiendo: es el caso de un SSD infrautilizado.
+
+    En la rampa inicial (nunca se ha bajado) el salto es GEOMÉTRICO: subir de
+    uno en uno cada 5 s tarda minutos en llegar al techo y una fase entera se
+    consume infra-aprovisionada."""
     historial = [_medicion(trabajadores=4, completados=100),
                  _medicion(trabajadores=5, completados=130)]
-    assert decidir_trabajadores(historial, minimo=1, maximo=16) == 6
+    assert decidir_trabajadores(historial, minimo=1, maximo=16) == 10
+
+
+def test_tras_una_bajada_la_subida_vuelve_a_ser_de_uno_en_uno():
+    """Si el historial tiene una ventana con MÁS trabajadores que ahora, es que
+    ya se tocó el techo real de la máquina y se bajó. A partir de ahí duplicar
+    volvería a provocar el mismo thrashing: toca afinar de uno en uno."""
+    historial = [_medicion(trabajadores=12, completados=90),
+                 _medicion(trabajadores=6, completados=100),
+                 _medicion(trabajadores=6, completados=130)]
+    assert decidir_trabajadores(historial, minimo=1, maximo=16) == 7
 
 
 def test_baja_si_el_rendimiento_empeora():
@@ -36,7 +50,16 @@ def test_baja_si_el_rendimiento_empeora():
     controlador no lo detecta y baja, el run se hace más lento cuanto más
     paralelismo le echamos, que es justo lo contrario de lo que se busca."""
     historial = [_medicion(trabajadores=6, completados=130),
-                 _medicion(trabajadores=7, completados=90)]
+                 _medicion(trabajadores=7, completados=115)]
+    assert decidir_trabajadores(historial, minimo=1, maximo=16) == 6
+
+
+def test_un_desplome_grande_corta_a_la_mitad():
+    """Contrapartida del salto geométrico: si duplicar provocó thrashing, hay
+    que deshacerlo igual de rápido. Bajando de uno en uno se tarda tantas
+    ventanas como saltos hubo, y todas ellas corriendo mal."""
+    historial = [_medicion(trabajadores=6, completados=130),
+                 _medicion(trabajadores=12, completados=60)]
     assert decidir_trabajadores(historial, minimo=1, maximo=16) == 6
 
 
@@ -63,7 +86,7 @@ def test_sube_en_zona_muerta_si_sobra_cpu():
     merece la pena probar un trabajador más."""
     historial = [_medicion(trabajadores=5, completados=100, cpu_ociosa_pct=60.0),
                  _medicion(trabajadores=5, completados=101, cpu_ociosa_pct=60.0)]
-    assert decidir_trabajadores(historial, minimo=1, maximo=16) == 6
+    assert decidir_trabajadores(historial, minimo=1, maximo=16) == 10
 
 
 def test_respeta_minimo_y_maximo():
@@ -183,3 +206,27 @@ def test_revisar_no_propaga_si_el_lector_de_recursos_lanza():
 
     assert isinstance(resultado, int)
     assert resultado >= controlador.minimo
+
+
+def test_el_arranque_se_puede_inyectar_para_fases_io():
+    """Una fase de HILOS que esperan a un proceso externo (térmicas) no tiene
+    la presión de RAM que `workers_para_lote` presupone: arrancar ahí la deja
+    infra-aprovisionada. `phases.py` le inyecta `utils.arranque_io()`."""
+    controlador = ControladorAdaptativo(maximo=32, arranque=16,
+                                        lector_recursos=lambda: (50.0, 8000.0))
+    assert controlador.trabajadores == 16
+
+
+def test_el_arranque_inyectado_respeta_el_maximo():
+    """El arranque nunca puede saltarse el techo de la fase."""
+    controlador = ControladorAdaptativo(maximo=4, arranque=16,
+                                        lector_recursos=lambda: (50.0, 8000.0))
+    assert controlador.trabajadores == 4
+
+
+def test_arranque_io_no_pasa_del_techo_de_io():
+    """`arranque_io` es un punto de partida, nunca por encima de
+    `max_io_workers` (que es el techo de la fase)."""
+    import utils
+
+    assert 1 <= utils.arranque_io() <= utils.max_io_workers()

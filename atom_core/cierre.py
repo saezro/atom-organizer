@@ -230,6 +230,18 @@ def verificar(manifiesto, cfg) -> list[str]:
             f"se interrumpió antes de terminar. Ejemplo: {sin_terminar[0]['ruta_origen']}"
         )
 
+    # 4b. Ninguna fila quedó 'fallido' (manifiesto.marcar_fallida): esas imágenes
+    # no se han procesado y el run no puede darse por limpio solo porque el
+    # resto salió bien.
+    fallidas = [fila for fila in filas if fila["estado"] == "fallido"]
+    if fallidas:
+        ejemplo = fallidas[0]
+        motivo = ejemplo["motivo_fallo"] if ejemplo["motivo_fallo"] else "sin motivo registrado"
+        problemas.append(
+            f"{len(fallidas)} imagen(es) fallaron y NO se han procesado. "
+            f"Ejemplo: {ejemplo['ruta_origen']} ({motivo})"
+        )
+
     # 5. Toda ruta de salida de una fila 'hecho' existe en disco y no está vacía.
     # Es el fallo más peligroso: el manifiesto dice que la imagen está lista
     # pero no hay nada que entregar.

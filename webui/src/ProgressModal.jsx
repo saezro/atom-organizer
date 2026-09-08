@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 // Modal de progreso por fases. Reemplaza la lluvia de "." por un checklist
 // estructurado con el nombre de la planta, la fase en curso + barra %, y el
@@ -23,9 +23,22 @@ function statsLine(s) {
   const parts = []
   if (s.total > 0) parts.push(`${Math.min(s.done, s.total)} de ${s.total} img`)
   else if (s.done > 0) parts.push(`${s.done} img`)
-  if (s.rgb > 0) parts.push(`${s.rgb} RGB`)
-  if (s.termica > 0) parts.push(`${s.termica} ${s.termica === 1 ? 'térmica' : 'térmicas'}`)
+  if (s.rgb > 0 && s.rgb !== s.done) parts.push(`${s.rgb} RGB`)
+  if (s.termica > 0 && s.termica !== s.done) {
+    parts.push(`${s.termica} ${s.termica === 1 ? 'térmica' : 'térmicas'}`)
+  }
   return parts.join(' · ')
+}
+
+// ETA de la fase activa a partir de su progreso y momento de arranque. Vacío
+// hasta que hay señal suficiente (progreso >=5% y >=3s transcurridos) para no
+// mostrar estimaciones absurdas nada más arrancar la fase.
+function etaText(startedAt, progress, now) {
+  if (startedAt == null || progress < 5) return ''
+  const elapsed = (now - startedAt) / 1000
+  if (elapsed < 3) return ''
+  const eta = (elapsed * (100 - progress)) / progress
+  return `queda ~${fmtDur(Math.round(eta))}`
 }
 
 // Megabytes legibles: pasa a GB cuando supera 1024 MB.
@@ -96,6 +109,16 @@ export default function ProgressModal({
   onClose,
 }) {
   const [showDetail, setShowDetail] = useState(false)
+  const [now, setNow] = useState(Date.now())
+  const hasActive = phases.some((p) => p.status === 'active')
+
+  // Reloj para el ETA de la fase activa: solo corre mientras haya algo que
+  // estimar, para no dejar un interval huérfano tras terminar.
+  useEffect(() => {
+    if (!hasActive || finished) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [hasActive, finished])
 
   return (
     <div className="pm-overlay" role="dialog" aria-modal="true">
@@ -139,10 +162,18 @@ export default function ProgressModal({
                         style={progress > 0 ? { width: `${progress}%` } : undefined}
                       />
                     </div>
-                    <span className="pm-pct">{progress}%</span>
+                    <span className="pm-pct">{progress > 0 ? `${progress}%` : '…'}</span>
+                    {etaText(p.startedAt, progress, now) && (
+                      <span className="pm-eta">{etaText(p.startedAt, progress, now)}</span>
+                    )}
                   </div>
-                  {statsLine(stats) && (
+                  {statsLine(stats) ? (
                     <div className="pm-stats">{statsLine(stats)}</div>
+                  ) : (
+                    p.startedAt != null &&
+                    (now - p.startedAt) / 1000 >= 3 && (
+                      <div className="pm-stats">escaneando…</div>
+                    )
                   )}
                 </>
               )}

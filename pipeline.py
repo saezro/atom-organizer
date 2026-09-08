@@ -57,7 +57,9 @@ from atom_core import almacen, rjpeg, sharding
 
 
 def _is_windows() -> bool:
-    return sys.platform.startswith("win")
+    """Único test de SO del pipeline, delegado en external_tools para que Windows,
+    Linux, ARM y Cloud Run se decidan siempre en el mismo sitio (external_tools._current_os)."""
+    return external_tools._current_os() == "win"
 
 
 # Ruta al helper de conversión térmica en Linux (equivalente a dji_irp.exe).
