@@ -45,7 +45,8 @@ from atom_core.almacen import (
     listar_subcarpetas,
     unir,
 )
-from atom_core.apply import aplicar_rgb, aplicar_termicas, _formatear_duracion
+from atom_core.apply import (aplicar_rgb, aplicar_termicas, _formatear_duracion,
+                             _ContadorRotacion)
 from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO
 from external_tools import resource_path
 from utils import (
@@ -1026,9 +1027,16 @@ class PipelinePhasesMixin:
             # compartido: el historial de mediciones de RGB (CPU-bound, procesos)
             # no describe a las térmicas (I/O-bound, hilos esperando a dji_irp y
             # exiftool) y arrancaría la segunda fase con una tendencia ajena.
+            # Contador de rotación COMPARTIDO entre RGB y térmicas: la línea
+            # "Rotación: N giradas 270° · M sin girar" de la UI es acumulada
+            # del run entero, no por fase (ver `apply._ContadorRotacion`).
+            contador_rotacion = _ContadorRotacion()
+
             aplicar_rgb(manifiesto, cfg, pipeline, progress_callback, progress_bar,
                        progress_summarize,
-                       controlador=paralelismo_mod.ControladorAdaptativo())
+                       controlador=paralelismo_mod.ControladorAdaptativo(
+                           etiqueta="RGB"),
+                       contador_rotacion=contador_rotacion)
             tiempos["RGB"] = time.monotonic() - marca
             marca = time.monotonic()
 
@@ -1039,7 +1047,10 @@ class PipelinePhasesMixin:
             aplicar_termicas(manifiesto, cfg, self.split_images_obj, progress_callback,
                             progress_bar, progress_summarize,
                             controlador=paralelismo_mod.ControladorAdaptativo(
-                                maximo=utils.max_io_workers()))
+                                maximo=utils.max_io_workers(),
+                                arranque=utils.arranque_io(),
+                                etiqueta="Termicas"),
+                            contador_rotacion=contador_rotacion)
             tiempos["Térmicas"] = time.monotonic() - marca
             marca = time.monotonic()
 

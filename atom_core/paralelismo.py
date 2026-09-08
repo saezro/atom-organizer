@@ -19,12 +19,20 @@ número. Quien lo consume aforo un semáforo con ese número (un
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 import utils
+
+#: Traza del aforo en vivo. Sale por el log de la app
+#: (%APPDATA%\ATOM-Organizer\Logs\app_*.log) con el prefijo `[paralelismo]`,
+#: una línea por VENTANA cerrada (5 s), para poder ver a posteriori si el
+#: controlador llegó a subir trabajadores o se quedó estancado. Es la única
+#: forma de saber por qué una fase va al 47% de CPU sin repetir el run.
+_log = logging.getLogger(__name__)
 
 #: Zona muerta para no oscilar por ruido de medida: un cambio de rendimiento
 #: por debajo de este umbral no mueve el número de trabajadores.
@@ -48,6 +56,39 @@ class Medicion:
     ram_libre_mb: float
 
 
+#: Caída de rendimiento a partir de la cual una bajada de -1 se queda corta:
+#: si un salto geométrico se pasó de frenada, deshacerlo de uno en uno cuesta
+#: tantas ventanas como saltos hubo. Por encima de este desplome se vuelve a
+#: la mitad de golpe.
+_DESPLOME_PARA_HALVING = 0.25
+
+
+def _subir(historial: List[Medicion], trabajadores: int, maximo: int) -> int:
+    """Cuánto subir cuando hay margen.
+
+    Durante la RAMPA INICIAL (mientras el controlador nunca haya tenido que
+    bajar) duplica: llegar de 7 a 32 de uno en uno son 25 ventanas = 125 s,
+    que en una fase de 355 s es el 35% del tiempo corriendo infra-aprovisionado
+    — y basta una ventana de ruido para perder el paso. Duplicando son 3.
+
+    En cuanto ha habido una bajada (alguna ventana del historial tuvo MÁS
+    trabajadores que ahora) se pasa a +1: ya se conoce el techo real de la
+    máquina y lo que toca es afinar, no volver a pasarse."""
+    if any(medicion.trabajadores > trabajadores for medicion in historial):
+        return min(maximo, trabajadores + 1)
+    return min(maximo, max(trabajadores + 1, trabajadores * 2))
+
+
+def _bajar(cambio_pct: float, trabajadores: int, minimo: int) -> int:
+    """Cuánto bajar cuando el rendimiento empeora. -1 por defecto; ante un
+    desplome grande (`_DESPLOME_PARA_HALVING`) se corta a la mitad, que es la
+    contrapartida necesaria del salto geométrico de `_subir`: si duplicar
+    provocó thrashing, hay que deshacerlo igual de rápido."""
+    if cambio_pct <= -_DESPLOME_PARA_HALVING:
+        return max(minimo, trabajadores // 2)
+    return max(minimo, trabajadores - 1)
+
+
 def decidir_trabajadores(
     historial: List[Medicion],
     minimo: int,
@@ -61,9 +102,11 @@ def decidir_trabajadores(
     1. RAM libre por debajo de `2 * mb_por_worker` en la última medición →
        bajar 1 (límite duro, no preferencia).
     2. Con menos de 2 mediciones → mantener (no hay tendencia que comparar).
-    3. Rendimiento mejora >5% respecto a la ventana anterior → subir 1.
-    4. Rendimiento empeora >5% → bajar 1 (esto detecta el thrashing de HDD).
-    5. Dentro del ±5% (zona muerta) y CPU ociosa >40% → subir 1 (hay margen).
+    3. Rendimiento mejora >5% respecto a la ventana anterior → subir (ver
+       `_subir`: geométrico durante la rampa inicial, +1 después).
+    4. Rendimiento empeora >5% → bajar (ver `_bajar`: -1, o a la mitad si el
+       desplome es grande). Esto detecta el thrashing de HDD.
+    5. Dentro del ±5% (zona muerta) y CPU ociosa >40% → subir (hay margen).
     6. En cualquier otro caso → mantener.
     """
     ultima = historial[-1]
@@ -87,15 +130,15 @@ def decidir_trabajadores(
 
     # Regla 3: mejora clara → subir.
     if cambio_pct > _ZONA_MUERTA_PCT:
-        return min(maximo, ultima.trabajadores + 1)
+        return _subir(historial, ultima.trabajadores, maximo)
 
     # Regla 4: empeora claro → bajar (thrashing de HDD).
     if cambio_pct < -_ZONA_MUERTA_PCT:
-        return max(minimo, ultima.trabajadores - 1)
+        return _bajar(cambio_pct, ultima.trabajadores, minimo)
 
     # Regla 5: zona muerta con margen de CPU → subir.
     if ultima.cpu_ociosa_pct > _CPU_OCIOSA_PARA_SUBIR:
-        return min(maximo, ultima.trabajadores + 1)
+        return _subir(historial, ultima.trabajadores, maximo)
 
     # Regla 6: nada de lo anterior → mantener.
     return ultima.trabajadores
@@ -140,14 +183,23 @@ class ControladorAdaptativo:
         mb_por_worker: float = utils.MB_POR_WORKER,
         reloj: Callable[[], float] = time.monotonic,
         lector_recursos: Optional[Callable[[], "tuple[float, float]"]] = None,
+        etiqueta: str = "",
+        arranque: Optional[int] = None,
     ) -> None:
+        self.etiqueta = etiqueta
         self.minimo = minimo
         self.mb_por_worker = mb_por_worker
         self.ventana_segundos = ventana_segundos
         self.reloj = reloj
         self.lector_recursos = lector_recursos or _lector_recursos_psutil
 
-        arranque = utils.workers_para_lote(mb_por_worker)
+        # `workers_para_lote` dimensiona por RAM pensando en PROCESOS que
+        # decodifican imágenes de 48 MP (la fase RGB). Una fase de HILOS que
+        # solo esperan a un proceso externo no tiene esa presión de memoria y
+        # arrancar ahí la deja infra-aprovisionada, así que se puede inyectar
+        # un `arranque` propio (lo hace `phases.py` en las térmicas).
+        if arranque is None:
+            arranque = utils.workers_para_lote(mb_por_worker)
         # El techo por RAM que da workers_para_lote es el punto de partida;
         # el máximo del controlador es ese mismo valor multiplicado por 2,
         # nunca un número inventado.
@@ -201,12 +253,35 @@ class ControladorAdaptativo:
             )
             self._historial.append(medicion)
 
+            previos = self._trabajadores
             self._trabajadores = decidir_trabajadores(
                 self._historial, self.minimo, self.maximo, self.mb_por_worker
             )
+            _trazar_ventana(self.etiqueta, medicion, previos, self._trabajadores,
+                            self.minimo, self.maximo)
 
             self._inicio_ventana = ahora
             self._completados_ventana = 0
             self._mb_ventana = 0.0
 
             return self._trabajadores
+
+
+def _trazar_ventana(etiqueta: str, medicion: Medicion, previos: int, nuevos: int,
+                    minimo: int, maximo: int) -> None:
+    """Escribe al log la ventana recién cerrada. Nunca puede tumbar el
+    organizado: un fallo del logging (fichero rotando, consola cerrada en el
+    .exe congelado) se traga en silencio."""
+    try:
+        img_s = medicion.completados / medicion.segundos if medicion.segundos else 0.0
+        mb_s = medicion.mb_procesados / medicion.segundos if medicion.segundos else 0.0
+        _log.info(
+            "[paralelismo]%s workers %d->%d (min=%d max=%d) | %d img en %.1fs "
+            "= %.2f img/s, %.1f MB/s | cpu_ociosa=%.0f%% ram_libre=%.0fMB",
+            " " + etiqueta if etiqueta else "",
+            previos, nuevos, minimo, maximo,
+            medicion.completados, medicion.segundos, img_s, mb_s,
+            medicion.cpu_ociosa_pct, medicion.ram_libre_mb,
+        )
+    except Exception:
+        pass

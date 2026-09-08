@@ -22,7 +22,6 @@ si el script esta dentro del Organizer; si no, pasalos con --sdk y --exiftool.
 import argparse
 import math
 import os
-import shutil
 import struct
 import subprocess
 import sys
@@ -32,7 +31,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 from PIL import Image
 
-ES_WINDOWS = os.name == "nt"
+import external_tools
+
+ES_WINDOWS = external_tools._current_os() == "win"
 
 # Resoluciones de sensor termico conocidas de DJI, para desambiguar el .raw.
 RESOLUCIONES = [
@@ -55,20 +56,6 @@ EXTS_IMAGEN = {".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".tif", ".tiff", ".dng"
 # re-invocado solo las volviera a coger, re-rotaría el TIFF (corrupción) o intentaría
 # convertirlo otra vez.
 EXTS_FUENTE = {".jpg", ".jpeg", ".jpe", ".jfif", ".png"}
-
-
-def localizar(nombre_win, nombre_nix, explicito, subcarpeta):
-    """Devuelve la ruta de una herramienta externa: --flag > junto al script > PATH."""
-    if explicito:
-        return explicito
-    base = os.path.dirname(os.path.abspath(__file__))
-    objetivo = nombre_win if ES_WINDOWS else nombre_nix
-    for raiz in (base, os.path.dirname(base)):
-        for rel in ((subcarpeta, objetivo), (objetivo,)):
-            cand = os.path.join(raiz, "programas_externos", *rel)
-            if os.path.exists(cand):
-                return cand
-    return shutil.which(objetivo) or ""
 
 
 # El payload radiometrico de DJI viaja en segmentos APP3/APP4/APP5 del JPEG.
@@ -217,10 +204,10 @@ def main():
     if not os.path.isdir(args.entrada):
         p.error("no existe la carpeta: {0}".format(args.entrada))
 
-    sdk = localizar("dji_irp.exe", "libdirp.so", args.sdk, "DJI")
+    sdk = args.sdk or external_tools.resolve_tool("dji_irp")
     if not sdk or not os.path.exists(sdk):
         p.error("no encuentro el SDK de DJI. Pasalo con --sdk")
-    exiftool = localizar("exiftool.exe", "exiftool", args.exiftool, "exiftool")
+    exiftool = args.exiftool or external_tools.resolve_tool("exiftool")
     if not exiftool:
         print("AVISO: sin exiftool, los TIFF saldran sin EXIF/GPS.")
 

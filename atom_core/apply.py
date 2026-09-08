@@ -110,8 +110,48 @@ class _MedidorVelocidad:
         return round(pendientes / velocidad)
 
 
+class _ContadorRotacion:
+    """Cuenta ACUMULADA del run de cuántas imágenes se giraron 270°, 90° o
+    ninguna, para la línea "Rotación: N giradas 270° · M sin girar" de la UI
+    (`ProgressModal.jsx`, `rotLine`). El motor viejo la sacaba con un regex
+    sobre su propio texto de log (`progress_stats.py`); el motor
+    plan-apply gira inline por fila (`_transpose_para_angulo`) y no deja ese
+    rastro de texto, así que aquí es donde hay que llevar la cuenta.
+
+    A propósito NO se reinicia entre fases: `aplicar_rgb` y `aplicar_termicas`
+    reciben la MISMA instancia (`phases.py`) para que el total sobreviva al
+    cambio de fase — la línea de rotación se pinta durante y después de todo
+    el proceso, no solo de la fase RGB. Un `threading.Lock` propio porque se
+    incrementa desde los mismos callbacks concurrentes que ya tocan
+    `resultado`/`completadas` en ambas funciones (varios workers a la vez)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._rot270 = 0
+        self._rot90 = 0
+        self._rot_none = 0
+
+    def registrar(self, angulo: int) -> None:
+        with self._lock:
+            if angulo == 270:
+                self._rot270 += 1
+            elif angulo == 90:
+                self._rot90 += 1
+            else:
+                self._rot_none += 1
+
+    def valores(self) -> dict:
+        with self._lock:
+            return {
+                "rot270": self._rot270,
+                "rot90": self._rot90,
+                "rot_none": self._rot_none,
+            }
+
+
 def _emitir_stats_apply(progress_callback, fase: str, done: int, total: int,
-                        rgb: int, termica: int, medidor: "_MedidorVelocidad") -> None:
+                        rgb: int, termica: int, medidor: "_MedidorVelocidad",
+                        contador_rotacion: "_ContadorRotacion") -> None:
     """Empaqueta y emite la métrica de velocidad de una fase del apply.
     Formato ver `STATS_APPLY_PREFIX`."""
     velocidad = medidor.img_por_segundo()
@@ -124,6 +164,7 @@ def _emitir_stats_apply(progress_callback, fase: str, done: int, total: int,
         "img_por_segundo": round(velocidad, 2) if velocidad is not None else None,
         "eta_segundos": medidor.eta_segundos(total - done),
     }
+    payload.update(contador_rotacion.valores())
     progress_callback.emit(STATS_APPLY_PREFIX + json.dumps(payload))
 
 
@@ -347,7 +388,8 @@ def _emitir_resumen_fase(progress_callback, fase: str, unidad: str, total: int,
 
 
 def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
-                progress_summarize, controlador=None) -> dict:
+                progress_summarize, controlador=None,
+                contador_rotacion: "_ContadorRotacion | None" = None) -> dict:
     """Recorre el manifiesto y escribe las salidas RGB pendientes.
 
     Reanudable por construcción: solo toca filas en estado 'pendiente'
@@ -388,6 +430,12 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
     if total == 0:
         return resultado
 
+    # Sin instancia compartida (llamada suelta, tests) se crea una propia:
+    # solo importa que `aplicar_rgb` y `aplicar_termicas` del MISMO run
+    # reciban la misma (ver `_ContadorRotacion`).
+    if contador_rotacion is None:
+        contador_rotacion = _ContadorRotacion()
+
     # Velocidad/ETA de esta fase (ver `_MedidorVelocidad`): un único medidor
     # compartido por el camino secuencial y el paralelo, porque `_cerrar_fila`
     # es el ÚNICO punto por el que pasa cada fila completada en AMBOS caminos.
@@ -399,6 +447,7 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
     lock_resultado = threading.Lock()
 
     def _cerrar_fila(fila: dict, verificacion=None, error: Exception = None) -> None:
+        contador_rotacion.registrar(fila["angulo_giro"] or 0)
         if error is not None:
             manifiesto.marcar_fallida(fila["id"], str(error))
             with lock_resultado:
@@ -412,7 +461,8 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
             completadas = resultado["hecho"] + resultado["fallido"]
         if completadas % _EMITIR_STATS_CADA == 0 or completadas == total:
             _emitir_stats_apply(progress_callback, "Imágenes RGB", completadas, total,
-                               rgb=completadas, termica=0, medidor=medidor_velocidad)
+                               rgb=completadas, termica=0, medidor=medidor_velocidad,
+                               contador_rotacion=contador_rotacion)
         if controlador is not None:
             controlador.registrar(mb=_tamano_mb(fila["ruta_origen"]))
             controlador.revisar()
@@ -495,20 +545,65 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
 # ThreadPoolExecutor, no en procesos.
 
 
-def _copiar_jpg_destino(origen: str, destino: str) -> None:
-    """Copia el JPG térmico de origen a su ruta final, de forma atómica
-    (`<raíz>.parcial<ext>` + `os.replace`). El JPG NO se gira aquí: es un
-    R-JPEG con el payload radiométrico propietario del SDK, y re-guardarlo
-    con PIL lo destruiría (`pipeline.rotate_thermal_jpgs_in_place`, que hace
-    ese giro en el motor viejo, corre DESPUÉS y sobre una copia ya sin
-    payload). Esta función solo lo materializa en su carpeta final."""
+# Calidad del re-encodado al girar el JPG térmico. 95, la misma que usaba
+# `pipeline._girar_termica_local`: el giro obliga a descomprimir y volver a
+# comprimir, y esta es la única copia que queda, así que no puede añadir
+# artefactos visibles. NO es `pipeline._ROTATION_JPEG_QUALITY` (40), que es la
+# de RGB — bajarla aquí degradaría la térmica frente al motor viejo.
+_CALIDAD_GIRO_JPG_TERMICO = 95
+
+
+def _copiar_jpg_destino(origen: str, destino: str, angulo: int = 0) -> None:
+    """Publica el JPG térmico en su ruta final, girándolo si el ángulo del
+    manifiesto lo pide, de forma atómica (`<raíz>.parcial<ext>` + `os.replace`).
+
+    El giro es el que hacía el motor viejo (`pipeline.rotate_thermal_jpgs_in_place`
+    -> `_girar_termica_local`) y usa el MISMO mapeo `_transpose_para_angulo` que
+    el TIFF y que RGB (invariante nº1: todo el vuelo comparte ángulo), así que el
+    `*_T.JPG` y el TIFF salen orientados igual.
+
+    Re-guardar con PIL DESTRUYE el payload radiométrico propietario del R-JPEG:
+    aquí es inocuo porque a esta altura el TIFF ya está extraído del ORIGINAL
+    (`_convertir_una_termica` convierte antes de llamar aquí) y el giro se aplica
+    sobre la copia de destino, nunca sobre el fichero de origen — el motor viejo
+    sí giraba en sitio. El EXIF se arrastra explícitamente: lleva el GPS y la
+    fecha, que es justo lo que se consulta luego sobre estas fotos.
+
+    Sin giro (`angulo` 0) se copia byte a byte con `copy2`, sin reabrir ni
+    recomprimir nada: el caso normal no paga ningún coste.
+    """
     carpeta = os.path.dirname(destino)
     if carpeta:
         os.makedirs(carpeta, exist_ok=True)
     raiz, extension = os.path.splitext(destino)
     parcial = f"{raiz}.parcial{extension}"
+    transpose = _transpose_para_angulo(angulo, pipeline)
     try:
-        shutil.copy2(origen, parcial)
+        if transpose is None:
+            shutil.copy2(origen, parcial)
+        else:
+            img = pipeline.Image.open(origen)
+            try:
+                if img.height > img.width:
+                    # Las térmicas DJI son apaisadas de fábrica (640x512). Si esta
+                    # ya viene vertical, girarla la dejaría a 180º: se publica tal
+                    # cual. Misma guarda que `pipeline._girar_termica_local`.
+                    img.close()
+                    shutil.copy2(origen, parcial)
+                else:
+                    exif = img.info.get("exif")
+                    girada = img.transpose(transpose)
+                    try:
+                        if exif:
+                            girada.save(parcial, format="JPEG",
+                                        quality=_CALIDAD_GIRO_JPG_TERMICO, exif=exif)
+                        else:
+                            girada.save(parcial, format="JPEG",
+                                        quality=_CALIDAD_GIRO_JPG_TERMICO)
+                    finally:
+                        girada.close()
+            finally:
+                img.close()
     except Exception:
         if os.path.exists(parcial):
             os.remove(parcial)
@@ -558,15 +653,17 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
                            progress_callback, progress_bar, carpeta_staging: str) -> None:
     """Convierte la térmica de `fila` a TIFF vía
     `pipeline_obj.convert_dji_image_to_tif` (una instancia de
-    `pipeline.SplitImages`), la publica ya girada en su ruta final y copia
-    su JPG de origen al destino que decidió el índice.
+    `pipeline.SplitImages`), la publica ya girada en su ruta final y publica
+    su JPG de origen —también girado— en el destino que decidió el índice.
 
     El giro NO se delega en el conversor: `rotate_90`/`rotate_minus_90` van
     siempre a `False` y `auto_rotate=False`, porque el criterio automático
     (`degree_de_giro` -> `read_auto_rotate_degree`) lee un CSV de criterio
     que en el motor plan-apply todavía no existe a esta altura (lo escribe
     el cierre, Tarea 6, DESPUÉS del apply). El ángulo sale de
-    `fila["angulo_giro"]` y se aplica después, en `_publicar_tiff_girado`.
+    `fila["angulo_giro"]` y se aplica después, al publicar: al TIFF en
+    `_publicar_tiff_girado` y al `*_T.JPG` en `_copiar_jpg_destino`. Los dos
+    salen con la MISMA orientación, como en el motor viejo.
 
     No toca el manifiesto: solo escribe en disco o lanza si algo falla, para
     que la llamadora decida cómo marcar la fila."""
@@ -598,7 +695,14 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
         if ruta_tiff_destino:
             _publicar_tiff_girado(tiff_staging, ruta_tiff_destino, fila["angulo_giro"] or 0)
 
-        _copiar_jpg_destino(fila["ruta_origen"], fila["ruta_salida_original"])
+        # El giro del `*_T.JPG` cuelga del switch maestro de ROTACION
+        # (`gen_thumbnails`, el que apaga `--sin-rotacion`), igual que en el motor
+        # viejo (`phases.split_images`): girar destruye el APP3/4/5 del R-JPEG y con
+        # él su radiometría, así que quien pide «sin rotación» no puede acabar con
+        # R-JPEG destruidos (incidente CLARE, execution `wpv52`, 2026-08-21). El TIFF
+        # sí se gira: lo único que se pierde es que el JPG case visualmente con él.
+        angulo_jpg = (fila["angulo_giro"] or 0) if getattr(cfg, "gen_thumbnails", True) else 0
+        _copiar_jpg_destino(fila["ruta_origen"], fila["ruta_salida_original"], angulo_jpg)
     finally:
         shutil.rmtree(staging_salida, ignore_errors=True)
 
@@ -611,7 +715,8 @@ def _en_lotes(items: list, tamano: int):
 
 
 def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
-                     progress_summarize, controlador=None, tamano_lote_exif: int = 200) -> dict:
+                     progress_summarize, controlador=None, tamano_lote_exif: int = 200,
+                     contador_rotacion: "_ContadorRotacion | None" = None) -> dict:
     """Recorre el manifiesto y escribe las salidas de térmica pendientes.
 
     Por cada fila: convierte el JPG a TIFF (`pipeline.convert_dji_image_to_tif`,
@@ -647,6 +752,9 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
     if total == 0:
         return resultado
 
+    if contador_rotacion is None:
+        contador_rotacion = _ContadorRotacion()
+
     exiftool_exe = external_tools.resource_path("programas_externos", "exiftool.exe")
     dji_utility = external_tools.dji_utility_path()
 
@@ -668,6 +776,7 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
 
         def _procesar_una(fila: dict) -> None:
             manifiesto.marcar_en_curso(fila["id"])
+            contador_rotacion.registrar(fila["angulo_giro"] or 0)
             try:
                 _convertir_una_termica(fila, cfg, pipeline, exiftool_exe, dji_utility,
                                        progress_callback, progress_bar, staging_raiz)
@@ -685,7 +794,8 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
             if hechas % _EMITIR_STATS_CADA == 0 or hechas == total:
                 _emitir_stats_apply(progress_callback, "Conversión térmica",
                                    hechas, total, rgb=0,
-                                   termica=hechas, medidor=medidor_velocidad)
+                                   termica=hechas, medidor=medidor_velocidad,
+                                   contador_rotacion=contador_rotacion)
             if controlador is not None:
                 controlador.registrar(mb=_tamano_mb(fila["ruta_origen"]))
                 controlador.revisar()

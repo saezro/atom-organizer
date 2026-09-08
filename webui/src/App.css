@@ -414,9 +414,13 @@ select.glass-input option {
   width: min(35rem, 100%);
   max-height: 88vh;
   overflow-y: auto;
-  /* contain: paint aisla la capa: sin GPU, cada scroll repintaba el layout entero */
-  contain: paint;
-  will-change: transform;
+  /* Sin `will-change: transform` ni `contain: paint` aquí. Promovían la tarjeta
+     a capa propia de compositor, y al terminar el run desaparecen de golpe las
+     dos animaciones que la mantenían repintando (el spinner de la fase activa y
+     la barra indeterminada): Chromium no invalidaba la capa para ese último
+     frame, así que el modal se quedaba congelado en la última fase y solo
+     pasaba a "Proceso terminado" si el operador hacía scroll. El aislamiento
+     sigue donde de verdad hacía falta: en `.pm-log`, el log crudo. */
   display: flex;
   flex-direction: column;
   gap: 1.1rem;
@@ -604,6 +608,13 @@ select.glass-input option {
   }
 }
 .pm-pct {
+  font-size: 0.78rem;
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* ETA de la fase activa, junto al porcentaje: mismo tono/tamaño que .pm-stats. */
+.pm-eta {
   font-size: 0.78rem;
   color: var(--muted);
   white-space: nowrap;

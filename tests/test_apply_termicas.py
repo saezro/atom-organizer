@@ -21,6 +21,7 @@ tests sujetan:
    que marcar fallidas TODAS las filas de ese lote (nunca darlas por buenas
    a ciegas).
 """
+import filecmp
 import os
 import types
 
@@ -139,7 +140,12 @@ def test_el_tiff_usa_el_angulo_del_manifiesto_igual_que_su_jpg(tmp_path, make_dj
     mismo ángulo. `fila["angulo_giro"]` sale del mismo diccionario
     (pb, vuelo) -> grados que usa el índice para las RGB; aquí se comprueba
     que `aplicar_termicas` traduce ese ángulo a PIL con el MISMO mapeo que
-    ya usa `apply._transpose_para_angulo` para RGB (90 -> ROTATE_270)."""
+    ya usa `apply._transpose_para_angulo` para RGB (90 -> ROTATE_270).
+
+    Desde que el `*_T.JPG` publicado también se gira, el TIFF radiométrico y
+    su JPG salen con el MISMO transpose: se esperan DOS aplicaciones
+    idénticas (con `cfg.gen_thumbnails=True`, el caso por defecto). El caso
+    `--sin-rotacion` lo cubre `test_jpg_termico_no_se_gira_con_sin_rotacion`."""
     origen = tmp_path / "origen" / "DJI_0001_T.JPG"
     origen.parent.mkdir(parents=True)
     make_dji_jpeg(str(origen))
@@ -165,8 +171,10 @@ def test_el_tiff_usa_el_angulo_del_manifiesto_igual_que_su_jpg(tmp_path, make_dj
     )
 
     assert resultado == {"hecho": 1, "fallido": 0}
-    assert transposes_aplicados == [apply._transpose_para_angulo(90, pipeline_real)]
+    esperado = apply._transpose_para_angulo(90, pipeline_real)
+    assert transposes_aplicados == [esperado, esperado]
     assert salida_tiff.exists()
+    assert salida_jpg.exists()
     manifiesto.cerrar()
 
 
@@ -296,3 +304,96 @@ def test_falta_de_metadatos_marca_la_fila_como_fallida(tmp_path, make_dji_jpeg):
     # pero eso no basta para que la fila quede 'hecho'.
     assert (tmp_path / "salida" / "DJI_0001_T.tif").exists()
     manifiesto.cerrar()
+
+
+def _jpg_termico_apaisado(path):
+    """JPEG apaisado 640x512 (medida real de una térmica DJI), no el 64x48 de
+    `make_dji_jpeg`: aquí importa poder distinguir orientación por tamaño."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    PILImage.new("RGB", (640, 512), color=(80, 90, 100)).save(path, format="JPEG", quality=95)
+
+
+def test_jpg_termico_se_gira_con_gen_thumbnails_activo(tmp_path):
+    """Con `gen_thumbnails=True` (switch maestro de rotación activo), el
+    `*_T.JPG` publicado sale girado con el ángulo del manifiesto: ancho y
+    alto quedan intercambiados respecto al origen apaisado (640x512 -> 512x640)."""
+    origen = tmp_path / "origen" / "DJI_0001_T.JPG"
+    _jpg_termico_apaisado(str(origen))
+
+    salida_jpg = tmp_path / "salida" / "DJI_0001_T.JPG"
+    salida_tiff = tmp_path / "salida" / "DJI_0001_T.tif"
+    manifiesto = _manifiesto_con(
+        tmp_path, [_fila_termica(origen, salida_jpg, salida_tiff, angulo_giro=90)]
+    )
+
+    doble = _PipelineDePrueba()
+    resultado = apply.aplicar_termicas(
+        manifiesto, _cfg(gen_thumbnails=True), doble, _SignalFalsa(), _SignalFalsa(), _SignalFalsa(),
+    )
+
+    assert resultado == {"hecho": 1, "fallido": 0}
+    with PILImage.open(origen) as img_origen:
+        ancho_origen, alto_origen = img_origen.size
+    with PILImage.open(salida_jpg) as img_salida:
+        ancho_salida, alto_salida = img_salida.size
+    assert (ancho_salida, alto_salida) == (alto_origen, ancho_origen)
+    manifiesto.cerrar()
+
+
+def test_jpg_termico_no_se_gira_con_sin_rotacion(tmp_path):
+    """Con `gen_thumbnails=False` (`--sin-rotacion`), el `*_T.JPG` NO se gira
+    aunque el manifiesto traiga ángulo: girarlo destruiría el payload
+    radiométrico del R-JPEG (incidente CLARE `wpv52`). El JPG publicado debe
+    ser IDÉNTICO byte a byte al de origen, mientras que el TIFF sí sale
+    girado (el switch maestro solo protege al JPG, no al TIFF)."""
+    origen = tmp_path / "origen" / "DJI_0001_T.JPG"
+    _jpg_termico_apaisado(str(origen))
+
+    salida_jpg = tmp_path / "salida" / "DJI_0001_T.JPG"
+    salida_tiff = tmp_path / "salida" / "DJI_0001_T.tif"
+    manifiesto = _manifiesto_con(
+        tmp_path, [_fila_termica(origen, salida_jpg, salida_tiff, angulo_giro=90)]
+    )
+
+    doble = _PipelineDePrueba()
+    resultado = apply.aplicar_termicas(
+        manifiesto, _cfg(gen_thumbnails=False), doble, _SignalFalsa(), _SignalFalsa(), _SignalFalsa(),
+    )
+
+    assert resultado == {"hecho": 1, "fallido": 0}
+    assert filecmp.cmp(str(origen), str(salida_jpg), shallow=False)
+
+    # El TIFF, en cambio, sí sale girado: el staging del doble es 4x2 (F, 2px),
+    # así que tras rotar 90 queda 2x4.
+    with PILImage.open(salida_tiff) as img_tiff:
+        assert img_tiff.size == (2, 4)
+    manifiesto.cerrar()
+
+
+def test_el_origen_nunca_se_modifica(tmp_path):
+    """Ni con `gen_thumbnails=True` ni con `False` el fichero de ORIGEN se
+    toca: el giro se aplica siempre sobre la copia de destino, nunca en
+    sitio (a diferencia del motor viejo, que sí giraba el origen)."""
+    for gen_thumbnails in (True, False):
+        origen = tmp_path / f"origen_{gen_thumbnails}" / "DJI_0001_T.JPG"
+        _jpg_termico_apaisado(str(origen))
+        contenido_original = origen.read_bytes()
+
+        salida_jpg = tmp_path / f"salida_{gen_thumbnails}" / "DJI_0001_T.JPG"
+        salida_tiff = tmp_path / f"salida_{gen_thumbnails}" / "DJI_0001_T.tif"
+        carpeta_manifiesto = tmp_path / f"m_{gen_thumbnails}"
+        carpeta_manifiesto.mkdir()
+        manifiesto = _manifiesto_con(
+            carpeta_manifiesto,
+            [_fila_termica(origen, salida_jpg, salida_tiff, angulo_giro=90)],
+        )
+
+        doble = _PipelineDePrueba()
+        resultado = apply.aplicar_termicas(
+            manifiesto, _cfg(gen_thumbnails=gen_thumbnails), doble,
+            _SignalFalsa(), _SignalFalsa(), _SignalFalsa(),
+        )
+
+        assert resultado == {"hecho": 1, "fallido": 0}
+        assert origen.read_bytes() == contenido_original
+        manifiesto.cerrar()

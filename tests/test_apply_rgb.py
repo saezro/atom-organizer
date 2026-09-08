@@ -18,6 +18,7 @@ escribe directo a su carpeta final. Lo que estos tests sujetan:
 """
 import datetime as dt
 import hashlib
+import json
 import threading
 import types
 
@@ -397,3 +398,68 @@ def test_camino_paralelo_no_se_cuelga_si_marcar_hecha_revienta_siempre(
     # test es que el hilo termina solo, no los contadores.
     assert resultado["valor"] == {"hecho": 0, "fallido": 0}
     manifiesto.cerrar()
+
+
+def _ultimo_payload_stats(signal: _SignalFalsa) -> dict:
+    """El último mensaje de `STATS_APPLY_PREFIX` emitido a la señal, ya
+    deserializado. `_EMITIR_STATS_CADA` throttlea las intermedias, pero la
+    última fila SIEMPRE re-emite (`completadas == total`)."""
+    mensajes_stats = [
+        m for m in signal.mensajes
+        if isinstance(m, str) and m.startswith(apply.STATS_APPLY_PREFIX)
+    ]
+    assert mensajes_stats, "no se emitió ningún STATS_APPLY_PREFIX"
+    return json.loads(mensajes_stats[-1][len(apply.STATS_APPLY_PREFIX):])
+
+
+def test_stats_apply_emite_conteo_de_rotacion(tmp_path, make_dji_jpeg):
+    """Regresión: la línea "Rotación: N giradas 270° · M sin girar" del
+    modal de progreso (`ProgressModal.jsx`, `rotLine`) leía `stats.rot270` /
+    `stats.rot90` / `stats.rot_none`, que solo rellenaba el motor VIEJO vía
+    regex sobre su log (`progress_stats.py`). El motor plan-apply gira
+    inline por fila (`_transpose_para_angulo`) y no emitía esas claves —la
+    línea de rotación desaparecía siempre, aunque sí se girase. El payload
+    de `_emitir_stats_apply` debe traer las tres claves con el conteo
+    exacto del lote."""
+    carpeta_origen = tmp_path / "origen"
+    carpeta_origen.mkdir()
+    carpeta_salida = tmp_path / "salida"
+
+    angulos = [270, 270, 90, 0, 0, 0]
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    filas = []
+    for indice, angulo in enumerate(angulos):
+        origen = carpeta_origen / f"DJI_{indice:04d}.JPG"
+        make_dji_jpeg(str(origen))
+        filas.append(_fila_manifiesto(
+            origen, carpeta_salida / f"DJI_{indice:04d}.JPG", angulo_giro=angulo,
+        ))
+    manifiesto.insertar_muchas(filas)
+
+    progress_callback = _SignalFalsa()
+    resultado = apply.aplicar_rgb(
+        manifiesto, _cfg(), pipeline_real,
+        progress_callback, _SignalFalsa(), _SignalFalsa(),
+    )
+    assert resultado == {"hecho": 6, "fallido": 0}
+
+    payload = _ultimo_payload_stats(progress_callback)
+    assert payload["rot270"] == 2
+    assert payload["rot90"] == 1
+    assert payload["rot_none"] == 3
+    manifiesto.cerrar()
+
+
+def test_stats_apply_rotacion_acumula_entre_rgb_y_termicas(tmp_path, make_dji_jpeg):
+    """El contador de rotación es del RUN, no de la fase (Correcciones §3):
+    una instancia compartida entre `aplicar_rgb` y `aplicar_termicas` debe
+    sumar los giros de AMBAS, no reiniciarse al cambiar de fase."""
+    contador = apply._ContadorRotacion()
+    contador.registrar(270)
+    contador.registrar(90)
+    contador.registrar(0)
+    contador.registrar(270)
+
+    valores = contador.valores()
+    assert valores == {"rot270": 2, "rot90": 1, "rot_none": 1}
