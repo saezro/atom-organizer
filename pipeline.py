@@ -658,8 +658,11 @@ class CompressImage:
                     # mismo que el de entrada y sobrescribimos las imágenes.
                     # Además, si cambiamos el nombre, necesitamos obtener los
                     # datos del gimbal antes de cambiarlo.
-                    gimbal_data = self.exif_management_obj.get_gimbal_yaw_pitch(str(ruta_local_origen))
-                    xmp_all_data = self.exif_management_obj.get_xmp_data(str(ruta_local_origen))
+                    # Una sola lectura de la cabecera XMP para las dos extracciones:
+                    # antes cada `get_*` reabría y releía el fichero por su cuenta.
+                    bloque_xmp = exif_management.leer_bloque_xmp(str(ruta_local_origen))
+                    gimbal_data = self.exif_management_obj.get_gimbal_yaw_pitch(str(ruta_local_origen), bloque_xmp)
+                    xmp_all_data = self.exif_management_obj.get_xmp_data(str(ruta_local_origen), bloque_xmp)
                 if new_name == "":  # No hay renombrado.
                     pass
                 else:
@@ -904,6 +907,34 @@ class CompressImage:
             if crop_imagen_open is not None and getattr(crop_imagen_open, "fp", None) is not None:
                 crop_imagen_open.close()
 
+    # Claves que `check_xmp_data_using_pyexiv2` exige; se comprueban aquí por texto
+    # sobre la cabecera para evitar el parseo completo cuando ya están todas.
+    _CLAVES_XMP_ESPERADAS = (
+        "AbsoluteAltitude", "RelativeAltitude", "GimbalRollDegree", "GimbalYawDegree",
+        "GimbalPitchDegree", "FlightRollDegree", "FlightYawDegree", "FlightPitchDegree",
+        "CamReverse", "GimbalReverse",
+    )
+
+    def _xmp_presente_en_cabecera(self, ruta: str) -> bool:
+        """True si todas las claves XMP esperadas aparecen ya en la cabecera del fichero.
+
+        Es un cribado optimista y CONSERVADOR: ante cualquier duda (fichero ilegible,
+        bloque XMP no encontrado, una clave que no aparece) devuelve False y deja que
+        la comprobación cara de pyexiv2 decida. Nunca puede dar un falso positivo que
+        se salte una reparación necesaria, porque las claves se buscan literalmente
+        en el mismo texto que pyexiv2 acabaría leyendo.
+        """
+        try:
+            bloque = exif_management.leer_bloque_xmp(ruta)
+        except Exception:
+            return False
+        inicio = bloque.find("<x:xmpmeta")
+        fin = bloque.find("</x:xmpmeta")
+        if inicio == -1 or fin == -1:
+            return False
+        xmp = bloque[inicio:fin]
+        return all(("drone-dji:" + clave) in xmp for clave in self._CLAVES_XMP_ESPERADAS)
+
     def check_and_fix_xmp_data(self, folder, image_name, gimbal_data, xmp_all_data, progress_callback, *, ruta_local: str | None = None) -> None:
         """
         Función que encapsula la comprobación de la existencia de los datos xmp, y en caso de que no existan, intenta grabarlos un número de veces.
@@ -918,7 +949,13 @@ class CompressImage:
             prefijo `gs://…`. Si no se pasa, se construye como hasta ahora.
         """
         ruta = ruta_local if ruta_local is not None else os.path.join(folder, image_name)
-        # Comprobamos que los datos xmp están en el archivo comprimido
+        # Comprobamos que los datos xmp están en el archivo comprimido.
+        # Primero, un cribado barato leyendo solo la cabecera del JPEG: si las claves
+        # están todas ahí (el caso normal, >99 % de las imágenes) nos ahorramos abrir
+        # y parsear el fichero entero con pyexiv2, que era un coste garantizado por
+        # imagen. Solo si el cribado sospecha que falta algo se paga el pyexiv2.
+        if self._xmp_presente_en_cabecera(ruta):
+            return
         xmp_data_missing, list_of_missing_keys = self.exif_management_obj.check_xmp_data_using_pyexiv2(ruta)
         # Si no están, se intenta volver a grabarlos dos veces, y si no se puede se lanza un mensaje a la ventana de log.
         if xmp_data_missing:

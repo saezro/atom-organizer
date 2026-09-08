@@ -28,6 +28,51 @@ function statsLine(s) {
   return parts.join(' · ')
 }
 
+// Megabytes legibles: pasa a GB cuando supera 1024 MB.
+function fmtMB(mb) {
+  if (mb == null) return ''
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`
+  return `${Math.round(mb)} MB`
+}
+
+// Velocidad de disco: un decimal si es menor de 10 MB/s, entero si no.
+function fmtMBps(v) {
+  if (v == null) return ''
+  return v < 10 ? `${v.toFixed(1)} MB/s` : `${Math.round(v)} MB/s`
+}
+
+// Línea discreta de recursos por fase: "48 MB/s · CPU 21%".
+function recursosLine(r) {
+  if (!r) return ''
+  const parts = []
+  if (r.mb_por_segundo != null) parts.push(fmtMBps(r.mb_por_segundo))
+  if (r.cpu_pct != null) parts.push(`CPU ${Math.round(r.cpu_pct)}%`)
+  return parts.join(' · ')
+}
+
+// Texto destacado del veredicto de cuello de botella del run completo.
+function veredictoTexto(v) {
+  if (v === 'disco') return '⚠ Cuello de botella: disco'
+  if (v === 'cpu') return '⚠ Cuello de botella: CPU'
+  if (v === 'mixto') return 'Cuello de botella: mixto (disco y CPU)'
+  return ''
+}
+
+// Detalle en pequeño bajo el veredicto: totales de disco y CPU del run.
+function veredictoDetalle(r) {
+  if (!r) return ''
+  const parts = []
+  if (r.mb_leidos != null) parts.push(`${fmtMB(r.mb_leidos)} leídos`)
+  if (r.mb_escritos != null) parts.push(`${fmtMB(r.mb_escritos)} escritos`)
+  if (r.mb_por_segundo != null) parts.push(fmtMBps(r.mb_por_segundo))
+  if (r.cpu_pct != null) {
+    parts.push(
+      `CPU media ${Math.round(r.cpu_pct)}%${r.nucleos != null ? ` de ${r.nucleos} núcleos` : ''}`
+    )
+  }
+  return parts.join(' · ')
+}
+
 // Resumen de rotación del run: qué se ha girado y en qué sentido.
 function rotLine(s) {
   if (!s) return ''
@@ -47,6 +92,7 @@ export default function ProgressModal({
   stats,
   detail,
   finished,
+  recursosTotales,
   onClose,
 }) {
   const [showDetail, setShowDetail] = useState(false)
@@ -77,6 +123,10 @@ export default function ProgressModal({
               )}
               {p.errors > 0 && (
                 <span className="pm-errbadge">{p.errors} err</span>
+              )}
+              {/* Métricas de disco/CPU de la fase ya cerrada (discreto). */}
+              {p.recursos && recursosLine(p.recursos) && (
+                <div className="pm-recursos">{recursosLine(p.recursos)}</div>
               )}
               {p.status === 'active' && !finished && (
                 <>
@@ -122,6 +172,20 @@ export default function ProgressModal({
                   : `⚠ Terminado con ${finished.errors} ${finished.errors === 1 ? 'error' : 'errores'}${finished.elapsed != null ? ` · ${fmtDur(finished.elapsed)}` : ''}`
                 : `✓ Proceso terminado${finished.elapsed != null ? ` · ${fmtDur(finished.elapsed)}` : ''}`}
           </p>
+        )}
+
+        {/* Veredicto de cuello de botella (disco/CPU) del run completo. */}
+        {finished && recursosTotales && recursosTotales.veredicto && (
+          <div className="pm-veredicto">
+            <p className="pm-veredicto-texto">
+              {veredictoTexto(recursosTotales.veredicto)}
+            </p>
+            {veredictoDetalle(recursosTotales) && (
+              <p className="pm-veredicto-detalle">
+                {veredictoDetalle(recursosTotales)}
+              </p>
+            )}
+          </div>
         )}
 
         {detail.length > 0 && (

@@ -533,6 +533,13 @@ select.glass-input option {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+/* Línea discreta de recursos (disco/CPU) por fase, bajo el nombre/duración. */
+.pm-recursos {
+  grid-column: 2 / -1;
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
 /* Badge de errores en la fase que falló. */
 .pm-errbadge {
   font-size: 0.72rem;
@@ -615,6 +622,22 @@ select.glass-input option {
 }
 .pm-status.warn {
   color: #fbbf24;
+}
+/* Veredicto de cuello de botella (disco/CPU) del run completo. */
+.pm-veredicto {
+  margin-top: 0.2rem;
+}
+.pm-veredicto-texto {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #fbbf24;
+}
+.pm-veredicto-detalle {
+  margin: 0.15rem 0 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 .pm-detail {
   border-top: 0.0625rem solid rgba(255, 255, 255, 0.1);
