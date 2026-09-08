@@ -15,7 +15,9 @@ que la decisión salga idéntica a la de siempre.
 """
 from __future__ import annotations
 
+import json
 import os
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -42,6 +44,13 @@ NOMBRE_CARPETA_SIN_ORDENAR = "SIN_ORDENAR"
 # (pipeline.py:2829) comprime "RGB_Extra" con el mismo flag `compress_checked`
 # que "RGB"-. Solo "TERMICA" queda fuera de este conjunto.
 TIPOS_RGB = frozenset({"RGB", NOMBRE_CARPETA_RGB_EXTRA})
+
+#: Prefijo del canal `progress_summarize` (texto) que `atom_core.organize`
+#: intercepta y convierte en `emit("stats", {...})` con el desglose del
+#: índice — ver `organize._STATS_INDICE_PREFIX`. Mismo mecanismo que
+#: `apply._STATS_APPLY_PREFIX`: el índice no tiene acceso al `emit` real de
+#: `organize.run_task`, solo a las tres señales de siempre.
+STATS_INDICE_PREFIX = "---> STATS_INDICE: "
 
 
 class ErrorColisionEstadillo(Exception):
@@ -305,9 +314,15 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
     tipo = _clasificar_tipo(dato.nombre, cfg)
     unassigned = ventana is None
 
+    # `timestamp=dato.timestamp`: el EXIF de esta imagen YA se leyó en
+    # `_leer_metadatos`, dentro del pool de hilos. Sin pasarlo, `nombre_destino`
+    # reabría el fichero con PIL para releer exactamente el mismo dato — y esta
+    # comprensión de lista va en serie, en el hilo principal: era una segunda
+    # pasada EXIF completa sobre todo el dataset, sin paralelizar.
     nombre_nuevo = pipeline.nombre_destino(
         dato.nombre, cfg.input_folder, cfg.rename_images,
-        cfg.mismatch_hours, cfg.mismatch_minutes, ruta_local=dato.ruta)
+        cfg.mismatch_hours, cfg.mismatch_minutes, ruta_local=dato.ruta,
+        timestamp=dato.timestamp)
     nombre_final = nombre_nuevo if nombre_nuevo else dato.nombre
 
     if unassigned:
@@ -392,7 +407,12 @@ def construir_indice(
                                    progress_callback)
     imagenes = _listar_imagenes(cfg.input_folder)
 
-    hilos = max_hilos or utils.workers_para_lote()
+    # Son HILOS leyendo EXIF/XMP: trabajo I/O-bound, así que el dimensionado es
+    # `max_io_workers` (hasta 32 hilos), no `workers_para_lote`, que calcula
+    # PROCESOS que decodifican imágenes enteras y topa por RAM (600 MB/worker).
+    # El resto del código ya usa este helper para este mismo patrón
+    # (`pipeline.py:1642`, `exif.py:985`); el índice era el único que no.
+    hilos = max_hilos or utils.max_io_workers()
     if imagenes:
         with ThreadPoolExecutor(max_workers=hilos) as ejecutor:
             metadatos = list(ejecutor.map(
@@ -411,6 +431,22 @@ def construir_indice(
     total = len(metadatos)
     unassigned = sum(1 for _dato, ventana in asignaciones if ventana is None)
     sin_timestamp = sum(1 for dato, _ventana in asignaciones if dato.timestamp is None)
+
+    # Desglose por tipo para el modal de progreso (ver LEDGER-metricas-progreso.md):
+    # RGB y RGB_Extra se cuentan APARTE aunque `TIPOS_RGB` los trate igual para
+    # procesar — es justo lo que el ledger pide, y fundirlos aquí escondería
+    # cuántas imágenes van por el "tercer grupo" de sufijos.
+    conteo_tipos = Counter(fila.tipo for fila in filas)
+    progress_summarize.emit(STATS_INDICE_PREFIX + json.dumps({
+        "fase": "Índice",
+        "total": total,
+        "rgb": conteo_tipos.get("RGB", 0),
+        "termica": conteo_tipos.get("TERMICA", 0),
+        "rgb_extra": conteo_tipos.get(NOMBRE_CARPETA_RGB_EXTRA, 0),
+        "sin_asignar": unassigned,
+        "sin_timestamp": sin_timestamp,
+        "vuelos": len(ventanas),
+    }))
 
     progress_bar.emit(100)
     return {
