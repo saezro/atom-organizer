@@ -21,6 +21,7 @@ tests sujetan:
    que marcar fallidas TODAS las filas de ese lote (nunca darlas por buenas
    a ciegas).
 """
+import datetime as dt
 import filecmp
 import os
 import types
@@ -337,6 +338,75 @@ def test_jpg_termico_se_gira_con_gen_thumbnails_activo(tmp_path):
     with PILImage.open(salida_jpg) as img_salida:
         ancho_salida, alto_salida = img_salida.size
     assert (ancho_salida, alto_salida) == (alto_origen, ancho_origen)
+    manifiesto.cerrar()
+
+
+def test_jpg_termico_con_exif_real_conserva_gps_fecha_y_yaw_tras_girar(
+    tmp_path, make_dji_jpeg, logger
+):
+    """Con un `*_T.JPG` que trae EXIF real (GPS + `DateTimeOriginal` + XMP
+    `GimbalYawDegree`, vía `make_dji_jpeg`), tras girar la copia de destino
+    (`gen_thumbnails=True`) el EXIF debe seguir presente y sus campos clave
+    deben valer LO MISMO que antes del giro: es justo el dato que luego se
+    consulta sobre estas fotos (`apply.py:568-570`). El original de entrada
+    no debe tocarse."""
+    import exif as exif_management
+
+    origen = tmp_path / "origen" / "DJI_0001_T.JPG"
+    os.makedirs(origen.parent, exist_ok=True)
+    latitud, longitud = 40.4168, -3.7038
+    fecha = dt.datetime(2024, 6, 1, 10, 30, 0)
+    make_dji_jpeg(str(origen), lat=latitud, lon=longitud, dt_val=fecha, gimbal_yaw=37.5)
+    contenido_origen_antes = origen.read_bytes()
+
+    exif_obj = exif_management.GeneralInformationFromImage(logger)
+    meta_location_obj = exif_management.MetaLocation(logger)
+    _, lat_antes, lon_antes, _alt_antes = meta_location_obj.leerLatitudLongitudAltitud_exif_DJI(
+        str(origen), _SignalFalsa()
+    )
+    fecha_antes = exif_obj.get_timestamp_from_image(str(origen))
+    yaw_antes, _pitch_antes = exif_obj.get_gimbal_yaw_pitch(str(origen))
+
+    salida_jpg = tmp_path / "salida" / "DJI_0001_T.JPG"
+    salida_tiff = tmp_path / "salida" / "DJI_0001_T.tif"
+    manifiesto = _manifiesto_con(
+        tmp_path, [_fila_termica(origen, salida_jpg, salida_tiff, angulo_giro=90)]
+    )
+
+    doble = _PipelineDePrueba()
+    resultado = apply.aplicar_termicas(
+        manifiesto, _cfg(gen_thumbnails=True), doble, _SignalFalsa(), _SignalFalsa(), _SignalFalsa(),
+    )
+    assert resultado == {"hecho": 1, "fallido": 0}
+
+    with PILImage.open(salida_jpg) as img_salida:
+        ancho_salida, alto_salida = img_salida.size
+    assert alto_salida > ancho_salida, "el JPG térmico girado debe quedar vertical"
+
+    _, lat_despues, lon_despues, _alt_despues = meta_location_obj.leerLatitudLongitudAltitud_exif_DJI(
+        str(salida_jpg), _SignalFalsa()
+    )
+    fecha_despues = exif_obj.get_timestamp_from_image(str(salida_jpg))
+
+    assert lat_despues is not None and lon_despues is not None, (
+        "el EXIF con el GPS debe seguir presente tras el giro"
+    )
+    assert (lat_despues, lon_despues) == (lat_antes, lon_antes), (
+        "el GPS no debe cambiar al girar la copia de destino"
+    )
+    assert fecha_despues == fecha_antes, (
+        "la fecha (DateTimeOriginal) no debe cambiar al girar la copia de destino"
+    )
+
+    yaw_despues, _pitch_despues = exif_obj.get_gimbal_yaw_pitch(str(salida_jpg))
+    assert yaw_despues == yaw_antes, (
+        f"el GimbalYawDegree del XMP debía conservarse tras el giro "
+        f"(antes={yaw_antes!r}, despues={yaw_despues!r})"
+    )
+
+    assert origen.read_bytes() == contenido_origen_antes, (
+        "el JPG térmico de ORIGEN nunca debe modificarse: el giro solo toca la copia de destino"
+    )
     manifiesto.cerrar()
 
 

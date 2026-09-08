@@ -29,6 +29,7 @@ from typing import Any, Mapping
 
 import external_tools
 import pipeline
+from exif import extraer_bloque_xmp_crudo
 from atom_core import indice as indice_mod
 
 #: MB que se le presupone a un item de RGB para el reporte al controlador
@@ -592,6 +593,11 @@ def _copiar_jpg_destino(origen: str, destino: str, angulo: int = 0) -> None:
                     shutil.copy2(origen, parcial)
                 else:
                     exif = img.info.get("exif")
+                    # El bloque XMP (GimbalYawDegree, GPS DJI, etc.) se lee del
+                    # ORIGEN antes de girar: `PIL.Image.save` no lo re-adjunta
+                    # (solo conoce el EXIF de `img.info`), así que sin esto la
+                    # copia girada perdía el XMP aunque conservase el EXIF.
+                    bloque_xmp = extraer_bloque_xmp_crudo(origen)
                     girada = img.transpose(transpose)
                     try:
                         if exif:
@@ -602,6 +608,15 @@ def _copiar_jpg_destino(origen: str, destino: str, angulo: int = 0) -> None:
                                         quality=_CALIDAD_GIRO_JPG_TERMICO)
                     finally:
                         girada.close()
+                    if bloque_xmp:
+                        # Mismo esquema que `make_dji_jpeg` en tests/conftest.py:
+                        # el XMP va pegado tras el JPEG, como texto crudo, no
+                        # como segmento estructurado — así lo escriben y así lo
+                        # leen `leer_bloque_xmp`/`get_gimbal_yaw_pitch`/
+                        # `get_xmp_data`, que buscan el texto en el fichero
+                        # entero sin mirar los segmentos.
+                        with open(parcial, "ab") as fh:
+                            fh.write(bloque_xmp)
             finally:
                 img.close()
     except Exception:
@@ -714,6 +729,33 @@ def _en_lotes(items: list, tamano: int):
         yield items[inicio:inicio + tamano]
 
 
+def _reportar_colisiones_destino(manifiesto, progress_callback) -> None:
+    """Avisa (SOLO avisa -- no cambia nada de lo que ya se escribe) cuando
+    dos o más imágenes de origen distinto comparten `ruta_salida_original`.
+
+    `os.replace` (más abajo, en `_escribir_salidas_de_fila` y en
+    `_convertir_una_termica`) es atómico pero silencioso: la segunda imagen
+    pisa a la primera sin error, y el fichero perdido no deja ningún rastro
+    salvo esta comprobación contra el manifiesto. Se lanza UNA vez, al cerrar
+    la fase de térmicas (la última antes del cierre del organizado), sobre el
+    manifiesto completo -- no depende de cuántas filas de térmica haya, así
+    que corre igual en un run puramente RGB.
+    """
+    colisiones = manifiesto.colisiones_ruta_salida_original()
+    if not colisiones:
+        return
+    total_colisiones = len(colisiones)
+    destinos = [fila["ruta_salida_original"] for fila in colisiones]
+    listado = ", ".join(destinos[:10])
+    if total_colisiones > 10:
+        listado += f", … ({total_colisiones - 10} más)"
+    progress_callback.emit(
+        f"\n[colisión] {total_colisiones} destino(s) recibieron imágenes de "
+        f"MÁS de un origen distinto; solo queda escrita la última que llegó, "
+        f"el resto se perdió en silencio: {listado}\n"
+    )
+
+
 def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
                      progress_summarize, controlador=None, tamano_lote_exif: int = 200,
                      contador_rotacion: "_ContadorRotacion | None" = None) -> dict:
@@ -745,6 +787,13 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
     estado en esta pasada.
     """
     progress_summarize.emit("---> SUBPROCESO: Conversión térmica")
+
+    # Chequeo de colisiones de destino sobre el manifiesto COMPLETO (todas
+    # las filas ya están insertadas por el índice antes de que arranque
+    # ningún apply): se hace aquí, y no en `aplicar_rgb`, porque esta es la
+    # última fase de escritura antes del cierre -- corre siempre, aunque no
+    # haya ninguna térmica pendiente en esta pasada.
+    _reportar_colisiones_destino(manifiesto, progress_callback)
 
     filas = [dict(fila) for fila in manifiesto.pendientes() if fila["tipo"] == "TERMICA"]
     resultado = {"hecho": 0, "fallido": 0}
