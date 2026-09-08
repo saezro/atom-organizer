@@ -37,6 +37,7 @@ __all__ = [
     "decidir",
     "confirmar_render",
     "set_modo",
+    "olvidar_degradacion",
 ]
 
 MODOS = ("auto", "gpu", "software")
@@ -49,7 +50,8 @@ UMBRAL_FALLOS = 2
 # degradación es para siempre y el usuario se queda con todo pintado por CPU.
 REINTENTO_CADA = 10
 
-ESTADO_INICIAL = {"modo": "auto", "pendiente": False, "fallos": 0, "arranques_sw": 0}
+ESTADO_INICIAL = {"modo": "auto", "pendiente": False, "fallos": 0, "arranques_sw": 0,
+                  "version": ""}
 
 
 def ruta_estado() -> str:
@@ -92,6 +94,8 @@ def leer() -> dict:
         "fallos": datos["fallos"],
         # Ausente en los render.json escritos antes del reintento periódico.
         "arranques_sw": datos.get("arranques_sw", 0),
+        # Versión de la app que escribió el estado (ver `olvidar_degradacion`).
+        "version": datos.get("version", "") if isinstance(datos.get("version", ""), str) else "",
     }
 
 
@@ -112,6 +116,26 @@ def guardar(estado: dict) -> bool:
         return True
     except Exception:
         return False
+
+
+def olvidar_degradacion(estado: dict, version: str) -> dict:
+    """Olvida la degradación a software si el estado lo escribió otra versión.
+
+    Un arranque que peta antes de pintar cuenta como fallo de render aunque la
+    GPU no tenga nada que ver (el crash de pytz de la v3.4.77 dejó a gente con
+    todo pintado por CPU). Al actualizar, la causa de aquellos fallos ya no está,
+    así que se parte de cero en vez de arrastrar el castigo diez arranques más.
+    El ajuste manual (`modo`) se respeta: eso lo decidió el usuario.
+    """
+    nuevo = dict(estado)
+    if nuevo.get("version") == version:
+        return nuevo
+    nuevo["version"] = version
+    if nuevo.get("modo", "auto") == "auto":
+        nuevo["pendiente"] = False
+        nuevo["fallos"] = 0
+        nuevo["arranques_sw"] = 0
+    return nuevo
 
 
 def decidir(estado: dict) -> tuple[bool, dict, str]:

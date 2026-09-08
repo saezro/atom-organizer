@@ -17,6 +17,7 @@ import ast
 import base64
 import datetime
 import glob
+import hashlib
 import importlib
 import json
 import logging
@@ -234,8 +235,7 @@ def _resumir_log_run(ruta: str, nombre: str, match_nombre: "re.Match") -> dict |
 # y IShellItem.GetDisplayName — el resto de la vtable son stubs para preservar el orden
 # de slots COM. Verificado en Win10 (PICKED=[C:\Users\...]). El here-string @"…"@ exige
 # que "@ vaya a inicio de línea → el cuerpo va a columna 0 a propósito.
-_MODERN_FOLDER_CS = '''Add-Type @"
-using System;
+_MODERN_FOLDER_SRC = '''using System;
 using System.Runtime.InteropServices;
 public static class ModernFolder {
   [ComImport, ClassInterface(ClassInterfaceType.None), Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
@@ -289,8 +289,120 @@ public static class ModernFolder {
     return p;
   }
 }
-"@;
 '''
+
+# El here-string PowerShell que compila el C# en caliente. Sólo se usa como
+# respaldo: la ruta normal carga el DLL ya compilado y cacheado en disco
+# (ver `_dll_carpeta_moderna`), porque compilar con csc.exe en cada apertura
+# del diálogo costaba entre uno y dos segundos.
+_MODERN_FOLDER_CS = 'Add-Type @"\n' + _MODERN_FOLDER_SRC + '"@;\n'
+
+
+# Compilar el C# anterior con csc.exe cuesta entre uno y dos segundos, y se pagaba
+# ENTERO en cada apertura del selector de carpeta (proceso PowerShell nuevo cada vez).
+# Se compila una sola vez a un DLL cacheado en la carpeta de configuración del
+# usuario; a partir de ahí el diálogo sólo hace `Add-Type -Path`, que son unas
+# decenas de milisegundos. El nombre lleva el hash del fuente, así que un cambio
+# en el C# invalida la caché sin tener que borrarla a mano.
+_candado_dll_carpeta = threading.Lock()
+_dll_carpeta: str | None = None
+
+
+def _ruta_dll_carpeta() -> Path:
+    try:
+        from external_tools import _user_config_path
+        base = Path(_user_config_path()).parent
+    except Exception:
+        base = Path.home()
+    firma = hashlib.sha1(_MODERN_FOLDER_SRC.encode("utf-8")).hexdigest()[:10]
+    return base / f"modern-folder-{firma}.dll"
+
+
+def _lit_ps(valor) -> str:
+    """Escapa un valor para meterlo en un literal PowerShell de comillas simples.
+
+    Sin esto, un `%APPDATA%` que cuelgue de un usuario con apóstrofe (`O'Brien`)
+    rompe la sintaxis del script y el DLL no se compila nunca.
+    """
+    return str(valor).replace("'", "''")
+
+
+def _invalidar_dll_carpeta(log=None) -> None:
+    """Descarta el DLL cacheado (corrupto o ilegible) para que se recompile."""
+    global _dll_carpeta
+    with _candado_dll_carpeta:
+        _dll_carpeta = None
+        try:
+            _ruta_dll_carpeta().unlink(missing_ok=True)
+        except Exception:
+            if log:
+                log("_invalidar_dll_carpeta: no se pudo borrar el DLL cacheado")
+
+
+def _dll_carpeta_moderna(log=None) -> str | None:
+    """Ruta del DLL con el diálogo moderno, compilándolo la primera vez.
+
+    Devuelve None si no se pudo compilar; el llamante debe recurrir entonces al
+    camino antiguo (compilar en caliente dentro del propio diálogo).
+    """
+    global _dll_carpeta
+    if platform.system() != "Windows":
+        return None
+    with _candado_dll_carpeta:
+        if _dll_carpeta:
+            return _dll_carpeta
+        destino = _ruta_dll_carpeta()
+        try:
+            if destino.is_file() and destino.stat().st_size > 0:
+                _dll_carpeta = str(destino)
+                return _dll_carpeta
+        except OSError:
+            pass
+        # Se compila a un fichero temporal propio de este proceso y sólo al final
+        # se mueve al nombre definitivo (os.replace es atómico en Windows sobre el
+        # mismo volumen). Si matan la app a mitad de compilación, o dos instancias
+        # compilan a la vez, nunca queda un DLL truncado en el nombre bueno: un
+        # `Add-Type -Path` sobre un ensamblado inválido es error terminante de
+        # PowerShell y dejaría el selector de carpeta muerto para siempre.
+        temporal = destino.with_name(f"{destino.stem}.{os.getpid()}.tmp")
+        script = (
+            "$src = @\"\n" + _MODERN_FOLDER_SRC + "\"@\n"
+            f"Add-Type -TypeDefinition $src -OutputAssembly '{_lit_ps(temporal)}' -OutputType Library\n"
+        )
+        try:
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            enc = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-EncodedCommand", enc],
+                capture_output=True, text=True, timeout=120,
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
+            )
+            if proc.returncode != 0 or not temporal.is_file() or temporal.stat().st_size == 0:
+                if log:
+                    log(f"_dll_carpeta_moderna rc={proc.returncode} err={proc.stderr!r}")
+                temporal.unlink(missing_ok=True)
+                return None
+            os.replace(temporal, destino)
+        except Exception:
+            if log:
+                import traceback
+                log("_dll_carpeta_moderna EXC:\n" + traceback.format_exc())
+            try:
+                temporal.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return None
+        _dll_carpeta = str(destino)
+        return _dll_carpeta
+
+
+def precalentar_dialogo_carpeta() -> None:
+    """Compila el DLL del selector en segundo plano para que la primera apertura
+    del diálogo ya lo encuentre hecho. No bloquea ni propaga errores."""
+    if platform.system() != "Windows":
+        return
+    threading.Thread(target=_dll_carpeta_moderna, daemon=True).start()
 
 
 class Api:
@@ -301,6 +413,10 @@ class Api:
         self._sink = None
         self._running = False
         self._downloading = False
+        # Código de salida del último PowerShell de diálogo: distingue "el usuario
+        # canceló" (0, sin stdout) de "el script abortó" (!= 0), que es lo que
+        # delata un DLL de selector inservible.
+        self._rc_dialogo: int | None = 0
         self._update_path: str | None = None
         # Último aviso "hay versión nueva" del chequeo automático (ver
         # `start_update_check`). El modal (`UpdateModal.jsx`) no está montado
@@ -424,11 +540,13 @@ class Api:
                 capture_output=True, text=True, timeout=600,
                 creationflags=0x08000000,  # CREATE_NO_WINDOW
             )
+            self._rc_dialogo = proc.returncode
             if proc.returncode != 0:
                 self._log_picker(f"_win_dialog rc={proc.returncode} err={proc.stderr!r}")
             out = (proc.stdout or "").strip()
             return out or None
         except Exception:
+            self._rc_dialogo = None
             import traceback
             self._log_picker("_win_dialog EXC:\n" + traceback.format_exc())
             return None
@@ -436,11 +554,24 @@ class Api:
     def _win_pick_folder(self) -> str | None:
         # Diálogo MODERNO del Explorador (IFileOpenDialog + FOS_PICKFOLDERS), con el
         # owner TopMost de _WIN_OWNER para quedar al frente desde el hilo no-foreground.
-        return self._win_dialog(
-            _MODERN_FOLDER_CS +
+        cuerpo = (
             "$p=[ModernFolder]::Pick($o.Handle,'Selecciona la carpeta');"
             "if($p){[Console]::Out.Write($p)}"
         )
+        dll = _dll_carpeta_moderna(self._log_picker)
+        # Con el DLL cacheado nos ahorramos compilar el C# en cada apertura.
+        prefijo = f"Add-Type -Path '{_lit_ps(dll)}';" if dll else _MODERN_FOLDER_CS
+        self._rc_dialogo = 0
+        elegido = self._win_dialog(prefijo + cuerpo)
+        if elegido is None and dll and self._rc_dialogo not in (0, None):
+            # PowerShell abortó: lo más probable es un DLL ilegible (borrado a
+            # medias, antivirus, disco lleno). Se tira la caché y se reintenta por
+            # el camino antiguo, que compila en caliente, para no dejar al usuario
+            # sin selector de carpeta.
+            self._log_picker("selector: DLL cacheado inservible, se invalida y se reintenta")
+            _invalidar_dll_carpeta(self._log_picker)
+            return self._win_dialog(_MODERN_FOLDER_CS + cuerpo)
+        return elegido
 
     def _win_pick_file(self) -> str | None:
         return self._win_dialog(
@@ -3114,10 +3245,19 @@ def main() -> None:
     logger.info("ATOM Organizer v%s arrancando (log: %s)",
                 _app_version_for_title(), _ruta_log or "sin fichero")
 
-    # Precarga de pandas en el HILO PRINCIPAL, antes de que exista ningún hilo
-    # (`_comprobar_al_arrancar`, el worker del pipeline, el de estadillos). El
-    # porqué completo, en atom_core/precarga.py.
-    precarga.precargar_en_arranque()
+    # Precarga de pandas en un hilo de fondo: importarlo cuesta más de un segundo
+    # y hacerlo aquí retrasaba la aparición de la ventana. El `Lock` de
+    # `precargar_pandas()` serializa, así que un consumidor que llegue antes de
+    # tiempo simplemente espera a que el hilo termine (ver atom_core/precarga.py).
+    # La neutralización de pytz sí va aquí, síncrona y antes de que exista ningún
+    # hilo: es barata (no importa pandas) y así queda hecha aunque algún módulo
+    # con `import pandas` en el cuerpo se adelante al hilo de precarga. Sin ella
+    # volvería el `_pandas_datetime_CAPI` de la v3.4.77.
+    precarga.neutralizar_pytz()
+    threading.Thread(target=precarga.precargar_en_arranque, daemon=True).start()
+    # El selector de carpeta de Windows compila su C# la primera vez; se hace ya
+    # para que la primera apertura del diálogo no lo pague.
+    precalentar_dialogo_carpeta()
 
     try:
         webview = _import_webview()
@@ -3192,6 +3332,11 @@ def main() -> None:
     # ninguna llamada `window.pywebview.api.*` llegaba a Python (pw=N en la sonda,
     # confirmado en VM con http_server/private_mode/storage_path). QtWebEngine usa
     # el mismo motor ya probado en Linux, donde el bridge funciona.
+    # Ahora sí: queda constancia de que se intenta pintar con GPU. Si esta ventana
+    # no llega a confirmar su primer frame, el arranque siguiente verá el marcador.
+    if globals().get("_pendiente_diferido"):
+        render_state.guardar(dict(render_state.leer(), pendiente=True))
+
     webview.start(gui="qt", debug=args.dev)
 
 
@@ -3217,14 +3362,25 @@ if __name__ == "__main__":
         # y su porqué están en atom_core/render_state.py. Se respeta un valor previo
         # de la env var si ya existe (override manual).
         try:
-            _estado_render = render_state.leer()
+            _estado_render = render_state.olvidar_degradacion(
+                render_state.leer(), _app_version_for_title())
             _usar_gpu, _estado_render, _motivo = render_state.decidir(_estado_render)
-            if not render_state.guardar(_estado_render) and _estado_render.get("pendiente"):
+            # El marcador `pendiente` NO se escribe todavía. Entre este punto y la
+            # apertura de la ventana aún pueden petar los imports, la precarga o el
+            # updater, y un crash así no es culpa de la GPU: contarlo degradaba el
+            # render a software durante diez arranques sin motivo (pasó con el fallo
+            # de pytz de la v3.4.77). Aquí se persiste el estado YA SIN pendiente —
+            # lo que además comprueba que el fichero es escribible — y el marcado
+            # real lo hace `main()` justo antes de `webview.start()`.
+            _pendiente_diferido = bool(_estado_render.get("pendiente"))
+            if not render_state.guardar(dict(_estado_render, pendiente=False)) \
+                    and _pendiente_diferido:
                 # No se pudo dejar constancia del intento (disco lleno, permisos):
                 # si ese intento dejara la ventana en negro, el arranque siguiente
                 # no vería el marcador y reintentaría GPU para siempre. Sin poder
                 # registrar el intento, no se intenta.
                 _usar_gpu = False
+                _pendiente_diferido = False
         except Exception:  # noqa: BLE001 — ante cualquier fallo, lo que siempre pintó
             _usar_gpu = False
         if not _usar_gpu:

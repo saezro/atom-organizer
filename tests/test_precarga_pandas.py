@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 
 import pytest
 
@@ -116,6 +117,27 @@ def test_precargar_en_arranque_registra_el_traceback_y_no_propaga(monkeypatch, c
     with caplog.at_level(logging.ERROR, logger="atom_core.precarga"):
         precarga.precargar_en_arranque()  # no debe propagar
     assert "DLL load failed" in caplog.text
+
+
+def test_precargar_en_arranque_en_hilo_daemon_no_bloquea_y_consumidor_obtiene_pandas():
+    """`precargar_en_arranque()` lanzado en un hilo daemon (como hace
+    `app_webview.py` en el arranque) no bloquea al hilo que lo lanza, y un
+    consumidor que llega después con `precargar_pandas()` encuentra pandas
+    ya listo (o espera al candado hasta que lo esté)."""
+    hilo = threading.Thread(target=precarga.precargar_en_arranque, daemon=True)
+    antes = time.monotonic()
+    hilo.start()
+    # El hilo que lanza no espera: arrancar el thread es prácticamente instantáneo.
+    assert time.monotonic() - antes < 0.5
+
+    hilo.join(timeout=10)
+    assert not hilo.is_alive()
+
+    # El consumidor llega después: pandas ya debe estar listo (candado + flag).
+    precarga.precargar_pandas()
+    import sys
+    assert "pandas" in sys.modules
+    assert precarga._pandas_listo is True
 
 
 def test_neutralizar_pytz_sin_version_lo_apaga(monkeypatch):
