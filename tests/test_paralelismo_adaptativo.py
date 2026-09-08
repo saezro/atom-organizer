@@ -9,8 +9,11 @@ todos esos casos: este controlador se corrige durante el run.
 Todo se prueba con reloj y lector de recursos inyectados: un test que
 dependiera del hardware real o de dormir sería lento y no determinista.
 """
+import sys
+
 import pytest
 
+from atom_core import paralelismo
 from atom_core.paralelismo import ControladorAdaptativo, Medicion, decidir_trabajadores
 
 
@@ -139,3 +142,44 @@ def test_el_controlador_baja_cuando_se_acaba_la_ram():
     controlador.registrar(mb=5.0)
     antes = controlador.trabajadores
     assert controlador.revisar() < antes
+
+
+def test_lector_psutil_devuelve_neutro_si_psutil_falla(monkeypatch):
+    """Red de seguridad documentada en `_lector_recursos_psutil`: si `psutil`
+    no viaja en el .exe congelado, o una lectura puntual revienta, el
+    organizado tiene que seguir guiado solo por throughput en vez de tumbar
+    la fase entera a mitad de run. `_lector_recursos_psutil` debe devolver
+    la lectura neutra `_RECURSOS_DESCONOCIDOS`, nunca dejar subir la
+    excepción."""
+
+    class _PsutilQueRevienta:
+        def cpu_percent(self, interval=None):
+            raise RuntimeError("psutil roto (simulado)")
+
+    monkeypatch.setitem(sys.modules, "psutil", _PsutilQueRevienta())
+
+    assert paralelismo._lector_recursos_psutil() == paralelismo._RECURSOS_DESCONOCIDOS
+
+
+def test_revisar_no_propaga_si_el_lector_de_recursos_lanza():
+    """`revisar()` ya envuelve la llamada a `lector_recursos` en su propio
+    try/except (para el lector inyectado, no solo para el de psutil): si
+    revienta a mitad de ventana, la ventana se cierra igual con la lectura
+    neutra y `revisar()` devuelve un entero. Sin esta red, un lector de
+    recursos que fallara tumbaría el apply entero en plena fase."""
+    reloj = _RelojFalso()
+
+    def _lector_que_revienta():
+        raise RuntimeError("lector de recursos roto (simulado)")
+
+    controlador = ControladorAdaptativo(
+        minimo=1, maximo=16, ventana_segundos=5.0, mb_por_worker=500.0,
+        reloj=reloj, lector_recursos=_lector_que_revienta,
+    )
+    reloj.avanzar(6.0)
+    controlador.registrar(mb=5.0)
+
+    resultado = controlador.revisar()
+
+    assert isinstance(resultado, int)
+    assert resultado >= controlador.minimo

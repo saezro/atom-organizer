@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pandas as pd
@@ -50,6 +51,35 @@ def _vuelos_del_manifiesto(manifiesto) -> list[tuple[str, str]]:
             vistos.add(clave)
             claves.append(clave)
     return claves
+
+
+def _agrupar_por_vuelo(filas) -> "dict[tuple[str, str], list]":
+    """Agrupa filas YA leídas por (pb, vuelo), en orden de aparición.
+
+    Equivale a `_vuelos_del_manifiesto` + un `filas_por_vuelo` por vuelo, pero
+    sin volver a la base de datos: `verificar` ya tiene todas las filas en la
+    mano y repetir el escaneo completo del manifiesto más una consulta por
+    vuelo no aporta nada (el manifiesto no cambia durante el cierre).
+    Las filas "unassigned" (sin pb/vuelo) no pertenecen a ningún vuelo.
+    """
+    grupos: "dict[tuple[str, str], list]" = {}
+    for fila in filas:
+        pb, vuelo = fila["pb"], fila["vuelo"]
+        if not pb or not vuelo:
+            continue
+        grupos.setdefault((pb, vuelo), []).append(fila)
+    return grupos
+
+
+def _revisar_ruta(ruta_origen: str, ruta: str) -> str | None:
+    """Problema con `ruta` (o None si está bien). Una sola función para poder
+    lanzarla en paralelo: cada llamada son 2 round-trips de metadata y en
+    almacenamiento remoto (GCS/SMB) la latencia manda sobre todo lo demás."""
+    if not existe_ruta(ruta):
+        return f"{ruta_origen}: 'hecho' en el manifiesto pero {ruta} no existe en disco."
+    if tamano_de(ruta) == 0:
+        return f"{ruta_origen}: {ruta} existe pero está vacío."
+    return None
 
 
 def _escribir_csv(df: pd.DataFrame, destino: str) -> None:
@@ -89,8 +119,9 @@ def _emitir_csv_criterio(manifiesto, cfg, progress_callback) -> dict[str, str]:
         os.makedirs(criterio_folder, exist_ok=True)
 
     rutas_emitidas: dict[str, str] = {}
-    for pb, vuelo in _vuelos_del_manifiesto(manifiesto):
-        filas_vuelo = manifiesto.filas_por_vuelo(pb, vuelo)
+    # Un solo escaneo del manifiesto y agrupado en memoria, en vez de un
+    # escaneo completo + una consulta por vuelo (ver `_agrupar_por_vuelo`).
+    for (pb, vuelo), filas_vuelo in _agrupar_por_vuelo(manifiesto.todas()).items():
         termicas = [fila for fila in filas_vuelo if fila["tipo"] == "TERMICA"]
         if not termicas:
             continue
@@ -202,26 +233,25 @@ def verificar(manifiesto, cfg) -> list[str]:
     # 5. Toda ruta de salida de una fila 'hecho' existe en disco y no está vacía.
     # Es el fallo más peligroso: el manifiesto dice que la imagen está lista
     # pero no hay nada que entregar.
-    for fila in filas:
-        if fila["estado"] != "hecho":
-            continue
-        for campo in ("ruta_salida_original", "ruta_salida_crop", "ruta_salida_tiff"):
-            ruta = fila[campo]
-            if not ruta:
-                continue
-            if not existe_ruta(ruta):
-                problemas.append(
-                    f"{fila['ruta_origen']}: 'hecho' en el manifiesto pero {ruta} "
-                    "no existe en disco."
-                )
-            elif tamano_de(ruta) == 0:
-                problemas.append(
-                    f"{fila['ruta_origen']}: {ruta} existe pero está vacío."
-                )
+    # En serie esto son hasta 3 rutas x 2 round-trips por imagen: en un run
+    # grande, y sobre todo en almacenamiento remoto, tarda más que el propio
+    # apply. Son operaciones de I/O puras (nada de CPU del intérprete), así
+    # que van a un pool de hilos. `executor.map` conserva el orden de entrada,
+    # así que la lista de problemas sale idéntica a la del bucle secuencial.
+    por_comprobar = [
+        (fila["ruta_origen"], fila[campo])
+        for fila in filas if fila["estado"] == "hecho"
+        for campo in ("ruta_salida_original", "ruta_salida_crop", "ruta_salida_tiff")
+        if fila[campo]
+    ]
+    if por_comprobar:
+        trabajadores = min(utils.max_io_workers(), len(por_comprobar))
+        with ThreadPoolExecutor(max_workers=trabajadores) as executor:
+            for problema in executor.map(lambda par: _revisar_ruta(*par), por_comprobar):
+                if problema is not None:
+                    problemas.append(problema)
 
-    vuelos = _vuelos_del_manifiesto(manifiesto)
-    for pb, vuelo in vuelos:
-        filas_vuelo = manifiesto.filas_por_vuelo(pb, vuelo)
+    for (pb, vuelo), filas_vuelo in _agrupar_por_vuelo(filas).items():
 
         # 1. jpg_count == tiff_count por vuelo (hoy pipeline.py:2446-2556): cada
         # térmica emite un JPG y, si hay conversión, un TIFF hermano.

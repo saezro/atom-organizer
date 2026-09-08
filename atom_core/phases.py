@@ -28,12 +28,14 @@ import os
 import re
 import shutil
 import tempfile
+import time
 
 import external_tools as config
 import pipeline
 import utils
 from atom_core import cierre as cierre_mod
 from atom_core import indice as indice_mod
+from atom_core import paralelismo as paralelismo_mod
 from atom_core import sharding
 from atom_core.almacen import (
     abrir_para_lectura,
@@ -43,7 +45,7 @@ from atom_core.almacen import (
     listar_subcarpetas,
     unir,
 )
-from atom_core.apply import aplicar_rgb, aplicar_termicas
+from atom_core.apply import aplicar_rgb, aplicar_termicas, _formatear_duracion
 from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO
 from external_tools import resource_path
 from utils import (
@@ -1003,20 +1005,57 @@ class PipelinePhasesMixin:
                     f"\n{reabiertas} imagen(es) quedaron a medias en un run anterior; "
                     "se reintentan en esta corrida.\n")
 
+            # Cronómetro por etapa: el usuario ve al final en qué se fue el
+            # tiempo del organizado (índice / RGB / térmicas / cierre) sin
+            # tener que instrumentar nada ni cronometrar a mano.
+            tiempos: dict[str, float] = {}
+            marca = time.monotonic()
+
             indice_mod.construir_indice(
                 cfg, adaptador, self.split_images_obj.exif_management_obj, manifiesto,
                 progress_callback, progress_bar, progress_summarize)
+            tiempos["Índice"] = time.monotonic() - marca
+            marca = time.monotonic()
 
+            # Sin `controlador` ambos apply corren SECUENCIALES, una imagen a la
+            # vez en este mismo proceso (`apply.py:321`). Eso es el camino de los
+            # tests, no el de producción: dejarlo así costó una regresión de ~10x
+            # en la fase RGB (3 min -> 30 min, reportado 2026-09-08 en el PC de
+            # oficina con la 3.4.81), porque el motor viejo sí repartía el lote
+            # con `utils.workers_para_lote()`. Un controlador POR FASE, no uno
+            # compartido: el historial de mediciones de RGB (CPU-bound, procesos)
+            # no describe a las térmicas (I/O-bound, hilos esperando a dji_irp y
+            # exiftool) y arrancaría la segunda fase con una tendencia ajena.
             aplicar_rgb(manifiesto, cfg, pipeline, progress_callback, progress_bar,
-                       progress_summarize)
+                       progress_summarize,
+                       controlador=paralelismo_mod.ControladorAdaptativo())
+            tiempos["RGB"] = time.monotonic() - marca
+            marca = time.monotonic()
 
+            # Las térmicas van a un `ThreadPoolExecutor`: el tiempo se va
+            # esperando a procesos externos, así que el techo no es la RAM por
+            # worker sino el de I/O (`utils.max_io_workers`, ya usado por el
+            # resto del pipeline para trabajo de este tipo).
             aplicar_termicas(manifiesto, cfg, self.split_images_obj, progress_callback,
-                            progress_bar, progress_summarize)
+                            progress_bar, progress_summarize,
+                            controlador=paralelismo_mod.ControladorAdaptativo(
+                                maximo=utils.max_io_workers()))
+            tiempos["Térmicas"] = time.monotonic() - marca
+            marca = time.monotonic()
 
             progress_summarize.emit("---> SUBPROCESO: Cierre")
             cierre_mod.emitir_csvs(manifiesto, cfg, progress_callback)
             problemas = cierre_mod.verificar(manifiesto, cfg)
+            tiempos["Cierre"] = time.monotonic() - marca
             progress_bar.emit(100)
+
+            desglose = " · ".join(
+                f"{etapa} {_formatear_duracion(segundos)}"
+                for etapa, segundos in tiempos.items())
+            progress_callback.emit(
+                f"\n[tiempos] Organizado completo: "
+                f"{_formatear_duracion(sum(tiempos.values()))} "
+                f"({desglose}).\n")
             if problemas:
                 progress_callback.emit(
                     f"\nHA HABIDO AVISOS: el cierre encontró {len(problemas)} "

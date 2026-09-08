@@ -17,9 +17,21 @@ Eventos del modal de progreso por fases:
   'plan'  -> lista ordenada de fases activas según la cfg (checklist inicial).
   'phase' -> {index, total, name}: fase que arranca (1-based). Se detecta
              interceptando el prefijo '---> SUBPROCESO:' del canal summary.
-  'stats' -> snapshot de `atom_core.progress_stats.StatsTracker`: imágenes
-             analizadas / anunciadas de la fase, reparto RGB vs térmica, y
-             rotaciones 270/90/sin rotar acumuladas del run.
+  'stats' -> tres orígenes distintos, todos bajo la misma clave de evento
+             (ver LEDGER-metricas-progreso.md, "no se crean tipos nuevos"):
+               1. `atom_core.progress_stats.StatsTracker` (motor viejo, texto
+                  parseado de pipeline.py): imágenes analizadas/anunciadas,
+                  reparto RGB vs térmica, rotaciones 270/90/sin rotar.
+               2. Desglose del índice del motor plan-apply
+                  (`atom_core.indice.construir_indice`), interceptando el
+                  prefijo `STATS_INDICE_PREFIX` en el canal summary:
+                  {fase, total, rgb, termica, rgb_extra, sin_asignar,
+                  sin_timestamp, vuelos}.
+               3. Velocidad/ETA del apply del motor plan-apply
+                  (`atom_core.apply.aplicar_rgb`/`aplicar_termicas`),
+                  interceptando el prefijo `STATS_APPLY_PREFIX` en el canal
+                  log: {fase, done, total, rgb, termica, img_por_segundo,
+                  eta_segundos}.
 
 Tasks soportados (== los de `run_thread` en gui.py):
   split_images, gen_meta_location, compress_image, gen_thumbnails,
@@ -30,6 +42,7 @@ Tasks soportados (== los de `run_thread` en gui.py):
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 import re
 import sys
@@ -43,6 +56,8 @@ import external_tools as config
 import exif as meta_location
 import pipeline
 import utils
+from atom_core.apply import STATS_APPLY_PREFIX
+from atom_core.indice import STATS_INDICE_PREFIX
 from atom_core.progress_stats import StatsTracker
 from atom_core.medicion_recursos import MedidorRecursos
 from atom_core.phases import PipelinePhasesMixin
@@ -431,9 +446,28 @@ def run_task(
                     _run_log.write(f"[phase] {payload.get('index')}/{payload.get('total')} "
                                    f"{payload.get('name')}{_cierre}\n")
                 elif kind == "stats" and isinstance(payload, dict):
-                    _run_log.write(
-                        "[stats] {done}/{total} img (RGB {rgb} / térmica {termica}) · "
-                        "rot 270:{rot270} 90:{rot90} sin:{rot_none}\n".format(**payload))
+                    # Tres formatos posibles bajo el mismo evento (ver docstring
+                    # del módulo): `.get()` en vez de `.format(**payload)` a
+                    # secas, porque el desglose del índice y la velocidad del
+                    # apply NO llevan las claves del StatsTracker viejo
+                    # (rot270/rot90/...) y un KeyError aquí (aunque se traga en
+                    # el `except` de fuera) dejaría el tee-log mudo para ellos.
+                    if "img_por_segundo" in payload or "eta_segundos" in payload:
+                        _run_log.write(
+                            "[stats] {fase}: {done}/{total} · {ips} img/s · ETA {eta}s\n"
+                            .format(fase=payload.get("fase", "?"),
+                                    done=payload.get("done", "?"), total=payload.get("total", "?"),
+                                    ips=payload.get("img_por_segundo", "?"),
+                                    eta=payload.get("eta_segundos", "?")))
+                    elif "vuelos" in payload:
+                        _run_log.write(
+                            "[stats] Índice: {total} img (RGB {rgb} / RGB_Extra {rgb_extra} / "
+                            "térmica {termica}) · sin_asignar {sin_asignar} · "
+                            "sin_timestamp {sin_timestamp} · vuelos {vuelos}\n".format(**payload))
+                    else:
+                        _run_log.write(
+                            "[stats] {done}/{total} img (RGB {rgb} / térmica {termica}) · "
+                            "rot 270:{rot270} 90:{rot90} sin:{rot_none}\n".format(**payload))
                 elif kind in ("done", "progress", "plan"):
                     _run_log.write(f"[{kind}] {payload}\n")
                 elif kind == "giros" and isinstance(payload, dict):
@@ -665,7 +699,17 @@ def run_task(
         # "HAN EXISTIDO ERRORES" es el marcador de cierre por si no hay conteo.
         phase_counter = {"i": 0}
         _t = {"start": datetime.now(), "phase_start": None,
-              "cur_errors": 0, "total_errors": 0, "total_warnings": 0}
+              "cur_errors": 0, "total_errors": 0, "total_warnings": 0,
+              # Nombre de la fase actualmente abierta: lo lee `_close_phase`
+              # para etiquetar la duración de la fase que se está cerrando
+              # (se actualiza DESPUÉS de cada `_close_phase`, así que en el
+              # momento del cierre todavía apunta a la fase saliente).
+              "phase_name": None,
+              # Duración de CADA fase cerrada, en orden de ejecución
+              # (`payload_done["fases"]`): a diferencia de `last` (solo la
+              # última), el modal necesita el listado completo para destacar
+              # cuál fue la más lenta.
+              "fases": []}
         _ERR_COUNT_RE = re.compile(r"[Hh]a habido (\d+) error")
 
         # Medición de disco/CPU por fase (ver atom_core.medicion_recursos): se
@@ -691,11 +735,16 @@ def run_task(
         def _close_phase(idx: int) -> dict:
             start = _t["phase_start"]
             dur = (datetime.now() - start).total_seconds() if start else 0.0
-            resultado = {"index": idx, "duration": round(dur, 1),
+            duracion = round(dur, 1)
+            resultado = {"index": idx, "duration": duracion,
                          "errors": _t["cur_errors"]}
             recursos = medidor.cerrar_fase()
             if recursos is not None:
                 resultado["recursos"] = recursos
+            # `_t["phase_name"]` en este punto sigue siendo el de la fase que
+            # se está cerrando: la llamadora la actualiza a la fase ENTRANTE
+            # justo después de este `_close_phase` (ver `_on_summary`).
+            _t["fases"].append({"nombre": _t["phase_name"], "segundos": duracion})
             return resultado
 
         # Estadísticas en vivo (imágenes analizadas, RGB vs térmica, rotaciones).
@@ -715,8 +764,33 @@ def run_task(
                 snapshot = {**snapshot, "final": True}
             emit("stats", snapshot)
 
+        def _emitir_marcador_stats(text: str, prefijo: str) -> bool:
+            """Detecta un marcador `PREFIJO + json` en el canal que sea
+            (log o summary) y lo reenvía como `emit("stats", payload)`.
+
+            Ni `construir_indice` ni `aplicar_rgb`/`aplicar_termicas` tienen
+            acceso al `emit` real de este módulo: solo reciben las tres
+            señales de siempre (`progress_callback`/`progress_bar`/
+            `progress_summarize`). En vez de inventar un cuarto canal, viajan
+            como texto reconocible por el MISMO mecanismo que ya usa
+            `_PHASE_PREFIX` para las fases. Si el JSON viene corrupto (no
+            debería, pero un texto de usuario que por casualidad empezara
+            igual no puede tumbar el run), se ignora en silencio: peor es
+            perder una métrica que abortar el organizado por un log.
+            """
+            if not text.startswith(prefijo):
+                return False
+            try:
+                payload = json.loads(text[len(prefijo):])
+            except (ValueError, TypeError):
+                return False
+            emit("stats", payload)
+            return True
+
         def _on_summary(s) -> None:
             text = str(s)
+            if _emitir_marcador_stats(text, STATS_INDICE_PREFIX):
+                return
             _scan_errors(text)
             if stats.on_line(text):
                 _emit_stats()
@@ -737,12 +811,17 @@ def run_task(
                     name = text[len(_PHASE_PREFIX):].strip().rstrip(".")
                 emit("phase", {"index": idx, "total": len(plan_names),
                                "name": name, "prev": prev})
+                # La fase ENTRANTE queda registrada para cuando le toque
+                # cerrarse a ELLA (ver `_close_phase`).
+                _t["phase_name"] = name
                 # Los contadores por fase arrancan de cero con la fase.
                 stats.start_phase(idx, name)
                 _emit_stats()
 
         def _on_log(s) -> None:
             text = str(s)
+            if _emitir_marcador_stats(text, STATS_APPLY_PREFIX):
+                return
             # El pipeline original de Aerotools emite un "." por cada imagen como
             # spinner textual. En el panel y en el log solo es ruido (ya hay barra
             # de progreso numérica): se descarta del texto, pero se CUENTA — es la
@@ -815,6 +894,10 @@ def run_task(
             "warnings": _t["total_warnings"],
             "elapsed": elapsed,
             "last": last,
+            # Duración de CADA fase, en orden de ejecución -- el modal
+            # destaca la más lenta (ver LEDGER-metricas-progreso.md). Tasks
+            # sin fases (no pasan por `_PHASE_PREFIX`) dejan la lista vacía.
+            "fases": _t["fases"],
         }
         # Agregado de disco/CPU de TODO el run: es lo que alimenta la línea de
         # veredicto del modal ("Cuello de botella: disco").

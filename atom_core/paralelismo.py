@@ -101,15 +101,30 @@ def decidir_trabajadores(
     return ultima.trabajadores
 
 
+#: Lectura neutra cuando no se puede medir la máquina: CPU ociosa 0 (la regla 5
+#: no sube trabajadores "por si acaso") y RAM libre infinita (la regla 1 no los
+#: baja por un dato que no tenemos). El controlador sigue reaccionando al
+#: throughput real, que es lo que mide él mismo.
+_RECURSOS_DESCONOCIDOS = (0.0, float("inf"))
+
+
 def _lector_recursos_psutil():
     """Lector de recursos por defecto, vía `psutil`. Import perezoso: si el
     llamante inyecta su propio lector (siempre en tests), no hace falta cargar
-    psutil para nada."""
-    import psutil
+    psutil para nada.
 
-    cpu_ociosa_pct = 100.0 - psutil.cpu_percent(interval=None)
-    ram_libre_mb = psutil.virtual_memory().available / (1024 * 1024)
-    return cpu_ociosa_pct, ram_libre_mb
+    Con red de seguridad, igual que `utils._memoria_disponible_mb`: `psutil`
+    está en requirements, pero si en el .exe congelado no viajara, o si una
+    lectura puntual fallara, el organizado tiene que seguir (guiado solo por
+    throughput) en vez de tumbar la fase entera a mitad de run."""
+    try:
+        import psutil
+
+        cpu_ociosa_pct = 100.0 - psutil.cpu_percent(interval=None)
+        ram_libre_mb = psutil.virtual_memory().available / (1024 * 1024)
+        return cpu_ociosa_pct, ram_libre_mb
+    except Exception:
+        return _RECURSOS_DESCONOCIDOS
 
 
 class ControladorAdaptativo:
@@ -170,7 +185,12 @@ class ControladorAdaptativo:
             if transcurrido < self.ventana_segundos:
                 return self._trabajadores
 
-            cpu_ociosa_pct, ram_libre_mb = self.lector_recursos()
+            try:
+                cpu_ociosa_pct, ram_libre_mb = self.lector_recursos()
+            except Exception:
+                # Un fallo del lector no puede tumbar la fase: se decide con
+                # lectura neutra y el throughput medido (ver `_lector_recursos_psutil`).
+                cpu_ociosa_pct, ram_libre_mb = _RECURSOS_DESCONOCIDOS
             medicion = Medicion(
                 trabajadores=self._trabajadores,
                 completados=self._completados_ventana,
