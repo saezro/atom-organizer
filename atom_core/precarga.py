@@ -36,8 +36,10 @@ no vuelva a quedar inservible si el bundle se degrada:
   - Si aun así el import de pandas falla, se purga `pandas*` de `sys.modules`
     para que el siguiente intento vuelva a dar el error REAL en vez del
     `_pandas_datetime_CAPI` que despista.
-  - La precarga corre en el hilo principal nada más arrancar, así que cuando
-    existan hilos pandas ya está entero y ninguno dispara un primer import.
+  - El import de pandas corre en un hilo de fondo (importarlo retrasaba más de
+    un segundo la aparición de la ventana), pero la neutralización de pytz se
+    hace ANTES, en el hilo principal, vía `neutralizar_pytz()`: así queda hecha
+    aunque otro `import pandas` gane la carrera al hilo de precarga.
 
 El `Lock` es el cinturón además de los tirantes: si alguna ruta de código llega
 antes que la precarga (tests, modo servidor, un entry point futuro), los imports
@@ -73,6 +75,12 @@ def _neutralizar_pytz_sin_version() -> None:
             "pytz está presente pero sin `__version__` (bundle degradado): se "
             "neutraliza para que pandas lo trate como ausente y use zoneinfo."
         )
+
+
+def neutralizar_pytz() -> None:
+    """Punto de entrada público de `_neutralizar_pytz_sin_version`, para poder
+    dejar pytz saneado en el hilo principal antes de lanzar la precarga."""
+    _neutralizar_pytz_sin_version()
 
 
 def _purgar_pandas_de_sys_modules() -> None:

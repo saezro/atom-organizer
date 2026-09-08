@@ -144,7 +144,8 @@ def test_leer_json_con_tipos_o_modo_invalido_devuelve_estado_inicial(_ruta_aisla
 
 
 def test_leer_json_valido_lo_devuelve():
-    estado = {"modo": "gpu", "pendiente": True, "fallos": 3, "arranques_sw": 5}
+    estado = {"modo": "gpu", "pendiente": True, "fallos": 3, "arranques_sw": 5,
+              "version": "3.4.79"}
     assert render_state.guardar(estado) is True
     assert render_state.leer() == estado
 
@@ -163,7 +164,8 @@ def test_leer_json_antiguo_sin_arranques_sw_da_default_cero(_ruta_aislada):
 
 
 def test_guardar_y_leer_round_trip():
-    estado = {"modo": "software", "pendiente": False, "fallos": 1, "arranques_sw": 3}
+    estado = {"modo": "software", "pendiente": False, "fallos": 1, "arranques_sw": 3,
+              "version": "3.4.79"}
     assert render_state.guardar(estado) is True
     assert render_state.leer() == estado
 
@@ -182,6 +184,53 @@ def test_guardar_devuelve_false_si_ruta_inescribible(tmp_path, monkeypatch):
     monkeypatch.setattr(render_state, "ruta_estado", lambda: str(destino))
 
     assert render_state.guardar({"modo": "auto", "pendiente": False, "fallos": 0}) is False
+
+
+# --- olvidar_degradacion() ----------------------------------------------
+
+
+def test_olvidar_degradacion_misma_version_no_cambia_nada():
+    estado = {"modo": "auto", "pendiente": True, "fallos": 2, "arranques_sw": 5,
+              "version": "3.4.78"}
+    nuevo = render_state.olvidar_degradacion(estado, "3.4.78")
+    assert nuevo == estado
+
+
+def test_olvidar_degradacion_version_distinta_modo_auto_resetea_todo():
+    estado = {"modo": "auto", "pendiente": True, "fallos": 2, "arranques_sw": 5,
+              "version": "3.4.77"}
+    nuevo = render_state.olvidar_degradacion(estado, "3.4.79")
+    assert nuevo["version"] == "3.4.79"
+    assert nuevo["pendiente"] is False
+    assert nuevo["fallos"] == 0
+    assert nuevo["arranques_sw"] == 0
+
+
+def test_olvidar_degradacion_version_distinta_modo_software_no_toca_contadores():
+    estado = {"modo": "software", "pendiente": True, "fallos": 2, "arranques_sw": 5,
+              "version": "3.4.77"}
+    nuevo = render_state.olvidar_degradacion(estado, "3.4.79")
+    assert nuevo["version"] == "3.4.79"
+    assert nuevo["pendiente"] is True
+    assert nuevo["fallos"] == 2
+    assert nuevo["arranques_sw"] == 5
+
+
+def test_olvidar_degradacion_version_distinta_modo_gpu_no_toca_contadores():
+    estado = {"modo": "gpu", "pendiente": False, "fallos": 3, "arranques_sw": 1,
+              "version": "3.4.77"}
+    nuevo = render_state.olvidar_degradacion(estado, "3.4.79")
+    assert nuevo["version"] == "3.4.79"
+    assert nuevo["fallos"] == 3
+    assert nuevo["arranques_sw"] == 1
+
+
+def test_olvidar_degradacion_no_muta_el_dict_de_entrada():
+    estado = {"modo": "auto", "pendiente": True, "fallos": 2, "arranques_sw": 5,
+              "version": "3.4.77"}
+    original = dict(estado)
+    render_state.olvidar_degradacion(estado, "3.4.79")
+    assert estado == original
 
 
 # --- ciclo completo de arranques ----------------------------------------
