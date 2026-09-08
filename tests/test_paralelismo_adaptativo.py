@@ -230,3 +230,50 @@ def test_arranque_io_no_pasa_del_techo_de_io():
     import utils
 
     assert 1 <= utils.arranque_io() <= utils.max_io_workers()
+
+
+def test_no_sube_por_encima_del_techo_de_ram_libre_aunque_el_maximo_sea_mayor():
+    """El aforo antiguo (`maximo = arranque*2`) es estático y no vigila la
+    RAM mientras el run avanza: en un PC de 8 GB podía subir hasta 8-12
+    workers x 600 MB = 4,8-7,2 GB solo en esta fase. Con poca RAM libre en la
+    última medición, `_subir` (llamado por la regla 3, rendimiento mejorando)
+    debe TOPAR por debajo de `maximo`, no solo por debajo de él."""
+    # Con 5 trabajadores y 600 MB/worker, dejando un colchón de 600 MB de
+    # margen, 1200 MB libres solo dan margen para 1 worker más (el mínimo
+    # para no chocar con la regla 1, que baja por debajo de esa RAM): sin
+    # techo dinámico el salto geométrico habría subido a 10 (maximo=16 no
+    # lo habría frenado); con él se queda en 6.
+    historial = [
+        _medicion(trabajadores=5, completados=100, ram_libre_mb=1200.0),
+        _medicion(trabajadores=5, completados=130, ram_libre_mb=1200.0),
+    ]
+    assert decidir_trabajadores(historial, minimo=1, maximo=16, mb_por_worker=600.0) == 6
+
+
+def test_sube_normal_si_hay_ram_de_sobra():
+    """Con RAM abundante, el techo dinámico no debe cambiar el comportamiento
+    de siempre: sigue subiendo geométrico en la rampa inicial, igual que
+    antes de vigilar la RAM en `_subir`."""
+    historial = [
+        _medicion(trabajadores=5, completados=100, ram_libre_mb=16000.0),
+        _medicion(trabajadores=5, completados=130, ram_libre_mb=16000.0),
+    ]
+    assert decidir_trabajadores(historial, minimo=1, maximo=16, mb_por_worker=600.0) == 10
+
+
+def test_techo_por_ram_libre_no_pasa_del_maximo_estatico(monkeypatch):
+    """Extremo a extremo con el controlador real: aunque la RAM disponible
+    dé para muchísimos workers, `maximo` (fijo, el `arranque*2` de siempre)
+    sigue siendo un techo que nunca se salta."""
+    reloj = _RelojFalso()
+    controlador = ControladorAdaptativo(
+        minimo=1, maximo=6, ventana_segundos=5.0, mb_por_worker=500.0,
+        reloj=reloj, lector_recursos=lambda: (60.0, 999999.0), arranque=5,
+    )
+    for _ in range(3):
+        reloj.avanzar(6.0)
+        for _ in range(50):
+            controlador.registrar(mb=5.0)
+        controlador.revisar()
+
+    assert controlador.trabajadores <= 6

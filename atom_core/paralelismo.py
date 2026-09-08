@@ -63,8 +63,45 @@ class Medicion:
 _DESPLOME_PARA_HALVING = 0.25
 
 
-def _subir(historial: List[Medicion], trabajadores: int, maximo: int) -> int:
+def _techo_por_ram_libre(trabajadores: int, mb_por_worker: float, ram_libre_mb: float) -> float:
+    """Cuántos trabajadores caben SIN pasar de la RAM libre real de esta
+    medición, dejando `mb_por_worker` de margen de seguridad (no se agota el
+    último colchón, igual que la regla 1 de `decidir_trabajadores`).
+
+    `ram_libre_mb` viene de la ÚLTIMA `Medicion` del historial, no de una
+    lectura nueva de `psutil`: es la misma lectura que ya hizo el
+    `lector_recursos` inyectado (o el real, vía `_lector_recursos_psutil`) al
+    cerrar esta ventana, así que sigue siendo "la RAM disponible en este
+    instante" sin duplicar la lectura ni romper la inyección para tests.
+
+    Cuando no se pudo medir la RAM (`ram_libre_mb == inf`, ver
+    `_RECURSOS_DESCONOCIDOS`), devuelve `inf`: sin dato de RAM no hay techo
+    dinámico que aplicar y manda solo `maximo`, igual que antes de este
+    cambio."""
+    if mb_por_worker <= 0 or ram_libre_mb == float("inf"):
+        return float("inf")
+    extra = max(0.0, ram_libre_mb - mb_por_worker) // mb_por_worker
+    return trabajadores + extra
+
+
+def _subir(
+    historial: List[Medicion],
+    trabajadores: int,
+    maximo: int,
+    mb_por_worker: float = utils.MB_POR_WORKER,
+    ram_libre_mb: float = float("inf"),
+) -> int:
     """Cuánto subir cuando hay margen.
+
+    El techo YA NO es solo `maximo` (fijo, calculado una vez al arrancar como
+    `arranque*2`): antes de subir se recalcula cuántos trabajadores caben en
+    la RAM libre REAL de esta medición (`_techo_por_ram_libre`) y se usa el
+    más bajo de los dos. `maximo` sigue mandando si el llamante lo pasó
+    explícito (nunca se sube por encima de él); lo que cambia es que un
+    `maximo` heredado de `arranque*2` ya no basta por sí solo si la RAM se ha
+    ido llenando con otra cosa mientras el organizado corría — en un PC de
+    8 GB, subir a ciegas hasta `arranque*2` podía significar 8-12 workers x
+    600 MB = 4,8-7,2 GB solo en esta fase.
 
     Durante la RAMPA INICIAL (mientras el controlador nunca haya tenido que
     bajar) duplica: llegar de 7 a 32 de uno en uno son 25 ventanas = 125 s,
@@ -74,9 +111,14 @@ def _subir(historial: List[Medicion], trabajadores: int, maximo: int) -> int:
     En cuanto ha habido una bajada (alguna ventana del historial tuvo MÁS
     trabajadores que ahora) se pasa a +1: ya se conoce el techo real de la
     máquina y lo que toca es afinar, no volver a pasarse."""
+    techo_ram = _techo_por_ram_libre(trabajadores, mb_por_worker, ram_libre_mb)
+    techo = maximo if techo_ram == float("inf") else min(maximo, int(techo_ram))
+    # Nunca bajar de los que ya hay al decidir una SUBIDA: si no cabe ni uno
+    # más, `_subir` simplemente mantiene, no reduce (eso es cosa de `_bajar`).
+    techo = max(trabajadores, techo)
     if any(medicion.trabajadores > trabajadores for medicion in historial):
-        return min(maximo, trabajadores + 1)
-    return min(maximo, max(trabajadores + 1, trabajadores * 2))
+        return min(techo, trabajadores + 1)
+    return min(techo, max(trabajadores + 1, trabajadores * 2))
 
 
 def _bajar(cambio_pct: float, trabajadores: int, minimo: int) -> int:
@@ -130,7 +172,7 @@ def decidir_trabajadores(
 
     # Regla 3: mejora clara → subir.
     if cambio_pct > _ZONA_MUERTA_PCT:
-        return _subir(historial, ultima.trabajadores, maximo)
+        return _subir(historial, ultima.trabajadores, maximo, mb_por_worker, ultima.ram_libre_mb)
 
     # Regla 4: empeora claro → bajar (thrashing de HDD).
     if cambio_pct < -_ZONA_MUERTA_PCT:
@@ -138,7 +180,7 @@ def decidir_trabajadores(
 
     # Regla 5: zona muerta con margen de CPU → subir.
     if ultima.cpu_ociosa_pct > _CPU_OCIOSA_PARA_SUBIR:
-        return _subir(historial, ultima.trabajadores, maximo)
+        return _subir(historial, ultima.trabajadores, maximo, mb_por_worker, ultima.ram_libre_mb)
 
     # Regla 6: nada de lo anterior → mantener.
     return ultima.trabajadores

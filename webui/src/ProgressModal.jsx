@@ -16,12 +16,33 @@ function fmtDur(s) {
   return `${m} min ${r} s`
 }
 
+// Desglose específico de la fase de Índice: viene con un payload distinto
+// (sin `done`, con `rgb_extra`/`sin_asignar`/`sin_timestamp`/`vuelos`, ver
+// `atom_core/indice.py`). Se detecta por la presencia de `vuelos`, que solo
+// emite esta fase.
+function indiceStatsLine(s) {
+  const parts = []
+  if (s.total > 0) parts.push(`${s.total} img`)
+  if (s.rgb > 0) parts.push(`${s.rgb} RGB`)
+  if (s.rgb_extra > 0) parts.push(`${s.rgb_extra} RGB extra`)
+  if (s.termica > 0) {
+    parts.push(`${s.termica} ${s.termica === 1 ? 'térmica' : 'térmicas'}`)
+  }
+  if (s.sin_asignar > 0) parts.push(`${s.sin_asignar} sin asignar`)
+  if (s.sin_timestamp > 0) parts.push(`${s.sin_timestamp} sin timestamp`)
+  if (s.vuelos > 0) parts.push(`${s.vuelos} ${s.vuelos === 1 ? 'vuelo' : 'vuelos'}`)
+  return parts.join(' · ')
+}
+
 // Desglose de lo analizado en la fase: "34 de 120 img · 90 RGB · 30 térmicas".
 // El total y el reparto solo aparecen cuando el pipeline los ha anunciado.
 function statsLine(s) {
   if (!s) return ''
+  if (s.vuelos != null) return indiceStatsLine(s)
   const parts = []
-  if (s.total > 0) parts.push(`${Math.min(s.done, s.total)} de ${s.total} img`)
+  // `done` no existe en todos los payloads (p.ej. el de Índice, cubierto
+  // arriba); sin este `?? s.total` el Math.min da NaN en pantalla.
+  if (s.total > 0) parts.push(`${Math.min(s.done ?? s.total, s.total)} de ${s.total} img`)
   else if (s.done > 0) parts.push(`${s.done} img`)
   if (s.rgb > 0 && s.rgb !== s.done) parts.push(`${s.rgb} RGB`)
   if (s.termica > 0 && s.termica !== s.done) {
@@ -30,15 +51,36 @@ function statsLine(s) {
   return parts.join(' · ')
 }
 
+// Velocidad de procesado en formato español: coma decimal, una cifra.
+function fmtImgPorSegundo(v) {
+  if (v == null) return ''
+  return `${v.toFixed(1).replace('.', ',')} img/s`
+}
+
 // ETA de la fase activa a partir de su progreso y momento de arranque. Vacío
 // hasta que hay señal suficiente (progreso >=5% y >=3s transcurridos) para no
-// mostrar estimaciones absurdas nada más arrancar la fase.
+// mostrar estimaciones absurdas nada más arrancar la fase. Heurística de
+// cliente: solo se usa de FALLBACK cuando el backend no manda `eta_segundos`
+// (ver `etaLine`).
 function etaText(startedAt, progress, now) {
   if (startedAt == null || progress < 5) return ''
   const elapsed = (now - startedAt) / 1000
   if (elapsed < 3) return ''
   const eta = (elapsed * (100 - progress)) / progress
   return `queda ~${fmtDur(Math.round(eta))}`
+}
+
+// ETA + velocidad reales del backend (`eta_segundos`/`img_por_segundo` en
+// `atom_core/apply.py`), con la heurística de cliente como fallback en las
+// fases que no los emiten (p.ej. Índice).
+function etaLine(stats, startedAt, progress, now) {
+  if (stats && stats.eta_segundos != null) {
+    const parts = [`~${fmtDur(stats.eta_segundos)} restantes`]
+    const vel = fmtImgPorSegundo(stats.img_por_segundo)
+    if (vel) parts.push(vel)
+    return parts.join(' · ')
+  }
+  return etaText(startedAt, progress, now)
 }
 
 // Megabytes legibles: pasa a GB cuando supera 1024 MB.
@@ -163,8 +205,8 @@ export default function ProgressModal({
                       />
                     </div>
                     <span className="pm-pct">{progress > 0 ? `${progress}%` : '…'}</span>
-                    {etaText(p.startedAt, progress, now) && (
-                      <span className="pm-eta">{etaText(p.startedAt, progress, now)}</span>
+                    {etaLine(stats, p.startedAt, progress, now) && (
+                      <span className="pm-eta">{etaLine(stats, p.startedAt, progress, now)}</span>
                     )}
                   </div>
                   {statsLine(stats) ? (

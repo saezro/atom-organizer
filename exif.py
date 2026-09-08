@@ -62,6 +62,34 @@ def leer_bloque_xmp(filename: str) -> str:
         fd.seek(0)
         return fd.read()
 
+
+def extraer_bloque_xmp_crudo(filename: str) -> bytes | None:
+    """Devuelve los bytes crudos del bloque `<x:xmpmeta>...</x:xmpmeta>` de
+    `filename` (mismo criterio de búsqueda de `leer_bloque_xmp` /
+    `get_gimbal_yaw_pitch` / `get_xmp_data`: texto plano, sin parsear XML),
+    o `None` si la imagen no trae XMP o el bloque viene incompleto/corrupto.
+
+    Pensada para re-adjuntar el XMP tal cual a una copia rotada del `*_T.JPG`
+    (ver `atom_core.apply._copiar_jpg_destino`): el R-JPEG térmico no se
+    puede reabrir con pyexiv2 sin arriesgar el payload radiométrico
+    propietario (segmentos APP3/APP4/APP5), así que el bloque se copia como
+    texto crudo en vez de reescribirse vía `modify_xmp`. Nunca lanza: un XMP
+    ausente o corrupto no debe abortar el organizado.
+    """
+    try:
+        d = leer_bloque_xmp(filename)
+        xmp_start = d.find('<x:xmpmeta')
+        if xmp_start == -1:
+            return None
+        xmp_end = d.find('</x:xmpmeta', xmp_start)
+        if xmp_end == -1:
+            return None
+        xmp_str = d[xmp_start:xmp_end + 12]  # +12 == len('</x:xmpmeta>')
+        return xmp_str.encode('latin-1')
+    except Exception:
+        return None
+
+
 class GeneralInformationFromImage:
     """
     Clase que utilizaremos para pruebas con el exif de las imágenes o para obtener información general del mismo.
