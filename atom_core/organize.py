@@ -69,7 +69,7 @@ from atom_core.diagnostico_maquina import (
 )
 from atom_core.phases import PipelinePhasesMixin
 from atom_core.sharding import ETAPAS, normalizar_shard
-from atom_core.manifiesto import NOMBRE_CARPETA_MANIFIESTO
+from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO
 from utils import (
     ROTATION_MIN_AGREEMENT_PCT,
     ROTATION_YAW_MARGIN,
@@ -374,6 +374,36 @@ _TASKS = {
     "rgb_cropping": ("do_rgb_cropping", RgbCroppingConfig),
     "tif_rotating": ("do_tif_rotating", TifRotatingConfig),
 }
+
+
+def _balance_de_bytes(cfg) -> Optional[dict]:
+    """Cuánto ocupa la entrega frente al material de partida, leído del
+    manifiesto del run. `None` si esta task no usa manifiesto (los motores
+    viejos no lo tienen) o si no queda nada que contar.
+
+    Es la respuesta a "¿por qué 28 GB leídos y solo 9 escritos?": esos dos
+    son contadores de I/O de disco de TODA la máquina —un `os.replace` dentro
+    del mismo disco no escribe un byte, y cada original se lee varias veces—,
+    no el tamaño de los datos. Esto sí lo es.
+    """
+    carpeta_salida = getattr(cfg, "output_folder", None)
+    if not carpeta_salida:
+        return None
+    ruta_db = os.path.join(carpeta_salida, NOMBRE_CARPETA_MANIFIESTO, "manifiesto.db")
+    if not os.path.exists(ruta_db):
+        return None
+    manifiesto = Manifiesto(ruta_db)
+    try:
+        balance = manifiesto.balance_bytes()
+    except Exception:
+        # Una estadística del resumen final no puede tumbar un run que ya
+        # terminó bien: sin dato, el modal simplemente no pinta la línea.
+        return None
+    finally:
+        # En Windows una conexión sqlite viva deja el .db bloqueado, y el
+        # run acaba de terminar: nadie más va a cerrarla por nosotros.
+        manifiesto.cerrar()
+    return balance if balance.get("imagenes") else None
 
 
 def run_task(
@@ -987,6 +1017,12 @@ def run_task(
         recursos_totales = medidor.resumen_total()
         if recursos_totales is not None:
             payload_done["recursos_totales"] = recursos_totales
+        # Balance de tamaño de la ENTREGA (lo que ocupa el output frente al
+        # input). Va aparte de `recursos_totales` porque mide otra cosa: allí
+        # son bytes de I/O de disco de la máquina, aquí bytes de datos.
+        balance = _balance_de_bytes(cfg)
+        if balance is not None:
+            payload_done["balance_bytes"] = balance
         emit("done", payload_done)
     except Exception as exc:  # noqa: BLE001 — se reenvía al front
         # Best-effort: los vuelos ya girados antes del fallo siguen siendo dato

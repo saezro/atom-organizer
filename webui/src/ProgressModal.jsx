@@ -172,6 +172,26 @@ export function rotLine(s) {
   return parts.join(' · ')
 }
 
+// Línea del balance de bytes real (entrada vs. salida) del run, distinto de
+// `veredictoDetalle` porque ese usa mb_leidos/mb_escritos del kernel (I/O),
+// no el tamaño real de los datos. Puede no venir (runs viejos, manifiesto sin
+// datos) y en ese caso no se pinta nada.
+export function balanceLine(b) {
+  if (!b || !(b.entrada > 0)) return ''
+  const entradaMB = b.entrada / (1024 * 1024)
+  let line = `Entrada ${fmtMB(entradaMB)}`
+  if (b.salida > 0) {
+    const salidaMB = b.salida / (1024 * 1024)
+    line += ` → salida ${fmtMB(salidaMB)}`
+    const pct = Math.round((b.salida / b.entrada) * 100)
+    line += ` · ${pct} % del original`
+  }
+  if (b.imagenes > 0) {
+    line += ` (${b.imagenes} ${b.imagenes === 1 ? 'imagen' : 'imágenes'})`
+  }
+  return line
+}
+
 export default function ProgressModal({
   plant,
   phases,
@@ -303,6 +323,11 @@ export default function ProgressModal({
             {veredictoDetalle(recursosTotales) && (
               <p className="pm-veredicto-detalle">
                 {veredictoDetalle(recursosTotales)}
+              </p>
+            )}
+            {balanceLine(recursosTotales.balance_bytes) && (
+              <p className="pm-veredicto-detalle">
+                {balanceLine(recursosTotales.balance_bytes)}
               </p>
             )}
           </div>

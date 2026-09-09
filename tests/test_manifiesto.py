@@ -161,3 +161,79 @@ def test_fila_unassigned_admite_pb_y_vuelo_vacios(tmp_path):
     assert fila["unassigned"] == 1
     assert fila["pb"] is None
     manifiesto.cerrar()
+
+
+def test_balance_de_bytes_solo_cuenta_las_hechas(tmp_path):
+    """La pregunta de Rodrigo (2026-09-09) era por qué el resumen decía 28 GB
+    leídos y 9 escritos: aquello es I/O de disco de toda la máquina, no el
+    tamaño de los datos. Esto sí compara lo entregado con lo que entró, y solo
+    de las filas terminadas — una pendiente todavía no ha entregado nada."""
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    manifiesto.insertar_muchas([
+        _fila("/origen/A.JPG", bytes_origen=10_000_000),
+        _fila("/origen/B.JPG", bytes_origen=20_000_000),
+        _fila("/origen/C.JPG", bytes_origen=30_000_000),
+    ])
+    filas = {fila["ruta_origen"]: fila["id"] for fila in manifiesto.todas()}
+    manifiesto.marcar_hecha(filas["/origen/A.JPG"], "/destino/A.JPG:3000000")
+    manifiesto.marcar_hecha(filas["/origen/B.JPG"],
+                            "/destino/B.JPG:5000000; /destino/B_CROP.JPG:1000000")
+    # C se queda pendiente a propósito.
+
+    assert manifiesto.balance_bytes() == {
+        "entrada": 30_000_000, "salida": 9_000_000, "imagenes": 2,
+    }
+
+
+def test_balance_de_bytes_aguanta_rutas_de_windows(tmp_path):
+    """`verificacion` se parte por el ÚLTIMO `:`, no por el primero: una ruta
+    de Windows lleva `C:\\...` y partir por el primero daría la letra de unidad
+    como tamaño (`ValueError`, y el run acabaría sin resumen)."""
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    manifiesto.insertar_muchas([_fila("C:\\origen\\A.JPG", bytes_origen=8_000_000)])
+    id_fila = manifiesto.todas()[0]["id"]
+    manifiesto.marcar_hecha(id_fila, "C:\\destino\\A.JPG:2500000")
+
+    assert manifiesto.balance_bytes()["salida"] == 2_500_000
+
+
+def test_balance_de_bytes_ignora_verificaciones_ilegibles(tmp_path):
+    """Una entrada corrupta se salta; no puede tumbar el resumen final de un
+    run que por lo demás terminó bien."""
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    manifiesto.insertar_muchas([_fila("/origen/A.JPG", bytes_origen=1_000)])
+    id_fila = manifiesto.todas()[0]["id"]
+    manifiesto.marcar_hecha(id_fila, "/destino/A.JPG:no-es-un-numero; /destino/B.JPG:700")
+
+    assert manifiesto.balance_bytes()["salida"] == 700
+
+
+def test_manifiesto_viejo_gana_la_columna_nueva(tmp_path):
+    """Reanudar un run empezado con una versión anterior del Organizer: la
+    tabla ya existe, así que `CREATE TABLE IF NOT EXISTS` no la toca y sin
+    migración el primer INSERT reventaría con `no such column`."""
+    ruta = tmp_path / "m.db"
+    antiguo = sqlite3.connect(ruta)
+    antiguo.execute("""
+        CREATE TABLE imagenes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ruta_origen TEXT NOT NULL UNIQUE, tipo TEXT NOT NULL,
+            timestamp_exif TEXT, modelo TEXT, pb TEXT, vuelo TEXT,
+            nombre_nuevo TEXT NOT NULL DEFAULT '',
+            angulo_giro INTEGER NOT NULL DEFAULT 0, pct_recorte REAL,
+            comprime INTEGER NOT NULL DEFAULT 0,
+            ruta_salida_original TEXT NOT NULL, ruta_salida_crop TEXT,
+            ruta_salida_tiff TEXT, unassigned INTEGER NOT NULL DEFAULT 0,
+            estado TEXT NOT NULL DEFAULT 'pendiente', motivo_fallo TEXT,
+            verificacion TEXT)
+    """)
+    antiguo.commit()
+    antiguo.close()
+
+    manifiesto = Manifiesto(ruta)
+    manifiesto.crear_esquema()
+    assert manifiesto.insertar_muchas([_fila(bytes_origen=4_000)]) == 1
+    assert manifiesto.todas()[0]["bytes_origen"] == 4_000
