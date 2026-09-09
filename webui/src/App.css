@@ -51,7 +51,7 @@
 .block {
   padding: 1.5rem;
   border-radius: 1rem;
-  background: rgba(255, 255, 255, 0.04);
+  background: #141414;
   border: 0.0625rem solid rgba(255, 255, 255, 0.1);
   /* Sin `backdrop-filter`: el fondo de la app es un color PLANO, asi que
      desenfocarlo devuelve el mismo color — el efecto no se ve. Lo que si se
@@ -211,7 +211,7 @@
 .card {
   padding: 2rem;
   border-radius: 1rem;
-  background: rgba(255, 255, 255, 0.04);
+  background: #141414;
   border: 0.0625rem solid rgba(255, 255, 255, 0.1);
   display: flex;
   flex-direction: column;
@@ -361,7 +361,7 @@ select.glass-input option {
 .adv-section {
   padding: 1.15rem 1.25rem;
   border-radius: var(--radio);
-  background: rgba(255, 255, 255, 0.03);
+  background: #1b1b1b;
   border: 0.0625rem solid rgba(255, 255, 255, 0.09);
   display: flex;
   flex-direction: column;
@@ -3182,7 +3182,7 @@ html.kiosk-modo body * {
   text-align: left;
   border-radius: var(--radio);
   border: 0.0625rem solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
+  background: #141414;
   color: inherit;
   font: inherit;
   cursor: pointer;
