@@ -911,7 +911,34 @@ def run_task(
             emit("stats", payload)
             return True
 
+        def _texto_de_log(s, canal: str) -> bool:
+            """¿Vale `s` como línea de log, o es un no-string colado?
+
+            `_on_log`/`_on_summary` son el ÚNICO chokepoint por el que pasa
+            todo lo que acaba en el log crudo del modal, y hacían `str(s)` sin
+            mirar el tipo: un `.emit(0)` de progreso numérico legacy salía como
+            una línea "0" y llegaba a inundar el modal con cientos de ceros.
+            El guard de `pipeline.py::_CollectingProgress.emit` (v3.4.90) no lo
+            tapaba porque esa clase es del motor viejo de 7 fases, que
+            `organizar_plan_apply` ya no invoca: arreglaba código muerto.
+
+            El descarte se ANOTA en el log de fichero del run (no en el modal)
+            para poder identificar al emisor real, que no aparece con grep
+            estático sobre el motor activo.
+            """
+            if isinstance(s, str) and s.strip():
+                return True
+            if _run_log is not None:
+                try:
+                    _run_log.write(f"[descartado:{canal}] {type(s).__name__} {s!r}\n")
+                    _run_log.flush()
+                except Exception:
+                    pass
+            return False
+
         def _on_summary(s) -> None:
+            if not _texto_de_log(s, "summary"):
+                return
             text = str(s)
             if _emitir_marcador_stats(text, STATS_INDICE_PREFIX):
                 return
@@ -943,6 +970,8 @@ def run_task(
                 _emit_stats()
 
         def _on_log(s) -> None:
+            if not _texto_de_log(s, "log"):
+                return
             text = str(s)
             if _emitir_marcador_stats(text, STATS_APPLY_PREFIX):
                 return

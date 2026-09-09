@@ -91,6 +91,54 @@ def test_marcador_de_apply_se_traduce_a_stats_y_no_ensucia_el_log(monkeypatch):
     assert not any(STATS_APPLY_PREFIX in str(p) for p in _de_tipo(eventos, "log"))
 
 
+def test_entero_cero_por_el_canal_de_log_no_genera_evento_log(monkeypatch):
+    """`_texto_de_log` (guard de `_on_log`) debe descartar un `.emit(0)` de
+    progreso numérico legacy: no debe colarse como línea "0" en el log
+    crudo del modal (regresión, ver docstring de `_texto_de_log`)."""
+
+    def _emitir(pcb, pbar, psum):
+        pcb.emit(0)
+
+    eventos = _run_con_acciones(monkeypatch, [_emitir])
+
+    # El run siempre emite además la línea de la sonda de máquina por el
+    # canal `log` (ver `test_sonda_inicial_...`): lo que NO debe aparecer es
+    # el "0" colado por `.emit(0)`.
+    assert "0" not in _de_tipo(eventos, "log")
+
+
+def test_string_normal_por_el_canal_de_log_si_genera_evento_log(monkeypatch):
+    """Contraparte del test anterior: un string normal sí debe pasar el
+    guard de `_texto_de_log` y llegar intacto como evento `log`."""
+
+    def _emitir(pcb, pbar, psum):
+        pcb.emit("procesando imagen 3 de 10")
+
+    eventos = _run_con_acciones(monkeypatch, [_emitir])
+
+    assert "procesando imagen 3 de 10" in _de_tipo(eventos, "log")
+
+
+def test_puntos_de_spinner_siguen_contando_tras_el_guard_de_texto_de_log(monkeypatch):
+    """Los `"."` que `_on_log` usa como spinner por-imagen deben seguir
+    contándose para el "N de M analizadas" del modal (`stats.done`, cada
+    `IMAGE_EMIT_EVERY` imágenes): `_texto_de_log` no debe tumbarlos al
+    filtrar los no-string."""
+
+    def _emitir(pcb, pbar, psum):
+        pcb.emit("...")
+        pcb.emit(".......")  # 3 + 7 = 10 == IMAGE_EMIT_EVERY: dispara el snapshot
+
+    eventos = _run_con_acciones(monkeypatch, [_emitir])
+
+    stats = _de_tipo(eventos, "stats")
+    assert any(p.get("done") == 10 for p in stats), (
+        "3 puntos + 7 puntos = 10 imágenes contadas por el spinner"
+    )
+    # Los puntos son ruido visual: no deben aparecer como línea de log.
+    assert not any(p in (".", "...", ".......") for p in _de_tipo(eventos, "log"))
+
+
 def test_payload_done_trae_las_fases_en_orden_con_su_duracion(monkeypatch):
     """`payload_done["fases"]` debe listar CADA fase que arrancó, en el
     orden en que arrancaron, con su duración — es lo que el modal usa para
