@@ -197,6 +197,9 @@ function App() {
   // Recursos (disco/CPU) acumulados de todo el run, del evento `done`.
   // null cuando el backend no los manda o no hay veredicto.
   const [recursosTotales, setRecursosTotales] = useState(null)
+  // Sonda inicial de la máquina (evento `maquina`): disco origen/destino,
+  // núcleos, RAM y si la máquina ya está ocupada antes de arrancar el run.
+  const [maquina, setMaquina] = useState(null)
 
   // Modal PREVIO (info del estadillo). null | {loading, info, task, params, advanced}
   const [preflight, setPreflight] = useState(null)
@@ -374,6 +377,9 @@ function App() {
           // Python ya reinicia los contadores por fase; aquí solo se pinta.
           setStats(d.data || null)
           break
+        case 'maquina':
+          setMaquina(d.data || null)
+          break
         case 'log':
           if (d.text) setDetail((l) => anexarLog(l, d.text))
           break
@@ -462,6 +468,7 @@ function App() {
     setDetail([])
     setFinished(null)
     setRecursosTotales(null)
+    setMaquina(null)
     setModalOpen(true)
     setRunning(true)
     // `estadillo` viaja como array por toda la UI (así es como se arma el
@@ -814,6 +821,7 @@ function App() {
           detail={detail}
           finished={finished}
           recursosTotales={recursosTotales}
+          maquina={maquina}
           onClose={() => setModalOpen(false)}
         />
       )}

@@ -169,6 +169,7 @@ def test_cerrar_fase_devuelve_contrato_completo_con_mb_por_resta(monkeypatch):
         "cpu_pct",
         "nucleos",
         "veredicto",
+        "tipo_disco",
     }
     # MB = resta entre el snapshot de abrir_fase y el de cierre, no acumulado bruto.
     assert resumen["mb_leidos"] == 20.0
@@ -316,3 +317,130 @@ def test_detener_sin_haber_iniciado_no_lanza(monkeypatch):
     medidor.detener()  # no debe lanzar
 
     assert medidor._hilo is None
+
+
+# --- 8. `_veredicto` consciente del tipo de disco ----------------------------
+
+
+def test_veredicto_hdd_al_47_por_ciento_es_disco():
+    # Caso real: fase RGB al 47% de CPU en disco de origen mecánico. Con un
+    # SSD sería "mixto", pero con HDD confirmado el cuello es el disco.
+    assert mr._veredicto(47.0, "HDD") == "disco"
+
+
+def test_veredicto_ssd_al_47_por_ciento_sigue_siendo_mixto():
+    assert mr._veredicto(47.0, "SSD") == "mixto"
+
+
+def test_veredicto_hdd_con_cpu_alta_sigue_siendo_cpu():
+    assert mr._veredicto(85.0, "HDD") == "cpu"
+
+
+def test_veredicto_sin_tipo_disco_se_comporta_como_antes():
+    # Regresión: `tipo_disco=None` (o "desconocido") no debe cambiar nada del
+    # comportamiento previo a esta tarea.
+    assert mr._veredicto(10.0) == "disco"
+    assert mr._veredicto(55.0) == "mixto"
+    assert mr._veredicto(85.0) == "cpu"
+    assert mr._veredicto(55.0, "desconocido") == "mixto"
+    assert mr._veredicto(55.0, None) == "mixto"
+
+
+# --- 9. `configurar_disco()` se refleja en el resumen ------------------------
+
+
+def test_configurar_disco_afecta_veredicto_y_queda_en_el_resumen(monkeypatch):
+    disco = [(0, 0), (0, 0), (0, 0)]
+    medidor, _ = _preparar_medidor(monkeypatch, disco, cpu_percent_value=47.0)
+    # Fase de 5s (>= 2 * INTERVALO) para que sí calcule cpu_pct.
+    monkeypatch.setattr(mr.time, "monotonic", _secuencia([0.0, 10.0, 15.0]))
+
+    medidor.configurar_disco("HDD")
+    medidor.iniciar()
+    medidor.abrir_fase()
+    _inyectar_muestra(medidor, 47.0)
+    _inyectar_muestra(medidor, 47.0)
+
+    resumen = medidor.cerrar_fase()
+
+    assert resumen["tipo_disco"] == "HDD"
+    assert resumen["veredicto"] == "disco"
+
+
+# --- 10. `resumen_parcial()` ---------------------------------------------------
+
+
+def test_resumen_parcial_sin_muestras_suficientes_devuelve_none(monkeypatch):
+    medidor, _ = _preparar_medidor(monkeypatch, disk_snapshots=[(0, 0)])
+    monkeypatch.setattr(mr.time, "monotonic", _secuencia([0.0]))
+    medidor.iniciar()
+
+    # Ninguna muestra inyectada en `_muestras_recientes`.
+    assert medidor.resumen_parcial(ventana_s=15.0) is None
+
+    with medidor._lock:
+        medidor._muestras_recientes.append((0.0, 50.0, (0, 0)))
+
+    # `time.monotonic()` en la llamada real: 1 sola muestra en la ventana.
+    assert medidor.resumen_parcial(ventana_s=15.0) is None
+
+
+def test_resumen_parcial_con_muestras_calcula_veredicto_hdd(monkeypatch):
+    medidor, _ = _preparar_medidor(monkeypatch, disk_snapshots=[(0, 0)])
+    monkeypatch.setattr(mr.time, "monotonic", _secuencia([0.0]))
+    medidor.iniciar()
+    medidor.configurar_disco("HDD")
+
+    # Inyecta a mano lo que dejaría el hilo de muestreo en 10s de ventana:
+    # CPU media 47% (disco-bound en HDD) y 20 MB leídos + 10 MB escritos.
+    # `_muestras_recientes` guarda snapshots YA en MB (como devuelve
+    # `_snapshot_disco()`), no bytes crudos.
+    with medidor._lock:
+        medidor._muestras_recientes.extend(
+            [
+                (100.0, 47.0, (0.0, 0.0)),
+                (105.0, 47.0, (10.0, 5.0)),
+                (110.0, 47.0, (20.0, 10.0)),
+            ]
+        )
+
+    monkeypatch.setattr(mr.time, "monotonic", lambda: 112.0)
+
+    resumen = medidor.resumen_parcial(ventana_s=15.0)
+
+    assert resumen is not None
+    assert resumen["cpu_pct"] == 47.0
+    assert resumen["mb_leidos"] == 20.0
+    assert resumen["mb_escritos"] == 10.0
+    assert resumen["mb_por_segundo"] == 3.0  # (20+10) MB / 10 s
+    assert resumen["tipo_disco"] == "HDD"
+    assert resumen["veredicto"] == "disco"
+
+
+def test_resumen_parcial_respeta_la_ventana_descartando_muestras_viejas(monkeypatch):
+    medidor, _ = _preparar_medidor(monkeypatch, disk_snapshots=[(0, 0)])
+    monkeypatch.setattr(mr.time, "monotonic", _secuencia([0.0]))
+    medidor.iniciar()
+
+    with medidor._lock:
+        medidor._muestras_recientes.extend(
+            [
+                (0.0, 90.0, None),  # fuera de la ventana de 15s
+                (100.0, 10.0, None),
+                (105.0, 10.0, None),
+            ]
+        )
+
+    monkeypatch.setattr(mr.time, "monotonic", lambda: 110.0)
+
+    resumen = medidor.resumen_parcial(ventana_s=15.0)
+
+    assert resumen is not None
+    assert resumen["cpu_pct"] == 10.0  # la muestra vieja (90.0) queda fuera
+
+
+def test_resumen_parcial_sin_psutil_devuelve_none_no_lanza(monkeypatch):
+    monkeypatch.setattr(mr, "psutil", None)
+    medidor = mr.MedidorRecursos()
+
+    assert medidor.resumen_parcial() is None

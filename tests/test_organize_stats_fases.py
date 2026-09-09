@@ -121,3 +121,50 @@ def test_task_sin_fases_deja_la_lista_vacia(monkeypatch):
     dones = _de_tipo(eventos, "done")
     assert len(dones) == 1
     assert dones[0]["fases"] == []
+
+
+def test_sonda_inicial_se_emite_una_vez_al_arrancar_el_run(monkeypatch):
+    """La sonda de máquina (`atom_core.diagnostico_maquina.sonda_inicial`)
+    debe dispararse una única vez al arrancar el run, ANTES de procesar
+    ninguna imagen, y su `texto` debe viajar también por el canal `log`."""
+    sonda_falsa = {
+        "disco_origen": {"tipo": "HDD", "modelo": "WD Blue", "unidad": "E:"},
+        "disco_destino": {"tipo": "SSD", "modelo": None, "unidad": "C:"},
+        "mismo_disco": False, "nucleos": 8, "ram_total_gb": 16.0,
+        "ram_libre_gb": 4.0, "cpu_ocupada_pct": 12.0, "maquina_ocupada": False,
+        "texto": "Origen E: HDD (disco mecánico) · Destino C: SSD",
+    }
+    llamadas = []
+
+    def _sonda_inicial_falsa(origen, destino):
+        llamadas.append((origen, destino))
+        return sonda_falsa
+
+    monkeypatch.setattr(organize, "sonda_inicial", _sonda_inicial_falsa)
+
+    eventos = _run_con_acciones(monkeypatch, [lambda pcb, pbar, psum: None])
+
+    assert len(llamadas) == 1, "la sonda debe lanzarse UNA sola vez por run"
+    maquinas = _de_tipo(eventos, "maquina")
+    assert maquinas == [sonda_falsa]
+    assert any(sonda_falsa["texto"] in str(p) for p in _de_tipo(eventos, "log"))
+
+
+def test_stats_incluye_recursos_vivo_cuando_el_medidor_lo_devuelve(monkeypatch):
+    """`_emit_stats` debe adjuntar `recursos_vivo` con lo que devuelva
+    `medidor.resumen_parcial()` (aquí mockeado) en cada snapshot de `stats`."""
+    resumen_falso = {
+        "mb_leidos": 10.0, "mb_escritos": 5.0, "mb_por_segundo": 36.4,
+        "cpu_pct": 22.0, "nucleos": 8, "veredicto": "disco", "tipo_disco": "HDD",
+    }
+    monkeypatch.setattr(organize.MedidorRecursos, "resumen_parcial",
+                         lambda self, ventana_s=15.0: resumen_falso)
+
+    def _emitir(pcb, pbar, psum):
+        psum.emit("Procesando 10 imágenes en el directorio /out/RGB")
+
+    eventos = _run_con_acciones(monkeypatch, [_emitir])
+
+    stats = _de_tipo(eventos, "stats")
+    assert stats, "debe haberse emitido al menos un snapshot de stats"
+    assert any(p.get("recursos_vivo") == resumen_falso for p in stats)

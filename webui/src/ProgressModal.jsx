@@ -105,11 +105,34 @@ function recursosLine(r) {
   return parts.join(' · ')
 }
 
-// Texto destacado del veredicto de cuello de botella del run completo.
-function veredictoTexto(v) {
-  if (v === 'disco') return '⚠ Cuello de botella: disco'
-  if (v === 'cpu') return '⚠ Cuello de botella: CPU'
-  if (v === 'mixto') return 'Cuello de botella: mixto (disco y CPU)'
+// Decimal en formato español (coma en vez de punto).
+function fmtDecimalEs(v, decimals) {
+  if (v == null) return ''
+  return v.toFixed(decimals).replace('.', ',')
+}
+
+// Texto destacado del veredicto de cuello de botella. Sin `live` es el
+// resumen breve del run ya terminado (detalle aparte en `veredictoDetalle`).
+// Con `live` (payload de `recursos_vivo`) lleva las cifras incrustadas, tal
+// cual las pidió Rodrigo, porque se pinta sola mientras el run sigue en curso.
+function veredictoTexto(v, live) {
+  if (!live) {
+    if (v === 'disco') return '⚠ Cuello de botella: disco'
+    if (v === 'cpu') return '⚠ Cuello de botella: CPU'
+    if (v === 'mixto') return 'Cuello de botella: mixto (disco y CPU)'
+    return ''
+  }
+  const { mb_por_segundo, cpu_pct, nucleos, tipo_disco } = live
+  if (v === 'disco') {
+    const disco = tipo_disco === 'HDD' || tipo_disco === 'SSD' ? ` (${tipo_disco})` : ''
+    return `⚠ El disco es el cuello de botella — ${fmtDecimalEs(mb_por_segundo, 1)} MB/s${disco}`
+  }
+  if (v === 'cpu') {
+    return `⚠ La CPU es el cuello de botella — ${Math.round(cpu_pct)}% de ${nucleos} núcleos`
+  }
+  if (v === 'mixto') {
+    return `Cuello de botella mixto (disco y CPU) — ${fmtDecimalEs(mb_por_segundo, 1)} MB/s · ${Math.round(cpu_pct)}% CPU`
+  }
   return ''
 }
 
@@ -148,6 +171,7 @@ export default function ProgressModal({
   detail,
   finished,
   recursosTotales,
+  maquina,
   onClose,
 }) {
   const [showDetail, setShowDetail] = useState(false)
@@ -168,6 +192,13 @@ export default function ProgressModal({
         <h2 className="pm-title">
           Procesando planta: <span className="pm-plant">{plant || '—'}</span>
         </h2>
+
+        {/* Sonda inicial de la máquina (disco/CPU/RAM), antes de arrancar. */}
+        {maquina && maquina.texto && (
+          <p className={'pm-maquina' + (maquina.maquina_ocupada ? ' pm-maquina-ocupada' : '')}>
+            {maquina.texto}
+          </p>
+        )}
 
         <ul className="pm-phases">
           {phases.length === 0 && (
@@ -227,6 +258,13 @@ export default function ProgressModal({
         {rotLine(stats) && (
           <p className="pm-rot">
             <span className="pm-rot-label">Rotación:</span> {rotLine(stats)}
+          </p>
+        )}
+
+        {/* Veredicto de cuello de botella EN VIVO (fase todavía en curso). */}
+        {!finished && stats && stats.recursos_vivo && stats.recursos_vivo.veredicto && (
+          <p className="pm-veredicto-vivo">
+            {veredictoTexto(stats.recursos_vivo.veredicto, stats.recursos_vivo)}
           </p>
         )}
 

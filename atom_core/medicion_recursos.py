@@ -49,6 +49,12 @@ _INTERVALO_MUESTREO_S = 1.0
 _UMBRAL_DISCO = 40.0
 _UMBRAL_CPU = 70.0
 
+# Ventana que se conserva en `_muestras_recientes` para `resumen_parcial()`.
+# Más que suficiente para cualquier `ventana_s` razonable (el uso previsto es
+# de pocos segundos a un par de minutos); recortar aquí evita que la lista
+# crezca sin límite en fases de 20+ minutos.
+_VENTANA_RECIENTES_MAX_S = 300.0
+
 
 def _snapshot_disco():
     """Devuelve `(mb_leidos_acum, mb_escritos_acum)` o `None` si no hay dato.
@@ -68,9 +74,18 @@ def _snapshot_disco():
     return (io.read_bytes / (1024 * 1024), io.write_bytes / (1024 * 1024))
 
 
-def _veredicto(cpu_pct: Optional[float]) -> Optional[str]:
+def _veredicto(cpu_pct: Optional[float], tipo_disco: Optional[str] = None) -> Optional[str]:
     if cpu_pct is None:
         return None
+    # Con un HDD el umbral de 40% es demasiado optimista: en discos mecánicos
+    # el organizado espera a la cabeza lectora bastante antes de que la CPU se
+    # note "libre" en el sentido de la SSD (visto en campo: fase RGB al 47% de
+    # CPU y 36 MB/s en un disco de origen mecánico, claramente disco-bound
+    # aunque el 47% caiga en la banda "mixto" de un SSD). Con HDD confirmado,
+    # cualquier CPU por debajo del umbral "cpu" ya es indicio suficiente de
+    # cuello de disco.
+    if tipo_disco == "HDD" and cpu_pct < _UMBRAL_CPU:
+        return "disco"
     if cpu_pct < _UMBRAL_DISCO:
         return "disco"
     if cpu_pct > _UMBRAL_CPU:
@@ -106,10 +121,21 @@ class MedidorRecursos:
         self._muestras_cpu_total: list = []
         self._muestras_cpu_fase: list = []
 
+        # Buffer con marca de tiempo (`time.monotonic()`) para `resumen_parcial()`:
+        # tuplas `(ts, cpu_pct, snapshot_disco_o_None)`, una por vuelta del hilo
+        # de muestreo. Es independiente de las dos listas de arriba (que no
+        # llevan timestamp) para no tocar su formato ni el de los resúmenes
+        # existentes.
+        self._muestras_recientes: list = []
+
         self._inicio_total_disco = None
         self._inicio_total_ts = None
         self._inicio_fase_disco = None
         self._inicio_fase_ts = None
+
+        # Tipo de disco de ORIGEN ("HDD"/"SSD"/"desconocido"/None): afecta al
+        # veredicto porque un HDD se satura con mucha menos CPU que un SSD.
+        self._tipo_disco: Optional[str] = None
 
     # -- ciclo de vida del hilo -------------------------------------------------
 
@@ -133,6 +159,7 @@ class MedidorRecursos:
             self._inicio_fase_ts = ahora
             self._muestras_cpu_total = []
             self._muestras_cpu_fase = []
+            self._muestras_recientes = []
             self._hilo = threading.Thread(
                 target=self._bucle_muestreo, name="MedidorRecursos", daemon=True
             )
@@ -154,14 +181,31 @@ class MedidorRecursos:
         while not self._parar.is_set():
             try:
                 muestra = psutil.cpu_percent(percpu=False)
+                ts = time.monotonic()
+                disco = _snapshot_disco()
                 with self._lock:
                     self._muestras_cpu_total.append(muestra)
                     self._muestras_cpu_fase.append(muestra)
+                    self._muestras_recientes.append((ts, muestra, disco))
+                    # Recorte: solo hace falta conservar la ventana máxima que
+                    # `resumen_parcial()` puede pedir; el resto ya no aporta.
+                    corte = ts - _VENTANA_RECIENTES_MAX_S
+                    while self._muestras_recientes and self._muestras_recientes[0][0] < corte:
+                        self._muestras_recientes.pop(0)
             except Exception:
                 # Un fallo puntual de psutil no debe matar el hilo: se ignora
                 # la muestra y se sigue intentando en la siguiente vuelta.
                 pass
             self._parar.wait(_INTERVALO_MUESTREO_S)
+
+    def configurar_disco(self, tipo_origen: Optional[str]) -> None:
+        """Fija el tipo de disco de ORIGEN ("HDD"/"SSD"/"desconocido"/None).
+
+        Se usa solo para afinar `_veredicto`: un HDD se satura con mucha menos
+        CPU que un SSD, así que el mismo % de CPU significa cosas distintas
+        según el disco. No dispara ninguna medición por sí sola.
+        """
+        self._tipo_disco = tipo_origen
 
     # -- fases -------------------------------------------------------------
 
@@ -199,6 +243,56 @@ class MedidorRecursos:
         except Exception:
             return None
 
+    def resumen_parcial(self, ventana_s: float = 15.0) -> Optional[dict]:
+        """Veredicto EN VIVO sobre los últimos `ventana_s` segundos.
+
+        Pensado para emitirse periódicamente mientras una fase larga corre
+        (a diferencia de `cerrar_fase()`, que solo existe al final). Usa el
+        buffer `_muestras_recientes` en vez de recortar las listas de fase,
+        para no interferir con el resumen "oficial" de la fase.
+        """
+        if not self._activo:
+            return None
+        try:
+            ahora = time.monotonic()
+            corte = ahora - ventana_s
+            with self._lock:
+                ventana = [m for m in self._muestras_recientes if m[0] >= corte]
+
+            # Menos de 2 muestras = ruido: ni la media de CPU ni el delta de
+            # disco (que necesita dos puntos) son fiables todavía.
+            if len(ventana) < 2:
+                return None
+
+            cpu_pct = sum(m[1] for m in ventana) / len(ventana)
+            segundos = ventana[-1][0] - ventana[0][0]
+
+            discos_validos = [m[2] for m in ventana if m[2] is not None]
+            if len(discos_validos) >= 2:
+                mb_leidos = max(0.0, discos_validos[-1][0] - discos_validos[0][0])
+                mb_escritos = max(0.0, discos_validos[-1][1] - discos_validos[0][1])
+            else:
+                mb_leidos = 0.0
+                mb_escritos = 0.0
+            mb_por_segundo = (mb_leidos + mb_escritos) / segundos if segundos > 0 else 0.0
+
+            try:
+                nucleos = psutil.cpu_count(logical=True) or 1
+            except Exception:
+                nucleos = 1
+
+            return {
+                "mb_leidos": round(mb_leidos, 1),
+                "mb_escritos": round(mb_escritos, 1),
+                "mb_por_segundo": round(mb_por_segundo, 1),
+                "cpu_pct": round(cpu_pct, 1),
+                "nucleos": nucleos,
+                "veredicto": _veredicto(cpu_pct, self._tipo_disco),
+                "tipo_disco": self._tipo_disco,
+            }
+        except Exception:
+            return None
+
     def _resumir(self, muestras: list, inicio_disco, inicio_ts) -> Optional[dict]:
         if inicio_ts is None:
             return None
@@ -230,5 +324,6 @@ class MedidorRecursos:
             "mb_por_segundo": round(mb_por_segundo, 1),
             "cpu_pct": round(cpu_pct, 1) if cpu_pct is not None else 0.0,
             "nucleos": nucleos,
-            "veredicto": _veredicto(cpu_pct),
+            "veredicto": _veredicto(cpu_pct, self._tipo_disco),
+            "tipo_disco": self._tipo_disco,
         }

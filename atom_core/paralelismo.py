@@ -42,6 +42,15 @@ _ZONA_MUERTA_PCT = 0.05
 #: aunque el rendimiento esté plano: la máquina ya está ocupada.
 _CPU_OCIOSA_PARA_SUBIR = 40.0
 
+#: Tope de trabajadores en la fase RGB cuando el disco de ORIGEN es HDD.
+#: La regla 5 de `decidir_trabajadores` (CPU ociosa >40% -> subir) interpreta
+#: el hueco de CPU esperando al disco como margen libre y sube de 7 a 14
+#: workers, pero en un disco mecánico más lectores concurrentes = más cabezal
+#: saltando entre pistas (seek thrashing), no más throughput. Con menos
+#: workers el disco lee más secuencial y el conjunto va más rápido de
+#: verdad, aunque la CPU se vea "ociosa".
+TOPE_WORKERS_HDD = 3
+
 
 @dataclass(frozen=True)
 class Medicion:
@@ -212,6 +221,19 @@ def _lector_recursos_psutil():
         return _RECURSOS_DESCONOCIDOS
 
 
+def _proveedor_tipo_disco_por_defecto() -> Optional[str]:
+    """Proveedor por defecto del tipo de disco de origen: import perezoso de
+    `atom_core.diagnostico_maquina` para no crear un ciclo de imports entre
+    ambos módulos (`organize.py` importa de los dos). Si el import fallara
+    por lo que sea, se degrada a `None` (sin dato, sin tope)."""
+    try:
+        from atom_core.diagnostico_maquina import tipo_disco_origen_detectado
+
+        return tipo_disco_origen_detectado()
+    except Exception:
+        return None
+
+
 class ControladorAdaptativo:
     """Mide throughput/latencia/RAM en ventanas de tiempo y decide cuántos
     trabajadores debe haber en cada momento. No toca ningún pool: solo
@@ -227,6 +249,8 @@ class ControladorAdaptativo:
         lector_recursos: Optional[Callable[[], "tuple[float, float]"]] = None,
         etiqueta: str = "",
         arranque: Optional[int] = None,
+        tope_hdd: Optional[int] = None,
+        proveedor_tipo_disco: Optional[Callable[[], Optional[str]]] = None,
     ) -> None:
         self.etiqueta = etiqueta
         self.minimo = minimo
@@ -234,6 +258,18 @@ class ControladorAdaptativo:
         self.ventana_segundos = ventana_segundos
         self.reloj = reloj
         self.lector_recursos = lector_recursos or _lector_recursos_psutil
+
+        # Tope de trabajadores para HDD (solo la fase RGB lo pasa, ver
+        # `phases.py`): si `tope_hdd` es `None` el comportamiento es
+        # EXACTAMENTE el de antes de este cambio (las térmicas y todos los
+        # tests existentes no se enteran).
+        self.tope_hdd = tope_hdd
+        self.proveedor_tipo_disco = proveedor_tipo_disco or _proveedor_tipo_disco_por_defecto
+        # Una vez detectado HDD en este run, se queda capado aunque el
+        # proveedor deje de responder "HDD" en una consulta puntual: el disco
+        # no cambia de tipo a mitad de run.
+        self._es_hdd = False
+        self._aviso_tope_trazado = False
 
         # `workers_para_lote` dimensiona por RAM pensando en PROCESOS que
         # decodifican imágenes de 48 MP (la fase RGB). Una fase de HILOS que
@@ -255,9 +291,43 @@ class ControladorAdaptativo:
         self._completados_ventana = 0
         self._mb_ventana = 0.0
 
+    def _aplicar_tope_disco(self, n: int) -> int:
+        """Capa `n` a `tope_hdd` si el disco de origen es HDD; si no, lo
+        devuelve intacto. Sin `tope_hdd` (fases que no lo pasan, como
+        Térmicas) es un no-op exacto, byte a byte igual que antes de este
+        cambio."""
+        if self.tope_hdd is None:
+            return n
+
+        if not self._es_hdd:
+            try:
+                tipo = self.proveedor_tipo_disco()
+            except Exception:
+                # Un proveedor roto nunca puede tumbar la fase: sin dato, no
+                # se capa (igual que si la sonda todavía no ha terminado).
+                tipo = None
+            if tipo == "HDD":
+                self._es_hdd = True
+
+        if not self._es_hdd:
+            return n
+
+        if not self._aviso_tope_trazado:
+            self._aviso_tope_trazado = True
+            try:
+                _log.info(
+                    "[paralelismo]%s disco HDD: tope de trabajadores = %d",
+                    " " + self.etiqueta if self.etiqueta else "",
+                    self.tope_hdd,
+                )
+            except Exception:
+                pass
+
+        return max(self.minimo, min(n, self.tope_hdd))
+
     @property
     def trabajadores(self) -> int:
-        return self._trabajadores
+        return self._aplicar_tope_disco(self._trabajadores)
 
     def registrar(self, mb: float) -> None:
         """Registra un item terminado dentro de la ventana en curso. Llamado
@@ -296,9 +366,14 @@ class ControladorAdaptativo:
             self._historial.append(medicion)
 
             previos = self._trabajadores
-            self._trabajadores = decidir_trabajadores(
+            decidido = decidir_trabajadores(
                 self._historial, self.minimo, self.maximo, self.mb_por_worker
             )
+            # Capar aquí también (no solo en la property `trabajadores`) para
+            # que el HISTORIAL refleje los workers REALES que hubo: si no, la
+            # próxima decisión razonaría sobre un `trabajadores` que nunca
+            # llegó a existir de verdad.
+            self._trabajadores = self._aplicar_tope_disco(decidido)
             _trazar_ventana(self.etiqueta, medicion, previos, self._trabajadores,
                             self.minimo, self.maximo)
 
