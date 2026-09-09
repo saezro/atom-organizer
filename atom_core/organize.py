@@ -62,6 +62,7 @@ from atom_core.apply import STATS_APPLY_PREFIX
 from atom_core.indice import STATS_INDICE_PREFIX
 from atom_core.progress_stats import StatsTracker
 from atom_core.medicion_recursos import MedidorRecursos
+from atom_core.paralelismo import set_sink_progreso
 from atom_core.diagnostico_maquina import (
     olvidar_tipo_disco_origen,
     registrar_tipo_disco_origen,
@@ -961,6 +962,14 @@ def run_task(
                 _emit_stats()
             emit("log", text)
 
+        # Las líneas `[paralelismo]` de `atom_core/paralelismo.py` usan el logger
+        # estándar (van al fichero de logs de la app) y no pasaban por `emit`, así
+        # que no llegaban al log crudo del modal de progreso de la webui. Se
+        # reenvían por el MISMO camino que `_on_log` (log/summary) mientras dura
+        # este run; se desinstala en el `finally` para no dejar una referencia
+        # colgando entre runs.
+        set_sink_progreso(_on_log)
+
         host = HeadlessHost()
         # `phases.split_images` los lee con getattr y default neutro, así que la
         # GUI Qt (que hereda el mismo mixin y no pasa por aquí) sigue corriendo
@@ -1045,6 +1054,13 @@ def run_task(
         emit("error", f"{type(exc).__name__}: {exc}")
         emit("log", traceback.format_exc())
     finally:
+        # Desinstalar el sink de `[paralelismo]` siempre, gane o pierda el run:
+        # si no, la próxima llamada (u otro run concurrente) seguiría escribiendo
+        # en el `_on_log` de ESTE run, que ya no es válido.
+        try:
+            set_sink_progreso(None)
+        except Exception:
+            pass
         # Antes de cerrar, esperamos a la sonda: es un hilo corto y así nunca
         # emite `maquina` DESPUÉS del `done` del run (y el test no depende de
         # una carrera). Si por lo que sea se atasca, el `daemon=True` evita que

@@ -358,6 +358,89 @@ def test_sin_tope_hdd_comportamiento_idéntico_al_actual():
     assert controlador.trabajadores > 3
 
 
+@pytest.fixture(autouse=True)
+def _sin_sink_colgado():
+    """Cada test arranca y termina sin sink instalado: `set_sink_progreso` es
+    estado de módulo y un test que lo dejara puesto contaminaría el resto."""
+    paralelismo.set_sink_progreso(None)
+    yield
+    paralelismo.set_sink_progreso(None)
+
+
+def test_trazar_sin_sink_no_peta_y_loguea(caplog):
+    """Sin sink instalado (caso de siempre) `_trazar` se comporta igual que
+    el `_log.info` que sustituye: no revienta y deja la línea en el logger."""
+    with caplog.at_level("INFO", logger="atom_core.paralelismo"):
+        paralelismo._trazar("[paralelismo] hola %s", "mundo")
+    assert "[paralelismo] hola mundo" in caplog.text
+
+
+def test_trazar_con_sink_recibe_mensaje_formateado_con_prefijo():
+    recibidos = []
+    paralelismo.set_sink_progreso(recibidos.append)
+
+    paralelismo._trazar("[paralelismo] workers %d->%d", 2, 4)
+
+    assert recibidos == ["[paralelismo] workers 2->4"]
+
+
+def test_sink_que_lanza_no_propaga(caplog):
+    """Un sink roto (p. ej. el modal cerrado a mitad de run) no puede tumbar
+    el organizado: se traga en silencio, igual que el resto de trazas de
+    este fichero."""
+    def _sink_roto(_texto):
+        raise RuntimeError("sink roto (simulado)")
+
+    paralelismo.set_sink_progreso(_sink_roto)
+
+    with caplog.at_level("INFO", logger="atom_core.paralelismo"):
+        paralelismo._trazar("[paralelismo] workers %d->%d", 1, 2)
+
+    # No propagó (si propagara, este test ya habría fallado con el RuntimeError)
+    # y la línea igualmente llegó al logger.
+    assert "[paralelismo] workers 1->2" in caplog.text
+
+
+def test_set_sink_progreso_none_lo_desinstala():
+    recibidos = []
+    paralelismo.set_sink_progreso(recibidos.append)
+    paralelismo._trazar("[paralelismo] primera")
+
+    paralelismo.set_sink_progreso(None)
+    paralelismo._trazar("[paralelismo] segunda")
+
+    assert recibidos == ["[paralelismo] primera"]
+
+
+def test_trazar_ventana_llega_al_sink_con_prefijo_paralelismo():
+    """`_trazar_ventana` (la traza real de cada ventana cerrada) también sale
+    por el sink, no solo `_trazar` a pelo."""
+    recibidos = []
+    paralelismo.set_sink_progreso(recibidos.append)
+
+    medicion = _medicion()
+    paralelismo._trazar_ventana("RGB", medicion, previos=2, nuevos=4, minimo=1, maximo=8)
+
+    assert len(recibidos) == 1
+    assert recibidos[0].startswith("[paralelismo] RGB workers 2->4")
+
+
+def test_aplicar_tope_disco_traza_llega_al_sink():
+    """`_aplicar_tope_disco` (aviso de tope HDD) también sale por el sink."""
+    reloj = _RelojFalso()
+    recibidos = []
+    paralelismo.set_sink_progreso(recibidos.append)
+
+    controlador = ControladorAdaptativo(
+        minimo=1, maximo=16, ventana_segundos=5.0, mb_por_worker=500.0,
+        reloj=reloj, lector_recursos=lambda: (60.0, 9000.0), arranque=4,
+        tope_hdd=3, proveedor_tipo_disco=lambda: "HDD",
+    )
+    controlador.trabajadores  # dispara el primer aviso de tope
+
+    assert any("disco HDD: tope de trabajadores = 3" in m for m in recibidos)
+
+
 def test_tope_hdd_proveedor_que_lanza_no_rompe_ni_capa():
     """Un proveedor roto nunca puede tumbar la fase (regla general de este
     módulo): se degrada a "sin dato" y no capa, igual que el resto de redes

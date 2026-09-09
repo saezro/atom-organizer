@@ -34,6 +34,36 @@ import utils
 #: forma de saber por qué una fase va al 47% de CPU sin repetir el run.
 _log = logging.getLogger(__name__)
 
+#: Sink opcional para que las líneas `[paralelismo]` lleguen también al log
+#: crudo del modal de progreso de la webui (que consume `progress_callback`,
+#: no el logger estándar). `organize.py` lo instala/desinstala durante el
+#: run; fuera de un run vale None y `_trazar` se comporta como antes.
+_sink_progreso: Optional[Callable[[str], None]] = None
+
+
+def set_sink_progreso(fn: Optional[Callable[[str], None]]) -> None:
+    """Instala (o quita, pasando None) el sink al que además del logger se
+    envían las líneas `[paralelismo]` ya formateadas."""
+    global _sink_progreso
+    _sink_progreso = fn
+
+
+def _trazar(fmt: str, *args) -> None:
+    """Loguea como siempre y, si hay sink instalado, le pasa el mensaje ya
+    formateado. Nunca puede tumbar el organizado: un sink roto (o el propio
+    logging) se traga en silencio, igual que el resto de trazas de este
+    fichero."""
+    try:
+        _log.info(fmt, *args)
+    except Exception:
+        pass
+    if _sink_progreso is not None:
+        try:
+            _sink_progreso(fmt % args)
+        except Exception:
+            pass
+
+
 #: Zona muerta para no oscilar por ruido de medida: un cambio de rendimiento
 #: por debajo de este umbral no mueve el número de trabajadores.
 _ZONA_MUERTA_PCT = 0.05
@@ -314,14 +344,11 @@ class ControladorAdaptativo:
 
         if not self._aviso_tope_trazado:
             self._aviso_tope_trazado = True
-            try:
-                _log.info(
-                    "[paralelismo]%s disco HDD: tope de trabajadores = %d",
-                    " " + self.etiqueta if self.etiqueta else "",
-                    self.tope_hdd,
-                )
-            except Exception:
-                pass
+            _trazar(
+                "[paralelismo]%s disco HDD: tope de trabajadores = %d",
+                " " + self.etiqueta if self.etiqueta else "",
+                self.tope_hdd,
+            )
 
         return max(self.minimo, min(n, self.tope_hdd))
 
@@ -392,13 +419,13 @@ def _trazar_ventana(etiqueta: str, medicion: Medicion, previos: int, nuevos: int
     try:
         img_s = medicion.completados / medicion.segundos if medicion.segundos else 0.0
         mb_s = medicion.mb_procesados / medicion.segundos if medicion.segundos else 0.0
-        _log.info(
-            "[paralelismo]%s workers %d->%d (min=%d max=%d) | %d img en %.1fs "
-            "= %.2f img/s, %.1f MB/s | cpu_ociosa=%.0f%% ram_libre=%.0fMB",
-            " " + etiqueta if etiqueta else "",
-            previos, nuevos, minimo, maximo,
-            medicion.completados, medicion.segundos, img_s, mb_s,
-            medicion.cpu_ociosa_pct, medicion.ram_libre_mb,
-        )
     except Exception:
-        pass
+        return
+    _trazar(
+        "[paralelismo]%s workers %d->%d (min=%d max=%d) | %d img en %.1fs "
+        "= %.2f img/s, %.1f MB/s | cpu_ociosa=%.0f%% ram_libre=%.0fMB",
+        " " + etiqueta if etiqueta else "",
+        previos, nuevos, minimo, maximo,
+        medicion.completados, medicion.segundos, img_s, mb_s,
+        medicion.cpu_ociosa_pct, medicion.ram_libre_mb,
+    )
