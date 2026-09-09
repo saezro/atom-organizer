@@ -79,7 +79,7 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
       </div>
 
       {carpeta && destino === 'local' && (
-        <PanelOrganizar origen={carpeta} estadillos={estadillo.rutas} ready={ready} running={running} onRun={onRun} />
+        <PanelOrganizar origen={carpeta} estadillos={estadillo.rutas} inspeccion={elegida} ready={ready} running={running} onRun={onRun} />
       )}
 
       {carpeta && (destino === 'bucket' || destino === 'nube') && (
