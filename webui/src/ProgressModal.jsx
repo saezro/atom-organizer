@@ -152,14 +152,23 @@ function veredictoDetalle(r) {
 }
 
 // Resumen de rotación del run: qué se ha girado y en qué sentido.
-function rotLine(s) {
+// Cuando el criterio de yaw no manda girar NINGUNA imagen (hay plantas
+// enteras así), la línea tiene que decirlo explícitamente en vez de dejar
+// solo un "N sin girar" que se lee como si algo se hubiera girado.
+export function rotLine(s) {
   if (!s) return ''
-  const total = s.rot270 + s.rot90 + s.rot_none
+  const rot270 = s.rot270 || 0
+  const rot90 = s.rot90 || 0
+  const sinGirar = s.rot_none || 0
+  const total = rot270 + rot90 + sinGirar
   if (total === 0) return ''
+  if (rot270 === 0 && rot90 === 0) {
+    return `sin giro · ${sinGirar} ${sinGirar === 1 ? 'imagen' : 'imágenes'} tal cual`
+  }
   const parts = []
-  if (s.rot270 > 0) parts.push(`${s.rot270} giradas 270°`)
-  if (s.rot90 > 0) parts.push(`${s.rot90} giradas 90°`)
-  if (s.rot_none > 0) parts.push(`${s.rot_none} sin girar`)
+  if (rot270 > 0) parts.push(`${rot270} giradas 270°`)
+  if (rot90 > 0) parts.push(`${rot90} giradas 90°`)
+  if (sinGirar > 0) parts.push(`${sinGirar} sin girar`)
   return parts.join(' · ')
 }
 
