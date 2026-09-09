@@ -448,3 +448,35 @@ def test_el_indice_no_escribe_ninguna_imagen(tmp_path):
     # La imagen de origen tampoco se ha movido ni tocado.
     assert os.path.isfile(ruta)
     manifiesto.cerrar()
+
+
+def test_bytes_origen_es_el_tamano_real_del_fichero(tmp_path):
+    """`bytes_origen` se rellena al indexar con el tamaño REAL del fichero de
+    origen, no un valor inventado: es lo que luego suma `balance_bytes()`
+    para comparar la entrega contra lo que entró. Si el índice lo dejara a 0
+    (el default de la columna) el balance final mentiría diciendo que no
+    entró nada."""
+    _escribir_estadillo(tmp_path / "estadillo.csv", [
+        ("1", "1", "2024:06:01", "10:00:00", "10:10:00"),
+    ])
+    cfg = _cfg(tmp_path)
+    ruta = _crear_imagen(cfg.input_folder, "DJI_0001_D.JPG")
+    # `_crear_imagen` escribe un fichero vacío; le metemos contenido real
+    # para que el tamaño no coincida por casualidad con el default 0 de la
+    # columna.
+    with open(ruta, "wb") as fh:
+        fh.write(b"contenido de prueba, no vacio" * 100)
+    tamano_real = os.path.getsize(ruta)
+
+    inicio = dt.datetime(2024, 6, 1, 10, 0, 0)
+    fin = dt.datetime(2024, 6, 1, 10, 10, 0)
+    ventanas = {("2024:06:01", "10:00:00", "10:10:00"): (inicio, fin)}
+    pipeline = _PipelineDePrueba(ventanas)
+    exif = _ExifDePrueba(timestamps={ruta: dt.datetime(2024, 6, 1, 10, 5, 0)})
+    manifiesto = _manifiesto(tmp_path)
+
+    construir_indice(cfg, pipeline, exif, manifiesto, _Signal(), _Signal(), _Signal())
+
+    fila = manifiesto.todas()[0]
+    assert fila["bytes_origen"] == tamano_real
+    manifiesto.cerrar()

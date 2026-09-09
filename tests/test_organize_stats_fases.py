@@ -168,3 +168,83 @@ def test_stats_incluye_recursos_vivo_cuando_el_medidor_lo_devuelve(monkeypatch):
     stats = _de_tipo(eventos, "stats")
     assert stats, "debe haberse emitido al menos un snapshot de stats"
     assert any(p.get("recursos_vivo") == resumen_falso for p in stats)
+
+
+def test_balance_de_bytes_lee_el_manifiesto_real(tmp_path):
+    """Con un manifiesto de verdad en `<salida>/.atom_manifiesto/manifiesto.db`
+    y filas ya `hecho`, `_balance_de_bytes` debe devolver el mismo dict que
+    `Manifiesto.balance_bytes()` (entrada/salida/imágenes), no un resumen
+    aparte reinventado en `organize.py`."""
+    from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO, FilaManifiesto
+
+    carpeta_salida = tmp_path / "salida"
+    carpeta_salida.mkdir()
+    ruta_db = carpeta_salida / NOMBRE_CARPETA_MANIFIESTO / "manifiesto.db"
+    ruta_db.parent.mkdir(parents=True)
+    manifiesto = Manifiesto(ruta_db)
+    manifiesto.crear_esquema()
+    manifiesto.insertar_muchas([
+        FilaManifiesto(
+            ruta_origen="C:\\origen\\a.jpg", tipo="RGB",
+            timestamp_exif="2026-05-01T10:00:00", modelo="M3T", pb="PB1",
+            vuelo="V01", nombre_nuevo="a.jpg", angulo_giro=0, pct_recorte=None,
+            comprime=False, ruta_salida_original="C:\\salida\\a.jpg",
+            ruta_salida_crop=None, ruta_salida_tiff=None, unassigned=False,
+            bytes_origen=1500,
+        ),
+    ])
+    id_fila = manifiesto.todas()[0]["id"]
+    manifiesto.marcar_hecha(id_fila, "C:\\salida\\a.jpg:1000; C:\\salida\\b.jpg:500")
+    manifiesto.cerrar()
+
+    cfg = RenameImagesConfig(output_folder=str(carpeta_salida))
+
+    assert organize._balance_de_bytes(cfg) == {
+        "entrada": 1500, "salida": 1500, "imagenes": 1,
+    }
+
+
+def test_balance_de_bytes_none_sin_manifiesto_o_sin_output_folder(tmp_path):
+    """Dos motivos legítimos de ausencia, no un fallo: (1) la task terminó
+    pero nunca se creó `manifiesto.db` (motores viejos sin manifiesto), y
+    (2) la cfg ni siquiera tiene `output_folder` (tasks que no escriben a
+    carpeta de salida). En ambos casos el modal simplemente omite la línea."""
+    carpeta_salida = tmp_path / "salida_vacia"
+    carpeta_salida.mkdir()
+    cfg = RenameImagesConfig(output_folder=str(carpeta_salida))
+    assert organize._balance_de_bytes(cfg) is None
+
+    class _CfgSinOutputFolder:
+        pass
+
+    assert organize._balance_de_bytes(_CfgSinOutputFolder()) is None
+
+
+def test_balance_de_bytes_none_si_no_hay_filas_hechas(tmp_path):
+    """El manifiesto existe pero ninguna fila llegó a `hecho` (todas
+    pendientes/en curso/falladas): no hay nada que entregar, así que no hay
+    balance que mostrar."""
+    from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO, FilaManifiesto
+
+    carpeta_salida = tmp_path / "salida"
+    carpeta_salida.mkdir()
+    ruta_db = carpeta_salida / NOMBRE_CARPETA_MANIFIESTO / "manifiesto.db"
+    ruta_db.parent.mkdir(parents=True)
+    manifiesto = Manifiesto(ruta_db)
+    manifiesto.crear_esquema()
+    manifiesto.insertar_muchas([
+        FilaManifiesto(
+            ruta_origen="/origen/a.jpg", tipo="RGB",
+            timestamp_exif="2026-05-01T10:00:00", modelo="M3T", pb="PB1",
+            vuelo="V01", nombre_nuevo="a.jpg", angulo_giro=0, pct_recorte=None,
+            comprime=False, ruta_salida_original="/salida/a.jpg",
+            ruta_salida_crop=None, ruta_salida_tiff=None, unassigned=False,
+            bytes_origen=1500,
+        ),
+    ])
+    # Fila deja en estado "pendiente" a propósito: no se marca hecha.
+    manifiesto.cerrar()
+
+    cfg = RenameImagesConfig(output_folder=str(carpeta_salida))
+
+    assert organize._balance_de_bytes(cfg) is None
