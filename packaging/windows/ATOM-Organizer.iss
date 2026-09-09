@@ -73,10 +73,12 @@ Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 Name: "desktopicon"; Description: "Crear un acceso directo en el escritorio"; GroupDescription: "Accesos directos:"
 
 [InstallDelete]
-; Sin esto quedan assets huérfanos de la versión anterior en webui\dist\assets
-; (Vite los nombra por hash) y el instalador solo sobrescribe por nombre.
-Type: filesandordirs; Name: "{app}\webui\dist"
-Type: filesandordirs; Name: "{app}\_internal\webui\dist"
+; Solo assets\, que es donde Vite nombra por hash y el instalador, que sobrescribe
+; por nombre, dejaría huérfanos. El resto de webui\dist (index.html y compañía)
+; tiene nombre estable: se sobrescribe solo, y borrarlo obligaba a reescribirlo
+; entero en cada actualización.
+Type: filesandordirs; Name: "{app}\webui\dist\assets"
+Type: filesandordirs; Name: "{app}\_internal\webui\dist\assets"
 
 [Files]
 ; Todo el onedir de PyInstaller (incluye _internal\ con Qt, pyexiv2, programas_externos…)
