@@ -364,6 +364,15 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
     # distinguir el tercer grupo de sufijos del segundo). Ver `TIPOS_RGB`.
     comprime = bool(cfg.compress_rgb) if tipo in TIPOS_RGB else False
 
+    # El tamaño de entrada se apunta AQUÍ, con el original todavía en su
+    # sitio: cuando el run termina, ese fichero puede haberse movido y ya no
+    # habría con qué comparar la entrega. Un origen ilegible cuenta 0 en vez
+    # de tumbar el indexado entero por una estadística.
+    try:
+        bytes_origen = almacen.tamano_de(dato.ruta)
+    except Exception:
+        bytes_origen = 0
+
     return FilaManifiesto(
         ruta_origen=dato.ruta,
         tipo=tipo,
@@ -379,6 +388,7 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
         ruta_salida_crop=ruta_salida_crop,
         ruta_salida_tiff=ruta_salida_tiff,
         unassigned=unassigned,
+        bytes_origen=bytes_origen,
     )
 
 

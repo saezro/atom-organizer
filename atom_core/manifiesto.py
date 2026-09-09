@@ -43,6 +43,11 @@ CREATE TABLE IF NOT EXISTS imagenes (
     ruta_salida_crop TEXT,
     ruta_salida_tiff TEXT,
     unassigned INTEGER NOT NULL DEFAULT 0,
+    -- Tamaño del fichero de ORIGEN, en bytes, tal y como lo vio el índice.
+    -- Se guarda al indexar y no al terminar a propósito: para cuando el run
+    -- acaba, el original puede haberse movido o borrado, y entonces ya no hay
+    -- forma de saber cuánto pesaba lo que entró.
+    bytes_origen INTEGER NOT NULL DEFAULT 0,
     estado TEXT NOT NULL DEFAULT 'pendiente',
     motivo_fallo TEXT,
     verificacion TEXT
@@ -50,6 +55,26 @@ CREATE TABLE IF NOT EXISTS imagenes (
 CREATE INDEX IF NOT EXISTS idx_estado ON imagenes(estado);
 CREATE INDEX IF NOT EXISTS idx_vuelo ON imagenes(pb, vuelo);
 """
+
+
+def _sumar_verificacion(verificacion: str | None) -> int:
+    """Suma los tamaños de `"ruta:tamaño; ruta:tamaño"`, el formato que deja
+    el apply al marcar una fila hecha. Tolerante a propósito: una entrada
+    ilegible se salta en vez de tumbar el resumen final de un run que por lo
+    demás fue bien. OJO con `rsplit`: en Windows las rutas llevan `C:\\…`, y
+    partir por el PRIMER `:` daría la letra de unidad como tamaño."""
+    if not verificacion:
+        return 0
+    total = 0
+    for entrada in verificacion.split("; "):
+        ruta_y_tamano = entrada.rsplit(":", 1)
+        if len(ruta_y_tamano) != 2:
+            continue
+        try:
+            total += int(ruta_y_tamano[1])
+        except ValueError:
+            continue
+    return total
 
 
 @dataclass(frozen=True)
@@ -71,6 +96,10 @@ class FilaManifiesto:
     ruta_salida_crop: str | None
     ruta_salida_tiff: str | None
     unassigned: bool
+    # Va con default porque se añadió después: los tests y llamadores que
+    # construyen filas a mano siguen valiendo, y una fila sin tamaño suma 0
+    # al balance en vez de reventarlo.
+    bytes_origen: int = 0
 
 
 class Manifiesto:
@@ -99,7 +128,19 @@ class Manifiesto:
     def crear_esquema(self) -> None:
         conexion = self._conexion()
         conexion.executescript(_ESQUEMA)
+        self._migrar_columnas(conexion)
         conexion.commit()
+
+    def _migrar_columnas(self, conexion: sqlite3.Connection) -> None:
+        """Añade las columnas que un manifiesto de una versión anterior no
+        tiene. `CREATE TABLE IF NOT EXISTS` no toca una tabla que ya existe,
+        así que reanudar un run empezado con una versión vieja del Organizer
+        se quedaría sin las columnas nuevas y reventaría al insertar."""
+        existentes = {fila["name"] for fila in
+                      conexion.execute("PRAGMA table_info(imagenes)")}
+        for nombre, definicion in (("bytes_origen", "INTEGER NOT NULL DEFAULT 0"),):
+            if nombre not in existentes:
+                conexion.execute(f"ALTER TABLE imagenes ADD COLUMN {nombre} {definicion}")
 
     def insertar_muchas(self, filas: Iterable[FilaManifiesto]) -> int:
         nombres = [campo.name for campo in fields(FilaManifiesto)]
@@ -124,6 +165,27 @@ class Manifiesto:
         if limite is not None:
             consulta += f" LIMIT {int(limite)}"
         return list(self._conexion().execute(consulta))
+
+    def balance_bytes(self) -> dict:
+        """Cuánto entró y cuánto se entregó, en bytes, de las filas `hecho`.
+
+        NO es lo mismo que los `mb_leidos`/`mb_escritos` del medidor de
+        recursos: aquellos son el I/O de disco de toda la máquina (un mover
+        dentro del mismo disco no escribe un solo byte, y el mismo origen se
+        lee varias veces). Esto es el dato que se pregunta de verdad —
+        cuánto ocupa la entrega frente al material de partida—, y sale de
+        tamaños ya grabados al escribir cada fichero: cero I/O extra, y en
+        `gs://…` cero llamadas al bucket.
+        """
+        entrada = 0
+        salida = 0
+        imagenes = 0
+        for fila in self._conexion().execute(
+                "SELECT bytes_origen, verificacion FROM imagenes WHERE estado = 'hecho'"):
+            imagenes += 1
+            entrada += fila["bytes_origen"] or 0
+            salida += _sumar_verificacion(fila["verificacion"])
+        return {"entrada": entrada, "salida": salida, "imagenes": imagenes}
 
     def marcar_en_curso(self, id_fila: int) -> None:
         self._actualizar(id_fila, estado="en_curso")
