@@ -277,3 +277,105 @@ def test_techo_por_ram_libre_no_pasa_del_maximo_estatico(monkeypatch):
         controlador.revisar()
 
     assert controlador.trabajadores <= 6
+
+
+# --- tope_hdd: capar RGB en disco mecánico ---------------------------------
+
+
+def test_tope_hdd_capa_aunque_el_rendimiento_pida_subir():
+    """Con `tope_hdd=3` y disco HDD, aunque las ventanas simulen CPU ociosa
+    alta (regla 5, la que interpretaba erróneamente el 47% de espera a disco
+    como margen libre) `trabajadores` nunca debe superar el tope."""
+    reloj = _RelojFalso()
+    controlador = ControladorAdaptativo(
+        minimo=1, maximo=16, ventana_segundos=5.0, mb_por_worker=500.0,
+        reloj=reloj, lector_recursos=lambda: (60.0, 9000.0), arranque=7,
+        tope_hdd=3, proveedor_tipo_disco=lambda: "HDD",
+    )
+    assert controlador.trabajadores == 3
+
+    for _ in range(4):
+        reloj.avanzar(6.0)
+        for _ in range(50):
+            controlador.registrar(mb=5.0)
+        controlador.revisar()
+
+    assert controlador.trabajadores <= 3
+
+
+def test_tope_hdd_no_afecta_si_el_disco_es_ssd():
+    """Con disco SSD (o desconocido) el comportamiento debe ser IDÉNTICO al
+    de siempre: sigue subiendo por encima del tope de HDD."""
+    reloj = _RelojFalso()
+    controlador = ControladorAdaptativo(
+        minimo=1, maximo=16, ventana_segundos=5.0, mb_por_worker=500.0,
+        reloj=reloj, lector_recursos=lambda: (60.0, 9000.0), arranque=4,
+        tope_hdd=3, proveedor_tipo_disco=lambda: "SSD",
+    )
+    for _ in range(3):
+        reloj.avanzar(6.0)
+        for _ in range(50):
+            controlador.registrar(mb=5.0)
+        controlador.revisar()
+
+    assert controlador.trabajadores > 3
+
+
+def test_tope_hdd_no_afecta_si_el_proveedor_devuelve_none():
+    """Mientras la sonda todavía no ha terminado (`None`), no hay dato con el
+    que capar: se comporta igual que sin `tope_hdd`."""
+    reloj = _RelojFalso()
+    controlador = ControladorAdaptativo(
+        minimo=1, maximo=16, ventana_segundos=5.0, mb_por_worker=500.0,
+        reloj=reloj, lector_recursos=lambda: (60.0, 9000.0), arranque=4,
+        tope_hdd=3, proveedor_tipo_disco=lambda: None,
+    )
+    for _ in range(3):
+        reloj.avanzar(6.0)
+        for _ in range(50):
+            controlador.registrar(mb=5.0)
+        controlador.revisar()
+
+    assert controlador.trabajadores > 3
+
+
+def test_sin_tope_hdd_comportamiento_idéntico_al_actual():
+    """`tope_hdd=None` (el default) no debe alterar nada, ni siquiera con un
+    proveedor que dijera HDD: es el camino de las térmicas y de cualquier
+    controlador creado antes de este cambio."""
+    reloj = _RelojFalso()
+    controlador = ControladorAdaptativo(
+        minimo=1, maximo=16, ventana_segundos=5.0, mb_por_worker=500.0,
+        reloj=reloj, lector_recursos=lambda: (60.0, 9000.0), arranque=4,
+        proveedor_tipo_disco=lambda: "HDD",
+    )
+    for _ in range(3):
+        reloj.avanzar(6.0)
+        for _ in range(50):
+            controlador.registrar(mb=5.0)
+        controlador.revisar()
+
+    assert controlador.trabajadores > 3
+
+
+def test_tope_hdd_proveedor_que_lanza_no_rompe_ni_capa():
+    """Un proveedor roto nunca puede tumbar la fase (regla general de este
+    módulo): se degrada a "sin dato" y no capa, igual que el resto de redes
+    de seguridad de este controlador."""
+    reloj = _RelojFalso()
+
+    def _proveedor_que_revienta():
+        raise RuntimeError("proveedor de tipo de disco roto (simulado)")
+
+    controlador = ControladorAdaptativo(
+        minimo=1, maximo=16, ventana_segundos=5.0, mb_por_worker=500.0,
+        reloj=reloj, lector_recursos=lambda: (60.0, 9000.0), arranque=4,
+        tope_hdd=3, proveedor_tipo_disco=_proveedor_que_revienta,
+    )
+    for _ in range(3):
+        reloj.avanzar(6.0)
+        for _ in range(50):
+            controlador.registrar(mb=5.0)
+        controlador.revisar()
+
+    assert controlador.trabajadores > 3

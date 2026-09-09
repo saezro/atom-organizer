@@ -14,6 +14,7 @@ function renderModal(props = {}) {
       detail={[]}
       finished={null}
       recursosTotales={null}
+      maquina={null}
       onClose={() => {}}
       {...props}
     />
@@ -80,5 +81,81 @@ describe('ProgressModal — veredicto de cuello de botella del run', () => {
     })
 
     expect(screen.queryByText(/Cuello de botella/)).toBeNull()
+  })
+})
+
+describe('ProgressModal — sonda inicial de la máquina', () => {
+  it('pinta el texto de la sonda', () => {
+    renderModal({
+      maquina: {
+        disco_origen: { tipo: 'HDD', modelo: 'X', unidad: 'C:' },
+        disco_destino: { tipo: 'SSD', modelo: 'Y', unidad: 'D:' },
+        mismo_disco: false,
+        nucleos: 8,
+        ram_total_gb: 16,
+        ram_libre_gb: 4,
+        cpu_ocupada_pct: 30,
+        maquina_ocupada: false,
+        texto: 'Origen HDD · Destino SSD · 8 núcleos',
+      },
+    })
+
+    expect(screen.getByText('Origen HDD · Destino SSD · 8 núcleos')).toBeTruthy()
+  })
+})
+
+describe('ProgressModal — veredicto EN VIVO', () => {
+  it('veredicto "disco" en vivo muestra el aviso con cifras mientras el run no ha terminado', () => {
+    renderModal({
+      finished: null,
+      stats: {
+        recursos_vivo: {
+          mb_por_segundo: 36.4,
+          cpu_pct: 47,
+          nucleos: 8,
+          tipo_disco: 'HDD',
+          veredicto: 'disco',
+        },
+      },
+    })
+
+    expect(
+      screen.getByText('⚠ El disco es el cuello de botella — 36,4 MB/s (HDD)')
+    ).toBeTruthy()
+  })
+
+  it('no aparece el aviso en vivo si recursos_vivo es null', () => {
+    renderModal({
+      finished: null,
+      stats: { recursos_vivo: null },
+    })
+
+    expect(screen.queryByText(/cuello de botella/i)).toBeNull()
+  })
+
+  it('el resumen final sigue funcionando aunque haya recursos_vivo (run ya terminado)', () => {
+    renderModal({
+      finished: { ok: true },
+      stats: {
+        recursos_vivo: {
+          mb_por_segundo: 36.4,
+          cpu_pct: 47,
+          nucleos: 8,
+          tipo_disco: 'HDD',
+          veredicto: 'disco',
+        },
+      },
+      recursosTotales: {
+        mb_leidos: 1200,
+        mb_escritos: 3400,
+        mb_por_segundo: 48,
+        cpu_pct: 21,
+        nucleos: 8,
+        veredicto: 'disco',
+      },
+    })
+
+    expect(screen.getByText('⚠ Cuello de botella: disco')).toBeTruthy()
+    expect(screen.queryByText(/El disco es el cuello de botella/)).toBeNull()
   })
 })

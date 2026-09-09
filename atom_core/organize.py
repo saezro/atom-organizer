@@ -44,8 +44,10 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import threading
 import re
 import sys
+import time
 import traceback
 import typing
 from datetime import datetime
@@ -60,6 +62,11 @@ from atom_core.apply import STATS_APPLY_PREFIX
 from atom_core.indice import STATS_INDICE_PREFIX
 from atom_core.progress_stats import StatsTracker
 from atom_core.medicion_recursos import MedidorRecursos
+from atom_core.diagnostico_maquina import (
+    olvidar_tipo_disco_origen,
+    registrar_tipo_disco_origen,
+    sonda_inicial,
+)
 from atom_core.phases import PipelinePhasesMixin
 from atom_core.sharding import ETAPAS, normalizar_shard
 from atom_core.manifiesto import NOMBRE_CARPETA_MANIFIESTO
@@ -453,12 +460,21 @@ def run_task(
                     # (rot270/rot90/...) y un KeyError aquí (aunque se traga en
                     # el `except` de fuera) dejaría el tee-log mudo para ellos.
                     if "img_por_segundo" in payload or "eta_segundos" in payload:
+                        # Veredicto en vivo (disco/cpu/mixto) si el medidor ya
+                        # tiene muestras suficientes: se anexa como sufijo para
+                        # no tocar el formato de la línea para quien no lo tenga
+                        # (`recursos_vivo` puede faltar o venir `None`).
+                        _recursos = payload.get("recursos_vivo") or {}
+                        _veredicto = _recursos.get("veredicto")
+                        _cuello = (f" · cuello: {_veredicto} ({_recursos.get('mb_por_segundo', '?')} MB/s)"
+                                   if _veredicto else "")
                         _run_log.write(
-                            "[stats] {fase}: {done}/{total} · {ips} img/s · ETA {eta}s\n"
+                            "[stats] {fase}: {done}/{total} · {ips} img/s · ETA {eta}s{cuello}\n"
                             .format(fase=payload.get("fase", "?"),
                                     done=payload.get("done", "?"), total=payload.get("total", "?"),
                                     ips=payload.get("img_por_segundo", "?"),
-                                    eta=payload.get("eta_segundos", "?")))
+                                    eta=payload.get("eta_segundos", "?"),
+                                    cuello=_cuello))
                     elif "vuelos" in payload:
                         _run_log.write(
                             "[stats] Índice: {total} img (RGB {rgb} / RGB_Extra {rgb_extra} / "
@@ -718,6 +734,52 @@ def run_task(
         medidor = MedidorRecursos()
         medidor.iniciar()
 
+        # Sonda de máquina: se lanza UNA vez al arrancar el run, antes de mover
+        # ninguna imagen, para que el usuario sepa desde el minuto 0 si el
+        # origen/destino son disco mecánico o la máquina ya está ocupada. Es
+        # puramente informativa (`sonda_inicial` nunca lanza), pero la
+        # envolvemos en su propio try/except: un fallo AQUÍ (path raro,
+        # psutil ausente, lo que sea) jamás puede tumbar el organizado.
+        def _sonda_en_segundo_plano() -> None:
+            """Sonda de hardware, fuera del hilo del run.
+
+            En Windows consultar el tipo de disco pasa por PowerShell, que con un
+            perfil corporativo o un antivirus interceptando `powershell.exe` puede
+            tardar varios segundos por unidad. Hacerlo en línea dejaba la UI muda
+            antes de la primera imagen y parecía un cuelgue, así que va en un hilo
+            aparte: cuando termina emite `maquina` y configura el medidor. Los
+            primeros segundos de veredicto salen sin tipo de disco, que es
+            exactamente el comportamiento que había antes de la sonda.
+            """
+            try:
+                _origen_sonda = getattr(cfg, "input_folder", None) or params.get("origen") \
+                    or params.get("input_folder") or ""
+                _destino_sonda = getattr(cfg, "output_folder", None) or params.get("destino") \
+                    or params.get("output_folder") or ""
+                # El destino de un run nuevo normalmente todavía no existe: subimos
+                # a la carpeta padre más cercana que sí exista, porque es la que de
+                # verdad está en el disco que vamos a escribir.
+                _destino_dir = str(_destino_sonda)
+                while _destino_dir and not os.path.isdir(_destino_dir):
+                    _padre = os.path.dirname(_destino_dir.rstrip("/\\"))
+                    if not _padre or _padre == _destino_dir:
+                        break
+                    _destino_dir = _padre
+                _sonda = sonda_inicial(_origen_sonda, _destino_dir)
+                emit("maquina", _sonda)
+                medidor.configurar_disco(_sonda["disco_origen"]["tipo"])
+                registrar_tipo_disco_origen(_sonda["disco_origen"]["tipo"])
+                emit("log", _sonda["texto"])
+            except Exception:
+                pass
+
+        # No arrastrar el disco de un run anterior mientras esta sonda nueva
+        # todavía está corriendo (ver `atom_core.diagnostico_maquina`).
+        olvidar_tipo_disco_origen()
+        _hilo_sonda = threading.Thread(target=_sonda_en_segundo_plano,
+                                       name="sonda-maquina", daemon=True)
+        _hilo_sonda.start()
+
         def _scan_errors(text: str) -> None:
             m = _ERR_COUNT_RE.search(text)
             if m:
@@ -751,8 +813,29 @@ def run_task(
         # Se derivan del texto que el pipeline ya emite; ver progress_stats.
         stats = StatsTracker()
 
+        # Caché del veredicto en vivo: `resumen_parcial()` recorre el buffer de
+        # muestras y hace media/deltas, y `_emit_stats` se llama muy a menudo
+        # (cada `IMAGE_EMIT_EVERY` imágenes, que en una fase rápida son varias
+        # veces por segundo). Sin throttle estaríamos recalculando el mismo
+        # veredicto decenas de veces por segundo para nada: la ventana de
+        # `resumen_parcial` ya es de 15s por defecto, así que refrescarlo cada
+        # 5s es más que suficiente para que se vea "en vivo" sin machacar CPU.
+        _recursos_vivo_cache = {"ts": 0.0, "valor": None}
+        _RECURSOS_VIVO_INTERVALO_S = 5.0
+
+        def _recursos_vivo() -> Optional[dict]:
+            ahora = time.monotonic()
+            if ahora - _recursos_vivo_cache["ts"] >= _RECURSOS_VIVO_INTERVALO_S:
+                try:
+                    _recursos_vivo_cache["valor"] = medidor.resumen_parcial()
+                except Exception:
+                    _recursos_vivo_cache["valor"] = None
+                _recursos_vivo_cache["ts"] = ahora
+            return _recursos_vivo_cache["valor"]
+
         def _emit_stats(final: bool = False) -> None:
             snapshot = stats.snapshot()
+            snapshot = {**snapshot, "recursos_vivo": _recursos_vivo()}
             if final:
                 # `RunReporter.progreso` descarta los latidos que caen dentro de
                 # `intervalo_latido`, y el último snapshot de un run cae casi
@@ -916,6 +999,14 @@ def run_task(
         emit("error", f"{type(exc).__name__}: {exc}")
         emit("log", traceback.format_exc())
     finally:
+        # Antes de cerrar, esperamos a la sonda: es un hilo corto y así nunca
+        # emite `maquina` DESPUÉS del `done` del run (y el test no depende de
+        # una carrera). Si por lo que sea se atasca, el `daemon=True` evita que
+        # deje la app colgada al salir.
+        try:
+            _hilo_sonda.join(timeout=15.0)
+        except Exception:
+            pass
         # El medidor puede no existir si el fallo fue antes de crearlo.
         try:
             medidor.detener()
