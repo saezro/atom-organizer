@@ -341,8 +341,18 @@ def _active_split_phases(cfg, etapa: str = "todo") -> list:
 
 
 def _derive_plant(params: dict) -> str:
-    """Nombre de planta para el título del modal. Cas (2026-07-22): tomarlo del
-    ESTADILLO (basename sin extensión); si no hay estadillo, del destino."""
+    """Nombre de planta para el título del modal. Orden de preferencia:
+    1) `inspeccion`: el nombre legible de la inspección que el operador ya
+       eligió en la pantalla de Trabajo (`elegida.etiqueta`/`prefijo`) — es lo
+       que reconoce, y coincide con lo que va a subir/organizar. Se usa TAL
+       CUAL (no es una ruta: no se le quita extensión ni se hace basename).
+    2) ESTADILLO (basename sin extensión), decisión original de Cas
+       (2026-07-22): sigue de respaldo para lanzamientos que no pasan por esa
+       pantalla de inspección (p.ej. el modo kiosco).
+    3) destino, si no hay ninguno de los dos anteriores."""
+    inspeccion = (params.get("inspeccion") or "").strip()
+    if inspeccion:
+        return inspeccion
     estad = (params.get("estadillo") or params.get("estad") or "").strip()
     if estad:
         return os.path.splitext(os.path.basename(estad))[0]
