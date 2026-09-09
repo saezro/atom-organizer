@@ -347,7 +347,12 @@ def test_pct_recorte_sale_del_modelo(tmp_path):
     modelo (vía `get_percentage_by_model`); con `False`, el manual de la
     interfaz. Confundir los dos deja recortes con el % de OTRO modelo,
     silenciosamente, porque `get_percentage_by_model` nunca revienta si el
-    modelo no está en el diccionario a mano del test."""
+    modelo no está en el diccionario a mano del test.
+
+    `pct_recorte` se guarda como FRACCIÓN 0-1 (80% -> 0.80): es lo que
+    `ImageProcessConfig.crop_centered_pct` multiplica por el ancho y el alto.
+    Guardarlo como porcentaje crudo pedía recortes de 8000*80 px y Pillow
+    abortaba con `DecompressionBombError`."""
     _escribir_estadillo(tmp_path / "estadillo.csv", [
         ("1", "1", "2024:06:01", "10:00:00", "10:10:00"),
     ])
@@ -364,7 +369,7 @@ def test_pct_recorte_sale_del_modelo(tmp_path):
     manifiesto_auto = _manifiesto(tmp_path, nombre="auto.db")
     construir_indice(cfg_auto, pipeline_auto, exif_auto, manifiesto_auto, _Signal(), _Signal(), _Signal())
     fila_auto = manifiesto_auto.todas()[0]
-    assert fila_auto["pct_recorte"] == 80
+    assert fila_auto["pct_recorte"] == 0.80
     manifiesto_auto.cerrar()
 
     # --- modo manual: el % sale de la interfaz, ignora el diccionario ---
@@ -375,7 +380,7 @@ def test_pct_recorte_sale_del_modelo(tmp_path):
     manifiesto_manual = _manifiesto(tmp_path, nombre="manual.db")
     construir_indice(cfg_manual, pipeline_manual, exif_manual, manifiesto_manual, _Signal(), _Signal(), _Signal())
     fila_manual = manifiesto_manual.todas()[0]
-    assert fila_manual["pct_recorte"] == 35.0
+    assert fila_manual["pct_recorte"] == 0.35
     manifiesto_manual.cerrar()
 
 
