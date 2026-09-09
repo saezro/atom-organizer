@@ -7,7 +7,7 @@ import PasoCarpeta from './PasoCarpeta'
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
 const ADV_FIELDS = SPLIT_ADVANCED.flatMap((s) => s.fields)
 
-export default function PanelOrganizar({ origen, estadillos, ready, running, onRun }) {
+export default function PanelOrganizar({ origen, estadillos, inspeccion, ready, running, onRun }) {
   const [destino, setDestino] = useState('')
   const [destinoFull, setDestinoFull] = useState(null) // {count} si la salida no está vacía
   const [rename, setRename] = useState(true)
@@ -66,7 +66,12 @@ export default function PanelOrganizar({ origen, estadillos, ready, running, onR
 
   function handleRun() {
     const advanced = buildParams(ADV_FIELDS, adv)
-    onRun('split_images', { origen, destino, estadillo: estadillos, rename }, advanced)
+    // Nombre de la inspección ya elegida en el paso anterior, para que el
+    // modal de progreso muestre eso (lo que el operador reconoce) en vez del
+    // fichero de estadillo. `_derive_plant` lo prioriza en el backend; si no
+    // llega (p.ej. "Nueva inspección"), cae solo al estadillo como siempre.
+    const nombreInspeccion = inspeccion?.etiqueta || inspeccion?.prefijo || ''
+    onRun('split_images', { origen, destino, estadillo: estadillos, rename, inspeccion: nombreInspeccion }, advanced)
   }
 
   return (

@@ -248,3 +248,24 @@ def test_balance_de_bytes_none_si_no_hay_filas_hechas(tmp_path):
     cfg = RenameImagesConfig(output_folder=str(carpeta_salida))
 
     assert organize._balance_de_bytes(cfg) is None
+
+
+class TestDerivePlant:
+    """Nombre de planta del modal: prioridad inspeccion > estadillo > destino
+    (ver comentario en `organize._derive_plant`)."""
+
+    def test_con_inspeccion_gana_sobre_estadillo_y_destino(self):
+        params = {
+            "inspeccion": "KL19 - Inspección térmica agosto",
+            "estadillo": "/vuelos/2026_08_19_estadillo_KL19.csv",
+            "destino": "/salida/KL19",
+        }
+        assert organize._derive_plant(params) == "KL19 - Inspección térmica agosto"
+
+    def test_sin_inspeccion_cae_al_estadillo_sin_extension(self):
+        params = {"estadillo": "/vuelos/2026_08_19_estadillo_KL19.csv", "destino": "/salida/KL19"}
+        assert organize._derive_plant(params) == "2026_08_19_estadillo_KL19"
+
+    def test_sin_inspeccion_ni_estadillo_cae_al_destino(self):
+        params = {"destino": "/salida/KL19"}
+        assert organize._derive_plant(params) == "KL19"

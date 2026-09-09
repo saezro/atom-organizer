@@ -79,4 +79,28 @@ describe('PanelOrganizar', () => {
       expect.anything(),
     )
   })
+
+  it('manda el nombre de la inspección ya elegida en los params', async () => {
+    api.pickFolder.mockResolvedValue('/datos/final')
+    const onRun = vi.fn()
+    const inspeccion = { id: 42, prefijo: 'KL19', etiqueta: 'KL19 - Inspección térmica agosto' }
+    render(
+      <PanelOrganizar
+        origen="/datos/vuelo"
+        estadillos={['/e.xlsx']}
+        inspeccion={inspeccion}
+        ready
+        running={false}
+        onRun={onRun}
+      />,
+    )
+    fireEvent.click(screen.getAllByText(/Elegir/i)[0])
+    await waitFor(() => expect(screen.getByDisplayValue('/datos/final')).toBeTruthy())
+    fireEvent.click(screen.getByText(/Ejecutar/i))
+    expect(onRun).toHaveBeenCalledWith(
+      'split_images',
+      expect.objectContaining({ inspeccion: 'KL19 - Inspección térmica agosto' }),
+      expect.anything(),
+    )
+  })
 })
