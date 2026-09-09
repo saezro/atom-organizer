@@ -1112,10 +1112,15 @@ class PipelinePhasesMixin:
             # del run entero, no por fase (ver `apply._ContadorRotacion`).
             contador_rotacion = _ContadorRotacion()
 
+            # `tope_hdd` solo se pasa aquí, en RGB: es la fase que LEE en
+            # masa y secuencial del disco de origen, donde más workers en un
+            # HDD provoca seek thrashing (ver `paralelismo.TOPE_WORKERS_HDD`).
+            # Térmicas es I/O a procesos externos (dji_irp/exiftool), no
+            # lectura masiva del disco, así que no le aplica el mismo tope.
             aplicar_rgb(manifiesto, cfg, pipeline, progress_callback, progress_bar,
                        progress_summarize,
                        controlador=paralelismo_mod.ControladorAdaptativo(
-                           etiqueta="RGB"),
+                           etiqueta="RGB", tope_hdd=paralelismo_mod.TOPE_WORKERS_HDD),
                        contador_rotacion=contador_rotacion)
             tiempos["RGB"] = time.monotonic() - marca
             marca = time.monotonic()

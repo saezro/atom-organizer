@@ -650,6 +650,24 @@ select.glass-input option {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+/* Sonda inicial de la máquina (disco/CPU/RAM), antes de arrancar el run. */
+.pm-maquina {
+  margin: 0 0 0.6rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.pm-maquina-ocupada {
+  color: #fbbf24;
+}
+/* Veredicto de cuello de botella EN VIVO: mismo tono que el del run cerrado. */
+.pm-veredicto-vivo {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #fbbf24;
+  font-variant-numeric: tabular-nums;
+}
 .pm-detail {
   border-top: 0.0625rem solid rgba(255, 255, 255, 0.1);
   padding-top: 0.8rem;
