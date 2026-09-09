@@ -4081,14 +4081,37 @@ class RGBCropping:
                 progress_callback.emit(".") # Por cada imagen que se va a procesar, se emite un "." a la ventana de log.
                 progress_bar.emit(p) # Por cada imagen que se va a procesar, se emite el procentaje de imágenes procesadas para mostrar en la barra de progreso.
 
+            # PRE-PASE: resolver el modelo EXIF de cada imagen. Es solo lectura de
+            # cabecera (no decodifica el JPEG), pero secuencial son 1012 open()+
+            # exifread en un único hilo ANTES de que arranque el pool de recorte,
+            # con los otros núcleos parados. Se paraleliza con HILOS —es I/O de
+            # fichero, que libera el GIL— y se conserva el ORDEN de `images`
+            # (`executor.map`), porque la decisión por imagen (contadores de error,
+            # progreso, `valid_items`) sigue en el bucle secuencial de abajo: así
+            # el resultado es idéntico, solo llega antes.
+            modelos = {}
+            if percentage_cropping_auto:
+                def _leer_modelo(image):
+                    ruta_imagen = almacen.unir(input_folder, image)
+                    try:
+                        # get_model necesita una ruta de fichero REAL (abre con open() a
+                        # pelo): sobre gs:// hay que bajarla primero a un temporal local.
+                        with almacen.abrir_para_lectura(ruta_imagen) as ruta_local:
+                            return self.exif_management_obj.get_model(str(ruta_local), progress_callback)
+                    except Exception:
+                        # Mismo contrato que la lectura secuencial: sin modelo -> la
+                        # imagen cae al contador de error en el bucle de abajo.
+                        return None
+
+                _hilos = min(8, (os.cpu_count() or 4) * 2, max(1, len(images)))
+                with ThreadPoolExecutor(max_workers=_hilos) as _ex:
+                    modelos = dict(zip(images, _ex.map(_leer_modelo, images)))
+
             valid_items = []  # (image, crop_centered_pct fraccional 0-1) de las imágenes con porcentaje resuelto correctamente.
             for image in images:
                 if percentage_cropping_auto:
                     ruta_imagen = almacen.unir(input_folder, image)
-                    # get_model necesita una ruta de fichero REAL (abre con open() a pelo):
-                    # sobre gs:// hay que bajarla primero a un temporal local.
-                    with almacen.abrir_para_lectura(ruta_imagen) as ruta_local:
-                        model = self.exif_management_obj.get_model(str(ruta_local), progress_callback)
+                    model = modelos.get(image)
                     if model is None:
                         _advance_progress()
                         self.error_rgb_cropping += 1
