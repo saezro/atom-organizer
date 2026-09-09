@@ -323,7 +323,11 @@ class _CollectingProgress:
         self.messages = []
 
     def emit(self, payload=None, *args, **kwargs) -> None:
-        if payload is not None:
+        # `if payload is not None` dejaba pasar el entero 0 (progreso numérico de Qt,
+        # que aquí no se usa) y cualquier otro no-string; inundaba el log crudo del
+        # modal con líneas "0". Solo interesa texto real; se conservan los "..."
+        # porque `organize.py::_on_log` los usa para contar imágenes procesadas.
+        if isinstance(payload, str) and payload.strip():
             self.messages.append(payload)
 
 
