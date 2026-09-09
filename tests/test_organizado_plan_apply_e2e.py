@@ -19,8 +19,8 @@ Dobles a mano (`_HostDePrueba`, `_SignalFalsa`, `_ConfigObjFalso`) y
 `tests/test_etapas_pipeline.py`.
 
 Lo que estos tests sujetan:
-1. El árbol de salida final es el que el equipo espera: `PBx_Vy/RGB`,
-   `PBx_Vy/TERMICA`, `SIN_ORDENAR` (lo que no cae en ningún vuelo del
+1. El árbol de salida final es el legacy que el equipo espera: `RGB/PBx/PBx_Vy`,
+   `TERMICA/PBx/PBx_Vy`, `SIN_ORDENAR` (lo que no cae en ningún vuelo del
    estadillo) y el CSV de criterio de giro en `CSVs/_criterio/`.
 2. Las 4 fases nuevas emiten su prefijo `---> SUBPROCESO:` con el nombre
    EXACTO que espera `atom_core.organize._SPLIT_PHASES`: es lo que
@@ -216,14 +216,14 @@ def test_organizado_completo_produce_el_arbol_esperado(_inspeccion, logger, monk
     _correr(host, cfg, monkeypatch)
 
     destino = cfg.output_folder
-    assert os.path.isdir(os.path.join(destino, "PB1_V1", "RGB"))
-    assert os.path.isdir(os.path.join(destino, "PB1_V1", "TERMICA"))
+    assert os.path.isdir(os.path.join(destino, "RGB", "PB1", "PB1_V1"))
+    assert os.path.isdir(os.path.join(destino, "TERMICA", "PB1", "PB1_V1"))
     assert os.path.isdir(os.path.join(destino, "SIN_ORDENAR"))
     assert os.path.isdir(os.path.join(destino, "CSVs", "_criterio"))
 
-    assert len(os.listdir(os.path.join(destino, "PB1_V1", "RGB"))) == 2
+    assert len(os.listdir(os.path.join(destino, "RGB", "PB1", "PB1_V1"))) == 2
     # JPG + TIF por cada térmica del vuelo (2 térmicas -> 2 JPG + 2 TIF).
-    assert len(os.listdir(os.path.join(destino, "PB1_V1", "TERMICA"))) == 4
+    assert len(os.listdir(os.path.join(destino, "TERMICA", "PB1", "PB1_V1"))) == 4
     # El nombre del CSV de criterio usa `pb_vuelo` tal cual (`cierre._emitir_csv_criterio`),
     # NO el nombre de la carpeta del vuelo (`PBx_Vy`, que lleva el prefijo "PB"/"V").
     assert os.path.isfile(os.path.join(destino, "CSVs", "_criterio", "1_1_Videofiles.csv"))
@@ -304,7 +304,7 @@ def test_rgb_extra_cuenta_como_rgb_no_se_queda_pendiente(tmp_path, make_dji_jpeg
     cfg = _cfg(tmp_path, end_rgb_extra_files="_E", end_rgb_files="_D")
     pcb, _pbar, _psum = _correr(host, cfg, monkeypatch)
 
-    ruta_rgb_extra = os.path.join(cfg.output_folder, "PB1_V1", "RGB_Extra")
+    ruta_rgb_extra = os.path.join(cfg.output_folder, "RGB_Extra", "PB1", "PB1_V1")
     assert os.path.isdir(ruta_rgb_extra), "RGB_Extra no se creó: la fila no se procesó"
     assert os.listdir(ruta_rgb_extra), "RGB_Extra está vacía: la fila se quedó sin escribir"
 

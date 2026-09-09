@@ -244,6 +244,15 @@ def _procesar_y_guardar_imagen(img: Image.Image, cfg: ImageProcessConfig) -> Non
         if cfg.crop_box is not None:
             img = img.crop(cfg.crop_box)
         elif cfg.crop_centered_pct is not None:
+            # Fracción 0-1, NO porcentaje: con un porcentaje crudo el recorte
+            # se dispara a miles de veces el tamaño real y Pillow aborta con
+            # `DecompressionBombError` (el spinbox de la UI llega a 200).
+            if not 0 < cfg.crop_centered_pct <= 1:
+                raise ValueError(
+                    f"crop_centered_pct debe ser una fracción en (0, 1]; "
+                    f"recibido {cfg.crop_centered_pct!r}. Un porcentaje (p. ej. 70) "
+                    f"hay que dividirlo entre 100 antes de llegar aquí."
+                )
             w, h = img.size
             cw = int(w * cfg.crop_centered_pct)
             ch = int(h * cfg.crop_centered_pct)

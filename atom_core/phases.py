@@ -34,6 +34,7 @@ import external_tools as config
 import pipeline
 import utils
 from atom_core import cierre as cierre_mod
+from atom_core import estadillo as estadillo_mod
 from atom_core import indice as indice_mod
 from atom_core import paralelismo as paralelismo_mod
 from atom_core import sharding
@@ -43,6 +44,8 @@ from atom_core.almacen import (
     existe_ruta,
     listar_ficheros,
     listar_subcarpetas,
+    publicar_en,
+    tamano_de,
     unir,
 )
 from atom_core.apply import (aplicar_rgb, aplicar_termicas, _formatear_duracion,
@@ -94,6 +97,81 @@ def _primera_imagen_almacen(carpeta: str) -> "str | None":
         if encontrada:
             return encontrada
     return None
+
+
+def _mismo_contenido(origen: str, destino: str) -> bool:
+    """¿Son `origen` y `destino` el mismo fichero byte a byte?
+
+    Compara primero el tamaño (barato, y en `gs://` evita bajarse el objeto
+    cuando ya se sabe que difieren) y solo si coincide lee ambos. Los
+    estadillos son CSVs pequeños, así que leerlos enteros no es problema.
+    """
+    try:
+        if tamano_de(origen) != tamano_de(destino):
+            return False
+        with abrir_para_lectura(origen) as ruta_origen, \
+                abrir_para_lectura(destino) as ruta_destino:
+            with open(ruta_origen, "rb") as f_origen, open(ruta_destino, "rb") as f_destino:
+                return f_origen.read() == f_destino.read()
+    except OSError:
+        # Si no se puede comparar (permisos, objeto recién borrado…), se trata
+        # como "distinto": el flujo cae en el sufijo `_1`, que es el
+        # comportamiento del legado y nunca pierde datos.
+        return False
+
+
+def _copiar_estadillos_a_salida(cfg, logger) -> None:
+    """Deja el/los estadillo(s) de `cfg.estad` en `<output_folder>/ESTADILLOS/`.
+
+    Réplica del comportamiento del motor viejo (`pipeline.py:1203-1253`), pero
+    unificada: ahí había dos ramas (GCS con `almacen.publicar_en` / local con
+    `shutil.copy2`) porque `pipeline.py` no tenía todavía `almacen.unir` /
+    `almacen.existe_ruta` / `almacen.publicar_en` uniformes para ambos
+    esquemas. Aquí esas tres funciones YA resuelven local y `gs://` por igual,
+    así que basta un solo camino.
+
+    La carpeta `ESTADILLOS/` se crea SIEMPRE, incluso sin estadillo
+    configurado (igual que `prepare_output_folder` en el legacy): en local con
+    `os.makedirs`; en `gs://` no hace falta -no hay directorios reales, el
+    prefijo aparece solo al publicar el primer objeto-.
+
+    Resuelve colisiones de nombre igual que el legacy: si ya hay un fichero
+    con ese nombre en destino, añade un sufijo `_1`, `_2`… antes de la
+    extensión.
+    """
+    output_estadillos = unir(cfg.output_folder, "ESTADILLOS")
+    salida_es_gcs = es_uri_gcs(cfg.output_folder)
+    if not salida_es_gcs:
+        os.makedirs(output_estadillos, exist_ok=True)
+
+    rutas_estadillo = estadillo_mod.desempaquetar_rutas(cfg.estad)
+    for ruta in rutas_estadillo:
+        nombre_estadillo = os.path.basename(ruta)
+        dest_estadillo = unir(output_estadillos, nombre_estadillo)
+
+        # Origen y destino locales apuntando al mismo fichero (p. ej. el
+        # estadillo ya vive dentro de la propia carpeta de salida): no hay
+        # nada que copiar, igual que comprobaba el legacy con `os.path.abspath`.
+        if not salida_es_gcs and not es_uri_gcs(ruta) and \
+                os.path.normcase(os.path.abspath(ruta)) == os.path.normcase(os.path.abspath(dest_estadillo)):
+            logger.info("Los estadillos son iguales. No se copia nada.")
+            continue
+
+        nombre, extension = os.path.splitext(nombre_estadillo)
+        counter = 1
+        while existe_ruta(dest_estadillo):
+            # Idempotencia: si lo que ya hay en destino ES este mismo estadillo
+            # (re-run sobre la misma carpeta de salida), no se copia ni se
+            # renombra. Sin esto, cada run añadiría un `_1`, `_2`… y el árbol
+            # de salida dejaría de ser estable entre ejecuciones.
+            if _mismo_contenido(ruta, dest_estadillo):
+                logger.info("El estadillo ya está en la salida y es idéntico. No se copia.")
+                break
+            logger.info(f"Había un estadillo con el mismo nombre. Usamos un counter - Valor: {counter}")
+            dest_estadillo = unir(output_estadillos, f"{nombre}_{counter}{extension}")
+            counter += 1
+        else:
+            publicar_en(ruta, dest_estadillo)
 
 
 class _PipelineAdaptadorPlanApply:
@@ -1011,6 +1089,8 @@ class PipelinePhasesMixin:
             # tener que instrumentar nada ni cronometrar a mano.
             tiempos: dict[str, float] = {}
             marca = time.monotonic()
+
+            _copiar_estadillos_a_salida(cfg, self.organizer_logger_obj.logger)
 
             indice_mod.construir_indice(
                 cfg, adaptador, self.split_images_obj.exif_management_obj, manifiesto,

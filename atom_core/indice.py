@@ -265,13 +265,14 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
     lim_min_270 = (-90) - subs_to_angle
 
     for (pb, vuelo), yaws in yaws_por_vuelo.items():
-        carpeta_vuelo = almacen.unir(output_folder, _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v))
+        carpeta_vuelo = almacen.unir(
+            output_folder, "TERMICA", f"PB{pb}", _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v))
         candidato_csv = almacen.unir(
-            carpeta_vuelo, "CSVs", utils.CRITERIO_DIRNAME,
+            output_folder, "CSVs", utils.CRITERIO_DIRNAME,
             f"{_nombre_carpeta_vuelo(pb, vuelo, cfg.include_v)}_Videofiles.csv")
         if almacen.existe_ruta(candidato_csv):
             angulos[(pb, vuelo)] = pipeline.read_auto_rotate_degree(
-                almacen.unir(carpeta_vuelo, "TERMICA"), progress_callback)
+                carpeta_vuelo, progress_callback)
             continue
 
         rotate_90 = sum(1 for yaw in yaws if lim_min_90 < yaw < lim_max_90)
@@ -294,7 +295,13 @@ def _pct_recorte(dato: _MetadatosImagen, tipo: str, cfg, pipeline) -> float | No
     árbol de salida salvo `TERMICA`, así que RGB_Extra se recorta igual que
     RGB). Sale de `Config.ini` vía `get_percentage_by_model` cuando el modo
     es automático; en manual, el valor de la interfaz (`cfg.crop_percentage`)
-    manda sin mirar el modelo."""
+    manda sin mirar el modelo.
+
+    Devuelve una FRACCIÓN 0-1, no un porcentaje: `ImageProcessConfig.
+    crop_centered_pct` (pipeline.py:199) multiplica directamente por el ancho
+    y el alto. Devolver aquí el porcentaje crudo (70) hacía que el recorte
+    pidiese 8000*70 x 6000*70 px y Pillow abortase con
+    `DecompressionBombError`, dejando todas las RGB en SIN_ORDENAR."""
     if tipo not in TIPOS_RGB or not cfg.cropping_rgb:
         return None
     if cfg.cropping_mode_auto:
@@ -305,8 +312,11 @@ def _pct_recorte(dato: _MetadatosImagen, tipo: str, cfg, pipeline) -> float | No
         # y no de `cfg` (`SplitImagesConfig` no lo lleva). Aquí se pide al mismo
         # `pipeline` que ya agrupa el resto de funciones reutilizadas: es quien
         # tiene que exponerlo como `pipeline.percentage_by_models`.
-        return float(pipeline.get_percentage_by_model(dato.modelo, pipeline.percentage_by_models))
-    return float(cfg.crop_percentage)
+        pct = pipeline.get_percentage_by_model(dato.modelo, pipeline.percentage_by_models)
+        if pct is None:
+            return None
+        return float(pct) / 100
+    return float(cfg.crop_percentage) / 100
 
 
 def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
@@ -333,7 +343,8 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
         pb, vuelo = ventana["pb"], ventana["vuelo"]
         angulo_giro = angulos.get((pb, vuelo), 0)
         carpeta_destino = almacen.unir(
-            cfg.output_folder, _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v), tipo)
+            cfg.output_folder, tipo, f"PB{pb}",
+            _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v))
 
     ruta_salida_original = almacen.unir(carpeta_destino, nombre_final)
 
