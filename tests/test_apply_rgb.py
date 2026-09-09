@@ -463,3 +463,56 @@ def test_stats_apply_rotacion_acumula_entre_rgb_y_termicas(tmp_path, make_dji_jp
 
     valores = contador.valores()
     assert valores == {"rot270": 2, "rot90": 1, "rot_none": 1}
+
+
+def test_una_fila_girada_solo_transpone_una_vez(tmp_path, make_dji_jpeg, monkeypatch):
+    """El transpose de una imagen de 48 MP cuesta ~0,55 s. Girar por
+    separado para el `_CROP` y para el original lo pagaba DOS veces sobre el
+    mismo decode (~20 % del ciclo de una imagen girada, tirado). Se gira una
+    vez y ambas salidas salen de la imagen ya girada."""
+    origen = tmp_path / "origen" / "DJI_0010.JPG"
+    origen.parent.mkdir()
+    make_dji_jpeg(str(origen))
+
+    transposes = []
+    transpose_real = PILImage.Image.transpose
+
+    def _transpose_que_apunta(self, method):
+        transposes.append(method)
+        return transpose_real(self, method)
+
+    monkeypatch.setattr(PILImage.Image, "transpose", _transpose_que_apunta)
+
+    fila = _fila_dict(str(origen), str(tmp_path / "salida" / "DJI_0010.JPG"),
+                      str(tmp_path / "salida" / "DJI_0010_CROP.JPG"),
+                      angulo_giro=90, pct_recorte=0.71)
+    apply._escribir_salidas_de_fila(fila, _cfg(), pipeline_real)
+
+    assert len(transposes) == 1, f"se transpuso {len(transposes)} veces, esperado 1"
+
+
+def test_el_crop_girado_es_pixel_a_pixel_el_de_antes(tmp_path, make_dji_jpeg):
+    """Invariante que autoriza el cambio de orden: el recorte centrado es
+    una fracción simétrica, así que conmuta con el giro de 90°. Recortar la
+    imagen ya girada tiene que dar EXACTAMENTE lo mismo que girar el
+    recorte de la original — si no, la entrega cambiaría de encuadre."""
+    origen = tmp_path / "origen" / "DJI_0011.JPG"
+    origen.parent.mkdir()
+    make_dji_jpeg(str(origen))
+
+    fila = _fila_dict(str(origen), str(tmp_path / "salida" / "DJI_0011.JPG"),
+                      str(tmp_path / "salida" / "DJI_0011_CROP.JPG"),
+                      angulo_giro=90, pct_recorte=0.71)
+    apply._escribir_salidas_de_fila(fila, _cfg(), pipeline_real)
+
+    # La esperada se produce con el ORDEN ANTIGUO (recortar y luego girar)
+    # y por el mismo `_procesar_y_guardar_imagen`, para que la comparación
+    # sea de píxeles y no del ruido de una recompresión JPEG distinta.
+    esperada = tmp_path / "esperada.JPG"
+    with PILImage.open(str(origen)) as bruta:
+        pipeline_real._procesar_y_guardar_imagen(bruta, pipeline_real.ImageProcessConfig(
+            output_path=str(esperada), quality=pipeline_real._ROTATION_JPEG_QUALITY,
+            crop_centered_pct=0.71, rotate_degrees=PILImage.ROTATE_270))
+
+    obtenida = tmp_path / "salida" / "DJI_0011_CROP.JPG"
+    assert obtenida.read_bytes() == esperada.read_bytes()

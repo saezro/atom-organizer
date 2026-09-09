@@ -241,6 +241,15 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
     pasamos, y sería ESE el que se cerraría. Escribirlo el último es lo que
     permite que ambas salidas compartan el mismo decode sin que la primera
     escritura cierre el fichero que necesita la segunda.
+
+    Giro UNA sola vez — de dónde sale el ahorro: el transpose de una imagen
+    de 48 MP cuesta ~0,55 s, y pasarle `rotate_degrees` a las DOS escrituras
+    lo pagaba DOS veces sobre el mismo decode. Aquí se gira una vez y ambas
+    salidas se escriben desde la imagen ya girada, sin transformación de
+    giro propia (~20 % del ciclo de una imagen girada). El recorte centrado
+    conmuta con el giro de 90°: `crop_centered_pct` es una fracción
+    simétrica, así que recortar la girada da exactamente el mismo píxel que
+    girar el recorte — solo se intercambian ancho y alto.
     """
     angulo = fila["angulo_giro"] or 0
     transpose = _transpose_para_angulo(angulo, pipeline_mod)
@@ -248,24 +257,34 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
 
     img = pipeline_mod.Image.open(fila["ruta_origen"])
     escritas: list[str] = []
+    girada = None
     try:
+        # La girada pasa a ser la base de AMBAS salidas; a partir de aquí
+        # ninguna de las dos escrituras vuelve a girar nada.
+        if transpose is not None:
+            girada = img.transpose(transpose)
+        base = girada if girada is not None else img
+
         ruta_crop = fila["ruta_salida_crop"]
         if ruta_crop:
-            _guardar_atomico(img, ruta_crop, transpose, fila["pct_recorte"], calidad,
+            _guardar_atomico(base, ruta_crop, None, fila["pct_recorte"], calidad,
                              pipeline_mod)
             escritas.append(ruta_crop)
 
         ruta_original = fila["ruta_salida_original"]
-        _guardar_atomico(img, ruta_original, transpose, None, calidad, pipeline_mod)
+        _guardar_atomico(base, ruta_original, None, None, calidad, pipeline_mod)
         escritas.append(ruta_original)
     finally:
-        # Defensivo: si el original ya cerró `img` (caso ángulo 0, ver
-        # docstring), un segundo `close()` sobre una imagen PIL ya cerrada
-        # es un no-op seguro.
-        try:
-            img.close()
-        except Exception:
-            pass
+        # Defensivo: el original ya cerró `base` (ahora nunca aplica
+        # transformación en su llamada, ver docstring); un segundo `close()`
+        # sobre una imagen PIL ya cerrada es un no-op seguro.
+        for imagen in (girada, img):
+            if imagen is None:
+                continue
+            try:
+                imagen.close()
+            except Exception:
+                pass
 
     return "; ".join(f"{ruta}:{os.path.getsize(ruta)}" for ruta in escritas)
 
