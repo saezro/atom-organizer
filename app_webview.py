@@ -3204,6 +3204,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    from atom_core import sin_consola
+    sin_consola.aplicar()
+
     parser = _build_parser()
     args = parser.parse_args()
 
