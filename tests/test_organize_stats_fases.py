@@ -20,6 +20,7 @@ import json
 from atom_core import organize
 from atom_core.apply import STATS_APPLY_PREFIX
 from atom_core.indice import STATS_INDICE_PREFIX
+from atom_core.manifiesto import NOMBRE_CARPETA_MANIFIESTO
 from utils import RenameImagesConfig
 
 
@@ -317,3 +318,144 @@ class TestDerivePlant:
     def test_sin_inspeccion_ni_estadillo_cae_al_destino(self):
         params = {"destino": "/salida/KL19"}
         assert organize._derive_plant(params) == "KL19"
+
+
+class TestTeeLog:
+    """`_TeeLog` hace fan-out del log de corrida al fichero de
+    `user_log_dir()` y a `<destino>/LOGS/`: un handle roto (disco de red
+    caído, destino desmontado) no puede tumbar la corrida ni silenciar el
+    otro handle (ver docstring de la clase)."""
+
+    class _HandleFalso:
+        def __init__(self, escrituras, nombre="h"):
+            self._escrituras = escrituras
+            self._nombre = nombre
+
+        def write(self, s):
+            self._escrituras.append((self._nombre, "write", s))
+
+        def flush(self):
+            self._escrituras.append((self._nombre, "flush", None))
+
+        def close(self):
+            self._escrituras.append((self._nombre, "close", None))
+
+    class _HandleQuePeta:
+        """Lanza en la operación indicada (`falla_en`) y nunca más responde:
+        una vez descartado por `_TeeLog`, no debe volver a recibir nada."""
+
+        def __init__(self, falla_en):
+            self._falla_en = falla_en
+            self.llamadas = []
+
+        def write(self, s):
+            self.llamadas.append(("write", s))
+            if self._falla_en == "write":
+                raise OSError("disco de red caído")
+
+        def flush(self):
+            self.llamadas.append(("flush", None))
+            if self._falla_en == "flush":
+                raise OSError("disco de red caído")
+
+        def close(self):
+            self.llamadas.append(("close", None))
+            if self._falla_en == "close":
+                raise OSError("disco de red caído")
+
+    def test_write_flush_close_llegan_a_todos_los_handles(self):
+        escrituras = []
+        h1 = self._HandleFalso(escrituras, "h1")
+        h2 = self._HandleFalso(escrituras, "h2")
+        tee = organize._TeeLog([h1, h2])
+
+        tee.write("línea 1\n")
+        tee.flush()
+        tee.close()
+
+        assert ("h1", "write", "línea 1\n") in escrituras
+        assert ("h2", "write", "línea 1\n") in escrituras
+        assert ("h1", "flush", None) in escrituras
+        assert ("h2", "flush", None) in escrituras
+        assert ("h1", "close", None) in escrituras
+        assert ("h2", "close", None) in escrituras
+
+    def test_handle_roto_en_write_no_propaga_y_el_otro_sigue_recibiendo(self):
+        roto = self._HandleQuePeta(falla_en="write")
+        escrituras_sanas = []
+        sano = self._HandleFalso(escrituras_sanas, "sano")
+        tee = organize._TeeLog([roto, sano])
+
+        # No debe propagar la excepción del handle roto.
+        tee.write("primera\n")
+        assert ("write", "primera\n") in roto.llamadas
+        assert ("sano", "write", "primera\n") in escrituras_sanas
+
+        # Tras el fallo, el roto queda descartado: la siguiente escritura NO
+        # debe volver a llamarlo, pero el sano sigue recibiendo todo.
+        llamadas_antes = list(roto.llamadas)
+        tee.write("segunda\n")
+        assert roto.llamadas == llamadas_antes, "el handle descartado no debe volver a recibir escrituras"
+        assert ("sano", "write", "segunda\n") in escrituras_sanas
+
+    def test_handle_roto_en_flush_no_propaga_y_el_otro_sigue_recibiendo(self):
+        roto = self._HandleQuePeta(falla_en="flush")
+        escrituras_sanas = []
+        sano = self._HandleFalso(escrituras_sanas, "sano")
+        tee = organize._TeeLog([roto, sano])
+
+        tee.flush()  # no debe propagar
+        assert ("flush", None) in roto.llamadas
+
+        llamadas_antes = list(roto.llamadas)
+        tee.write("tras el flush roto\n")
+        assert roto.llamadas == llamadas_antes, "el handle descartado en flush no debe recibir el write posterior"
+        assert ("sano", "write", "tras el flush roto\n") in escrituras_sanas
+
+
+class TestGuardCarpetaSalidaSplitImages:
+    """Guard de `run_task` (task `split_images`): la carpeta de salida debe
+    estar vacía, pero `LOGS/` (la crea este mismo run al abrir el log tee) y
+    `.organizado/` (manifiesto de reanudación) no cuentan como residuo.
+
+    Se ejercita `run_task` de verdad (no se replica el filtro a mano):
+    `HeadlessHost` se sustituye por un doble mínimo cuyo `organizar_plan_apply`
+    no hace nada, así que el resto de la corrida (sonda de máquina, medidor de
+    recursos, checklist de fases) transcurre con datos vacíos y lo único que
+    se sujeta es si el guard deja pasar o aborta ANTES de llegar ahí."""
+
+    class _HostSplitFalso:
+        def organizar_plan_apply(self, cfg, pcb, pbar, psum):
+            pass
+
+    def _run_split(self, monkeypatch, destino):
+        monkeypatch.setattr(organize, "HeadlessHost", lambda: self._HostSplitFalso())
+        eventos, emit = _emisor()
+        organize.run_task("split_images", {"destino": str(destino)}, emit)
+        return eventos
+
+    def test_no_aborta_si_el_destino_solo_tiene_logs_y_manifiesto(self, monkeypatch, tmp_path):
+        destino = tmp_path / "salida"
+        destino.mkdir()
+        (destino / NOMBRE_CARPETA_MANIFIESTO).mkdir()
+
+        eventos = self._run_split(monkeypatch, destino)
+
+        errores = _de_tipo(eventos, "error")
+        assert not any("no está vacía" in str(e) for e in errores), (
+            f"el guard no debe abortar con solo LOGS/.organizado de residuo, errores={errores}"
+        )
+        assert _de_tipo(eventos, "done"), "la corrida debe llegar a terminar (done) si el guard no aborta"
+
+    def test_aborta_si_el_destino_tiene_otro_residuo(self, monkeypatch, tmp_path):
+        destino = tmp_path / "salida"
+        destino.mkdir()
+        (destino / "PB1").mkdir()
+
+        eventos = self._run_split(monkeypatch, destino)
+
+        errores = _de_tipo(eventos, "error")
+        assert any("no está vacía" in str(e) for e in errores), (
+            "el guard debe abortar cuando hay un residuo real (PB1) en el destino"
+        )
+        assert not _de_tipo(eventos, "done"), "el guard debe cortar ANTES de llegar a done"
