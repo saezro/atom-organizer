@@ -417,6 +417,46 @@ def _balance_de_bytes(cfg) -> Optional[dict]:
     return balance if balance.get("imagenes") else None
 
 
+# Subcarpeta del destino donde se deja la copia del log de corrida. Va como
+# constante porque el guard de "carpeta de salida vacía" tiene que excluirla:
+# la crea el propio run ANTES de comprobar el destino.
+NOMBRE_CARPETA_LOGS = "LOGS"
+
+
+class _TeeLog:
+    """Escribe el log de corrida en varios ficheros a la vez.
+
+    El log del perfil de usuario (%APPDATA%) es el que SIEMPRE existe, pero
+    pedírselo al usuario por teléfono es un vía crucis: no lo encuentra. La
+    copia dentro de `<destino>/LOGS/` queda al lado de las imágenes que acaba
+    de organizar, así que la ve sin que nadie le explique dónde mirar.
+
+    Un fallo de escritura en un handle (disco de red que se cae, destino
+    desmontado) NO puede tumbar la corrida ni silenciar los otros: cada
+    operación se aísla y el handle roto se descarta.
+    """
+
+    def __init__(self, handles):
+        self._handles = [h for h in handles if h is not None]
+
+    def _fanout(self, op):
+        for h in list(self._handles):
+            try:
+                op(h)
+            except Exception:
+                self._handles.remove(h)
+
+    def write(self, s: str) -> None:
+        self._fanout(lambda h: h.write(s))
+
+    def flush(self) -> None:
+        self._fanout(lambda h: h.flush())
+
+    def close(self) -> None:
+        self._fanout(lambda h: h.close())
+        self._handles = []
+
+
 def run_task(
     task: str,
     params: dict,
@@ -443,8 +483,24 @@ def run_task(
         # El PID va en el nombre: dos corridas en el MISMO segundo (p. ej. dos
         # sesiones a la vez) caían antes en el mismo fichero y se INTERLEAVABAN
         # -> un log con origen de una corrida y errores de otra, imposible de leer.
-        _run_log = open(os.path.join(_log_dir, f"atom-organizer-run_{_ts}_pid{os.getpid()}.log"),
-                        "a", encoding="utf-8")
+        _nombre_log = f"atom-organizer-run_{_ts}_pid{os.getpid()}.log"
+        _run_log = open(os.path.join(_log_dir, _nombre_log), "a", encoding="utf-8")
+        # Copia en `<destino>/LOGS/`: el log del perfil de usuario es el que
+        # siempre existe, pero el usuario no sabe encontrarlo; este queda junto
+        # a las imágenes organizadas. Es BEST-EFFORT: si el destino no está
+        # definido todavía (tasks que no organizan), no existe o no es
+        # escribible, la corrida sigue con el log del perfil y nada más.
+        try:
+            _destino = (params.get("destino") or params.get("output_folder") or "").strip()
+            if _destino:
+                _logs_destino = os.path.join(_destino, NOMBRE_CARPETA_LOGS)
+                os.makedirs(_logs_destino, exist_ok=True)
+                _run_log = _TeeLog([
+                    _run_log,
+                    open(os.path.join(_logs_destino, _nombre_log), "a", encoding="utf-8"),
+                ])
+        except Exception:
+            pass
         # Cabecera de contexto: qué task, con qué directorios y qué PID. Permite
         # detectar de un vistazo cruces de directorio (origen X -> salida Y) y
         # colisiones entre procesos que operan sobre los MISMOS ficheros.
@@ -724,8 +780,10 @@ def run_task(
             # motor deja aposta cuando un run muere a mitad, y es justo lo que
             # permite reanudar. Si lo contáramos, el guard abortaría la corrida
             # siguiente y la reanudación sería inalcanzable en la práctica.
+            # `LOGS/` tampoco: la crea ESTE MISMO run al abrir el log, unos
+            # cientos de líneas más arriba, así que contarla abortaría siempre.
             _restos = [n for n in (os.listdir(_out) if _out and os.path.isdir(_out) else [])
-                       if n != NOMBRE_CARPETA_MANIFIESTO]
+                       if n not in (NOMBRE_CARPETA_MANIFIESTO, NOMBRE_CARPETA_LOGS)]
             if _guard_activo and _restos:
                 emit("error", "La carpeta de salida no está vacía: "
                               f"\"{_out}\". Vacíala o elige una carpeta vacía "
