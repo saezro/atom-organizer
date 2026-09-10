@@ -12,6 +12,7 @@ dependiera del hardware real o de dormir sería lento y no determinista.
 import sys
 
 import pytest
+import utils
 
 from atom_core import paralelismo
 from atom_core.paralelismo import ControladorAdaptativo, Medicion, decidir_trabajadores
@@ -87,6 +88,67 @@ def test_sube_en_zona_muerta_si_sobra_cpu():
     historial = [_medicion(trabajadores=5, completados=100, cpu_ociosa_pct=60.0),
                  _medicion(trabajadores=5, completados=101, cpu_ociosa_pct=60.0)]
     assert decidir_trabajadores(historial, minimo=1, maximo=16) == 10
+
+
+def test_caida_sin_cambio_de_workers_no_baja():
+    """Si el número de trabajadores fue el MISMO en las dos ventanas, una
+    caída de throughput >5% no es atribuible al paralelismo: es ruido del
+    contenido de las fotos, no thrashing. Antes de este cambio el
+    controlador bajaba igualmente, y como `_subir` tras una bajada solo sube
+    +1, nunca se recuperaba: es la causa medida de la oscilación 7↔26."""
+    historial = [_medicion(trabajadores=6, completados=130),
+                 _medicion(trabajadores=6, completados=115)]
+    assert decidir_trabajadores(historial, minimo=1, maximo=16) == 6
+
+
+def test_caida_tras_subir_workers_sigue_bajando():
+    """El comportamiento de HDD (thrashing real al subir workers) se
+    preserva: si el número de trabajadores SÍ subió entre las dos ventanas y
+    el rendimiento cae, sigue bajando."""
+    historial = [_medicion(trabajadores=6, completados=130),
+                 _medicion(trabajadores=7, completados=115)]
+    assert decidir_trabajadores(historial, minimo=1, maximo=16) == 6
+
+
+def test_caida_justo_despues_de_una_bajada_no_vuelve_a_bajar():
+    """Tras una bajada, los trabajadores se quedan quietos entre las dos
+    últimas ventanas: una nueva caída de rendimiento no es atribuible al
+    paralelismo (ya se bajó, no se subió), así que no debe volver a bajar."""
+    historial = [_medicion(trabajadores=12, completados=90),
+                 _medicion(trabajadores=6, completados=100),
+                 _medicion(trabajadores=6, completados=80)]
+    assert decidir_trabajadores(historial, minimo=1, maximo=16) == 6
+
+
+def test_zona_muerta_con_poca_cpu_ociosa_ahora_sube():
+    """Con `_CPU_OCIOSA_PARA_SUBIR` bajado de 40% a 15%, un 20% de CPU
+    ociosa en zona muerta ya es margen suficiente para probar a subir (antes
+    de este cambio se quedaba quieto, dejando la CPU ociosa al 30-46%
+    medido)."""
+    historial = [_medicion(trabajadores=5, completados=100, cpu_ociosa_pct=20.0),
+                 _medicion(trabajadores=5, completados=102, cpu_ociosa_pct=20.0)]
+    assert decidir_trabajadores(historial, minimo=1, maximo=16) == 10
+
+
+def test_zona_muerta_con_bajada_reciente_no_sube_pese_a_cpu_ociosa():
+    """Histéresis: si en las últimas `_VENTANAS_ESPERA_TRAS_BAJADA` mediciones
+    hubo una bajada de trabajadores, no se sube aunque haya CPU ociosa de
+    sobra — si no, en discos lentos se oscilaría subir/bajar en bucle."""
+    historial = [_medicion(trabajadores=10, completados=100, cpu_ociosa_pct=20.0),
+                 _medicion(trabajadores=6, completados=90, cpu_ociosa_pct=20.0),
+                 _medicion(trabajadores=6, completados=92, cpu_ociosa_pct=20.0)]
+    assert decidir_trabajadores(historial, minimo=1, maximo=16) == 6
+
+
+def test_ram_manda_incluso_en_zona_muerta_con_cpu_ociosa_y_sin_bajada_previa():
+    """La regla 1 (RAM, límite duro) sigue mandando sobre todo lo demás: ni
+    la zona muerta con CPU ociosa (que ahora sube más fácil) ni la ausencia
+    de bajada previa la saltan."""
+    historial = [_medicion(trabajadores=6, completados=100, cpu_ociosa_pct=20.0,
+                            ram_libre_mb=9000.0),
+                 _medicion(trabajadores=6, completados=102, cpu_ociosa_pct=20.0,
+                            ram_libre_mb=200.0)]
+    assert decidir_trabajadores(historial, minimo=1, maximo=16) == 5
 
 
 def test_respeta_minimo_y_maximo():
@@ -462,3 +524,40 @@ def test_tope_hdd_proveedor_que_lanza_no_rompe_ni_capa():
         controlador.revisar()
 
     assert controlador.trabajadores > 3
+
+
+def test_maximo_cpu_bound_son_los_nucleos_utilizables(monkeypatch):
+    """La fase RGB es CPU-bound: su techo son los núcleos utilizables, no el
+    `arranque * 2` del default (pensado para fases I/O-bound). Con 16 núcleos
+    y `NUCLEOS_RESERVADOS = 1` el tope es 15, no 30."""
+    monkeypatch.setattr(utils, "workers_para_lote", lambda mb_por_worker=600: 15 if mb_por_worker == 0 else 9)
+
+    assert paralelismo.maximo_cpu_bound() == 15
+
+
+def test_maximo_cpu_bound_ignora_la_ram_disponible(monkeypatch):
+    """El límite por RAM es el punto de ARRANQUE seguro, no el techo: si la
+    memoria aprieta durante el run ya baja la regla 1 en caliente. Si el techo
+    lo fijara la RAM del primer segundo, una máquina con la memoria ocupada al
+    empezar se quedaría capada el run entero."""
+    vistos = []
+
+    def _falso(mb_por_worker=600):
+        vistos.append(mb_por_worker)
+        return 12
+
+    monkeypatch.setattr(utils, "workers_para_lote", _falso)
+
+    assert paralelismo.maximo_cpu_bound() == 12
+    assert vistos == [0]
+
+
+def test_controlador_con_maximo_explicito_no_lo_duplica(monkeypatch):
+    """`ControladorAdaptativo(maximo=N)` respeta N tal cual: es lo que hace la
+    fase RGB en `phases.py` para no sobre-suscribir la CPU."""
+    monkeypatch.setattr(utils, "workers_para_lote", lambda mb_por_worker=600: 15)
+
+    controlador = ControladorAdaptativo(maximo=paralelismo.maximo_cpu_bound(), etiqueta="RGB")
+
+    assert controlador.maximo == 15
+    assert controlador.trabajadores <= 15
