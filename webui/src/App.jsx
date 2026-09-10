@@ -9,6 +9,7 @@ import NavIcon from './NavIcon'
 import KioskScreen from './KioskScreen'
 import KioskGuard from './KioskGuard.jsx'
 import AvisoSesion from './AvisoSesion.jsx'
+import SesionRemota from './SesionRemota.jsx'
 import FileField from './FileField'
 import cloudUploadConfirmando from './trabajo/cloudUploadConfirmando'
 import TrabajoScreen from './trabajo/TrabajoScreen'
@@ -153,6 +154,24 @@ function App() {
   const [ready, setReady] = useState(false)
   const [section, setSection] = useState('home')
   const [running, setRunning] = useState(false)
+
+  // Sesión remota (SSH/benchmark) usando la máquina. Se poll-ea cada 5 s; si
+  // la llamada falla se trata como "no activa" (fail-open, sin spamear la
+  // consola) para no dejar al operador bloqueado por un bridge caído.
+  const [sesionRemota, setSesionRemota] = useState(null)
+  useEffect(() => {
+    let cancelado = false
+    async function consultar() {
+      const res = await api.sesionRemota().catch(() => ({ activa: false, motivo: null, desde: null }))
+      if (!cancelado) setSesionRemota(res)
+    }
+    consultar()
+    const id = setInterval(consultar, 5000)
+    return () => {
+      cancelado = true
+      clearInterval(id)
+    }
+  }, [])
 
   // Sesión (cuenta Google o invitado): gatea toda la UI de escritorio, salvo
   // el kiosco de la Pi (ver comprobación `!kiosco` más abajo, ese modo no
@@ -437,6 +456,9 @@ function App() {
   // Entrada de "Ejecutar": si hay estadillo, primero el modal previo con la
   // info de vuelo; el pipeline no arranca hasta que el operador pulsa Comenzar.
   async function run(task, params, advanced) {
+    // Sesión remota activa (benchmark por SSH): no se arranca nada local
+    // mientras la máquina esté ocupada por otro trabajo.
+    if (sesionRemota?.activa) return
     const estadillos = Array.isArray(params.estadillo) ? params.estadillo.filter(Boolean) : []
     if (task === 'split_images' && estadillos.length) {
       setPreflight({ loading: true, info: null, task, params, advanced })
@@ -653,6 +675,9 @@ function App() {
     if (sesionCargando) return <div className="app" />
     return (
       <div className="app">
+        {sesionRemota?.activa && (
+          <SesionRemota motivo={sesionRemota.motivo} desde={sesionRemota.desde} />
+        )}
         {/* `onPerfilActivado` es obligatorio en la práctica: sin ella, activar
             un perfil guardado caía en el `window.location.reload()` de
             PantallaEntrada, el ÚNICO camino de entrada que remonta la webview
@@ -674,6 +699,9 @@ function App() {
     // regla anti-seleccion de texto cubre tambien lo que se monta fuera de
     // `.kiosk` (AvisoSesion, SplashInicio) y lo que se anada en el futuro.
     <div className={kiosco ? 'app app-kiosco' : 'app'}>
+      {sesionRemota?.activa && (
+        <SesionRemota motivo={sesionRemota.motivo} desde={sesionRemota.desde} />
+      )}
       {splash && <SplashInicio onFin={() => setSplash(false)} />}
       {kiosco && !avisoCerrado && (
         <AvisoSesion
