@@ -1120,6 +1120,7 @@ class PipelinePhasesMixin:
             aplicar_rgb(manifiesto, cfg, pipeline, progress_callback, progress_bar,
                        progress_summarize,
                        controlador=paralelismo_mod.ControladorAdaptativo(
+                           maximo=paralelismo_mod.maximo_cpu_bound(),
                            etiqueta="RGB", tope_hdd=paralelismo_mod.TOPE_WORKERS_HDD),
                        contador_rotacion=contador_rotacion)
             tiempos["RGB"] = time.monotonic() - marca

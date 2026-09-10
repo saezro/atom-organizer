@@ -1,6 +1,6 @@
 """resolve_target: URL servida a QtWebEngine según modo dev/prod.
 
-En prod usa file:// con cache-busting por versión (?v=<version>) para que el
+En prod usa file:// con cache-busting por versión (#v=<version>) para que el
 perfil de QtWebEngine no siga sirviendo el index.html cacheado de una versión
 anterior tras una actualización in-place.
 """
@@ -31,7 +31,7 @@ def test_prod_con_build_devuelve_file_uri_con_version(monkeypatch):
     destino = resolve_target(dev=False)
 
     assert destino.startswith("file://")
-    assert destino.endswith("?v=3.4.71")
+    assert destino.endswith("#v=3.4.71")
     assert DIST_INDEX.resolve().as_uri() in destino
 
 
@@ -41,4 +41,4 @@ def test_prod_version_desconocida_se_urlencodea(monkeypatch):
 
     destino = resolve_target(dev=False)
 
-    assert destino.endswith(f"?v={urllib.parse.quote('?')}")
+    assert destino.endswith(f"#v={urllib.parse.quote('?')}")

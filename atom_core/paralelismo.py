@@ -69,8 +69,19 @@ def _trazar(fmt: str, *args) -> None:
 _ZONA_MUERTA_PCT = 0.05
 
 #: Por debajo de este umbral de CPU ociosa no merece la pena subir trabajadores
-#: aunque el rendimiento esté plano: la máquina ya está ocupada.
-_CPU_OCIOSA_PARA_SUBIR = 40.0
+#: aunque el rendimiento esté plano: la máquina ya está ocupada. Medido en un
+#: banco de 16 núcleos: con el umbral en 40.0 el controlador se quedaba
+#: infra-aprovisionado con la CPU ociosa al 30-46% (nunca llegaba a subir);
+#: en 15.0 sí aprovecha ese margen.
+_CPU_OCIOSA_PARA_SUBIR = 15.0
+
+#: Cuántas mediciones recientes se miran para la histéresis de la regla 5: si
+#: en alguna pareja consecutiva de las últimas `_VENTANAS_ESPERA_TRAS_BAJADA`
+#: mediciones el número de trabajadores bajó, no se sube aunque sobre CPU
+#: ociosa. Sin esto, bajar el umbral de arriba haría que en discos lentos el
+#: controlador subiera otra vez justo después de haber bajado, oscilando en
+#: bucle en vez de asentarse en el techo real de la máquina.
+_VENTANAS_ESPERA_TRAS_BAJADA = 3
 
 #: Tope de trabajadores en la fase RGB cuando el disco de ORIGEN es HDD.
 #: La regla 5 de `decidir_trabajadores` (CPU ociosa >40% -> subir) interpreta
@@ -80,6 +91,24 @@ _CPU_OCIOSA_PARA_SUBIR = 40.0
 #: workers el disco lee más secuencial y el conjunto va más rápido de
 #: verdad, aunque la CPU se vea "ociosa".
 TOPE_WORKERS_HDD = 3
+
+
+def maximo_cpu_bound() -> int:
+    """Techo de trabajadores para una fase CPU-bound (RGB): los núcleos
+    utilizables, sin más.
+
+    El default del controlador es `arranque * 2`, que tiene sentido en fases
+    I/O-bound (las térmicas esperan a `dji_irp`/`exiftool` y aprovechan el
+    doble de hilos que núcleos), pero en RGB cada worker está decodificando y
+    encodeando (0,94 s de CPU por imagen): sobre-suscribir 2x solo añade
+    cambios de contexto y presión de memoria. Medido en ZARATAN (16 núcleos):
+    con 29,6 workers de media la fase tardó 506 s frente a 467 s con 10,9.
+
+    Se pasa `mb_por_worker=0` a propósito para saltarse el límite por RAM: ese
+    es el punto de ARRANQUE seguro, no el techo. Si la memoria aprieta durante
+    el run, la regla 1 de `decidir_trabajadores` ya baja en caliente.
+    """
+    return utils.workers_para_lote(mb_por_worker=0)
 
 
 @dataclass(frozen=True)
@@ -185,9 +214,17 @@ def decidir_trabajadores(
     2. Con menos de 2 mediciones → mantener (no hay tendencia que comparar).
     3. Rendimiento mejora >5% respecto a la ventana anterior → subir (ver
        `_subir`: geométrico durante la rampa inicial, +1 después).
-    4. Rendimiento empeora >5% → bajar (ver `_bajar`: -1, o a la mitad si el
-       desplome es grande). Esto detecta el thrashing de HDD.
-    5. Dentro del ±5% (zona muerta) y CPU ociosa >40% → subir (hay margen).
+    4. Rendimiento empeora >5% Y el número de trabajadores SUBIÓ entre la
+       ventana anterior y la última → bajar (ver `_bajar`: -1, o a la mitad
+       si el desplome es grande). Esto detecta el thrashing de HDD. Si los
+       trabajadores NO subieron, la caída no es atribuible al paralelismo
+       (ruido de medida por el contenido de las fotos, o carga externa) y no
+       se baja: bajar aquí sin más era la causa medida de que el controlador
+       nunca se recuperase (`_subir` tras una bajada solo sube +1).
+    5. Dentro del ±5% (zona muerta) y CPU ociosa >15% → subir (hay margen),
+       salvo que en las últimas `_VENTANAS_ESPERA_TRAS_BAJADA` mediciones
+       haya habido una bajada de trabajadores (histéresis: no reoscilar justo
+       después de haber bajado).
     6. En cualquier otro caso → mantener.
     """
     ultima = historial[-1]
@@ -213,13 +250,23 @@ def decidir_trabajadores(
     if cambio_pct > _ZONA_MUERTA_PCT:
         return _subir(historial, ultima.trabajadores, maximo, mb_por_worker, ultima.ram_libre_mb)
 
-    # Regla 4: empeora claro → bajar (thrashing de HDD).
-    if cambio_pct < -_ZONA_MUERTA_PCT:
+    # Regla 4: empeora claro, pero solo es "thrashing de HDD" si la subida de
+    # trabajadores precedió a la caída. Si el número de trabajadores no
+    # cambió, la caída es ruido de medida (o carga externa), no un efecto del
+    # paralelismo, y bajar aquí no tiene forma de recuperarse después.
+    if cambio_pct < -_ZONA_MUERTA_PCT and ultima.trabajadores > anterior.trabajadores:
         return _bajar(cambio_pct, ultima.trabajadores, minimo)
 
-    # Regla 5: zona muerta con margen de CPU → subir.
+    # Regla 5: zona muerta con margen de CPU → subir, salvo que se acabara de
+    # bajar (histéresis: dar tiempo a asentarse antes de volver a subir).
     if ultima.cpu_ociosa_pct > _CPU_OCIOSA_PARA_SUBIR:
-        return _subir(historial, ultima.trabajadores, maximo, mb_por_worker, ultima.ram_libre_mb)
+        recientes = historial[-_VENTANAS_ESPERA_TRAS_BAJADA:]
+        hubo_bajada_reciente = any(
+            recientes[i].trabajadores > recientes[i + 1].trabajadores
+            for i in range(len(recientes) - 1)
+        )
+        if not hubo_bajada_reciente:
+            return _subir(historial, ultima.trabajadores, maximo, mb_por_worker, ultima.ram_libre_mb)
 
     # Regla 6: nada de lo anterior → mantener.
     return ultima.trabajadores

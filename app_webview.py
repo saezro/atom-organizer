@@ -42,6 +42,7 @@ from atom_core.google_auth import AuthError
 from atom_core import pin_kiosco
 from atom_core import precarga
 from atom_core import render_state, window_state
+from atom_core import sesion_remota
 
 logger = logging.getLogger(__name__)
 
@@ -492,6 +493,15 @@ class Api:
             "python": platform.python_version(),
             "platform": platform.system(),
         }
+
+    def sesion_remota(self) -> dict:
+        try:
+            datos = sesion_remota.activa()
+        except Exception:
+            return {"activa": False, "motivo": None, "desde": None}
+        if not datos:
+            return {"activa": False, "motivo": None, "desde": None}
+        return {"activa": True, "motivo": datos.get("motivo"), "desde": datos.get("desde")}
 
     # ---- diálogos de archivo ----------------------------------------------
     # En Linux el backend Qt de pywebview abre el diálogo desde el hilo del
@@ -3004,10 +3014,17 @@ def resolve_target(dev: bool) -> str:
         )
     # El perfil de QtWebEngine persiste entre versiones y, con la misma URL,
     # puede servir el index.html cacheado tras una actualización in-place.
-    # La query cambia la URL en cada versión sin cambiar el origin (localStorage
-    # y sesión se conservan).
+    # El marcador de versión cambia la URL en cada versión sin cambiar el origin
+    # (localStorage y sesión se conservan).
+    #
+    # OJO: tiene que ser un FRAGMENTO (#), no una query (?). El backend
+    # WebView2/EdgeChromium (el que usa pywebview en Windows cuando no hay Qt)
+    # no resuelve un `?query` sobre `file://`: intenta abrir el fichero literal
+    # "index.html?v=3.4.92", no lo encuentra y pinta la pagina de error de Edge
+    # (pantalla en blanco / ERR_FILE_NOT_FOUND). El fragmento sí es válido en
+    # todos los backends porque no forma parte de la ruta del fichero.
     version = urllib.parse.quote(_app_version_for_title())
-    return f"{DIST_INDEX.resolve().as_uri()}?v={version}"
+    return f"{DIST_INDEX.resolve().as_uri()}#v={version}"
 
 
 def _app_version_for_title() -> str:

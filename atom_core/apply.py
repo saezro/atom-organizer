@@ -31,6 +31,7 @@ import external_tools
 import pipeline
 from exif import extraer_bloque_xmp_crudo
 from atom_core import indice as indice_mod
+from atom_core import perfil_rgb
 
 #: MB que se le presupone a un item de RGB para el reporte al controlador
 #: adaptativo. Si no se puede leer el tamaño real del origen (p. ej. se
@@ -192,12 +193,17 @@ def _transpose_para_angulo(angulo: int, pipeline_mod) -> "int | None":
 
 
 def _guardar_atomico(img, destino: str, transpose, pct_recorte, calidad: int,
-                      pipeline_mod) -> None:
+                      pipeline_mod, etapa_encode: str = "encode_original") -> None:
     """Guarda `img` (con el crop/giro que le toque) en `destino` escribiendo
     primero a `<destino>.parcial` y renombrando con `os.replace`. Un fallo a
     mitad de un `save()` (disco lleno, JPEG corrupto al escribir, lo que
     sea) no puede dejar un fichero truncado en la carpeta de entrega: o el
     `.parcial` desaparece, o `destino` queda completo. Nunca un intermedio.
+
+    `etapa_encode` distingue en `perfil_rgb` si este guardado es el
+    original o el `_CROP` (`"encode_original"` / `"encode_crop"`); el
+    `os.replace` final se mide aparte, en la etapa genérica `"escritura"`
+    (instrumentación OPT-IN, no-op si `perfil_rgb.ACTIVO` es `False`).
     """
     carpeta = os.path.dirname(destino)
     if carpeta:
@@ -217,12 +223,14 @@ def _guardar_atomico(img, destino: str, transpose, pct_recorte, calidad: int,
         rotate_degrees=transpose,
     )
     try:
-        pipeline_mod._procesar_y_guardar_imagen(img, cfg_escritura)
+        with perfil_rgb.medir(etapa_encode):
+            pipeline_mod._procesar_y_guardar_imagen(img, cfg_escritura)
     except Exception:
         if os.path.exists(parcial):
             os.remove(parcial)
         raise
-    os.replace(parcial, destino)
+    with perfil_rgb.medir("escritura"):
+        os.replace(parcial, destino)
 
 
 def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str:
@@ -250,41 +258,62 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
     conmuta con el giro de 90°: `crop_centered_pct` es una fracción
     simétrica, así que recortar la girada da exactamente el mismo píxel que
     girar el recorte — solo se intercambian ancho y alto.
+
+    Instrumentación OPT-IN (`atom_core.perfil_rgb`, activa solo con
+    `ORGANIZER_PERFIL_RGB` definida): la lectura del fichero de origen y su
+    decode van en las etapas `"lectura"`/`"decode"`, cada `_guardar_atomico`
+    mide su propio encode (`"encode_crop"`/`"encode_original"`) y su
+    escritura (`"escritura"`); el giro (`transpose`) no tiene columna propia
+    en el CSV, así que su tiempo queda dentro de `t_total` sin repartir en
+    ninguna etapa — es fiel al "no existe en este camino" del resto de
+    columnas cuando no aplica.
     """
-    angulo = fila["angulo_giro"] or 0
-    transpose = _transpose_para_angulo(angulo, pipeline_mod)
-    calidad = pipeline_mod._ROTATION_JPEG_QUALITY if angulo else cfg.compress_level
-
-    img = pipeline_mod.Image.open(fila["ruta_origen"])
-    escritas: list[str] = []
-    girada = None
+    nombre = os.path.basename(fila["ruta_origen"])
     try:
-        # La girada pasa a ser la base de AMBAS salidas; a partir de aquí
-        # ninguna de las dos escrituras vuelve a girar nada.
-        if transpose is not None:
-            girada = img.transpose(transpose)
-        base = girada if girada is not None else img
+        bytes_origen = os.path.getsize(fila["ruta_origen"])
+    except OSError:
+        bytes_origen = 0
 
-        ruta_crop = fila["ruta_salida_crop"]
-        if ruta_crop:
-            _guardar_atomico(base, ruta_crop, None, fila["pct_recorte"], calidad,
-                             pipeline_mod)
-            escritas.append(ruta_crop)
+    with perfil_rgb.medir_imagen(nombre, bytes_origen):
+        angulo = fila["angulo_giro"] or 0
+        transpose = _transpose_para_angulo(angulo, pipeline_mod)
+        calidad = pipeline_mod._ROTATION_JPEG_QUALITY if angulo else cfg.compress_level
 
-        ruta_original = fila["ruta_salida_original"]
-        _guardar_atomico(base, ruta_original, None, None, calidad, pipeline_mod)
-        escritas.append(ruta_original)
-    finally:
-        # Defensivo: el original ya cerró `base` (ahora nunca aplica
-        # transformación en su llamada, ver docstring); un segundo `close()`
-        # sobre una imagen PIL ya cerrada es un no-op seguro.
-        for imagen in (girada, img):
-            if imagen is None:
-                continue
-            try:
-                imagen.close()
-            except Exception:
-                pass
+        with perfil_rgb.medir("lectura"):
+            img = pipeline_mod.Image.open(fila["ruta_origen"])
+        with perfil_rgb.medir("decode"):
+            img.load()
+
+        escritas: list[str] = []
+        girada = None
+        try:
+            # La girada pasa a ser la base de AMBAS salidas; a partir de aquí
+            # ninguna de las dos escrituras vuelve a girar nada.
+            if transpose is not None:
+                girada = img.transpose(transpose)
+            base = girada if girada is not None else img
+
+            ruta_crop = fila["ruta_salida_crop"]
+            if ruta_crop:
+                _guardar_atomico(base, ruta_crop, None, fila["pct_recorte"], calidad,
+                                 pipeline_mod, etapa_encode="encode_crop")
+                escritas.append(ruta_crop)
+
+            ruta_original = fila["ruta_salida_original"]
+            _guardar_atomico(base, ruta_original, None, None, calidad, pipeline_mod,
+                             etapa_encode="encode_original")
+            escritas.append(ruta_original)
+        finally:
+            # Defensivo: el original ya cerró `base` (ahora nunca aplica
+            # transformación en su llamada, ver docstring); un segundo `close()`
+            # sobre una imagen PIL ya cerrada es un no-op seguro.
+            for imagen in (girada, img):
+                if imagen is None:
+                    continue
+                try:
+                    imagen.close()
+                except Exception:
+                    pass
 
     return "; ".join(f"{ruta}:{os.path.getsize(ruta)}" for ruta in escritas)
 
@@ -407,6 +436,25 @@ def _emitir_resumen_fase(progress_callback, fase: str, unidad: str, total: int,
     )
 
 
+def _emitir_resumen_perfil_rgb(progress_callback) -> None:
+    """Cierre de la instrumentación OPT-IN de `perfil_rgb`: no-op si
+    `ORGANIZER_PERFIL_RGB` no está definida. Con la env var activa, relee el
+    CSV ya escrito (una fila por imagen, de ambos caminos: secuencial y
+    pool) y loguea la media de cada etapa."""
+    resumen = perfil_rgb.resumen()
+    if resumen is None:
+        return
+    medias = resumen["medias"]
+    progress_callback.emit(
+        f"\n[perfil_rgb] {resumen['n_imagenes']} imagen(es) — medias (s): "
+        f"lectura={medias['t_lectura']:.4f} decode={medias['t_decode']:.4f} "
+        f"encode_original={medias['t_encode_original']:.4f} "
+        f"encode_crop={medias['t_encode_crop']:.4f} "
+        f"thumbnail={medias['t_thumbnail']:.4f} "
+        f"escritura={medias['t_escritura']:.4f} total={medias['t_total']:.4f}\n"
+    )
+
+
 def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
                 progress_summarize, controlador=None,
                 contador_rotacion: "_ContadorRotacion | None" = None) -> dict:
@@ -449,6 +497,11 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
     total = len(filas)
     if total == 0:
         return resultado
+
+    # Instrumentación OPT-IN (`ORGANIZER_PERFIL_RGB`): la cabecera la escribe
+    # SOLO el proceso padre (aquí), nunca los workers — si la escribiera cada
+    # worker del pool se duplicaría una vez por proceso.
+    perfil_rgb.escribir_cabecera()
 
     # Sin instancia compartida (llamada suelta, tests) se crea una propia:
     # solo importa que `aplicar_rgb` y `aplicar_termicas` del MISMO run
@@ -497,6 +550,7 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
             else:
                 _cerrar_fila(fila, verificacion=verificacion)
             progress_bar.emit(int(indice / total * 100))
+        _emitir_resumen_perfil_rgb(progress_callback)
         return resultado
 
     # --- Camino paralelo -----------------------------------------------
@@ -556,6 +610,7 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
 
     _emitir_resumen_fase(progress_callback, "Imágenes RGB", "proceso(s)", total,
                          aforo.resumen(controlador.maximo))
+    _emitir_resumen_perfil_rgb(progress_callback)
     return resultado
 
 

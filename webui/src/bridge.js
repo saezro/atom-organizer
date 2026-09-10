@@ -361,6 +361,10 @@ export const api = {
   listarPerfiles: () => call('listar_perfiles'),
   activarPerfil: (email) => call('activar_perfil', email),
   borrarPerfil: (email) => call('borrar_perfil', email),
+  // Sesión remota (SSH/benchmark) usando la máquina en este momento. Sin
+  // argumentos. Devuelve {activa, motivo, desde} — la UI se bloquea con un
+  // overlay (`SesionRemota.jsx`) mientras `activa` sea true.
+  sesionRemota: () => call('sesion_remota'),
 }
 
 // Python empuja progreso del pipeline con:
