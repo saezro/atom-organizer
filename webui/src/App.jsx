@@ -21,6 +21,13 @@ import PantallaEntrada from './sesion/PantallaEntrada.jsx'
 import MenuCuenta from './MenuCuenta.jsx'
 import './App.css'
 import { conPlazo } from './plazo'
+import { SPLIT_ADVANCED } from './schema'
+import { initialState, buildParams } from './TaskBlock'
+
+// Mismos campos avanzados que `PanelOrganizar`: el kiosco lanza el pipeline
+// con el MISMO `advanced` que el escritorio (defaults del panel + sufijos
+// autodetectados), no con `null` (defaults del backend, que difieren).
+const KIOSK_ADV_FIELDS = SPLIT_ADVANCED.flatMap((s) => s.fields)
 
 // Plazos de las llamadas que mandan una pantalla completa. Generosos a
 // propósito: no son el límite del trabajo (organizar tarda lo que tarde, y el
@@ -535,8 +542,45 @@ function App() {
     // `estadillo` ya llega como array (viene de `EstadilloField`); solo se
     // filtran huecos, sin volver a empaquetar un string suelto.
     const estadillos = Array.isArray(estadillo) ? estadillo.filter(Boolean) : []
-    run('split_images', { origen, destino, estadillo: estadillos, rename: true }, null)
+    const adv = { ...initialState(KIOSK_ADV_FIELDS) }
+    if (kioskSufijos?.ok) {
+      adv.end_thermo_files = kioskSufijos.thermal || ''
+      adv.end_rgb_files = kioskSufijos.rgb || ''
+    }
+    run('split_images', { origen, destino, estadillo: estadillos, rename: true },
+      buildParams(KIOSK_ADV_FIELDS, adv))
   }
+
+  // Autodetección al elegir carpeta, igual que el escritorio: estadillo
+  // (`PasoEstadillo`) y sufijos térmica/RGB (`PanelOrganizar`). Con estadillo
+  // detectado, «Organizar» abre el mismo modal previo con el resumen de
+  // vuelos. Fail-open: si no se detecta nada se sigue eligiendo a mano. Al
+  // cambiar de carpeta se vacía el estadillo anterior (era de otro vuelo).
+  const [kioskSufijos, setKioskSufijos] = useState(null)
+  useEffect(() => {
+    if (!kiosco || !kioskCarpeta) return
+    let vivo = true
+    setKioskEstadillo([])
+    setKioskSufijos(null)
+    api.estadillosDetectar(kioskCarpeta)
+      .then((r) => {
+        const rutas = Array.isArray(r?.rutas) ? r.rutas : []
+        // No pisar una elección manual hecha mientras se buscaba.
+        if (vivo && !r?.error && rutas.length) setKioskEstadillo((prev) => (prev.length ? prev : rutas))
+      })
+      .catch(() => {})
+    const off = onAnalisis((d) => {
+      if (d.scope !== 'suffixes' || !vivo) return
+      if (d.kind === 'done') setKioskSufijos(d.data || null)
+    })
+    ;(async () => {
+      try {
+        await api.analisisReset()
+        if (vivo) await api.detectSuffixesStart(kioskCarpeta)
+      } catch { /* fail-open: defaults del panel */ }
+    })()
+    return () => { vivo = false; off() }
+  }, [kiosco, kioskCarpeta])
 
   async function kioskPickCarpeta() {
     const path = await api.pickFolder()
