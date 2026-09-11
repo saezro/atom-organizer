@@ -20,8 +20,18 @@ cualquier duda de thread-safety de la librería nativa y permiten paralelizar.
 Uso:
     python dji_irp_linux.py <img_rjpeg> <raw_out> <humidity> <emissivity> <lib_dir>
 Salida: 0 = OK (raw escrito); != 0 = error (mensaje en stderr).
+
+Modo servidor (solo lo usa `dji_worker_pool.py`, en Raspberry Pi/ARM para
+amortizar el arranque de box64+Python x86-64 entre imágenes):
+    python dji_irp_linux.py --server
+Lee de stdin una línea JSON por petición, `{"img","raw_out","humidity",
+"emissivity","lib_dir"}` (mismos argumentos que el CLI de arriba), llama a la
+MISMA función `measure()` -- el cómputo es idéntico al de un proceso efímero --
+y responde una línea JSON `{"ok": true}` o `{"ok": false, "error": "..."}` por
+stdout. `{"cmd": "quit"}` o EOF en stdin terminan el proceso.
 """
 import ctypes
+import json
 import os
 import sys
 
@@ -162,10 +172,50 @@ def _suppress_core_dumps():
         pass
 
 
+def _reply(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def _serve():
+    """Bucle del modo servidor: una petición JSON por línea de stdin, una
+    respuesta JSON por línea de stdout. Reutiliza `measure()` tal cual: el
+    cómputo por imagen es exactamente el mismo que en el modo CLI efímero, así
+    que la salida es byte a byte idéntica."""
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except Exception as e:
+            _reply({"ok": False, "error": "petición no-JSON: {0}".format(e)})
+            continue
+        if req.get("cmd") == "quit":
+            break
+        try:
+            measure(req["img"], req["raw_out"], float(req["humidity"]),
+                    float(req["emissivity"]), req["lib_dir"])
+        except Exception as e:  # noqa: BLE001 — el padre solo necesita ok=false + mensaje
+            _reply({"ok": False, "error": "{0}: {1}".format(type(e).__name__, e)})
+            continue
+        _reply({"ok": True})
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # os._exit evita el teardown del intérprete, donde libdirp/libgomp segfaultean
+    # al descargarse (mismo motivo que en el modo CLI; ver cabecera del fichero).
+    os._exit(0)
+
+
 def main(argv):
     _suppress_core_dumps()
+    if len(argv) == 2 and argv[1] == "--server":
+        _serve()
+        return 0  # inalcanzable: _serve() siempre termina con os._exit
     if len(argv) != 6:
-        sys.stderr.write("uso: dji_irp_linux.py <img> <raw_out> <humidity> <emissivity> <lib_dir>\n")
+        sys.stderr.write(
+            "uso: dji_irp_linux.py <img> <raw_out> <humidity> <emissivity> <lib_dir>\n"
+            "     dji_irp_linux.py --server\n")
         return 2
     _, img, raw_out, humidity, emissivity, lib_dir = argv
     try:
