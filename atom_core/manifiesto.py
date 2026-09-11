@@ -1,4 +1,4 @@
-"""Manifiesto del organizado: una fila por imagen, en SQLite modo WAL.
+"""Manifiesto del organizado: una fila por imagen, en SQLite (WAL en disco local).
 
 Es la memoria del run. El índice lo llena decidiendo qué hacer con cada
 imagen; el apply lo recorre escribiendo y marcando estado desde varios
@@ -12,7 +12,9 @@ completa, que es lo que hace un journal clásico.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
+import sys
 import threading
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -25,6 +27,50 @@ ESTADOS = ("pendiente", "en_curso", "hecho", "fallido")
 # sobre la MISMA salida), así que todo lo que recorra o cuente el árbol
 # entregado tiene que ignorarla: no es una imagen, es fontanería del motor.
 NOMBRE_CARPETA_MANIFIESTO = ".organizado"
+
+# Sistemas de ficheros donde WAL corrompe la base: su índice `-shm` se comparte
+# por mmap entre procesos, y fuse/red no garantizan que todos vean las mismas
+# páginas. Caso real (2026-09-11): SSD NTFS por ntfs-3g en la Pi →
+# "database disk image is malformed" en la fase RGB con 2+ workers.
+_FS_SIN_WAL = ("fuse", "nfs", "cifs", "smb", "9p", "sshfs", "davfs")
+
+
+def _tipo_fs_linux(ruta: str) -> str:
+    """fstype del punto de montaje más largo que contiene `ruta` ('' si no se sabe)."""
+    try:
+        with open("/proc/mounts", encoding="utf-8") as f:
+            montajes = [linea.split()[1:3] for linea in f if len(linea.split()) >= 3]
+    except OSError:
+        return ""
+    ruta = os.path.realpath(ruta)
+    mejor, tipo = "", ""
+    for punto, fs in montajes:
+        punto = punto.replace("\\040", " ")
+        if (ruta == punto or ruta.startswith(punto.rstrip("/") + "/")) and len(punto) >= len(mejor):
+            mejor, tipo = punto, fs
+    return tipo
+
+
+def _es_unidad_red_windows(ruta: str) -> bool:
+    ruta = os.path.abspath(ruta)
+    if ruta.startswith("\\\\"):
+        return True
+    try:
+        import ctypes
+        DRIVE_REMOTE = 4
+        return ctypes.windll.kernel32.GetDriveTypeW(os.path.splitdrive(ruta)[0] + "\\") == DRIVE_REMOTE
+    except (AttributeError, OSError):
+        return False
+
+
+def modo_journal(ruta_db: str | Path) -> str:
+    """'WAL' en disco local; 'DELETE' donde WAL no es seguro (fuse, red)."""
+    carpeta = os.path.dirname(os.path.abspath(str(ruta_db)))
+    if sys.platform == "win32":
+        return "DELETE" if _es_unidad_red_windows(carpeta) else "WAL"
+    tipo = _tipo_fs_linux(carpeta)
+    return "DELETE" if any(tipo.startswith(p) for p in _FS_SIN_WAL) else "WAL"
+
 
 _ESQUEMA = """
 CREATE TABLE IF NOT EXISTS imagenes (
@@ -118,8 +164,9 @@ class Manifiesto:
             conexion.row_factory = sqlite3.Row
             # WAL: lectores y escritor conviven. busy_timeout evita que dos
             # workers que coinciden en el mismo instante aborten con
-            # "database is locked" en vez de esperar su turno.
-            conexion.execute("PRAGMA journal_mode=WAL")
+            # "database is locked" en vez de esperar su turno. En disco sin
+            # memoria compartida fiable (fuse, red) cae a DELETE.
+            conexion.execute(f"PRAGMA journal_mode={modo_journal(self.ruta_db)}")
             conexion.execute("PRAGMA busy_timeout=30000")
             conexion.execute("PRAGMA synchronous=NORMAL")
             self._local.conexion = conexion
