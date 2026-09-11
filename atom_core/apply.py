@@ -193,7 +193,43 @@ def _transpose_para_angulo(angulo: int, pipeline_mod) -> "int | None":
     return None
 
 
-def _guardar_atomico(img, destino: str, transpose, pct_recorte, calidad: int,
+#: Calidad JPEG del `_CROP` cuando la fila NO se gira. La del Organizer
+#: original (`RGBCropping`): distinta de `compress_level` (que es la del
+#: original sin recortar) y distinta de `_ROTATION_JPEG_QUALITY` (que es la
+#: que pisa a AMBAS salidas — original y `_CROP` — cuando la fila sí se gira).
+_CROP_JPEG_QUALITY = 75
+
+
+def _caja_recorte_termico(ancho: int, alto: int, pct: float) -> tuple[int, int, int, int]:
+    """Caja de recorte centrado del `_CROP` de RGB, en proporción 5:4 — la
+    de la térmica — igual que hacía el Organizer original (`RGBCropping`),
+    en vez del recorte simétrico (misma proporción que la RGB) que llegó a
+    tener el motor plan-apply antes de esta corrección.
+
+    `pct` es la fracción (0-1, NO porcentaje) que decide el ancho de la
+    caja: `cw = ancho * pct`. El alto NO es `alto * pct` — sale de imponer
+    la proporción 5:4 sobre ese mismo ancho (`ch = cw / 1.25`), que es la
+    proporción real de la térmica DJI (640x512 = 5:4). Ambas dimensiones se
+    fuerzan a PAR (si salen impares, +1) antes de centrar: un recorte de
+    ancho/alto impar deja el centrado ligeramente asimétrico en el spinbox
+    del Organizer original, y esta función replica ese comportamiento
+    exacto, no lo que "debería" ser matemáticamente.
+
+    Caso de referencia (Correcciones §4, replicar el Organizer original):
+    8000x6000, pct=0.70 -> (1200, 760, 6800, 5240) — caja de 5600x4480.
+    """
+    cw = int(round(ancho * pct, 6))
+    if cw % 2:
+        cw += 1
+    ch = int(round(cw / 1.25, 6))
+    if ch % 2:
+        ch += 1
+    left = (ancho - cw) // 2
+    top = (alto - ch) // 2
+    return (left, top, left + cw, top + ch)
+
+
+def _guardar_atomico(img, destino: str, transpose, crop_box, calidad: int,
                       pipeline_mod, etapa_encode: str = "encode_original",
                       bloque_xmp: bytes | None = None) -> None:
     """Guarda `img` (con el crop/giro que le toque) en `destino` escribiendo
@@ -221,7 +257,7 @@ def _guardar_atomico(img, destino: str, transpose, pct_recorte, calidad: int,
     cfg_escritura = pipeline_mod.ImageProcessConfig(
         output_path=parcial,
         quality=calidad,
-        crop_centered_pct=pct_recorte,
+        crop_box=crop_box,
         rotate_degrees=transpose,
     )
     try:
@@ -251,21 +287,24 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
     antes que el original. `pipeline._procesar_y_guardar_imagen` reasigna su
     variable local `img` solo si aplica `crop` o `transpose`, y cierra esa
     variable local al terminar (`finally: img.close()`). El `_CROP` siempre
-    aplica `crop_centered_pct`, así que su cierre nunca toca el `img` de
-    fuera. El original, cuando el ángulo es 0, no aplica NINGUNA
-    transformación — su llamada recibiría literalmente el mismo objeto que
-    pasamos, y sería ESE el que se cerraría. Escribirlo el último es lo que
-    permite que ambas salidas compartan el mismo decode sin que la primera
-    escritura cierre el fichero que necesita la segunda.
+    aplica `crop_box`, así que su cierre nunca toca el `img` de fuera. El
+    original, cuando el ángulo es 0, no aplica NINGUNA transformación — su
+    llamada recibiría literalmente el mismo objeto que pasamos, y sería ESE
+    el que se cerraría. Escribirlo el último es lo que permite que ambas
+    salidas compartan el mismo decode sin que la primera escritura cierre el
+    fichero que necesita la segunda.
 
-    Giro UNA sola vez — de dónde sale el ahorro: el transpose de una imagen
-    de 48 MP cuesta ~0,55 s, y pasarle `rotate_degrees` a las DOS escrituras
-    lo pagaba DOS veces sobre el mismo decode. Aquí se gira una vez y ambas
-    salidas se escriben desde la imagen ya girada, sin transformación de
-    giro propia (~20 % del ciclo de una imagen girada). El recorte centrado
-    conmuta con el giro de 90°: `crop_centered_pct` es una fracción
-    simétrica, así que recortar la girada da exactamente el mismo píxel que
-    girar el recorte — solo se intercambian ancho y alto.
+    El `_CROP` recorta EN COORDENADAS DEL ORIGINAL, sin girar (Correcciones
+    §4: replicar al Organizer original, `_caja_recorte_termico` — proporción
+    5:4, no simétrica al recorte antiguo). Ya no conmuta con el giro de 90°
+    (esa propiedad era del recorte simétrico viejo, `ancho*pct x alto*pct`;
+    la caja 5:4 no la conserva), así que el `_CROP` gira DESPUÉS de recortar,
+    dentro del propio `_procesar_y_guardar_imagen` (`crop_box` +
+    `rotate_degrees` en la misma llamada) — no reutiliza la `girada` del
+    original. El original SÍ sigue reutilizando una única `girada` para su
+    propia escritura (sin recorte): cuando la fila gira, hay dos `transpose`
+    en total (uno para el `_CROP`, sobre la región ya recortada — barata — y
+    uno para el original completo), no uno.
 
     Instrumentación OPT-IN (`atom_core.perfil_rgb`, activa solo con
     `ORGANIZER_PERFIL_RGB` definida): la lectura del fichero de origen y su
@@ -285,7 +324,8 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
     with perfil_rgb.medir_imagen(nombre, bytes_origen):
         angulo = fila["angulo_giro"] or 0
         transpose = _transpose_para_angulo(angulo, pipeline_mod)
-        calidad = pipeline_mod._ROTATION_JPEG_QUALITY if angulo else cfg.compress_level
+        calidad_original = pipeline_mod._ROTATION_JPEG_QUALITY if angulo else cfg.compress_level
+        calidad_crop = pipeline_mod._ROTATION_JPEG_QUALITY if angulo else _CROP_JPEG_QUALITY
 
         with perfil_rgb.medir("lectura"):
             img = pipeline_mod.Image.open(fila["ruta_origen"])
@@ -296,21 +336,27 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
         escritas: list[str] = []
         girada = None
         try:
-            # La girada pasa a ser la base de AMBAS salidas; a partir de aquí
-            # ninguna de las dos escrituras vuelve a girar nada.
-            if transpose is not None:
-                girada = img.transpose(transpose)
-            base = girada if girada is not None else img
-
             ruta_crop = fila["ruta_salida_crop"]
             if ruta_crop:
-                _guardar_atomico(base, ruta_crop, None, fila["pct_recorte"], calidad,
+                # Caja en coordenadas del `img` SIN girar; el giro (si toca)
+                # lo aplica `_guardar_atomico`/`_procesar_y_guardar_imagen`
+                # DESPUÉS del crop, en la misma llamada — ver docstring.
+                caja = _caja_recorte_termico(img.width, img.height, fila["pct_recorte"])
+                _guardar_atomico(img, ruta_crop, transpose, caja, calidad_crop,
                                  pipeline_mod, etapa_encode="encode_crop",
                                  bloque_xmp=bloque_xmp)
                 escritas.append(ruta_crop)
 
+            # El original reutiliza una única `girada` para su propia
+            # escritura (sin recorte): el `_CROP` de arriba nunca cierra ni
+            # toca `img` (siempre reasigna su copia local al aplicar
+            # `crop_box`), así que sigue intacto para girarlo aquí.
+            if transpose is not None:
+                girada = img.transpose(transpose)
+            base = girada if girada is not None else img
+
             ruta_original = fila["ruta_salida_original"]
-            _guardar_atomico(base, ruta_original, None, None, calidad, pipeline_mod,
+            _guardar_atomico(base, ruta_original, None, None, calidad_original, pipeline_mod,
                              etapa_encode="encode_original", bloque_xmp=bloque_xmp)
             escritas.append(ruta_original)
         finally:
