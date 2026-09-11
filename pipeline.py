@@ -53,6 +53,7 @@ import exif as em
 
 import sys
 import external_tools
+import dji_worker_pool
 from atom_core import almacen, rjpeg, sharding
 
 
@@ -2477,6 +2478,12 @@ class SplitImages:
         """
         from rjpeg_a_tiff import EXTS_IMAGEN  # import local: evita ciclo con rjpeg_a_tiff, que hace `import pipeline`
 
+        # La conversión DJI->TIFF de la fase ya terminó (esta verificación siempre se
+        # llama justo después, en los dos entry points de `iterate_folders_for_DJI`):
+        # cierra aquí el pool de workers persistentes (no-op si no se usó, p. ej.
+        # Windows/x86). No-op también si `ATOM_DJI_PERSISTENT=0`.
+        dji_worker_pool.shutdown()
+
         results = {}
         errors = []
 
@@ -3118,8 +3125,33 @@ class SplitImages:
         --measurefmt float32 -o IMG.raw`. Genera el mismo .raw (buffer plano float32,
         °C, row-major, resolución del sensor) que el ejecutable de Windows.
 
-        Se ejecuta en un SUBPROCESO EFÍMERO (dji_irp_linux.py), igual que Windows lanza
-        un dji_irp.exe por imagen: aísla el proceso y permite paralelizar sin dudas de
+        En máquinas no-x86 (Raspberry Pi/ARM), donde el SDK de DJI se emula entero
+        bajo box64 + Python x86-64 (ver `external_tools.dji_linux_launcher`), primero
+        intenta el pool de workers persistentes (`dji_worker_pool`): amortiza el
+        arranque del intérprete emulado (~370 ms) entre imágenes en vez de pagarlo en
+        cada una. Si el pool falla por lo que sea (worker muerto, protocolo roto, o
+        error del propio SDK) cae SIEMPRE al subproceso efímero de siempre — la
+        salida es la misma en ambos caminos, verificado byte a byte (ver
+        `_dji_measure_to_raw_linux_subprocess`). Desactivable con
+        `ATOM_DJI_PERSISTENT=0`. En Windows/x86 este intento ni se hace.
+        """
+        if dji_worker_pool.persistent_enabled():
+            try:
+                dji_worker_pool.measure(image_path, raw_path, humidity, emissivity, lib_dir)
+                if (os.path.exists(raw_path) and os.path.getsize(raw_path) > 0
+                        and os.path.getsize(raw_path) % 4 == 0):
+                    return
+                raise RuntimeError("el worker persistente no dejó un .raw válido")
+            except Exception as e:
+                self.organizer_logger.logger.warning(
+                    "Conversor térmico persistente falló en {0} ({1}); reintentando con "
+                    "subproceso efímero.".format(image_path, e))
+        self._dji_measure_to_raw_linux_subprocess(image_path, raw_path, humidity, emissivity, lib_dir)
+
+    def _dji_measure_to_raw_linux_subprocess(self, image_path: str, raw_path: str, humidity: float, emissivity: float, lib_dir: str):
+        """
+        Vía original (subproceso efímero por imagen): igual que Windows lanza un
+        dji_irp.exe por imagen, aísla el proceso y permite paralelizar sin dudas de
         thread-safety de la librería nativa.
 
         En aarch64 (Raspberry Pi) ese subproceso va bajo box64 con un Python x86-64,

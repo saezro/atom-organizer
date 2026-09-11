@@ -28,6 +28,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, wait as 
 from typing import Any, Mapping
 
 import external_tools
+import dji_worker_pool
 import pipeline
 from exif import extraer_bloque_xmp_crudo
 from atom_core import indice as indice_mod
@@ -996,6 +997,9 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
                     resultado["hecho"] += 1
             progress_bar.emit(int(50 + numero_lote / len(lotes) * 50))
     finally:
+        # Fin de la fase térmica: cierra los workers persistentes del SDK DJI si se
+        # usaron (no-op en Windows/x86 o con ATOM_DJI_PERSISTENT=0).
+        dji_worker_pool.shutdown()
         shutil.rmtree(staging_raiz, ignore_errors=True)
 
     return resultado
