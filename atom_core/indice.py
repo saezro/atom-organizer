@@ -357,7 +357,7 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
     ruta_salida_tiff = None
     if tipo == "TERMICA" and cfg.convert_to_tif:
         raiz, _ext = os.path.splitext(nombre_final)
-        ruta_salida_tiff = almacen.unir(carpeta_destino, f"{raiz}.tif")
+        ruta_salida_tiff = almacen.unir(carpeta_destino, f"{raiz}.tiff")
 
     # RGB_Extra comprime con el MISMO flag que RGB (`Pipeline.iterate_folders`,
     # pipeline.py:2829: `compress_checked` es el único condicional, sin

@@ -208,6 +208,27 @@ def test_conserva_el_exif_en_la_salida(tmp_path, make_dji_jpeg):
     assert piexif.GPSIFD.GPSLatitude in exif_salida["GPS"]
 
 
+@pytest.mark.parametrize("angulo_giro", [0, 90])
+def test_conserva_el_xmp_dji_en_original_y_crop(tmp_path, make_dji_jpeg, angulo_giro):
+    """Sin el XMP DJI (gimbal, altitud relativa) el location.csv sale con esas
+    columnas a 0 (bench KL19 2026-09-11)."""
+    origen = tmp_path / "origen" / "DJI_0003.JPG"
+    origen.parent.mkdir()
+    make_dji_jpeg(str(origen), relative_altitude=12.5, gimbal_yaw=-84.9, gimbal_pitch=-90.0)
+
+    salida = tmp_path / "salida" / "DJI_0003.JPG"
+    crop = tmp_path / "salida" / "DJI_0003_CROP.JPG"
+    fila = _fila_dict(str(origen), str(salida), salida_crop=str(crop),
+                      angulo_giro=angulo_giro, pct_recorte=0.1)
+
+    apply._escribir_salidas_de_fila(fila, _cfg(), pipeline_real)
+
+    for ruta in (salida, crop):
+        datos = ruta.read_bytes()
+        assert b"GimbalYawDegree" in datos and b"-84.9" in datos
+        assert b"RelativeAltitude" in datos and b"12.5" in datos
+
+
 def test_la_rotacion_usa_la_calidad_del_motor_viejo(tmp_path, make_dji_jpeg, monkeypatch):
     """Decisión de Rodrigo (2026-09-08, Correcciones §4): replicar el
     criterio del motor viejo, no mejorarlo por sorpresa. Una RGB girada se
@@ -515,4 +536,7 @@ def test_el_crop_girado_es_pixel_a_pixel_el_de_antes(tmp_path, make_dji_jpeg):
             crop_centered_pct=0.71, rotate_degrees=PILImage.ROTATE_270))
 
     obtenida = tmp_path / "salida" / "DJI_0011_CROP.JPG"
-    assert obtenida.read_bytes() == esperada.read_bytes()
+    # La salida lleva además el XMP DJI pegado tras el JPEG: se compara el JPEG.
+    datos, esperados = obtenida.read_bytes(), esperada.read_bytes()
+    assert datos[:len(esperados)] == esperados
+    assert datos[len(esperados):].startswith(b"<x:xmpmeta")

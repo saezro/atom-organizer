@@ -194,7 +194,8 @@ def _transpose_para_angulo(angulo: int, pipeline_mod) -> "int | None":
 
 
 def _guardar_atomico(img, destino: str, transpose, pct_recorte, calidad: int,
-                      pipeline_mod, etapa_encode: str = "encode_original") -> None:
+                      pipeline_mod, etapa_encode: str = "encode_original",
+                      bloque_xmp: bytes | None = None) -> None:
     """Guarda `img` (con el crop/giro que le toque) en `destino` escribiendo
     primero a `<destino>.parcial` y renombrando con `os.replace`. Un fallo a
     mitad de un `save()` (disco lleno, JPEG corrupto al escribir, lo que
@@ -226,6 +227,12 @@ def _guardar_atomico(img, destino: str, transpose, pct_recorte, calidad: int,
     try:
         with perfil_rgb.medir(etapa_encode):
             pipeline_mod._procesar_y_guardar_imagen(img, cfg_escritura)
+        if bloque_xmp:
+            # `PIL.Image.save` no re-adjunta el XMP de DJI (gimbal, altitud
+            # relativa): sin esto el location.csv sale con esas columnas a 0.
+            # Mismo esquema que `_copiar_jpg_destino`: texto crudo tras el JPEG.
+            with open(parcial, "ab") as fh:
+                fh.write(bloque_xmp)
     except Exception:
         if os.path.exists(parcial):
             os.remove(parcial)
@@ -282,6 +289,7 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
 
         with perfil_rgb.medir("lectura"):
             img = pipeline_mod.Image.open(fila["ruta_origen"])
+            bloque_xmp = extraer_bloque_xmp_crudo(fila["ruta_origen"])
         with perfil_rgb.medir("decode"):
             img.load()
 
@@ -297,12 +305,13 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
             ruta_crop = fila["ruta_salida_crop"]
             if ruta_crop:
                 _guardar_atomico(base, ruta_crop, None, fila["pct_recorte"], calidad,
-                                 pipeline_mod, etapa_encode="encode_crop")
+                                 pipeline_mod, etapa_encode="encode_crop",
+                                 bloque_xmp=bloque_xmp)
                 escritas.append(ruta_crop)
 
             ruta_original = fila["ruta_salida_original"]
             _guardar_atomico(base, ruta_original, None, None, calidad, pipeline_mod,
-                             etapa_encode="encode_original")
+                             etapa_encode="encode_original", bloque_xmp=bloque_xmp)
             escritas.append(ruta_original)
         finally:
             # Defensivo: el original ya cerró `base` (ahora nunca aplica

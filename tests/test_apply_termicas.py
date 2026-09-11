@@ -152,7 +152,7 @@ def test_el_tiff_usa_el_angulo_del_manifiesto_igual_que_su_jpg(tmp_path, make_dj
     make_dji_jpeg(str(origen))
 
     salida_jpg = tmp_path / "salida" / "DJI_0001_T.JPG"
-    salida_tiff = tmp_path / "salida" / "DJI_0001_T.tif"
+    salida_tiff = tmp_path / "salida" / "DJI_0001_T.tiff"
     manifiesto = _manifiesto_con(
         tmp_path, [_fila_termica(origen, salida_jpg, salida_tiff, angulo_giro=90)]
     )
@@ -189,7 +189,7 @@ def test_los_metadatos_se_copian_en_lotes(tmp_path, make_dji_jpeg):
         origen.parent.mkdir(parents=True, exist_ok=True)
         make_dji_jpeg(str(origen))
         salida_jpg = tmp_path / "salida" / f"DJI_{indice:04d}_T.JPG"
-        salida_tiff = tmp_path / "salida" / f"DJI_{indice:04d}_T.tif"
+        salida_tiff = tmp_path / "salida" / f"DJI_{indice:04d}_T.tiff"
         filas.append(_fila_termica(origen, salida_jpg, salida_tiff))
 
     manifiesto = _manifiesto_con(tmp_path, filas)
@@ -217,9 +217,9 @@ def test_una_termica_sin_su_jpg_de_origen_queda_fallida(tmp_path, make_dji_jpeg)
 
     manifiesto = _manifiesto_con(tmp_path, [
         _fila_termica(origen_ok, tmp_path / "salida" / "DJI_0001_T.JPG",
-                      tmp_path / "salida" / "DJI_0001_T.tif"),
+                      tmp_path / "salida" / "DJI_0001_T.tiff"),
         _fila_termica(origen_roto, tmp_path / "salida" / "NO_EXISTE_T.JPG",
-                      tmp_path / "salida" / "NO_EXISTE_T.tif"),
+                      tmp_path / "salida" / "NO_EXISTE_T.tiff"),
     ])
     doble = _PipelineDePrueba()
 
@@ -249,7 +249,7 @@ def test_el_tiff_se_escribe_de_forma_atomica(tmp_path, make_dji_jpeg, monkeypatc
 
     carpeta_salida = tmp_path / "salida"
     salida_jpg = carpeta_salida / "DJI_0001_T.JPG"
-    salida_tiff = carpeta_salida / "DJI_0001_T.tif"
+    salida_tiff = carpeta_salida / "DJI_0001_T.tiff"
     manifiesto = _manifiesto_con(
         tmp_path, [_fila_termica(origen, salida_jpg, salida_tiff, angulo_giro=90)]
     )
@@ -283,9 +283,9 @@ def test_falta_de_metadatos_marca_la_fila_como_fallida(tmp_path, make_dji_jpeg):
 
     manifiesto = _manifiesto_con(tmp_path, [
         _fila_termica(origen_falla, tmp_path / "salida" / "DJI_0001_T.JPG",
-                      tmp_path / "salida" / "DJI_0001_T.tif"),
+                      tmp_path / "salida" / "DJI_0001_T.tiff"),
         _fila_termica(origen_ok, tmp_path / "salida" / "DJI_0002_T.JPG",
-                      tmp_path / "salida" / "DJI_0002_T.tif"),
+                      tmp_path / "salida" / "DJI_0002_T.tiff"),
     ])
     doble = _PipelineDePrueba(lotes_que_fallan={str(origen_falla)})
 
@@ -303,7 +303,7 @@ def test_falta_de_metadatos_marca_la_fila_como_fallida(tmp_path, make_dji_jpeg):
     assert hecha["estado"] == "hecho"
     # El TIFF sí se escribió (la conversión fue OK, lo que falló fue exiftool),
     # pero eso no basta para que la fila quede 'hecho'.
-    assert (tmp_path / "salida" / "DJI_0001_T.tif").exists()
+    assert (tmp_path / "salida" / "DJI_0001_T.tiff").exists()
     manifiesto.cerrar()
 
 
@@ -322,7 +322,7 @@ def test_jpg_termico_se_gira_con_gen_thumbnails_activo(tmp_path):
     _jpg_termico_apaisado(str(origen))
 
     salida_jpg = tmp_path / "salida" / "DJI_0001_T.JPG"
-    salida_tiff = tmp_path / "salida" / "DJI_0001_T.tif"
+    salida_tiff = tmp_path / "salida" / "DJI_0001_T.tiff"
     manifiesto = _manifiesto_con(
         tmp_path, [_fila_termica(origen, salida_jpg, salida_tiff, angulo_giro=90)]
     )
@@ -368,7 +368,7 @@ def test_jpg_termico_con_exif_real_conserva_gps_fecha_y_yaw_tras_girar(
     yaw_antes, _pitch_antes = exif_obj.get_gimbal_yaw_pitch(str(origen))
 
     salida_jpg = tmp_path / "salida" / "DJI_0001_T.JPG"
-    salida_tiff = tmp_path / "salida" / "DJI_0001_T.tif"
+    salida_tiff = tmp_path / "salida" / "DJI_0001_T.tiff"
     manifiesto = _manifiesto_con(
         tmp_path, [_fila_termica(origen, salida_jpg, salida_tiff, angulo_giro=90)]
     )
@@ -420,7 +420,7 @@ def test_jpg_termico_no_se_gira_con_sin_rotacion(tmp_path):
     _jpg_termico_apaisado(str(origen))
 
     salida_jpg = tmp_path / "salida" / "DJI_0001_T.JPG"
-    salida_tiff = tmp_path / "salida" / "DJI_0001_T.tif"
+    salida_tiff = tmp_path / "salida" / "DJI_0001_T.tiff"
     manifiesto = _manifiesto_con(
         tmp_path, [_fila_termica(origen, salida_jpg, salida_tiff, angulo_giro=90)]
     )
@@ -450,7 +450,7 @@ def test_el_origen_nunca_se_modifica(tmp_path):
         contenido_original = origen.read_bytes()
 
         salida_jpg = tmp_path / f"salida_{gen_thumbnails}" / "DJI_0001_T.JPG"
-        salida_tiff = tmp_path / f"salida_{gen_thumbnails}" / "DJI_0001_T.tif"
+        salida_tiff = tmp_path / f"salida_{gen_thumbnails}" / "DJI_0001_T.tiff"
         carpeta_manifiesto = tmp_path / f"m_{gen_thumbnails}"
         carpeta_manifiesto.mkdir()
         manifiesto = _manifiesto_con(
