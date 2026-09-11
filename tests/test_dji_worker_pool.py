@@ -151,3 +151,22 @@ def test_persistent_enabled_true_en_no_x86_salvo_variable_de_entorno(monkeypatch
     assert dji_worker_pool.persistent_enabled() is True
     monkeypatch.setenv("ATOM_DJI_PERSISTENT", "0")
     assert dji_worker_pool.persistent_enabled() is False
+
+
+def test_pool_devuelve_el_cupo_si_el_worker_no_llega_a_nacer(monkeypatch):
+    """Si crear el worker falla (p. ej. falta el runtime x86), el cupo reservado
+    vuelve: antes se perdía y, tras _MAX_WORKERS fallos, todos los hilos se
+    quedaban esperando en `_idle.get()` para siempre (cuelgue KL19 Pi)."""
+    def lanzador_roto(lib_dir):
+        raise external_tools.FeatureUnavailableError("falta el runtime x86")
+
+    monkeypatch.setattr(external_tools, "dji_linux_launcher", lanzador_roto)
+    monkeypatch.setattr(dji_worker_pool, "_MAX_WORKERS", 2)
+    monkeypatch.setattr(dji_worker_pool, "_pool", None)
+    try:
+        for i in range(5):  # más fallos que cupo: antes el 3º se colgaba
+            with pytest.raises(external_tools.FeatureUnavailableError):
+                dji_worker_pool.measure(f"{i}.jpg", f"{i}.raw", 50.0, 0.9, "/lib")
+        assert dji_worker_pool._pool._n_created == 0
+    finally:
+        dji_worker_pool.shutdown()
