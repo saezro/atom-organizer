@@ -486,11 +486,15 @@ def test_stats_apply_rotacion_acumula_entre_rgb_y_termicas(tmp_path, make_dji_jp
     assert valores == {"rot270": 2, "rot90": 1, "rot_none": 1}
 
 
-def test_una_fila_girada_solo_transpone_una_vez(tmp_path, make_dji_jpeg, monkeypatch):
-    """El transpose de una imagen de 48 MP cuesta ~0,55 s. Girar por
-    separado para el `_CROP` y para el original lo pagaba DOS veces sobre el
-    mismo decode (~20 % del ciclo de una imagen girada, tirado). Se gira una
-    vez y ambas salidas salen de la imagen ya girada."""
+def test_una_fila_girada_transpone_el_original_y_el_crop_por_separado(
+    tmp_path, make_dji_jpeg, monkeypatch
+):
+    """Correcciones §4: el `_CROP` ahora es una caja 5:4 (`_caja_recorte_termico`,
+    la de la térmica), no el recorte simétrico `ancho*pct x alto*pct` de antes —
+    y esa caja NO conmuta con el giro de 90° (la simetría que lo permitía era
+    justo la del recorte viejo). El `_CROP` tiene que recortarse en coordenadas
+    del original y girarse DESPUÉS, sin reutilizar la `girada` del original: dos
+    `transpose` en total cuando la fila gira, uno por salida — ya no uno solo."""
     origen = tmp_path / "origen" / "DJI_0010.JPG"
     origen.parent.mkdir()
     make_dji_jpeg(str(origen))
@@ -509,14 +513,15 @@ def test_una_fila_girada_solo_transpone_una_vez(tmp_path, make_dji_jpeg, monkeyp
                       angulo_giro=90, pct_recorte=0.71)
     apply._escribir_salidas_de_fila(fila, _cfg(), pipeline_real)
 
-    assert len(transposes) == 1, f"se transpuso {len(transposes)} veces, esperado 1"
+    assert len(transposes) == 2, f"se transpuso {len(transposes)} veces, esperado 2"
 
 
-def test_el_crop_girado_es_pixel_a_pixel_el_de_antes(tmp_path, make_dji_jpeg):
-    """Invariante que autoriza el cambio de orden: el recorte centrado es
-    una fracción simétrica, así que conmuta con el giro de 90°. Recortar la
-    imagen ya girada tiene que dar EXACTAMENTE lo mismo que girar el
-    recorte de la original — si no, la entrega cambiaría de encuadre."""
+def test_el_crop_recorta_en_coordenadas_del_original_y_luego_gira(tmp_path, make_dji_jpeg):
+    """El `_CROP` debe salir PIXEL A PIXEL igual que recortar la imagen SIN
+    girar (`_caja_recorte_termico` sobre `ancho x alto` del original) y girar
+    DESPUÉS ese recorte — nunca recortar la imagen ya girada. Es la misma
+    llamada que hace `_guardar_atomico` para el `_CROP`, así que la
+    comparación es bit a bit, no aproximada."""
     origen = tmp_path / "origen" / "DJI_0011.JPG"
     origen.parent.mkdir()
     make_dji_jpeg(str(origen))
@@ -526,17 +531,125 @@ def test_el_crop_girado_es_pixel_a_pixel_el_de_antes(tmp_path, make_dji_jpeg):
                       angulo_giro=90, pct_recorte=0.71)
     apply._escribir_salidas_de_fila(fila, _cfg(), pipeline_real)
 
-    # La esperada se produce con el ORDEN ANTIGUO (recortar y luego girar)
-    # y por el mismo `_procesar_y_guardar_imagen`, para que la comparación
-    # sea de píxeles y no del ruido de una recompresión JPEG distinta.
+    with PILImage.open(str(origen)) as bruta:
+        ancho, alto = bruta.size
+    caja = apply._caja_recorte_termico(ancho, alto, 0.71)
+
     esperada = tmp_path / "esperada.JPG"
     with PILImage.open(str(origen)) as bruta:
         pipeline_real._procesar_y_guardar_imagen(bruta, pipeline_real.ImageProcessConfig(
             output_path=str(esperada), quality=pipeline_real._ROTATION_JPEG_QUALITY,
-            crop_centered_pct=0.71, rotate_degrees=PILImage.ROTATE_270))
+            crop_box=caja, rotate_degrees=PILImage.ROTATE_270))
 
     obtenida = tmp_path / "salida" / "DJI_0011_CROP.JPG"
     # La salida lleva además el XMP DJI pegado tras el JPEG: se compara el JPEG.
     datos, esperados = obtenida.read_bytes(), esperada.read_bytes()
     assert datos[:len(esperados)] == esperados
     assert datos[len(esperados):].startswith(b"<x:xmpmeta")
+
+
+def test_caja_recorte_termico_caso_de_referencia():
+    """Caso de referencia obligatorio (Correcciones §4, replicar el Organizer
+    original): 8000x6000 al 70 % da una caja 5600x4480 (proporción 5:4, la de
+    la térmica), centrada."""
+    assert apply._caja_recorte_termico(8000, 6000, 0.70) == (1200, 760, 6800, 5240)
+
+
+def test_caja_recorte_termico_ancho_o_alto_impar_se_redondea_a_par():
+    """`cw`/`ch` impares se suben a par ANTES de centrar (replica el
+    comportamiento exacto del spinbox del Organizer original, no lo que
+    "debería" ser matemáticamente): 100x90 al 81 % da cw=81 (impar) -> 82, y
+    con eso ch=64,8 (impar tras redondear) -> 66."""
+    caja = apply._caja_recorte_termico(100, 90, 0.81)
+    left, top, right, bottom = caja
+    assert (right - left, bottom - top) == (82, 66)
+    assert caja == (9, 12, 91, 78)
+
+
+def test_caja_recorte_termico_proporcion_5_4():
+    """El `_CROP` de RGB debe salir SIEMPRE en proporción 5:4 (la de la
+    térmica), sea cual sea el `pct` o el tamaño de origen — no la proporción
+    del sensor RGB."""
+    for ancho, alto, pct in [(8000, 6000, 0.70), (5280, 3956, 0.5), (64, 48, 0.71)]:
+        left, top, right, bottom = apply._caja_recorte_termico(ancho, alto, pct)
+        cw, ch = right - left, bottom - top
+        assert cw % 2 == 0 and ch % 2 == 0
+        assert cw == pytest.approx(ch * 1.25, abs=1)
+
+
+def test_el_crop_generado_tiene_proporcion_5_4(tmp_path, make_dji_jpeg):
+    """El fichero `_CROP` escrito de verdad debe salir con la proporción 5:4
+    que decide `_caja_recorte_termico`, no el recorte cuadrado/simétrico
+    antiguo."""
+    origen = tmp_path / "origen" / "DJI_0012.JPG"
+    origen.parent.mkdir()
+    make_dji_jpeg(str(origen))
+
+    with PILImage.open(str(origen)) as bruta:
+        ancho, alto = bruta.size
+    caja_esperada = apply._caja_recorte_termico(ancho, alto, 0.7)
+    ancho_esperado = caja_esperada[2] - caja_esperada[0]
+    alto_esperado = caja_esperada[3] - caja_esperada[1]
+
+    crop = tmp_path / "salida" / "DJI_0012_CROP.JPG"
+    fila = _fila_dict(str(origen), str(tmp_path / "salida" / "DJI_0012.JPG"),
+                      str(crop), angulo_giro=0, pct_recorte=0.7)
+    apply._escribir_salidas_de_fila(fila, _cfg(), pipeline_real)
+
+    with PILImage.open(str(crop)) as generado:
+        assert generado.size == (ancho_esperado, alto_esperado)
+
+
+def test_calidad_del_crop_75_sin_girar_40_girada(tmp_path, make_dji_jpeg, monkeypatch):
+    """Calidad JPEG del `_CROP`: 75 cuando la fila no gira (la del Organizer
+    original), `_ROTATION_JPEG_QUALITY` (40) cuando sí gira — pisando
+    `cfg.compress_level`, igual que ya hace el original girado."""
+    origen = tmp_path / "origen" / "DJI_0013.JPG"
+    origen.parent.mkdir()
+    make_dji_jpeg(str(origen))
+
+    calidades = []
+    guardado_real = PILImage.Image.save
+
+    def _save_que_apunta(self, fp, *args, **kwargs):
+        calidades.append(kwargs.get("quality"))
+        return guardado_real(self, fp, *args, **kwargs)
+
+    monkeypatch.setattr(PILImage.Image, "save", _save_que_apunta)
+
+    cfg = _cfg(compress_level=77)
+
+    fila_recta = _fila_dict(str(origen), str(tmp_path / "recta.jpg"),
+                            str(tmp_path / "recta_CROP.jpg"),
+                            angulo_giro=0, pct_recorte=0.7)
+    apply._escribir_salidas_de_fila(fila_recta, cfg, pipeline_real)
+    # Orden de escritura: CROP primero, original después (ver docstring).
+    assert calidades == [75, 77]
+
+    calidades.clear()
+    fila_girada = _fila_dict(str(origen), str(tmp_path / "girada.jpg"),
+                             str(tmp_path / "girada_CROP.jpg"),
+                             angulo_giro=90, pct_recorte=0.7)
+    apply._escribir_salidas_de_fila(fila_girada, cfg, pipeline_real)
+    assert calidades == [40, 40]
+
+
+def test_el_crop_conserva_el_exif(tmp_path, make_dji_jpeg):
+    """El `_CROP` debe conservar el EXIF (fecha, GPS) igual que el original —
+    sin eso no se puede georreferenciar la imagen recortada."""
+    dt_val = dt.datetime(2026, 5, 1, 10, 30, 0)
+    origen = tmp_path / "origen" / "DJI_0014.JPG"
+    origen.parent.mkdir()
+    make_dji_jpeg(str(origen), lat=40.0, lon=-3.0, dt_val=dt_val)
+
+    salida = tmp_path / "salida" / "DJI_0014.JPG"
+    crop = tmp_path / "salida" / "DJI_0014_CROP.JPG"
+    fila = _fila_dict(str(origen), str(salida), salida_crop=str(crop),
+                      angulo_giro=0, pct_recorte=0.7)
+
+    apply._escribir_salidas_de_fila(fila, _cfg(), pipeline_real)
+
+    exif_crop = piexif.load(str(crop))
+    fecha = exif_crop["Exif"][piexif.ExifIFD.DateTimeOriginal].decode()
+    assert fecha == "2026:05:01 10:30:00"
+    assert piexif.GPSIFD.GPSLatitude in exif_crop["GPS"]
