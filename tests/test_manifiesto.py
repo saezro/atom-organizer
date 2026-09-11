@@ -47,6 +47,31 @@ def test_esquema_en_modo_wal(tmp_path):
     manifiesto.cerrar()
 
 
+def test_fuse_cae_a_delete(tmp_path, monkeypatch):
+    """En NTFS por fuse (SSD de la Pi) WAL corrompía la base con varios
+    workers: ahí el manifiesto tiene que ir en journal DELETE."""
+    import atom_core.manifiesto as m
+    monkeypatch.setattr(m.sys, "platform", "linux")
+    monkeypatch.setattr(m, "_tipo_fs_linux", lambda ruta: "fuseblk")
+    manifiesto = Manifiesto(tmp_path / "manifiesto.db")
+    manifiesto.crear_esquema()
+    with sqlite3.connect(tmp_path / "manifiesto.db") as conexion:
+        modo = conexion.execute("PRAGMA journal_mode").fetchone()[0]
+    assert modo.lower() == "delete"
+    manifiesto.cerrar()
+
+
+def test_tipo_fs_linux_elige_montaje_mas_largo(tmp_path, monkeypatch):
+    import atom_core.manifiesto as m
+    montajes = "/dev/a / ext4 rw 0 0\n/dev/sdc1 /media/pi/USB_HDD fuseblk rw 0 0\n"
+    import io
+    monkeypatch.setattr("builtins.open", lambda *a, **k: io.StringIO(montajes))
+    monkeypatch.setattr(m.os.path, "realpath", lambda r: r)
+    assert m._tipo_fs_linux("/media/pi/USB_HDD/KL19/.organizado") == "fuseblk"
+    assert m._tipo_fs_linux("/media/pi/USB_HDDX") == "ext4"
+    assert m._tipo_fs_linux("/home/pi") == "ext4"
+
+
 def test_insertar_y_contar_pendientes(tmp_path):
     """Toda fila recién insertada nace 'pendiente': el apply no puede saltarse
     ninguna imagen por un default mal puesto."""
