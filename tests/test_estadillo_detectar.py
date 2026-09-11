@@ -62,3 +62,16 @@ def test_ignora_temporal_de_office(tmp_path):
     assert res["rutas"] == [ok]
     assert str(temporal) not in res["rutas"]
     assert str(temporal) not in res["descartados"]
+
+
+def test_detecta_estadillo_en_carpeta_padre(tmp_path):
+    """KL19/estadillo.csv con KL19/FOTOS como origen: se encuentra; las
+    carpetas hermanas NO se barren."""
+    (tmp_path / "FOTOS").mkdir()
+    (tmp_path / "OTRA").mkdir()
+    e = _csv(tmp_path / "estadillo_KL19.csv", [("1", "1", "2026:03:17", "10:00:00", "10:05:00")])
+    _csv(tmp_path / "OTRA" / "ajeno.csv", [("2", "1", "2026:03:18", "11:00:00", "11:05:00")])
+
+    res = estadillo.detectar_estadillos(str(tmp_path / "FOTOS"))
+
+    assert res["rutas"] == [e]

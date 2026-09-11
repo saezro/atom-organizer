@@ -154,6 +154,18 @@ def detectar_estadillos(carpeta: str, max_profundidad: int = 2) -> dict:
                 continue
             candidatos.append(os.path.join(dirpath, nombre))
 
+    # El estadillo suele vivir junto a la carpeta de fotos (KL19/estadillo.csv
+    # con KL19/FOTOS como origen): mirar también la carpeta padre, solo su
+    # nivel (sin recursión, para no barrer hermanas).
+    padre = os.path.dirname(raiz_normalizada)
+    if padre and padre != raiz_normalizada and os.path.isdir(padre):
+        for nombre in os.listdir(padre):
+            ruta_padre = os.path.join(padre, nombre)
+            if nombre.startswith(".") or nombre.startswith("~$") or not os.path.isfile(ruta_padre):
+                continue
+            if os.path.splitext(nombre)[1].lower() in _EXTENSIONES_CANDIDATAS:
+                candidatos.append(ruta_padre)
+
     rutas: list[str] = []
     descartados: list[str] = []
     for ruta in candidatos:
