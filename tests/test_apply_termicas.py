@@ -202,7 +202,34 @@ def test_los_metadatos_se_copian_en_lotes(tmp_path, make_dji_jpeg):
 
     assert resultado == {"hecho": 5, "fallido": 0}
     assert len(doble.llamadas_exif) == 3
-    assert [len(lote) for lote in doble.llamadas_exif] == [2, 2, 1]
+    # Los lotes corren en paralelo: el orden de llegada no está garantizado.
+    assert sorted(len(lote) for lote in doble.llamadas_exif) == [1, 2, 2]
+    manifiesto.cerrar()
+
+
+def test_lotes_exif_se_reparten_en_multiplo_de_procesos(tmp_path, make_dji_jpeg, monkeypatch):
+    """Con 4 exiftool en paralelo, 9 térmicas y `tamano_lote_exif=2` saldrían
+    5 lotes (2+2+2+2+1), y el quinto correría solo con 3 procesos ociosos: se
+    redondea a 8 lotes equilibrados (2+1×7) y todas las filas quedan hechas."""
+    monkeypatch.setenv("ATOM_EXIF_WORKERS", "4")
+    filas = []
+    for indice in range(9):
+        origen = tmp_path / "origen" / f"DJI_{indice:04d}_T.JPG"
+        origen.parent.mkdir(parents=True, exist_ok=True)
+        make_dji_jpeg(str(origen))
+        filas.append(_fila_termica(origen, tmp_path / "salida" / f"DJI_{indice:04d}_T.JPG",
+                                   tmp_path / "salida" / f"DJI_{indice:04d}_T.tiff"))
+
+    manifiesto = _manifiesto_con(tmp_path, filas)
+    doble = _PipelineDePrueba()
+
+    resultado = apply.aplicar_termicas(
+        manifiesto, _cfg(), doble, _SignalFalsa(), _SignalFalsa(), _SignalFalsa(),
+        tamano_lote_exif=2,
+    )
+
+    assert resultado == {"hecho": 9, "fallido": 0}
+    assert sorted(len(lote) for lote in doble.llamadas_exif) == [1] * 7 + [2]
     manifiesto.cerrar()
 
 

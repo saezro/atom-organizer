@@ -852,11 +852,29 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
         shutil.rmtree(staging_salida, ignore_errors=True)
 
 
-def _en_lotes(items: list, tamano: int):
-    """Trocea `items` en listas de como mucho `tamano` elementos, en orden."""
-    tamano = max(1, tamano)
-    for inicio in range(0, len(items), tamano):
-        yield items[inicio:inicio + tamano]
+def _procesos_exif() -> int:
+    """Nº de exiftool simultáneos para copiar los metadatos a los TIFF. Tope 4:
+    además de CPU, cada proceso reescribe TIFFs en el disco de destino, y en un
+    HDD más escritores a la vez solo añaden seeks. `ATOM_EXIF_WORKERS` lo fuerza
+    (1 = el comportamiento en serie de antes)."""
+    forzado = int(os.environ.get("ATOM_EXIF_WORKERS", "0") or 0)
+    if forzado > 0:
+        return forzado
+    return max(1, min(4, os.cpu_count() or 1))
+
+
+def _repartir(items: list, grupos: int) -> list[list]:
+    """Parte `items` en `grupos` trozos contiguos cuyo tamaño difiere como mucho
+    en 1 (los más grandes primero). Sin items, ningún trozo."""
+    if not items or grupos <= 0:
+        return []
+    base, resto = divmod(len(items), grupos)
+    trozos, inicio = [], 0
+    for indice in range(grupos):
+        fin = inicio + base + (1 if indice < resto else 0)
+        trozos.append(items[inicio:fin])
+        inicio = fin
+    return [trozo for trozo in trozos if trozo]
 
 
 def _reportar_colisiones_destino(manifiesto, progress_callback) -> None:
@@ -1029,17 +1047,36 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
                                  total, aforo.resumen(controlador.maximo))
 
         # --- Metadatos: exiftool en lotes, sobre lo que sí se convirtió ----
+        # Los lotes van en PARALELO, cada uno en su propio exiftool: cada par
+        # escribe un TIFF distinto, así que no se pisan, y el Perl de exiftool es
+        # CPU de un solo hilo. Medido en la Pi con 400 TIFFs de KL19: 32,6 s en
+        # serie frente a 13,2 s con 4 procesos, salida byte a byte idéntica. Si hay
+        # más lotes que procesos, se redondea a un múltiplo del nº de procesos con
+        # lotes equilibrados, para que la última ronda no deje procesos ociosos
+        # con un lote residual (1012 pares / 200 daba 5 lotes llenos y uno de 12).
         pendientes_exif = list(convertidas.values())
-        lotes = list(_en_lotes(pendientes_exif, tamano_lote_exif))
-        for numero_lote, lote in enumerate(lotes, start=1):
+        procesos_exif = _procesos_exif()
+        grupos = -(-len(pendientes_exif) // max(1, tamano_lote_exif))
+        if grupos > procesos_exif:
+            grupos = procesos_exif * -(-grupos // procesos_exif)
+        lotes = _repartir(pendientes_exif, grupos)
+
+        def _lote_exif(lote: list) -> None:
             pares = [(fila["ruta_origen"], fila["ruta_salida_tiff"]) for fila in lote]
-            try:
-                pipeline._run_exif_batch_local(pares, exiftool_exe, progress_callback)
-            except Exception as exc:
-                for fila in lote:
-                    manifiesto.marcar_fallida(fila["id"], str(exc))
-                    resultado["fallido"] += 1
-            else:
+            pipeline._run_exif_batch_local(pares, exiftool_exe, progress_callback)
+
+        with ThreadPoolExecutor(max_workers=max(1, min(procesos_exif, len(lotes)))) as executor_exif:
+            futuros_exif = [executor_exif.submit(_lote_exif, lote) for lote in lotes]
+            # El manifiesto se escribe desde ESTE hilo y en el orden de los lotes,
+            # igual que cuando iban en serie.
+            for numero_lote, (lote, futuro_exif) in enumerate(zip(lotes, futuros_exif), start=1):
+                exc = futuro_exif.exception()
+                if exc is not None:
+                    for fila in lote:
+                        manifiesto.marcar_fallida(fila["id"], str(exc))
+                        resultado["fallido"] += 1
+                    progress_bar.emit(int(50 + numero_lote / len(lotes) * 50))
+                    continue
                 for fila in lote:
                     piezas = [
                         f"{fila['ruta_salida_original']}:{os.path.getsize(fila['ruta_salida_original'])}",
@@ -1050,7 +1087,7 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
                         )
                     manifiesto.marcar_hecha(fila["id"], "; ".join(piezas))
                     resultado["hecho"] += 1
-            progress_bar.emit(int(50 + numero_lote / len(lotes) * 50))
+                progress_bar.emit(int(50 + numero_lote / len(lotes) * 50))
     finally:
         # Fin de la fase térmica: cierra los workers persistentes del SDK DJI si se
         # usaron (no-op en Windows/x86 o con ATOM_DJI_PERSISTENT=0).
