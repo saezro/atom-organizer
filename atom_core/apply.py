@@ -598,7 +598,6 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
 
     if controlador is None:
         for indice, fila in enumerate(filas, start=1):
-            manifiesto.marcar_en_curso(fila["id"])
             try:
                 verificacion = _escribir_salidas_de_fila(fila, cfg, pipeline_mod)
             except Exception as exc:
@@ -648,14 +647,13 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
         for fila in filas:
             aforo.adquirir()
             try:
-                manifiesto.marcar_en_curso(fila["id"])
                 futuro = executor.submit(_trabajo_fila, fila, cfg)
             except Exception as exc:
                 # Sin futuro no habrá callback: hay que cerrar la fila y
                 # devolver el permiso aquí mismo. Un `BrokenProcessPool` (un
                 # worker muerto por RAM) rompe TODOS los submit siguientes, y
-                # dejar que la excepción suba abortaría el lote entero con las
-                # filas ya marcadas 'en_curso' y el aforo a medias.
+                # dejar que la excepción suba abortaría el lote entero con el
+                # aforo a medias.
                 _cerrar_fila(fila, error=exc)
                 aforo.liberar()
                 continue
@@ -972,7 +970,6 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
         lock_contadores = threading.Lock()
 
         def _procesar_una(fila: dict) -> None:
-            manifiesto.marcar_en_curso(fila["id"])
             contador_rotacion.registrar(fila["angulo_giro"] or 0)
             try:
                 _convertir_una_termica(fila, cfg, pipeline, exiftool_exe, dji_utility,
