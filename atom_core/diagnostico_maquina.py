@@ -86,6 +86,21 @@ def _tipo_disco_windows(ruta) -> dict:
     return {"tipo": tipo, "modelo": modelo, "unidad": letra}
 
 
+def _rpm_udev(dispositivo: str) -> Optional[int]:
+    """`ID_ATA_ROTATION_RATE_RPM` de la base de datos de udev para el disco
+    `dispositivo` (p.ej. "sda"), o `None` si udev no lo tiene. Nunca lanza."""
+    try:
+        with open(f"/sys/block/{dispositivo}/dev", "r") as f:
+            mayor_menor = f.read().strip()
+        with open(f"/run/udev/data/b{mayor_menor}", "r") as f:
+            for linea in f:
+                if linea.startswith("E:ID_ATA_ROTATION_RATE_RPM="):
+                    return int(linea.split("=", 1)[1].strip())
+    except Exception:
+        return None
+    return None
+
+
 def _tipo_disco_linux(ruta) -> dict:
     ruta_abs = os.path.abspath(str(ruta))
     try:
@@ -126,6 +141,15 @@ def _tipo_disco_linux(ruta) -> dict:
         tipo = "HDD" if valor == "1" else ("SSD" if valor == "0" else "desconocido")
     except Exception:
         tipo = "desconocido"
+
+    # Las cajas USB suelen reportar rotational=1 aunque dentro haya un SSD
+    # (Pi del kiosco: Samsung MZ7PD128 en caja USB -> ROTA=1). udev guarda la
+    # velocidad de giro que el propio disco declara en su IDENTIFY ATA: 0 es
+    # SSD. Sin ese dato (puente USB sin passthrough ATA) se mantiene el kernel.
+    if tipo == "HDD":
+        rpm = _rpm_udev(dispositivo)
+        if rpm == 0:
+            tipo = "SSD"
 
     modelo = None
     try:
