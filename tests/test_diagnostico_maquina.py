@@ -16,8 +16,9 @@ from atom_core import diagnostico_maquina as dm
 # --- tipo_disco: Linux -------------------------------------------------------
 
 
-def _parchea_linux_rotational(monkeypatch, valor: str, dispositivo: str = "sda"):
-    """Simula que `ruta` vive en un disco cuyo `rotational` vale `valor`."""
+def _parchea_linux_rotational(monkeypatch, valor: str, dispositivo: str = "sda", udev: str | None = None):
+    """Simula que `ruta` vive en un disco cuyo `rotational` vale `valor`.
+    `udev` es el contenido de /run/udev/data/b8:0 (None = udev sin datos)."""
     monkeypatch.setattr(dm.os, "name", "posix")
 
     class _Stat:
@@ -44,6 +45,16 @@ def _parchea_linux_rotational(monkeypatch, valor: str, dispositivo: str = "sda")
             return io.StringIO(valor)
         if ruta == f"/sys/block/{dispositivo}/device/model":
             raise FileNotFoundError()
+        if ruta == f"/sys/block/{dispositivo}/dev":
+            import io
+
+            return io.StringIO("8:0\n")
+        if ruta == "/run/udev/data/b8:0":
+            if udev is None:
+                raise FileNotFoundError()
+            import io
+
+            return io.StringIO(udev)
         return _open_original(ruta, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "open", _fake_open)
@@ -53,6 +64,24 @@ def test_tipo_disco_linux_rotational_1_es_hdd(monkeypatch):
     _parchea_linux_rotational(monkeypatch, "1\n")
     resultado = dm.tipo_disco("/mnt/datos/foo")
     assert resultado["tipo"] == "HDD"
+
+
+def test_tipo_disco_linux_ssd_en_caja_usb_rpm_0_es_ssd(monkeypatch):
+    # Caja USB: el kernel dice rotational=1, pero el disco declara 0 RPM.
+    _parchea_linux_rotational(
+        monkeypatch, "1\n", udev="E:ID_BUS=ata\nE:ID_ATA_ROTATION_RATE_RPM=0\nG:systemd\n"
+    )
+    assert dm.tipo_disco("/media/pi/USB_HDD/KL19")["tipo"] == "SSD"
+
+
+def test_tipo_disco_linux_hdd_con_rpm_sigue_hdd(monkeypatch):
+    _parchea_linux_rotational(monkeypatch, "1\n", udev="E:ID_ATA_ROTATION_RATE_RPM=5400\n")
+    assert dm.tipo_disco("/mnt/datos/foo")["tipo"] == "HDD"
+
+
+def test_tipo_disco_linux_udev_corrupto_se_queda_con_el_kernel(monkeypatch):
+    _parchea_linux_rotational(monkeypatch, "1\n", udev="E:ID_ATA_ROTATION_RATE_RPM=basura\n")
+    assert dm.tipo_disco("/mnt/datos/foo")["tipo"] == "HDD"
 
 
 def test_tipo_disco_linux_rotational_0_es_ssd(monkeypatch):
