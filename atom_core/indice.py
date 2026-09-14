@@ -15,12 +15,19 @@ que la decisión salga idéntica a la de siempre.
 """
 from __future__ import annotations
 
+import datetime
+import io
 import json
 import os
+import re
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+import exifread
+import PIL.Image
+
+import exif as exif_mod
 import utils
 from atom_core import almacen
 from atom_core import estadillo as estadillo_mod
@@ -90,11 +97,21 @@ def _clasificar_tipo(nombre: str, cfg) -> str:
     repartir el mismo origen en varias pasadas. Sin sufijo que case, RGB por
     defecto (el caso mayoritario: cámara sin marcar terminación propia)."""
     base, _ext = os.path.splitext(nombre)
-    if cfg.end_thermo_files and base.endswith(cfg.end_thermo_files):
+    if _termina_en_sufijo(base, cfg.end_thermo_files):
         return "TERMICA"
-    if cfg.end_rgb_extra_files and base.endswith(cfg.end_rgb_extra_files):
+    if _termina_en_sufijo(base, cfg.end_rgb_extra_files):
         return NOMBRE_CARPETA_RGB_EXTRA
     return "RGB"
+
+
+def _termina_en_sufijo(base: str, sufijos: str) -> bool:
+    """¿`base` acaba en alguno de `sufijos` (lista por comas, como en
+    `utils.check_suffix_within_the_name`), admitiendo detrás el `_pointN` que
+    añade la H30T en disparos por punto (`DJI_..._T_point0`)? #3890."""
+    for suf in (sufijos or "").split(","):
+        if suf and re.search(re.escape(suf) + r"(_point\d+)?$", base):
+            return True
+    return False
 
 
 def _nombre_carpeta_vuelo(pb: str, vuelo: str, include_v: bool) -> str:
@@ -133,27 +150,176 @@ def _listar_imagenes_gcs(carpeta: str) -> list[str]:
     return rutas
 
 
+# Cuántos bytes se leen de golpe para la pasada rápida de metadatos: igual
+# que `exif._XMP_HEADER_BYTES` (256 KB), que ya cubre de sobra la cabecera
+# EXIF/XMP de un JPEG de dron. Reutilizamos la misma constante en vez de
+# duplicar el número para que ambas lecturas de cabecera sigan alineadas si
+# algún día cambia.
+_BYTES_CABECERA = exif_mod._XMP_HEADER_BYTES
+
+
+def _timestamp_desde_buffer(buf: bytes) -> datetime.datetime | None:
+    """Réplica en memoria de `exif.GeneralInformationFromImage.get_timestamp_from_image`,
+    sin logging (eso lo sigue haciendo la función original cuando `_leer_metadatos`
+    cae al fallback por ruta). Cualquier excepción se deja subir tal cual: quien
+    llama decide si reintenta con el fichero completo o cae al fallback."""
+    img = PIL.Image.open(io.BytesIO(buf))
+    datos_exif = img._getexif()
+    img.close()
+    if datos_exif is None:
+        return None
+    if 36867 not in datos_exif:
+        return None
+    fecha_hora = datos_exif[36867].split(' ')
+    return datetime.datetime.strptime(fecha_hora[0] + '_' + fecha_hora[1], '%Y:%m:%d_%H:%M:%S')
+
+
+def _modelo_desde_buffer(buf: bytes) -> str:
+    """Réplica en memoria de `get_model`. Si `Image Model` no aparece ni en
+    la pasada rápida (`stop_tag`) ni en la de detalle, deja subir el
+    `KeyError` tal cual hace la original (la captura ahí, no aquí)."""
+    f = io.BytesIO(buf)
+    tags = exifread.process_file(f, details=False, stop_tag="Image Model")
+    if "Image Model" not in tags:
+        f.seek(0)
+        tags = exifread.process_file(f, details=True)
+    return str(tags["Image Model"])
+
+
+def _bloque_xmp_desde_buffer(buf: bytes, ruta: str) -> str:
+    """Réplica de `exif.leer_bloque_xmp` a partir de una cabecera ya leída
+    en memoria: mismo criterio (latin-1 + universal newlines) y mismo
+    resultado exacto.
+
+    `open(..., encoding='latin-1')` en modo texto decodifica Y normaliza
+    `\\r\\n`/`\\r` a `\\n` (universal newlines) según va leyendo del fichero,
+    así que sus primeros N *caracteres* no siempre corresponden a los
+    primeros N *bytes* de `buf` cuando el binario trae `\\r`/`\\n` sueltos
+    antes del XMP: el texto normalizado de `buf` puede ser más corto que ese
+    trozo de N caracteres. Es, en el peor caso, un PREFIJO idéntico de esa
+    cadena (mismos bytes de origen, mismo punto de partida), así que si el
+    cierre del XMP aparece dentro del texto normalizado de `buf`, aparece
+    exactamente en el mismo índice que si se hubiera calculado desde el
+    fichero — es seguro usarlo tal cual.
+
+    Si NO aparece, no se puede distinguir "no hay XMP" de "se cortó el
+    prefijo antes de encontrarlo": en ese caso (raro: solo si el bloque XMP
+    queda pasados los primeros `_BYTES_CABECERA` bytes crudos) se llama a la
+    función original, que relee el fichero con el mismo criterio exacto."""
+    texto = buf.decode('latin-1').replace('\r\n', '\n').replace('\r', '\n')
+    if texto.find('</x:xmpmeta') != -1:
+        return texto
+    return exif_mod.leer_bloque_xmp(ruta)
+
+
+def _exif_entero_en_buffer(buf: bytes) -> bool:
+    """¿Contiene `buf` el EXIF COMPLETO de la imagen? Si el recorte deja un
+    valor EXIF a medias, PIL/exifread pueden devolver una cadena truncada SIN
+    excepción (no dispararía el fallback). Solo se fía del buffer si es el
+    fichero entero, o si es un JPEG cuyo segmento APP1 `Exif` termina dentro
+    de él (los offsets EXIF son relativos a ese segmento, así que todos sus
+    valores quedan dentro). Cualquier otro caso (TIFF, marcadores raros) ->
+    False, y timestamp/modelo usan las funciones originales por ruta."""
+    if len(buf) < _BYTES_CABECERA:
+        return True
+    if buf[:2] != b'\xff\xd8':
+        return False
+    pos = 2
+    while pos + 4 <= len(buf):
+        if buf[pos] != 0xFF:
+            return False
+        marcador = buf[pos + 1]
+        if marcador == 0xDA:  # SOS: empiezan los datos de imagen sin haber visto APP1 Exif
+            return False
+        longitud = int.from_bytes(buf[pos + 2:pos + 4], 'big')
+        fin = pos + 2 + longitud
+        if marcador == 0xE1 and buf[pos + 4:pos + 10] == b'Exif\x00\x00':
+            return fin <= len(buf)
+        pos = fin
+    return False
+
+
+def _con_reintento_fichero_completo(funcion_pura, buf: bytes, ruta: str):
+    """Ejecuta `funcion_pura(buf)`; si lanza, relee el fichero ENTERO a
+    memoria una única vez y reintenta con ese buffer completo (así un XMP o
+    un EXIF que caiga más allá de `_BYTES_CABECERA` no se pierde por el
+    tamaño del recorte). Si sigue fallando, la excepción sube tal cual."""
+    try:
+        return funcion_pura(buf)
+    except Exception:
+        with open(ruta, 'rb') as fd:
+            buf_completo = fd.read()
+        return funcion_pura(buf_completo)
+
+
 def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
     """Una imagen -> sus metadatos, o `None` en cada campo que no se pudo
     leer. Cada lectura va en su propio `try/except`: que falle el yaw no
-    tiene por qué tirar también el timestamp de la misma imagen."""
+    tiene por qué tirar también el timestamp de la misma imagen.
+
+    Lee la imagen UNA sola vez (los primeros `_BYTES_CABECERA` bytes, que
+    cubren de sobra la cabecera EXIF/XMP) y de ahí saca timestamp/modelo/yaw
+    con réplicas puras en memoria de las funciones originales de `exif`, en
+    vez de que cada campo abra el fichero por su cuenta -antes eran hasta 4
+    aperturas por imagen, caro en lotes servidos desde HDD. Por campo: si la
+    réplica rápida lanza excepción o da `None`, se cae a la función ORIGINAL
+    de `exif` por ruta, así que el resultado -y el logging/contadores de
+    error de la original en el caso de fallo real- es idéntico a antes.
+
+    El GPS (`leerLatitudLongitudAltitud_exif_DJI`) NO entra en el atajo: esa
+    función vive en `exif.MetaLocation`, no en `exif.GeneralInformationFromImage`
+    -el tipo real de `exif_management_obj`, que es el objeto que llega aquí en
+    producción (`atom_core/phases.py`)-, así que hoy `exif.leerLatitudLongitudAltitud_exif_DJI`
+    SIEMPRE lanza `AttributeError` y `gps` sale `None` en todas las imágenes.
+    Sustituirlo por una lectura real de EXIF cambiaría ese resultado (dejaría
+    de ser `None`), así que se deja tal cual: una única llamada, exactamente
+    como antes.
+
+    Las rutas `gs://…` tampoco entran en el atajo (la lectura cruda de bytes
+    solo vale para ficheros locales): siguen el camino de siempre, llamando
+    directamente a las funciones originales."""
     nombre = os.path.basename(ruta)
 
+    buf = None
+    if not almacen.es_uri_gcs(ruta):
+        try:
+            with open(ruta, 'rb') as fd:
+                buf = fd.read(_BYTES_CABECERA)
+        except Exception:  # noqa: BLE001 — sin buffer, cada campo cae a su original
+            buf = None
+    buf_exif = buf if buf is not None and _exif_entero_en_buffer(buf) else None
+
     timestamp = None
-    try:
-        timestamp = exif.get_timestamp_from_image(ruta)
-    except Exception:  # noqa: BLE001 — una imagen ilegible no tumba el índice
-        timestamp = None
+    if buf_exif is not None:
+        try:
+            timestamp = _con_reintento_fichero_completo(_timestamp_desde_buffer, buf_exif, ruta)
+        except Exception:  # noqa: BLE001
+            timestamp = None
+    if timestamp is None:
+        try:
+            timestamp = exif.get_timestamp_from_image(ruta)
+        except Exception:  # noqa: BLE001 — una imagen ilegible no tumba el índice
+            timestamp = None
 
     modelo = None
-    try:
-        modelo = exif.get_model(ruta, progress_callback)
-    except Exception:  # noqa: BLE001
-        modelo = None
+    if buf_exif is not None:
+        try:
+            modelo = _con_reintento_fichero_completo(_modelo_desde_buffer, buf_exif, ruta)
+        except Exception:  # noqa: BLE001
+            modelo = None
+    if modelo is None:
+        try:
+            modelo = exif.get_model(ruta, progress_callback)
+        except Exception:  # noqa: BLE001
+            modelo = None
 
     yaw = None
     try:
-        yaw_bruto = exif.get_gimbal_yaw_pitch(ruta)[0]
+        if buf is not None:
+            bloque_xmp = _bloque_xmp_desde_buffer(buf, ruta)
+            yaw_bruto = exif.get_gimbal_yaw_pitch(ruta, bloque_xmp=bloque_xmp)[0]
+        else:
+            yaw_bruto = exif.get_gimbal_yaw_pitch(ruta)[0]
         yaw = float(yaw_bruto)
     except Exception:  # noqa: BLE001
         yaw = None

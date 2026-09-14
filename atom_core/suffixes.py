@@ -15,6 +15,7 @@ solo `os`. Se llama on-demand desde el bridge al elegir la carpeta origen.
 from __future__ import annotations
 
 import os
+import re
 
 # Terminaciones DJI conocidas (para clasificar lo detectado; NO es una lista
 # cerrada — cualquier token `_XX` se cuenta igual).
@@ -26,6 +27,7 @@ _IMG_EXT = ("jpg", "png", "JPG")
 def _stem_suffix(stem: str) -> str | None:
     """Token final tras el último `_` (incluido el `_`), o None si no hay `_`.
     `DJI_20240101_0001_T` -> `_T`; `DJI_0001_W` -> `_W`; `IMG1234` -> None."""
+    stem = re.sub(r"_point\d+$", "", stem)  # H30T: `DJI_0001_T_point0` -> `_T` (#3890)
     i = stem.rfind("_")
     if i == -1:
         return None
