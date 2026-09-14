@@ -4,6 +4,7 @@
 // flujo de trabajo — no se toca `TrabajoScreen`/`ProgressModal` para nada.
 import { useEffect, useState } from 'react'
 import { api } from '../bridge'
+import { formatDuracion } from '../formato'
 import { conPlazo } from '../plazo'
 
 const PLAZO_MS = 15000
@@ -24,9 +25,7 @@ function formatoDuracion(segundos) {
   const s = Number(segundos)
   if (Number.isNaN(s)) return '—'
   if (s < 60) return `${s.toFixed(1)} s`
-  const min = Math.floor(s / 60)
-  const rest = Math.round(s % 60)
-  return `${min} min ${rest} s`
+  return formatDuracion(s)
 }
 
 const MARCA_ESTADO = { ok: '✓', error: '✗', incompleto: '⚠' }
