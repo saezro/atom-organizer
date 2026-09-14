@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { formatDuracion } from './formato.js'
 
 // Modal de progreso por fases. Reemplaza la lluvia de "." por un checklist
 // estructurado con el nombre de la planta, la fase en curso + barra %, y el
@@ -7,13 +8,11 @@ import { useEffect, useState } from 'react'
 
 const ICON = { done: '✓', active: '●', pending: '⏳', error: '✗' }
 
-// Duración legible: "8.4 s" o "1 min 12 s".
+// Duración legible: "8.4 s", "1 min 12 s" o "1 h 35 min".
 function fmtDur(s) {
   if (s == null) return ''
   if (s < 60) return `${s} s`
-  const m = Math.floor(s / 60)
-  const r = Math.round(s % 60)
-  return `${m} min ${r} s`
+  return formatDuracion(s)
 }
 
 // Desglose específico de la fase de Índice: viene con un payload distinto
