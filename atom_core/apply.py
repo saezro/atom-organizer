@@ -471,7 +471,10 @@ def _formatear_duracion(segundos: float) -> str:
     if segundos < 60:
         return f"{segundos:.1f} s"
     minutos, resto = divmod(int(round(segundos)), 60)
-    return f"{minutos} min {resto:02d} s"
+    if minutos < 60:
+        return f"{minutos} min {resto:02d} s"
+    horas, minutos = divmod(minutos, 60)
+    return f"{horas} h {minutos:02d} min {resto:02d} s"
 
 
 def _emitir_resumen_fase(progress_callback, fase: str, unidad: str, total: int,
