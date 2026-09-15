@@ -205,6 +205,10 @@ def build_plan(root: Path, prefix: str = "", *,
             break
         if not path.is_file():
             continue
+        # El manifiesto del organizado vive dentro del destino (memoria para
+        # organizar por cachitos) pero nunca se entrega.
+        if ".organizado" in path.relative_to(root).parts:
+            continue
         if path.name.lower() in IGNORED_NAMES:
             continue
         if allowed and path.suffix.lower() not in allowed:
