@@ -390,24 +390,51 @@ def test_un_run_que_revienta_conserva_el_manifiesto_y_el_siguiente_reanuda(
         "'hecho'")
 
 
-def test_tras_un_run_limpio_no_queda_el_manifiesto_en_el_arbol_entregado(
-        _inspeccion, logger, monkeypatch):
-    """La carpeta interna del motor no se entrega al equipo.
-
-    Incidente que previene: el manifiesto pasó a vivir DENTRO de
-    `output_folder` (en `.organizado/`) para poder reanudar, y eso abre el
-    riesgo contrario: que se quede ahí para siempre y viaje al Drive del
-    cliente junto a las imágenes, o que cuente como contenido inesperado.
-    Tras un cierre limpio tiene que desaparecer.
-    """
+def test_tras_un_run_limpio_el_manifiesto_y_el_indice_se_quedan(_inspeccion, logger, monkeypatch):
+    """Decisión 2026-09-15: el manifiesto es la memoria del destino para
+    organizar por cachitos, así que ya NO se borra tras un cierre limpio. La
+    subida lo excluye (`cloud_upload.build_plan`)."""
     from atom_core.manifiesto import NOMBRE_CARPETA_MANIFIESTO
 
     host = _HostDePrueba(logger)
     cfg = _cfg(_inspeccion)
     _correr(host, cfg, monkeypatch)
 
-    assert not os.path.exists(os.path.join(cfg.output_folder, NOMBRE_CARPETA_MANIFIESTO)), \
-        "la carpeta interna del manifiesto sobrevivió a un run sin problemas"
-    assert not any(rel.startswith(NOMBRE_CARPETA_MANIFIESTO + os.sep)
-                   for rel in _arbol_relativo(cfg.output_folder)), \
-        "quedaron ficheros del manifiesto en el árbol entregado"
+    assert os.path.isfile(os.path.join(cfg.output_folder, NOMBRE_CARPETA_MANIFIESTO, "manifiesto.db"))
+    assert os.path.isfile(os.path.join(cfg.output_folder, "INDICE_destino.xlsx"))
+
+
+def test_segundo_cachito_acumula_salta_lo_hecho_y_reutiliza_el_angulo(tmp_path, make_dji_jpeg, logger, monkeypatch):
+    """Cachito 1: RGB del vuelo con yaw ~90 -> ángulo 90. Cachito 2 (otra
+    carpeta de origen): repite una imagen del 1 y trae una nueva con yaw 0.
+    La repetida se salta y se avisa; la nueva entra con el ángulo del vuelo
+    ya decidido (90), no con el recalculado (0)."""
+    from openpyxl import load_workbook
+    from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO
+
+    ts = dt.datetime(2026, 1, 15, 10, 0, 0)
+    sd1, sd2 = tmp_path / "sd1", tmp_path / "sd2"
+    sd1.mkdir()
+    sd2.mkdir()
+    make_dji_jpeg(str(sd1 / "DJI_0001_D.JPG"), dt_val=ts, gimbal_yaw=90.0)
+    make_dji_jpeg(str(sd1 / "DJI_0002_D.JPG"), dt_val=ts + dt.timedelta(seconds=5), gimbal_yaw=90.0)
+    import shutil as _sh
+    _sh.copy2(sd1 / "DJI_0002_D.JPG", sd2 / "DJI_0002_D.JPG")
+    make_dji_jpeg(str(sd2 / "DJI_0003_D.JPG"), dt_val=ts + dt.timedelta(seconds=9), gimbal_yaw=0.0)
+    _escribir_estadillo(tmp_path / "estadillo.csv", [("1", "1", "2026:01:15", "09:55:00", "10:05:00")])
+
+    cfg1 = _cfg(tmp_path, input_folder=str(sd1), convert_to_tif=False)
+    _correr(_HostDePrueba(logger), cfg1, monkeypatch)
+    cfg2 = _cfg(tmp_path, input_folder=str(sd2), convert_to_tif=False)
+    pcb, _pbar, _psum = _correr(_HostDePrueba(logger), cfg2, monkeypatch)
+
+    m = Manifiesto(os.path.join(cfg2.output_folder, NOMBRE_CARPETA_MANIFIESTO, "manifiesto.db"))
+    filas = m.todas()
+    assert sorted(f["nombre_original"] for f in filas) == ["DJI_0001_D.JPG", "DJI_0002_D.JPG", "DJI_0003_D.JPG"]
+    assert {f["angulo_giro"] for f in filas} == {90}
+    assert all(f["estado"] == "hecho" for f in filas)
+    assert len(m.ejecuciones()) == 2
+    assert any("ya estaban organizadas" in str(linea) for linea in pcb.mensajes)
+    assert len(os.listdir(os.path.join(cfg2.output_folder, "RGB", "PB1", "PB1_V1"))) == 3
+    hoja = load_workbook(os.path.join(cfg2.output_folder, "INDICE_destino.xlsx"), read_only=True)["Imagenes"]
+    assert len(list(hoja.iter_rows(values_only=True))) == 4

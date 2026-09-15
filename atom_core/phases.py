@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import tempfile
 import time
 
@@ -36,6 +35,7 @@ import utils
 from atom_core import cierre as cierre_mod
 from atom_core import estadillo as estadillo_mod
 from atom_core import indice as indice_mod
+from atom_core import indice_excel
 from atom_core import paralelismo as paralelismo_mod
 from atom_core import sharding
 from atom_core.almacen import (
@@ -52,6 +52,7 @@ from atom_core.apply import (aplicar_rgb, aplicar_termicas, _formatear_duracion,
                              _ContadorRotacion)
 from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO
 from external_tools import resource_path
+from version import __version__
 from utils import (
     CompressRgbsConfig,
     ConvertToTifConfig,
@@ -1062,10 +1063,8 @@ class PipelinePhasesMixin:
         no encontraba nada, así que `reabrir_huerfanas` no podía dispararse
         jamás.
 
-        Por eso el borrado NO es incondicional: la carpeta `.organizado` solo
-        se elimina tras un cierre limpio (sin excepción y sin problemas en
-        `verificar`). Si algo falló, se conserva para reanudar. El `cerrar()`
-        del SQLite sí va siempre en el `finally`.
+        `.organizado/` se conserva SIEMPRE: es la memoria del destino para
+        organizar por cachitos (decisión 2026-09-15). La subida lo excluye.
         """
         self.organizer_logger_obj.logger.info("###################################################################")
         self.organizer_logger_obj.logger.info("PROCESO: ORGANIZAR (motor índice -> manifiesto -> apply -> cierre)")
@@ -1075,7 +1074,6 @@ class PipelinePhasesMixin:
         carpeta_manifiesto = os.path.join(cfg.output_folder, NOMBRE_CARPETA_MANIFIESTO)
         os.makedirs(carpeta_manifiesto, exist_ok=True)
         manifiesto = Manifiesto(os.path.join(carpeta_manifiesto, "manifiesto.db"))
-        cierre_limpio = False
         try:
             manifiesto.crear_esquema()
             reabiertas = manifiesto.reabrir_huerfanas()
@@ -1083,6 +1081,7 @@ class PipelinePhasesMixin:
                 progress_callback.emit(
                     f"\n{reabiertas} imagen(es) quedaron a medias en un run anterior; "
                     "se reintentan en esta corrida.\n")
+            ejecucion_id = manifiesto.abrir_ejecucion(cfg.input_folder, __version__)
 
             # Cronómetro por etapa: el usuario ve al final en qué se fue el
             # tiempo del organizado (índice / RGB / térmicas / cierre) sin
@@ -1092,9 +1091,9 @@ class PipelinePhasesMixin:
 
             _copiar_estadillos_a_salida(cfg, self.organizer_logger_obj.logger)
 
-            indice_mod.construir_indice(
+            resumen_indice = indice_mod.construir_indice(
                 cfg, adaptador, self.split_images_obj.exif_management_obj, manifiesto,
-                progress_callback, progress_bar, progress_summarize)
+                progress_callback, progress_bar, progress_summarize, ejecucion_id=ejecucion_id)
             tiempos["Índice"] = time.monotonic() - marca
             marca = time.monotonic()
 
@@ -1141,8 +1140,18 @@ class PipelinePhasesMixin:
             marca = time.monotonic()
 
             progress_summarize.emit("---> SUBPROCESO: Cierre")
-            cierre_mod.emitir_csvs(manifiesto, cfg, progress_callback)
+            proyecciones: dict = {}
+            cierre_mod.emitir_csvs(manifiesto, cfg, progress_callback, proyecciones=proyecciones)
             problemas = cierre_mod.verificar(manifiesto, cfg)
+            # El índice Excel es informativo: si falla, se avisa y el cierre sigue.
+            try:
+                ruta_indice = indice_excel.escribir_indice(manifiesto, cfg, proyecciones, progress_callback)
+                progress_callback.emit(f"\nÍndice de la planta: {ruta_indice}\n")
+            except Exception as excepcion:  # noqa: BLE001
+                progress_callback.emit(f"\nAVISO: no se pudo generar el índice Excel: {excepcion}\n")
+            manifiesto.cerrar_ejecucion(
+                ejecucion_id, (resumen_indice or {}).get("nuevas", 0),
+                (resumen_indice or {}).get("saltadas", 0), (resumen_indice or {}).get("reintentadas", 0))
             tiempos["Cierre"] = time.monotonic() - marca
             progress_bar.emit(100)
 
@@ -1163,14 +1172,10 @@ class PipelinePhasesMixin:
                     "Cierre con %d problema(s): %s", len(problemas), problemas)
             else:
                 progress_callback.emit("\nOrganizado completado sin problemas.\n")
-                cierre_limpio = True
         finally:
+            # `.organizado/` se conserva SIEMPRE: haya o no problemas, el
+            # `cerrar()` del SQLite es lo único incondicional.
             manifiesto.cerrar()
-            # Solo se tira el manifiesto si el organizado cerró limpio. Si hubo
-            # excepción o `verificar` encontró problemas, se queda en disco para
-            # que la siguiente corrida reanude en vez de repetirlo todo.
-            if cierre_limpio:
-                shutil.rmtree(carpeta_manifiesto, ignore_errors=True)
 
     def rename_images(self, cfg: RenameImagesConfig, progress_callback, progress_bar, progress_summarize):
         """Función que renombra las imágenes que se encuentran en la carpeta elegida

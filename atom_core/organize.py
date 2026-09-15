@@ -784,7 +784,14 @@ def run_task(
             # cientos de líneas más arriba, así que contarla abortaría siempre.
             _restos = [n for n in (os.listdir(_out) if _out and os.path.isdir(_out) else [])
                        if n not in (NOMBRE_CARPETA_MANIFIESTO, NOMBRE_CARPETA_LOGS)]
-            if _guard_activo and _restos:
+            # Destino ya organizado por un cachito anterior: su manifiesto sabe
+            # qué hay dentro, así que se acumula en vez de abortar.
+            _hay_manifiesto = bool(_out) and os.path.isfile(
+                os.path.join(_out, NOMBRE_CARPETA_MANIFIESTO, "manifiesto.db"))
+            if _guard_activo and _restos and _hay_manifiesto:
+                emit("log", f"El destino ya tiene un organizado previo (\"{_out}\"): "
+                            "se acumula sobre él y se saltan las imágenes ya hechas.")
+            if _guard_activo and _restos and not _hay_manifiesto:
                 emit("error", "La carpeta de salida no está vacía: "
                               f"\"{_out}\". Vacíala o elige una carpeta vacía "
                               "antes de organizar (una corrida sobre residuos "

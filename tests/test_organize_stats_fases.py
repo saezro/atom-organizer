@@ -459,3 +459,15 @@ class TestGuardCarpetaSalidaSplitImages:
             "el guard debe abortar cuando hay un residuo real (PB1) en el destino"
         )
         assert not _de_tipo(eventos, "done"), "el guard debe cortar ANTES de llegar a done"
+
+    def test_no_aborta_si_hay_residuo_pero_existe_manifiesto(self, monkeypatch, tmp_path):
+        """Destino ya organizado por un cachito anterior: se acumula."""
+        destino = tmp_path / "salida"
+        (destino / NOMBRE_CARPETA_MANIFIESTO).mkdir(parents=True)
+        (destino / NOMBRE_CARPETA_MANIFIESTO / "manifiesto.db").write_bytes(b"")
+        (destino / "RGB").mkdir()
+
+        eventos = self._run_split(monkeypatch, destino)
+
+        assert not any("no está vacía" in str(e) for e in _de_tipo(eventos, "error"))
+        assert _de_tipo(eventos, "done")
