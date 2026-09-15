@@ -24,7 +24,7 @@ import pandas as pd
 
 import utils
 from atom_core.almacen import abrir_para_lectura, es_uri_gcs, existe_ruta, publicar_en, tamano_de, unir
-from atom_core.indice import NOMBRE_CARPETA_RGB_EXTRA, TIPOS_RGB, _nombre_carpeta_vuelo
+from atom_core.indice import NOMBRE_CARPETA_RGB_EXTRA, TIPOS_RGB
 
 # Columnas exactas del CSV de criterio de giro que hoy escribe
 # `Pipeline.write_videofiles_csv` (pipeline.py:1972). El giro/TIFF térmico lee
@@ -165,6 +165,15 @@ def _lectura_de_fila(meta_location_obj, fila, progress_callback) -> tuple:
     return meta_location_obj.leer_exif_imagen(fila["ruta_salida_original"], progress_callback)
 
 
+def _carpeta_de(ruta: str) -> str:
+    """Directorio que contiene `ruta` (fichero), URI-aware: en `gs://` las
+    rutas son claves con `/` siempre, así que no vale `os.path.dirname` (mete
+    `\\` en Windows)."""
+    if es_uri_gcs(ruta):
+        return ruta.rsplit("/", 1)[0]
+    return os.path.dirname(ruta)
+
+
 def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None) -> dict[str, str]:
     """Emite `meta.csv`/`location.csv` desde el manifiesto.
 
@@ -199,8 +208,6 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
             for (tipo_grupo, pb, vuelo), filas in grupos.items():
                 if tipo_grupo != tipo:
                     continue
-                carpeta = unir(cfg.output_folder, tipo, f"PB{pb}",
-                               _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v))
                 # Mismo filtro que `get_images_from_dir(..., ["_CROP"], solo_fuente=True)`.
                 por_nombre = {}
                 for fila in filas:
@@ -210,18 +217,40 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
                 images = natsorted(por_nombre)
                 if not images:
                     continue
-                progress_callback.emit(
-                    "\nProcesando {0} imágenes en directorio {1}".format(len(images), carpeta) + "\n")
-                lecturas = [_lectura_de_fila(meta_location_obj, por_nombre[n], progress_callback)
-                            for n in images]
-                df = meta_location_obj.df_desde_lecturas(
-                    images, lecturas, progress_callback, progress_callback,
-                    cfg.flight_height, cfg.calculate_proyected_distance)
-                meta_location_obj.publicar_csv(df, carpeta, nombre_csv, csv_folder, progress_callback)
-                if proyecciones is not None and cfg.calculate_proyected_distance:
-                    for _indice, linea in df.iterrows():
-                        proyecciones[por_nombre[linea["Foto"]]["ruta_salida_original"]] = (
-                            linea["CalculatedDistance"], linea["LatitudFoto"], linea["LongitudFoto"])
+                # Carpeta REAL de las imágenes de este vuelo, no recompuesta con
+                # el `include_v` del run actual: si cambió entre cachitos (o
+                # entre este cierre y el que escribió las imágenes), reconstruir
+                # el nombre de carpeta con `_nombre_carpeta_vuelo` podía apuntar
+                # a una carpeta inexistente y tumbar meta/location del resto de
+                # vuelos (ver `except` de abajo, ahora por vuelo).
+                try:
+                    carpeta = _carpeta_de(por_nombre[images[0]]["ruta_salida_original"])
+                    if not es_uri_gcs(carpeta):
+                        os.makedirs(carpeta, exist_ok=True)
+                    progress_callback.emit(
+                        "\nProcesando {0} imágenes en directorio {1}".format(len(images), carpeta) + "\n")
+                    # Las filas sin posición leída (migradas, `gs://…`) relanzan la
+                    # lectura EXIF, que es I/O puro: en serie es la única parte del
+                    # cierre que se queda esperando red en `gs://…` (ver
+                    # `exif.MetaLocation.gen_meta_location`, mismo patrón/workers).
+                    # `executor.map` conserva el orden de `images`.
+                    with ThreadPoolExecutor(max_workers=utils.max_io_workers()) as executor:
+                        lecturas = list(executor.map(
+                            lambda n: _lectura_de_fila(meta_location_obj, por_nombre[n], progress_callback),
+                            images))
+                    df = meta_location_obj.df_desde_lecturas(
+                        images, lecturas, progress_callback, progress_callback,
+                        cfg.flight_height, cfg.calculate_proyected_distance)
+                    meta_location_obj.publicar_csv(df, carpeta, nombre_csv, csv_folder, progress_callback)
+                    if proyecciones is not None and cfg.calculate_proyected_distance:
+                        for _indice, linea in df.iterrows():
+                            proyecciones[por_nombre[linea["Foto"]]["ruta_salida_original"]] = (
+                                linea["CalculatedDistance"], linea["LatitudFoto"], linea["LongitudFoto"])
+                except Exception as excepcion_vuelo:  # pragma: no cover - salvaguarda
+                    # Un vuelo roto no puede tumbar meta/location del resto: se
+                    # avisa y se sigue con el siguiente (pb, vuelo).
+                    progress_callback.emit(
+                        f"\nERROR generando meta/location de PB{pb}_{vuelo}: {excepcion_vuelo}\n")
         rutas_emitidas["meta_location"] = csv_folder
     except Exception as excepcion:  # pragma: no cover - salvaguarda
         # No tumbar el cierre entero: criterio y verificaciones tienen que completarse.

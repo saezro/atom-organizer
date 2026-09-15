@@ -390,6 +390,41 @@ def test_un_run_que_revienta_conserva_el_manifiesto_y_el_siguiente_reanuda(
         "'hecho'")
 
 
+def test_ejecucion_se_cierra_aunque_el_cierre_reviente(_inspeccion, logger, monkeypatch):
+    """F6: si el organizado revienta a mitad, `cerrar_ejecucion` tiene que
+    correr igual (en un `finally`) para que la fila de `ejecuciones` no se
+    quede sin `fin` para siempre. La excepción original sigue propagándose
+    (ver `test_un_run_que_revienta_conserva_el_manifiesto_y_el_siguiente_reanuda`,
+    aquí solo se comprueba el cierre de la ejecución)."""
+    from atom_core import phases as phases_mod
+    from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO
+
+    host = _HostDePrueba(logger)
+    cfg = _cfg(_inspeccion)
+
+    def _emitir_csvs_que_revienta(*_args, **_kwargs):
+        raise RuntimeError("corte simulado a mitad del organizado")
+
+    monkeypatch.setattr(phases_mod.cierre_mod, "emitir_csvs", _emitir_csvs_que_revienta)
+    monkeypatch.setattr(host.split_images_obj, "convert_dji_image_to_tif",
+                        _fake_convert_dji_image_to_tif)
+    monkeypatch.setattr(host.split_images_obj, "_run_exif_batch_local",
+                        _fake_run_exif_batch_local)
+    pcb, pbar, psum = _SignalFalsa(), _SignalFalsa(), _SignalFalsa()
+    with pytest.raises(RuntimeError):
+        host.organizar_plan_apply(cfg, pcb, pbar, psum)
+
+    manifiesto_db = os.path.join(cfg.output_folder, NOMBRE_CARPETA_MANIFIESTO, "manifiesto.db")
+    m = Manifiesto(manifiesto_db)
+    try:
+        ejecuciones = m.ejecuciones()
+        assert ejecuciones, "no se abrió ninguna ejecución"
+        ultima = ejecuciones[max(ejecuciones)]
+        assert ultima["fin"] is not None, "la ejecución se quedó sin `fin` tras la excepción"
+    finally:
+        m.cerrar()
+
+
 def test_tras_un_run_limpio_el_manifiesto_y_el_indice_se_quedan(_inspeccion, logger, monkeypatch):
     """Decisión 2026-09-15: el manifiesto es la memoria del destino para
     organizar por cachitos, así que ya NO se borra tras un cierre limpio. La

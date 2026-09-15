@@ -1082,96 +1082,108 @@ class PipelinePhasesMixin:
                     f"\n{reabiertas} imagen(es) quedaron a medias en un run anterior; "
                     "se reintentan en esta corrida.\n")
             ejecucion_id = manifiesto.abrir_ejecucion(cfg.input_folder, __version__)
-
-            # Cronómetro por etapa: el usuario ve al final en qué se fue el
-            # tiempo del organizado (índice / RGB / térmicas / cierre) sin
-            # tener que instrumentar nada ni cronometrar a mano.
-            tiempos: dict[str, float] = {}
-            marca = time.monotonic()
-
-            _copiar_estadillos_a_salida(cfg, self.organizer_logger_obj.logger)
-
-            resumen_indice = indice_mod.construir_indice(
-                cfg, adaptador, self.split_images_obj.exif_management_obj, manifiesto,
-                progress_callback, progress_bar, progress_summarize, ejecucion_id=ejecucion_id)
-            tiempos["Índice"] = time.monotonic() - marca
-            marca = time.monotonic()
-
-            # Sin `controlador` ambos apply corren SECUENCIALES, una imagen a la
-            # vez en este mismo proceso (`apply.py:321`). Eso es el camino de los
-            # tests, no el de producción: dejarlo así costó una regresión de ~10x
-            # en la fase RGB (3 min -> 30 min, reportado 2026-09-08 en el PC de
-            # oficina con la 3.4.81), porque el motor viejo sí repartía el lote
-            # con `utils.workers_para_lote()`. Un controlador POR FASE, no uno
-            # compartido: el historial de mediciones de RGB (CPU-bound, procesos)
-            # no describe a las térmicas (I/O-bound, hilos esperando a dji_irp y
-            # exiftool) y arrancaría la segunda fase con una tendencia ajena.
-            # Contador de rotación COMPARTIDO entre RGB y térmicas: la línea
-            # "Rotación: N giradas 270° · M sin girar" de la UI es acumulada
-            # del run entero, no por fase (ver `apply._ContadorRotacion`).
-            contador_rotacion = _ContadorRotacion()
-
-            # `tope_hdd` solo se pasa aquí, en RGB: es la fase que LEE en
-            # masa y secuencial del disco de origen, donde más workers en un
-            # HDD provoca seek thrashing (ver `paralelismo.TOPE_WORKERS_HDD`).
-            # Térmicas es I/O a procesos externos (dji_irp/exiftool), no
-            # lectura masiva del disco, así que no le aplica el mismo tope.
-            aplicar_rgb(manifiesto, cfg, pipeline, progress_callback, progress_bar,
-                       progress_summarize,
-                       controlador=paralelismo_mod.ControladorAdaptativo(
-                           maximo=paralelismo_mod.maximo_cpu_bound(),
-                           etiqueta="RGB", tope_hdd=paralelismo_mod.TOPE_WORKERS_HDD),
-                       contador_rotacion=contador_rotacion)
-            tiempos["RGB"] = time.monotonic() - marca
-            marca = time.monotonic()
-
-            # Las térmicas van a un `ThreadPoolExecutor`: el tiempo se va
-            # esperando a procesos externos, así que el techo no es la RAM por
-            # worker sino el de I/O (`utils.max_io_workers`, ya usado por el
-            # resto del pipeline para trabajo de este tipo).
-            aplicar_termicas(manifiesto, cfg, self.split_images_obj, progress_callback,
-                            progress_bar, progress_summarize,
-                            controlador=paralelismo_mod.ControladorAdaptativo(
-                                maximo=utils.max_io_workers(),
-                                arranque=utils.arranque_io(),
-                                etiqueta="Termicas"),
-                            contador_rotacion=contador_rotacion)
-            tiempos["Térmicas"] = time.monotonic() - marca
-            marca = time.monotonic()
-
-            progress_summarize.emit("---> SUBPROCESO: Cierre")
-            proyecciones: dict = {}
-            cierre_mod.emitir_csvs(manifiesto, cfg, progress_callback, proyecciones=proyecciones)
-            problemas = cierre_mod.verificar(manifiesto, cfg)
-            # El índice Excel es informativo: si falla, se avisa y el cierre sigue.
+            # `None` hasta que `construir_indice` lo rellene: si algo revienta
+            # antes (o dentro), el `finally` de abajo igualmente puede cerrar
+            # la ejecución con los contadores a 0 en vez de un `NameError`.
+            resumen_indice = None
             try:
-                ruta_indice = indice_excel.escribir_indice(manifiesto, cfg, proyecciones, progress_callback)
-                progress_callback.emit(f"\nÍndice de la planta: {ruta_indice}\n")
-            except Exception as excepcion:  # noqa: BLE001
-                progress_callback.emit(f"\nAVISO: no se pudo generar el índice Excel: {excepcion}\n")
-            manifiesto.cerrar_ejecucion(
-                ejecucion_id, (resumen_indice or {}).get("nuevas", 0),
-                (resumen_indice or {}).get("saltadas", 0), (resumen_indice or {}).get("reintentadas", 0))
-            tiempos["Cierre"] = time.monotonic() - marca
-            progress_bar.emit(100)
+                # Cronómetro por etapa: el usuario ve al final en qué se fue el
+                # tiempo del organizado (índice / RGB / térmicas / cierre) sin
+                # tener que instrumentar nada ni cronometrar a mano.
+                tiempos: dict[str, float] = {}
+                marca = time.monotonic()
 
-            desglose = " · ".join(
-                f"{etapa} {_formatear_duracion(segundos)}"
-                for etapa, segundos in tiempos.items())
-            progress_callback.emit(
-                f"\n[tiempos] Organizado completo: "
-                f"{_formatear_duracion(sum(tiempos.values()))} "
-                f"({desglose}).\n")
-            if problemas:
+                _copiar_estadillos_a_salida(cfg, self.organizer_logger_obj.logger)
+
+                resumen_indice = indice_mod.construir_indice(
+                    cfg, adaptador, self.split_images_obj.exif_management_obj, manifiesto,
+                    progress_callback, progress_bar, progress_summarize, ejecucion_id=ejecucion_id)
+                tiempos["Índice"] = time.monotonic() - marca
+                marca = time.monotonic()
+
+                # Sin `controlador` ambos apply corren SECUENCIALES, una imagen a la
+                # vez en este mismo proceso (`apply.py:321`). Eso es el camino de los
+                # tests, no el de producción: dejarlo así costó una regresión de ~10x
+                # en la fase RGB (3 min -> 30 min, reportado 2026-09-08 en el PC de
+                # oficina con la 3.4.81), porque el motor viejo sí repartía el lote
+                # con `utils.workers_para_lote()`. Un controlador POR FASE, no uno
+                # compartido: el historial de mediciones de RGB (CPU-bound, procesos)
+                # no describe a las térmicas (I/O-bound, hilos esperando a dji_irp y
+                # exiftool) y arrancaría la segunda fase con una tendencia ajena.
+                # Contador de rotación COMPARTIDO entre RGB y térmicas: la línea
+                # "Rotación: N giradas 270° · M sin girar" de la UI es acumulada
+                # del run entero, no por fase (ver `apply._ContadorRotacion`).
+                contador_rotacion = _ContadorRotacion()
+
+                # `tope_hdd` solo se pasa aquí, en RGB: es la fase que LEE en
+                # masa y secuencial del disco de origen, donde más workers en un
+                # HDD provoca seek thrashing (ver `paralelismo.TOPE_WORKERS_HDD`).
+                # Térmicas es I/O a procesos externos (dji_irp/exiftool), no
+                # lectura masiva del disco, así que no le aplica el mismo tope.
+                aplicar_rgb(manifiesto, cfg, pipeline, progress_callback, progress_bar,
+                           progress_summarize,
+                           controlador=paralelismo_mod.ControladorAdaptativo(
+                               maximo=paralelismo_mod.maximo_cpu_bound(),
+                               etiqueta="RGB", tope_hdd=paralelismo_mod.TOPE_WORKERS_HDD),
+                           contador_rotacion=contador_rotacion)
+                tiempos["RGB"] = time.monotonic() - marca
+                marca = time.monotonic()
+
+                # Las térmicas van a un `ThreadPoolExecutor`: el tiempo se va
+                # esperando a procesos externos, así que el techo no es la RAM por
+                # worker sino el de I/O (`utils.max_io_workers`, ya usado por el
+                # resto del pipeline para trabajo de este tipo).
+                aplicar_termicas(manifiesto, cfg, self.split_images_obj, progress_callback,
+                                progress_bar, progress_summarize,
+                                controlador=paralelismo_mod.ControladorAdaptativo(
+                                    maximo=utils.max_io_workers(),
+                                    arranque=utils.arranque_io(),
+                                    etiqueta="Termicas"),
+                                contador_rotacion=contador_rotacion)
+                tiempos["Térmicas"] = time.monotonic() - marca
+                marca = time.monotonic()
+
+                progress_summarize.emit("---> SUBPROCESO: Cierre")
+                proyecciones: dict = {}
+                cierre_mod.emitir_csvs(manifiesto, cfg, progress_callback, proyecciones=proyecciones)
+                problemas = cierre_mod.verificar(manifiesto, cfg)
+                # El índice Excel es informativo: si falla, se avisa y el cierre sigue.
+                try:
+                    ruta_indice = indice_excel.escribir_indice(manifiesto, cfg, proyecciones, progress_callback)
+                    progress_callback.emit(f"\nÍndice de la planta: {ruta_indice}\n")
+                except Exception as excepcion:  # noqa: BLE001
+                    progress_callback.emit(f"\nAVISO: no se pudo generar el índice Excel: {excepcion}\n")
+                tiempos["Cierre"] = time.monotonic() - marca
+                progress_bar.emit(100)
+
+                desglose = " · ".join(
+                    f"{etapa} {_formatear_duracion(segundos)}"
+                    for etapa, segundos in tiempos.items())
                 progress_callback.emit(
-                    f"\nHA HABIDO AVISOS: el cierre encontró {len(problemas)} "
-                    "problema(s) al verificar el manifiesto contra disco:\n")
-                for problema in problemas:
-                    progress_callback.emit(f"  - {problema}\n")
-                self.organizer_logger_obj.logger.warning(
-                    "Cierre con %d problema(s): %s", len(problemas), problemas)
-            else:
-                progress_callback.emit("\nOrganizado completado sin problemas.\n")
+                    f"\n[tiempos] Organizado completo: "
+                    f"{_formatear_duracion(sum(tiempos.values()))} "
+                    f"({desglose}).\n")
+                if problemas:
+                    progress_callback.emit(
+                        f"\nHA HABIDO AVISOS: el cierre encontró {len(problemas)} "
+                        "problema(s) al verificar el manifiesto contra disco:\n")
+                    for problema in problemas:
+                        progress_callback.emit(f"  - {problema}\n")
+                    self.organizer_logger_obj.logger.warning(
+                        "Cierre con %d problema(s): %s", len(problemas), problemas)
+                else:
+                    progress_callback.emit("\nOrganizado completado sin problemas.\n")
+            finally:
+                # `cerrar_ejecucion` tiene que quedar registrado SIEMPRE, haya
+                # o no excepción: si no, una ejecución que revienta a mitad se
+                # queda sin `fin` (F6). Un fallo aquí se avisa pero nunca tapa
+                # la excepción original del `try` (si la hay, sigue propagándose).
+                try:
+                    manifiesto.cerrar_ejecucion(
+                        ejecucion_id, (resumen_indice or {}).get("nuevas", 0),
+                        (resumen_indice or {}).get("saltadas", 0), (resumen_indice or {}).get("reintentadas", 0))
+                except Exception as excepcion_cierre:  # noqa: BLE001
+                    progress_callback.emit(f"\nAVISO: no se pudo cerrar la ejecución: {excepcion_cierre}\n")
         finally:
             # `.organizado/` se conserva SIEMPRE: haya o no problemas, el
             # `cerrar()` del SQLite es lo único incondicional.

@@ -10,8 +10,6 @@ import datetime
 import os
 import tempfile
 
-from openpyxl import Workbook
-
 from atom_core.almacen import es_uri_gcs, publicar_en
 from atom_core.equipo import equipo_coincide, texto_coincide
 
@@ -95,12 +93,22 @@ def escribir_indice(manifiesto, cfg, proyecciones: dict, progress_callback) -> s
     """Escribe el índice y devuelve la ruta final. Si el fichero está abierto
     (Excel en Windows bloquea el `.xlsx`), escribe al lado con marca de hora y
     avisa: un índice bloqueado no puede tumbar el cierre."""
+    from openpyxl import Workbook  # noqa: PLC0415 (import perezoso: falta en el .exe -> no debe tumbar el import de phases)
+    from openpyxl.utils import get_column_letter  # noqa: PLC0415
+
     libro = Workbook(write_only=True)
     hoja = libro.create_sheet("Imagenes")
     hoja.freeze_panes = "A2"
     hoja.append(list(COLUMNAS))
+    n_filas = 1
     for fila in _filas(manifiesto, cfg, proyecciones):
         hoja.append(list(fila))
+        n_filas += 1
+
+    # Cabecera congelada + autofiltro (spec). `write_only=True` sí soporta
+    # `auto_filter.ref` (openpyxl 3.1.5) mientras se fije antes de `save`.
+    ultima_columna = get_column_letter(len(COLUMNAS))
+    hoja.auto_filter.ref = f"A1:{ultima_columna}{n_filas}"
 
     destino = ruta_indice(cfg.output_folder)
     if es_uri_gcs(destino):
