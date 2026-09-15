@@ -30,6 +30,7 @@ import PIL.Image
 import exif as exif_mod
 import utils
 from atom_core import almacen
+from atom_core import equipo as equipo_mod
 from atom_core import estadillo as estadillo_mod
 from atom_core.manifiesto import FilaManifiesto, Manifiesto
 from rjpeg_a_tiff import EXTS_FUENTE
@@ -68,6 +69,24 @@ class ErrorColisionEstadillo(Exception):
 
 
 @dataclass
+class _Posicion:
+    """Posición de una imagen tal y como la escribe hoy meta/location: lat/lon
+    en decimal y el resto como TEXTO crudo del XMP DJI (`get_gimbal_yaw_pitch`,
+    `get_xmp_data`), para que el CSV desde manifiesto salga idéntico."""
+
+    lat: float | None
+    lon: float | None
+    altitud_abs: str | None
+    altura_relativa: str | None
+    gimbal_yaw: str | None
+    gimbal_pitch: str | None
+    gimbal_roll: str | None
+    flight_yaw: str | None
+    ancho_px: int | None
+    alto_px: int | None
+
+
+@dataclass
 class _MetadatosImagen:
     """Lo que la única pasada de EXIF/XMP lee de una imagen. Cada campo que
     no se puede leer queda a `None`: una imagen ilegible no puede tumbar el
@@ -82,6 +101,9 @@ class _MetadatosImagen:
     modelo: str | None
     yaw: float | None
     gps: object
+    posicion: "_Posicion | None" = None
+    meta_leida: bool = False
+    make: str | None = None
 
 
 def _sin_utils_helper() -> "utils.Utils":
@@ -186,6 +208,61 @@ def _modelo_desde_buffer(buf: bytes) -> str:
     return str(tags["Image Model"])
 
 
+def _make_desde_buffer(buf: bytes) -> str | None:
+    """Fabricante EXIF (`Image Make`), misma lectura que `_modelo_desde_buffer`.
+    `exif` no tiene función original para el fabricante: sin tag -> `None`."""
+    f = io.BytesIO(buf)
+    tags = exifread.process_file(f, details=False, stop_tag="Image Make")
+    if "Image Make" not in tags:
+        f.seek(0)
+        tags = exifread.process_file(f, details=True)
+    if "Image Make" not in tags:
+        return None
+    return str(tags["Image Make"]).strip("\x00").strip() or None
+
+
+def _gps_desde_buffer(buf: bytes) -> tuple[float, float] | None:
+    """Réplica en memoria de `MetaLocation.leerLatitudLongitudAltitud_exif_DJI`
+    (exif.py:1164), sin logging ni contadores: mismas referencias N/S/E/W,
+    misma aritmética (mismo orden de operaciones -> mismo float). `None` en
+    los mismos casos en que la original devuelve `None`."""
+    img = PIL.Image.open(io.BytesIO(buf))
+    try:
+        datos_exif = img.getexif()
+    finally:
+        img.close()
+    if len(datos_exif) == 0:
+        return None
+    coordenadas = datos_exif.get_ifd(34853)
+    lat_ref = coordenadas.get(1)
+    lon_ref = coordenadas.get(3)
+    if lat_ref is None or lon_ref is None:
+        return None
+    latitud = coordenadas.get(2, 0)
+    longitud = coordenadas.get(4, 0)
+    if lat_ref == 'N':
+        lat = float(latitud[0]) + float(latitud[1]) / 60 + float(latitud[2]) / 3600
+    elif lat_ref == 'S':
+        lat = (float(latitud[0]) + float(latitud[1]) / 60 + float(latitud[2]) / 3600) * -1
+    else:
+        return None
+    if lon_ref == 'E':
+        lon = float(longitud[0]) + float(longitud[1]) / 60 + float(longitud[2]) / 3600
+    elif lon_ref == 'W':
+        lon = (float(longitud[0]) + float(longitud[1]) / 60 + float(longitud[2]) / 3600) * -1
+    else:
+        return None
+    return lat, lon
+
+
+def _dimensiones_desde_buffer(buf: bytes) -> tuple[int | None, int | None]:
+    try:
+        with PIL.Image.open(io.BytesIO(buf)) as img:
+            return img.size
+    except Exception:  # noqa: BLE001 — dato informativo del índice, no bloquea
+        return None, None
+
+
 def _bloque_xmp_desde_buffer(buf: bytes, ruta: str) -> str:
     """Réplica de `exif.leer_bloque_xmp` a partir de una cabecera ya leída
     en memoria: mismo criterio (latin-1 + universal newlines) y mismo
@@ -266,14 +343,8 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
     de `exif` por ruta, así que el resultado -y el logging/contadores de
     error de la original en el caso de fallo real- es idéntico a antes.
 
-    El GPS (`leerLatitudLongitudAltitud_exif_DJI`) NO entra en el atajo: esa
-    función vive en `exif.MetaLocation`, no en `exif.GeneralInformationFromImage`
-    -el tipo real de `exif_management_obj`, que es el objeto que llega aquí en
-    producción (`atom_core/phases.py`)-, así que hoy `exif.leerLatitudLongitudAltitud_exif_DJI`
-    SIEMPRE lanza `AttributeError` y `gps` sale `None` en todas las imágenes.
-    Sustituirlo por una lectura real de EXIF cambiaría ese resultado (dejaría
-    de ser `None`), así que se deja tal cual: una única llamada, exactamente
-    como antes.
+    El GPS se lee ahora con una réplica pura en memoria (`_gps_desde_buffer`),
+    con el mismo reintento con fichero completo que el resto de campos.
 
     Las rutas `gs://…` tampoco entran en el atajo (la lectura cruda de bytes
     solo vale para ficheros locales): siguen el camino de siempre, llamando
@@ -313,25 +384,57 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
         except Exception:  # noqa: BLE001
             modelo = None
 
+    make = None
+    if buf_exif is not None:
+        try:
+            make = _con_reintento_fichero_completo(_make_desde_buffer, buf_exif, ruta)
+        except Exception:  # noqa: BLE001 — dato informativo, no bloquea
+            make = None
+
     yaw = None
+    gimbal = None
+    xmp = None
     try:
         if buf is not None:
             bloque_xmp = _bloque_xmp_desde_buffer(buf, ruta)
-            yaw_bruto = exif.get_gimbal_yaw_pitch(ruta, bloque_xmp=bloque_xmp)[0]
+            gimbal = exif.get_gimbal_yaw_pitch(ruta, bloque_xmp=bloque_xmp)
+            try:
+                xmp = exif.get_xmp_data(ruta, bloque_xmp=bloque_xmp)
+            except Exception:  # noqa: BLE001
+                xmp = None
         else:
-            yaw_bruto = exif.get_gimbal_yaw_pitch(ruta)[0]
-        yaw = float(yaw_bruto)
+            gimbal = exif.get_gimbal_yaw_pitch(ruta)
+        yaw = float(gimbal[0])
     except Exception:  # noqa: BLE001
         yaw = None
 
     gps = None
-    try:
-        gps = exif.leerLatitudLongitudAltitud_exif_DJI(ruta, progress_callback)
-    except Exception:  # noqa: BLE001
-        gps = None
+    if buf is not None:
+        try:
+            if buf_exif is not None:
+                gps = _con_reintento_fichero_completo(_gps_desde_buffer, buf_exif, ruta)
+            else:
+                with open(ruta, 'rb') as fd:
+                    gps = _gps_desde_buffer(fd.read())
+        except Exception:  # noqa: BLE001 — sin GPS la fila queda fuera de meta/location, como hoy
+            gps = None
+
+    # Solo local: con buffer, gimbal y XMP leídos. `gs://…` o lectura rota ->
+    # `meta_leida=False` y el cierre relee el fichero de salida como siempre.
+    posicion = None
+    meta_leida = buf is not None and gimbal is not None and xmp is not None
+    if meta_leida:
+        ancho, alto = _dimensiones_desde_buffer(buf)
+        posicion = _Posicion(
+            lat=gps[0] if gps else None, lon=gps[1] if gps else None,
+            altitud_abs=xmp[0], altura_relativa=xmp[1],
+            gimbal_yaw=gimbal[0], gimbal_pitch=gimbal[1],
+            gimbal_roll=xmp[2], flight_yaw=xmp[4],
+            ancho_px=ancho, alto_px=alto)
 
     return _MetadatosImagen(ruta=ruta, nombre=nombre, timestamp=timestamp,
-                            modelo=modelo, yaw=yaw, gps=gps)
+                            modelo=modelo, yaw=yaw, gps=gps,
+                            posicion=posicion, meta_leida=meta_leida, make=make)
 
 
 def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
@@ -347,6 +450,7 @@ def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
     col_fecha = nombres_columnas["Fecha"]
     col_inicio = nombres_columnas["Hora_de_inicio"]
     col_final = nombres_columnas["Hora_final"]
+    col_equipo = nombres_columnas.get("Equipo_de_vuelo")
 
     ventanas: list[dict] = []
     for indice in range(len(estadillo_df)):
@@ -368,7 +472,14 @@ def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
         inicio, fin = pipeline.ventana_horaria_vuelo(
             fecha, hora_inicio, hora_final, cfg.seconds_range,
             cfg.mismatch_hours, cfg.mismatch_minutes)
-        ventanas.append({"pb": pb, "vuelo": vuelo, "inicio": inicio, "fin": fin})
+
+        equipo = None
+        if col_equipo is not None and col_equipo in estadillo_df.columns:
+            texto = str(estadillo_df[col_equipo].iloc[indice]).strip()
+            equipo = texto if texto and texto.lower() != "nan" else None
+
+        ventanas.append({"pb": pb, "vuelo": vuelo, "inicio": inicio, "fin": fin,
+                         "equipo": equipo})
     return ventanas
 
 
@@ -485,6 +596,37 @@ def _pct_recorte(dato: _MetadatosImagen, tipo: str, cfg, pipeline) -> float | No
     return float(cfg.crop_percentage) / 100
 
 
+def campos_posicion(dato: _MetadatosImagen) -> dict:
+    """kwargs de posición para `FilaManifiesto`. Sin lectura, solo
+    `meta_leida=False` (el resto queda en su default `None`)."""
+    if not dato.meta_leida or dato.posicion is None:
+        return {"meta_leida": False}
+    p = dato.posicion
+    return {"meta_leida": True, "lat": p.lat, "lon": p.lon,
+            "altitud_abs": p.altitud_abs, "altura_relativa": p.altura_relativa,
+            "gimbal_yaw": p.gimbal_yaw, "gimbal_pitch": p.gimbal_pitch,
+            "gimbal_roll": p.gimbal_roll, "flight_yaw": p.flight_yaw,
+            "ancho_px": p.ancho_px, "alto_px": p.alto_px}
+
+
+def _avisar_equipo(asignaciones, progress_callback) -> int:
+    """Una línea por vuelo cuyo `Equipo_de_vuelo` no cuadra con el modelo EXIF
+    de alguna de sus imágenes. Solo avisa. Devuelve cuántos vuelos discrepan."""
+    discrepancias: dict[tuple[str, str], tuple[str, set[str]]] = {}
+    for dato, ventana in asignaciones:
+        if ventana is None or not ventana.get("equipo"):
+            continue
+        if equipo_mod.equipo_coincide(ventana["equipo"], dato.modelo) is False:
+            _texto, modelos = discrepancias.setdefault(
+                (ventana["pb"], ventana["vuelo"]), (ventana["equipo"], set()))
+            modelos.add(str(dato.modelo).strip("\x00").strip())
+    for (pb, vuelo), (texto, modelos) in discrepancias.items():
+        progress_callback.emit(
+            f"\nAVISO: PB{pb} vuelo {vuelo}: el estadillo dice '{texto}' pero el EXIF "
+            f"es {', '.join(sorted(modelos))}. Revisa el estadillo.\n")
+    return len(discrepancias)
+
+
 def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
                     angulos: dict[tuple[str, str], int], cfg, pipeline) -> FilaManifiesto:
     tipo = _clasificar_tipo(dato.nombre, cfg)
@@ -555,6 +697,9 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
         ruta_salida_tiff=ruta_salida_tiff,
         unassigned=unassigned,
         bytes_origen=bytes_origen,
+        **campos_posicion(dato),
+        make=dato.make,
+        equipo_estadillo=None if unassigned else ventana.get("equipo"),
     )
 
 
@@ -567,13 +712,16 @@ def construir_indice(
     progress_bar,
     progress_summarize,
     max_hilos: int | None = None,
+    ejecucion_id: int | None = None,
 ) -> dict:
     """Construye el manifiesto completo del run: una pasada de metadatos
     sobre `cfg.input_folder`, cruzada con el estadillo, decidiendo vuelo,
     nombre, ángulo, % de recorte y rutas de salida de cada imagen. No
-    escribe ni mueve NINGUNA imagen: solo inserta filas en `manifiesto`.
+    escribe ni mueve NINGUNA imagen: solo inserta (o reabre) filas en
+    `manifiesto`.
 
-    Devuelve `{"total", "unassigned", "sin_timestamp", "vuelos"}`.
+    Devuelve `{"total", "unassigned", "sin_timestamp", "vuelos", "nuevas",
+    "saltadas", "reintentadas", "vuelos_equipo_discrepa"}`.
     """
     progress_summarize.emit("---> SUBPROCESO: Índice")
 
@@ -608,12 +756,22 @@ def construir_indice(
         metadatos = []
 
     asignaciones = [(dato, _asignar_vuelo(dato, ventanas)) for dato in metadatos]
+    vuelos_equipo_discrepa = _avisar_equipo(asignaciones, progress_callback)
     angulos = _consenso_de_angulo_por_vuelo(asignaciones, pipeline, cfg,
                                             cfg.output_folder, progress_callback)
+    # Cachito posterior del mismo destino: el ángulo ya decidido para un vuelo
+    # manda sobre el recalculado, para que JPG y TIFF del vuelo no discrepen.
+    angulos.update(manifiesto.angulos_por_vuelo())
 
     filas = [_construir_fila(dato, ventana, angulos, cfg, pipeline)
              for dato, ventana in asignaciones]
-    manifiesto.insertar_muchas(filas)
+    resultado = manifiesto.insertar_o_reabrir(filas, ejecucion_id=ejecucion_id)
+    if resultado.saltadas:
+        vuelos = ", ".join(_nombre_carpeta_vuelo(pb, vuelo, cfg.include_v)
+                           for pb, vuelo in resultado.vuelos_saltados) or "sin vuelo asignado"
+        progress_callback.emit(
+            f"\n{resultado.saltadas} imagen(es) ya estaban organizadas en este destino "
+            f"y se saltan (vuelos: {vuelos}).\n")
 
     total = len(metadatos)
     unassigned = sum(1 for _dato, ventana in asignaciones if ventana is None)
@@ -633,6 +791,7 @@ def construir_indice(
         "sin_asignar": unassigned,
         "sin_timestamp": sin_timestamp,
         "vuelos": len(ventanas),
+        "ya_organizadas": resultado.saltadas,
     }))
 
     progress_bar.emit(100)
@@ -641,4 +800,8 @@ def construir_indice(
         "unassigned": unassigned,
         "sin_timestamp": sin_timestamp,
         "vuelos": len(ventanas),
+        "nuevas": resultado.nuevas,
+        "saltadas": resultado.saltadas,
+        "reintentadas": resultado.reintentadas,
+        "vuelos_equipo_discrepa": vuelos_equipo_discrepa,
     }
