@@ -22,6 +22,25 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 mkdir -p "$TMP/origen" "$TMP/PLANTA_SMOKE"
+# Un origen vacío no es una corrida válida: el motor exige estadillo y corta
+# antes del cierre. Esta foto sin EXIF entra en SIN_ORDENAR, pero recorre el
+# pipeline real y obliga a materializar manifiesto + índice Excel.
+python - "$TMP" <<'PY'
+import sys
+from pathlib import Path
+
+from PIL import Image
+
+base = Path(sys.argv[1])
+Image.new("RGB", (64, 48), (120, 130, 140)).save(
+    base / "origen" / "DJI_0001_D.JPG", "JPEG"
+)
+(base / "estadillo.csv").write_text(
+    "PB;Vuelo;Fecha;Hora_de_inicio;Hora_final\n"
+    "1;1;2026:01:15;09:55:00;10:05:00\n",
+    encoding="utf-8",
+)
+PY
 chmod +x "$APP"
 setsid env APPIMAGE_EXTRACT_AND_RUN=1 ATOM_LOG_LEVEL=INFO \
   "$APP" --server --host 127.0.0.1 --port "$PORT" >"$LOG" 2>&1 &
@@ -47,7 +66,7 @@ if [[ "$ready" != true ]]; then
 fi
 
 response="$(curl -fsS -H 'Content-Type: application/json' \
-  -d "{\"args\":[{\"origen\":\"$TMP/origen\",\"destino\":\"$TMP/PLANTA_SMOKE\",\"rename\":false}]}" \
+  -d "{\"args\":[{\"origen\":\"$TMP/origen\",\"destino\":\"$TMP/PLANTA_SMOKE\",\"estadillo\":\"$TMP/estadillo.csv\",\"rename\":false}]}" \
   "http://127.0.0.1:$PORT/api/run_organize")"
 if [[ "$response" != *'"started": true'* ]]; then
   echo "ERROR: run_organize no arrancó: $response" >&2
