@@ -6,18 +6,21 @@ cabecera en memoria y de ahí saca timestamp/modelo/yaw con réplicas puras de
 las funciones originales; solo cae a la función ORIGINAL (por ruta, con su
 propia apertura) cuando la réplica rápida falla o no encuentra el dato.
 
-El campo `gps` (`leerLatitudLongitudAltitud_exif_DJI`) queda FUERA del
-atajo a propósito: esa función vive en `exif.MetaLocation`, no en
-`exif.GeneralInformationFromImage` (el tipo real del objeto que
-`atom_core/phases.py` pasa a `construir_indice`), así que hoy en producción
-SIEMPRE lanza `AttributeError` y `gps` sale `None` en todas las imágenes.
-Implementar una lectura real de EXIF ahí habría cambiado ese resultado
-(dejaría de ser `None`), así que se deja intacta: una única llamada, igual
-que antes. Ver `test_gps_siempre_none_porque_el_metodo_no_existe`.
+El campo `gps` SÍ entra en el atajo (a diferencia de antes): se lee con una
+réplica pura en memoria (`_gps_desde_buffer`), con el mismo reintento con
+fichero completo que el resto de campos. `GeneralInformationFromImage`
+-el tipo real del objeto que `atom_core/phases.py` pasa a `construir_indice`-
+sigue sin tener `leerLatitudLongitudAltitud_exif_DJI` (vive en
+`exif.MetaLocation`), así que `_leer_metadatos_original` -que llama a esa
+función para tener una referencia de las 4 funciones "originales"- sigue
+dando `gps=None` siempre: ya no es la referencia válida para ese campo, por
+eso `_comparar` no lo compara y los tests que necesitan el GPS real lo
+comprueban aparte. Ver `test_gps_se_lee_del_buffer`.
 
-Lo que se prueba aquí es que el atajo NO cambia NINGÚN resultado frente a
-llamar a las funciones originales de `exif.GeneralInformationFromImage`
-directamente, en los casos que importan:
+Lo que se prueba aquí es que el atajo NO cambia NINGÚN resultado (salvo el
+GPS, comprobado aparte con su valor real) frente a llamar a las funciones
+originales de `exif.GeneralInformationFromImage` directamente, en los casos
+que importan:
 
 - imagen completa (EXIF + XMP);
 - sin bloque XMP;
@@ -119,9 +122,13 @@ def exif_obj(organizer_logger_stub):
 
 
 def _leer_metadatos_original(ruta: str, exif_obj, callback) -> _MetadatosImagen:
-    """Los mismos 4 campos, pero SIEMPRE por las 4 funciones originales
-    (una apertura de fichero cada una) — el comportamiento de referencia
-    contra el que se compara el atajo."""
+    """Los mismos 4 campos, pero SIEMPRE por las funciones originales (una
+    apertura de fichero cada una) — el comportamiento de referencia contra
+    el que se compara el atajo, salvo en `gps`: aquí sigue llamando a
+    `leerLatitudLongitudAltitud_exif_DJI`, que `GeneralInformationFromImage`
+    no tiene, así que este `gps` sale `None` siempre y ya no es la
+    referencia válida (el atajo real lee el GPS de verdad; ver
+    `test_gps_se_lee_del_buffer`)."""
     nombre = os.path.basename(ruta)
     try:
         timestamp = exif_obj.get_timestamp_from_image(ruta)
@@ -151,7 +158,9 @@ def _comparar(ruta, exif_obj):
     assert rapido.timestamp == original.timestamp
     assert rapido.modelo == original.modelo
     assert rapido.yaw == original.yaw
-    assert rapido.gps == original.gps
+    # `gps` NO se compara aquí: `original.gps` sale siempre `None` (ver
+    # docstring de `_leer_metadatos_original`), pero el atajo real ya lee un
+    # GPS de verdad. Los tests que lo necesitan lo comprueban aparte.
     return rapido
 
 
@@ -162,18 +171,21 @@ def test_imagen_completa_da_los_mismos_4_campos(tmp_path, exif_obj):
     assert rapido.timestamp is not None
     assert rapido.modelo == "M3T"
     assert rapido.yaw == pytest.approx(-45.5)
+    # El GPS real de la imagen (ver coordenadas de `_crear_jpeg`), no solo
+    # "no es None".
+    assert rapido.gps == pytest.approx((40.44444444444444, -3.738055555555556))
 
 
-def test_gps_siempre_none_porque_el_metodo_no_existe(tmp_path, exif_obj):
-    """`GeneralInformationFromImage` -el tipo real de `exif_management_obj`
-    que llega a `_leer_metadatos` en producción- no tiene
-    `leerLatitudLongitudAltitud_exif_DJI` (vive en `exif.MetaLocation`). El
-    atajo no debe "arreglar" eso: `gps` tiene que seguir saliendo `None`,
-    igual que con las 4 funciones originales."""
+def test_gps_se_lee_del_buffer(tmp_path, exif_obj):
+    """El atajo YA NO depende de `MetaLocation.leerLatitudLongitudAltitud_exif_DJI`
+    -que ni siquiera existe en `GeneralInformationFromImage`, el tipo real de
+    `exif_management_obj` que llega a `_leer_metadatos` en producción-: lee
+    las coordenadas con su propia réplica pura (`_gps_desde_buffer`), así que
+    `gps` sale con el valor REAL de la imagen en vez de `None`."""
     assert not hasattr(exif_obj, "leerLatitudLongitudAltitud_exif_DJI")
     ruta = _crear_jpeg(str(tmp_path / "completa.jpg"))
     rapido = _leer_metadatos(ruta, exif_obj, _Callback())
-    assert rapido.gps is None
+    assert rapido.gps == pytest.approx((40.44444444444444, -3.738055555555556))
 
 
 def test_imagen_sin_exif_dan_los_mismos_campos_none(tmp_path, exif_obj):
@@ -263,8 +275,8 @@ def test_caso_normal_abre_el_fichero_una_sola_vez(tmp_path, exif_obj, monkeypatc
     assert resultado.modelo == "M3T"
     assert resultado.timestamp is not None
     assert resultado.yaw == pytest.approx(-45.5)
-    # `gps` no pasa por el atajo (ver docstring del módulo): sigue `None`.
-    assert resultado.gps is None
+    # `gps` también sale del mismo buffer ya leído: ni una apertura extra.
+    assert resultado.gps == pytest.approx((40.44444444444444, -3.738055555555556))
 
 
 def test_exif_entero_en_buffer_solo_si_app1_cabe():
