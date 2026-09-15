@@ -89,3 +89,29 @@ def test_excel_abierto_escribe_con_otro_nombre_y_avisa(tmp_path, monkeypatch):
     assert os.path.isfile(ruta)
     assert any("abierto" in l for l in cb.lineas)
     assert not [f for f in os.listdir(cfg.output_folder) if f.endswith(".tmp")]
+
+
+def test_cabecera_congelada_y_autofiltro(tmp_path):
+    """F3: la spec exige cabecera congelada + autofiltro."""
+    m, cfg, orig = _preparar(tmp_path)
+    ruta = indice_excel.escribir_indice(m, cfg, {orig: (0.0, 37.1, -5.6)}, _Cb())
+
+    ws = load_workbook(ruta)["Imagenes"]
+    assert ws.freeze_panes == "A2"
+    ultima_columna_letra = ws.cell(row=1, column=len(indice_excel.COLUMNAS)).coordinate[:-1]
+    assert ws.auto_filter.ref == f"A1:{ultima_columna_letra}{ws.max_row}"
+
+
+def test_escribir_indice_falla_sin_openpyxl_si_no_se_importa_al_cargar_phases(monkeypatch):
+    """F4: `atom_core.phases` no debe arrastrar `openpyxl` al importarse (si
+    falta en el .exe, no puede tumbar el import de todo el módulo). El fallo,
+    si openpyxl faltara de verdad, debe quedar contenido dentro de
+    `escribir_indice`/`phases`, no al hacer `import atom_core.phases`."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "openpyxl", None)
+    for nombre in list(sys.modules):
+        if nombre == "atom_core.phases" or nombre.startswith("atom_core.phases."):
+            monkeypatch.delitem(sys.modules, nombre, raising=False)
+
+    import atom_core.phases  # noqa: F401 - el import en sí es la comprobación
