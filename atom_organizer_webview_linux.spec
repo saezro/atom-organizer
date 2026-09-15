@@ -17,18 +17,21 @@ block_cipher = None
 pyexiv2_datas, pyexiv2_binaries, pyexiv2_hidden = collect_all('pyexiv2')
 # matplotlib mpl-data (colormaps usados por el pipeline térmico)
 mpl_datas = collect_data_files('matplotlib')
+# openpyxl (índice Excel acumulativo): mismo patrón que pyexiv2, por si acaso
+# el hook genérico se deja algo de sus submódulos.
+openpyxl_datas, openpyxl_binaries, openpyxl_hidden = collect_all('openpyxl')
 
 a = Analysis(
     ['app_webview.py'],
     pathex=[],
-    binaries=pyexiv2_binaries,
+    binaries=pyexiv2_binaries + openpyxl_binaries,
     datas=[
         ('webui/dist', 'webui/dist'),          # UI React buildeada (npm run build)
         ('config/Config.ini', 'config'),
         ('Logo_atom_uas_horizonta-02.png', '.'),
         ('assets', 'assets'),
         ('programas_externos', 'programas_externos'),  # DJI/ libdirp.so + deps (Linux)
-    ] + pyexiv2_datas + mpl_datas,
+    ] + pyexiv2_datas + mpl_datas + openpyxl_datas,
     hiddenimports=[
         'pyexiv2', 'ipaddress',
         'version', 'atom_core.updater',        # updater: import perezoso desde app_webview
@@ -40,7 +43,7 @@ a = Analysis(
         'PySide6.QtWebEngineWidgets',          # Chromium embebido (imprescindible en Linux)
         'PySide6.QtWebEngineCore',
         'PySide6.QtWebChannel',
-    ] + pyexiv2_hidden,
+    ] + pyexiv2_hidden + openpyxl_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -208,6 +208,16 @@ def test_build_plan_conserva_subcarpetas_y_descarta_basura(tmp_path):
     assert plan.total_bytes == 10 + 20 + len(b"lat,lon\n")
 
 
+def test_build_plan_nunca_sube_el_manifiesto(tmp_path):
+    root = tmp_path / "planta"
+    (root / ".organizado").mkdir(parents=True)
+    (root / ".organizado" / "manifiesto.db").write_bytes(b"x")
+    (root / ".organizado" / "foto.jpg").write_bytes(b"x")
+    (root / "a.jpg").write_bytes(b"x")
+    plan = cu.build_plan(root, prefix="p", suffixes=())
+    assert [i.remote for i in plan.items] == ["p/a.jpg"]
+
+
 def test_build_plan_usa_separador_posix_aunque_el_cliente_sea_windows(tmp_path):
     root = _vuelo(tmp_path, {"sub/dir/DJI_0001_T.JPG": b"x"})
     plan = cu.build_plan(root, prefix="p")
