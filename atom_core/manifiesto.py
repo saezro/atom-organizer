@@ -12,7 +12,9 @@ completa, que es lo que hace un journal clásico.
 """
 from __future__ import annotations
 
+import datetime
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -72,35 +74,92 @@ def modo_journal(ruta_db: str | Path) -> str:
     return "DELETE" if any(tipo.startswith(p) for p in _FS_SIN_WAL) else "WAL"
 
 
-_ESQUEMA = """
-CREATE TABLE IF NOT EXISTS imagenes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ruta_origen TEXT NOT NULL UNIQUE,
-    tipo TEXT NOT NULL,
-    timestamp_exif TEXT,
-    modelo TEXT,
-    pb TEXT,
-    vuelo TEXT,
-    nombre_nuevo TEXT NOT NULL DEFAULT '',
-    angulo_giro INTEGER NOT NULL DEFAULT 0,
-    pct_recorte REAL,
-    comprime INTEGER NOT NULL DEFAULT 0,
-    ruta_salida_original TEXT NOT NULL,
-    ruta_salida_crop TEXT,
-    ruta_salida_tiff TEXT,
-    unassigned INTEGER NOT NULL DEFAULT 0,
-    -- Tamaño del fichero de ORIGEN, en bytes, tal y como lo vio el índice.
-    -- Se guarda al indexar y no al terminar a propósito: para cuando el run
-    -- acaba, el original puede haberse movido o borrado, y entonces ya no hay
-    -- forma de saber cuánto pesaba lo que entró.
-    bytes_origen INTEGER NOT NULL DEFAULT 0,
-    estado TEXT NOT NULL DEFAULT 'pendiente',
-    motivo_fallo TEXT,
-    verificacion TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_estado ON imagenes(estado);
-CREATE INDEX IF NOT EXISTS idx_vuelo ON imagenes(pb, vuelo);
-"""
+_SENTENCIAS_ESQUEMA = (
+    """
+    CREATE TABLE IF NOT EXISTS imagenes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        -- Última ruta desde la que se vio la imagen. NO es única: la misma
+        -- imagen puede llegar desde otra SD u otro punto de montaje en un
+        -- cachito posterior; la identidad es `clave`.
+        ruta_origen TEXT NOT NULL,
+        nombre_original TEXT NOT NULL DEFAULT '',
+        -- nombre|timestamp_exif|bytes_origen (ver `clave_imagen`).
+        clave TEXT NOT NULL,
+        tipo TEXT NOT NULL,
+        timestamp_exif TEXT,
+        modelo TEXT,
+        -- EXIF `Image Make`. Con `modelo`, para comprobar el dron del estadillo.
+        make TEXT,
+        pb TEXT,
+        vuelo TEXT,
+        -- `Equipo_de_vuelo` del estadillo para ese vuelo, tal cual (texto libre).
+        -- El Sí/No no se guarda: se deriva con `atom_core.equipo` al escribir el Excel.
+        equipo_estadillo TEXT,
+        nombre_nuevo TEXT NOT NULL DEFAULT '',
+        angulo_giro INTEGER NOT NULL DEFAULT 0,
+        pct_recorte REAL,
+        comprime INTEGER NOT NULL DEFAULT 0,
+        ruta_salida_original TEXT NOT NULL,
+        ruta_salida_crop TEXT,
+        ruta_salida_tiff TEXT,
+        unassigned INTEGER NOT NULL DEFAULT 0,
+        -- Tamaño del fichero de ORIGEN, en bytes, tal y como lo vio el índice.
+        -- Se guarda al indexar y no al terminar a propósito: para cuando el run
+        -- acaba, el original puede haberse movido o borrado, y entonces ya no hay
+        -- forma de saber cuánto pesaba lo que entró.
+        bytes_origen INTEGER NOT NULL DEFAULT 0,
+        estado TEXT NOT NULL DEFAULT 'pendiente',
+        motivo_fallo TEXT,
+        verificacion TEXT,
+        -- 1 si el índice leyó la posición de esta imagen (aunque viniera sin
+        -- GPS). 0 en filas migradas o de `gs://…`: el cierre relee su salida.
+        meta_leida INTEGER NOT NULL DEFAULT 0,
+        lat REAL,
+        lon REAL,
+        -- Texto crudo del XMP DJI: es lo que entra tal cual en meta/location.
+        altitud_abs TEXT,
+        altura_relativa TEXT,
+        gimbal_yaw TEXT,
+        gimbal_pitch TEXT,
+        gimbal_roll TEXT,
+        flight_yaw TEXT,
+        ancho_px INTEGER,
+        alto_px INTEGER,
+        ejecucion_id INTEGER
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_clave ON imagenes(clave)",
+    "CREATE INDEX IF NOT EXISTS idx_estado ON imagenes(estado)",
+    "CREATE INDEX IF NOT EXISTS idx_vuelo ON imagenes(pb, vuelo)",
+    """
+    CREATE TABLE IF NOT EXISTS ejecuciones (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        inicio TEXT NOT NULL,
+        fin TEXT,
+        origen TEXT NOT NULL DEFAULT '',
+        version_app TEXT NOT NULL DEFAULT '',
+        n_nuevas INTEGER NOT NULL DEFAULT 0,
+        n_saltadas INTEGER NOT NULL DEFAULT 0,
+        n_reintentadas INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+)
+
+
+def nombre_de_ruta(ruta: str) -> str:
+    """Nombre de fichero de una ruta local (Windows o POSIX) o `gs://…`.
+    `os.path.basename` en Linux no parte por `\\`, y el manifiesto puede
+    venir de un run hecho en Windows."""
+    return re.split(r"[\\/]", ruta or "")[-1]
+
+
+def clave_imagen(ruta_origen: str, timestamp_exif: str | None, bytes_origen: int | None) -> str:
+    """Identidad de una imagen independiente de dónde esté montada.
+
+    Nombre + segundo EXIF no basta: dos drones volando a la vez pueden sacar
+    `DJI_0001.JPG` en el mismo segundo. El tamaño lo desempata, y una copia
+    de la misma imagen desde otra SD pesa exactamente lo mismo."""
+    return f"{nombre_de_ruta(ruta_origen)}|{timestamp_exif or ''}|{int(bytes_origen or 0)}"
 
 
 def _sumar_verificacion(verificacion: str | None) -> int:
@@ -146,6 +205,31 @@ class FilaManifiesto:
     # construyen filas a mano siguen valiendo, y una fila sin tamaño suma 0
     # al balance en vez de reventarlo.
     bytes_origen: int = 0
+    # Posición leída en el índice (ver `indice.campos_posicion`). Con default
+    # por lo mismo que `bytes_origen`: los llamadores viejos siguen valiendo.
+    meta_leida: bool = False
+    lat: float | None = None
+    lon: float | None = None
+    altitud_abs: str | None = None
+    altura_relativa: str | None = None
+    gimbal_yaw: str | None = None
+    gimbal_pitch: str | None = None
+    gimbal_roll: str | None = None
+    flight_yaw: str | None = None
+    ancho_px: int | None = None
+    alto_px: int | None = None
+    # Equipo: EXIF `Image Make` y `Equipo_de_vuelo` del estadillo (ver `atom_core.equipo`).
+    make: str | None = None
+    equipo_estadillo: str | None = None
+
+
+@dataclass
+class ResultadoInsercion:
+    nuevas: int
+    saltadas: int
+    reintentadas: int
+    # (pb, vuelo) de las imágenes saltadas, sin repetir y en orden de aparición.
+    vuelos_saltados: list[tuple[str, str]]
 
 
 class Manifiesto:
@@ -174,38 +258,108 @@ class Manifiesto:
 
     def crear_esquema(self) -> None:
         conexion = self._conexion()
-        conexion.executescript(_ESQUEMA)
-        self._migrar_columnas(conexion)
+        if self._existe_tabla(conexion, "imagenes"):
+            self._migrar_columnas(conexion)
+            conexion.commit()
+            if "clave" not in self._columnas(conexion):
+                self._recrear_con_clave(conexion)
+        for sentencia in _SENTENCIAS_ESQUEMA:
+            conexion.execute(sentencia)
         conexion.commit()
+
+    @staticmethod
+    def _existe_tabla(conexion: sqlite3.Connection, nombre: str) -> bool:
+        return conexion.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (nombre,)
+        ).fetchone() is not None
+
+    @staticmethod
+    def _columnas(conexion: sqlite3.Connection) -> list[str]:
+        return [fila["name"] for fila in conexion.execute("PRAGMA table_info(imagenes)")]
 
     def _migrar_columnas(self, conexion: sqlite3.Connection) -> None:
         """Añade las columnas que un manifiesto de una versión anterior no
         tiene. `CREATE TABLE IF NOT EXISTS` no toca una tabla que ya existe,
         así que reanudar un run empezado con una versión vieja del Organizer
         se quedaría sin las columnas nuevas y reventaría al insertar."""
-        existentes = {fila["name"] for fila in
-                      conexion.execute("PRAGMA table_info(imagenes)")}
+        existentes = set(self._columnas(conexion))
         for nombre, definicion in (("bytes_origen", "INTEGER NOT NULL DEFAULT 0"),):
             if nombre not in existentes:
                 conexion.execute(f"ALTER TABLE imagenes ADD COLUMN {nombre} {definicion}")
 
-    def insertar_muchas(self, filas: Iterable[FilaManifiesto]) -> int:
+    def _recrear_con_clave(self, conexion: sqlite3.Connection) -> None:
+        """Manifiesto anterior a la acumulación: `ruta_origen` era UNIQUE y no
+        había `clave`. SQLite no quita un UNIQUE con ALTER, así que se recrea
+        la tabla en UNA transacción: o migra entera o se queda como estaba."""
+        viejas = [c for c in self._columnas(conexion) if c != "id"]
+        lista = ", ".join(viejas)
+        conexion.create_function("clave_imagen", 3, clave_imagen, deterministic=True)
+        conexion.create_function("nombre_de_ruta", 1, nombre_de_ruta, deterministic=True)
+        try:
+            conexion.execute("BEGIN IMMEDIATE")
+            conexion.execute("ALTER TABLE imagenes RENAME TO imagenes_v1")
+            conexion.execute("DROP INDEX IF EXISTS idx_estado")
+            conexion.execute("DROP INDEX IF EXISTS idx_vuelo")
+            for sentencia in _SENTENCIAS_ESQUEMA:
+                conexion.execute(sentencia)
+            conexion.execute(
+                f"INSERT OR IGNORE INTO imagenes (id, {lista}, nombre_original, clave) "
+                f"SELECT id, {lista}, nombre_de_ruta(ruta_origen), "
+                f"clave_imagen(ruta_origen, timestamp_exif, bytes_origen) "
+                f"FROM imagenes_v1 ORDER BY id")
+            conexion.execute("DROP TABLE imagenes_v1")
+            conexion.commit()
+        except Exception:
+            conexion.rollback()
+            raise
+
+    def insertar_o_reabrir(self, filas: Iterable[FilaManifiesto],
+                           ejecucion_id: int | None = None) -> ResultadoInsercion:
+        """Inserta lo nuevo y decide qué hacer con lo que ya estaba.
+
+        - clave nueva -> fila nueva.
+        - clave `hecho` -> no se toca: ya está organizada en este destino.
+        - clave `fallido`/`pendiente`/`en_curso` -> se reescribe con la decisión
+          y la ruta de ESTE run y vuelve a `pendiente`.
+        """
         nombres = [campo.name for campo in fields(FilaManifiesto)]
-        columnas = ", ".join(nombres)
-        marcadores = ", ".join(f":{nombre}" for nombre in nombres)
+        columnas = nombres + ["nombre_original", "clave", "ejecucion_id"]
+        lista = ", ".join(columnas)
+        marcadores = ", ".join(f":{c}" for c in columnas)
+        asignaciones = ", ".join(f"{c} = :{c}" for c in columnas if c != "clave")
         conexion = self._conexion()
-        insertadas = 0
+        nuevas = saltadas = reintentadas = 0
+        vuelos_saltados: list[tuple[str, str]] = []
         with conexion:
             for fila in filas:
                 datos = {nombre: getattr(fila, nombre) for nombre in nombres}
-                datos["comprime"] = int(datos["comprime"])
-                datos["unassigned"] = int(datos["unassigned"])
-                cursor = conexion.execute(
-                    f"INSERT OR IGNORE INTO imagenes ({columnas}) VALUES ({marcadores})",
-                    datos,
-                )
-                insertadas += cursor.rowcount
-        return insertadas
+                for booleano in ("comprime", "unassigned", "meta_leida"):
+                    datos[booleano] = int(datos[booleano])
+                datos["nombre_original"] = nombre_de_ruta(fila.ruta_origen)
+                datos["clave"] = clave_imagen(fila.ruta_origen, fila.timestamp_exif, fila.bytes_origen)
+                datos["ejecucion_id"] = ejecucion_id
+                previa = conexion.execute(
+                    "SELECT id, estado, pb, vuelo FROM imagenes WHERE clave = ?",
+                    (datos["clave"],)).fetchone()
+                if previa is None:
+                    conexion.execute(f"INSERT INTO imagenes ({lista}) VALUES ({marcadores})", datos)
+                    nuevas += 1
+                elif previa["estado"] == "hecho":
+                    saltadas += 1
+                    vuelo = (previa["pb"], previa["vuelo"])
+                    if previa["pb"] and previa["vuelo"] and vuelo not in vuelos_saltados:
+                        vuelos_saltados.append(vuelo)
+                else:
+                    conexion.execute(
+                        f"UPDATE imagenes SET {asignaciones}, estado = 'pendiente', "
+                        f"motivo_fallo = NULL WHERE id = :id_previa",
+                        dict(datos, id_previa=previa["id"]))
+                    reintentadas += 1
+        return ResultadoInsercion(nuevas, saltadas, reintentadas, vuelos_saltados)
+
+    def insertar_muchas(self, filas: Iterable[FilaManifiesto]) -> int:
+        """Compatibilidad: cuántas filas NUEVAS entraron."""
+        return self.insertar_o_reabrir(filas).nuevas
 
     def pendientes(self, limite: int | None = None) -> list[sqlite3.Row]:
         consulta = "SELECT * FROM imagenes WHERE estado = 'pendiente' ORDER BY id"
@@ -284,6 +438,40 @@ class Manifiesto:
             )
         )
 
+    def angulos_por_vuelo(self) -> dict[tuple[str, str], int]:
+        """Ángulo ya decidido para cada vuelo del destino. Un cachito posterior
+        del mismo vuelo DEBE reutilizarlo: si no, JPG y TIFF del mismo vuelo
+        podrían salir con giros distintos entre cachitos."""
+        return {
+            (fila["pb"], fila["vuelo"]): fila["angulo_giro"]
+            for fila in self._conexion().execute(
+                "SELECT pb, vuelo, angulo_giro FROM imagenes WHERE id IN ("
+                "SELECT MIN(id) FROM imagenes WHERE pb IS NOT NULL AND vuelo IS NOT NULL "
+                "AND unassigned = 0 GROUP BY pb, vuelo)")
+        }
+
+    def abrir_ejecucion(self, origen: str, version_app: str) -> int:
+        conexion = self._conexion()
+        with conexion:
+            cursor = conexion.execute(
+                "INSERT INTO ejecuciones (inicio, origen, version_app) VALUES (?, ?, ?)",
+                (datetime.datetime.now().isoformat(timespec="seconds"), origen or "", version_app or ""))
+        return int(cursor.lastrowid)
+
+    def cerrar_ejecucion(self, id_ejecucion: int, n_nuevas: int, n_saltadas: int,
+                         n_reintentadas: int) -> None:
+        conexion = self._conexion()
+        with conexion:
+            conexion.execute(
+                "UPDATE ejecuciones SET fin = ?, n_nuevas = ?, n_saltadas = ?, n_reintentadas = ? "
+                "WHERE id = ?",
+                (datetime.datetime.now().isoformat(timespec="seconds"),
+                 n_nuevas, n_saltadas, n_reintentadas, id_ejecucion))
+
+    def ejecuciones(self) -> dict[int, sqlite3.Row]:
+        return {fila["id"]: fila for fila in
+                self._conexion().execute("SELECT * FROM ejecuciones ORDER BY id")}
+
     def todas(self) -> list[sqlite3.Row]:
         return list(self._conexion().execute("SELECT * FROM imagenes ORDER BY id"))
 
@@ -291,7 +479,7 @@ class Manifiesto:
         """Destinos (`ruta_salida_original`) en los que dos o más imágenes de
         ORIGEN distinto resuelven al MISMO fichero final.
 
-        `ruta_origen` es UNIQUE (arriba), pero nada obliga a que
+        `clave` es UNIQUE (arriba), pero nada obliga a que
         `ruta_salida_original` lo sea: dos imágenes distintas pueden acabar
         con el mismo nombre calculado. El `os.replace` final de `apply.py` es
         atómico pero silencioso -- la segunda escritura pisa a la primera sin
