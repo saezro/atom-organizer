@@ -169,7 +169,12 @@ function App() {
   useEffect(() => {
     let cancelado = false
     async function consultar() {
-      const res = await api.sesionRemota().catch(() => ({ activa: false, motivo: null, desde: null }))
+      let res
+      try {
+        res = await api.sesionRemota()
+      } catch {
+        res = { activa: false, motivo: null, desde: null }
+      }
       if (!cancelado) setSesionRemota(res)
     }
     consultar()
