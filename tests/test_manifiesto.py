@@ -262,3 +262,135 @@ def test_manifiesto_viejo_gana_la_columna_nueva(tmp_path):
     manifiesto.crear_esquema()
     assert manifiesto.insertar_muchas([_fila(bytes_origen=4_000)]) == 1
     assert manifiesto.todas()[0]["bytes_origen"] == 4_000
+
+
+def test_misma_imagen_desde_dos_rutas_es_una_sola_fila(tmp_path):
+    """Otra SD u otro punto de montaje: la ruta cambia, la imagen no."""
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    r1 = manifiesto.insertar_o_reabrir([_fila("/media/sd1/DCIM/DJI_0001.JPG", bytes_origen=500)])
+    r2 = manifiesto.insertar_o_reabrir([_fila("/media/sd2/100MEDIA/DJI_0001.JPG", bytes_origen=500)])
+    assert (r1.nuevas, r2.nuevas) == (1, 0)
+    assert len(manifiesto.todas()) == 1
+
+
+def test_mismo_nombre_y_segundo_con_distinto_tamano_son_dos_filas(tmp_path):
+    """Dos drones pueden sacar DJI_0001.JPG en el mismo segundo."""
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    manifiesto.insertar_o_reabrir([_fila("/a/DJI_0001.JPG", bytes_origen=500),
+                                   _fila("/b/DJI_0001.JPG", bytes_origen=501)])
+    assert len(manifiesto.todas()) == 2
+
+
+def test_hecha_se_salta_y_se_informa_su_vuelo(tmp_path):
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    manifiesto.insertar_o_reabrir([_fila("/sd1/DJI_0001.JPG")])
+    manifiesto.marcar_hecha(manifiesto.todas()[0]["id"], "/destino/x.JPG:10")
+
+    resultado = manifiesto.insertar_o_reabrir([_fila("/sd2/DJI_0001.JPG")])
+
+    assert (resultado.nuevas, resultado.saltadas, resultado.reintentadas) == (0, 1, 0)
+    assert resultado.vuelos_saltados == [("PB1", "V01")]
+    fila = manifiesto.todas()[0]
+    assert fila["estado"] == "hecho"
+    assert fila["ruta_origen"] == "/sd1/DJI_0001.JPG"
+
+
+def test_fallida_se_reabre_con_la_ruta_nueva(tmp_path):
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    manifiesto.insertar_o_reabrir([_fila("/sd1/DJI_0001.JPG")], ejecucion_id=1)
+    manifiesto.marcar_fallida(manifiesto.todas()[0]["id"], "exiftool no encontrado")
+
+    resultado = manifiesto.insertar_o_reabrir([_fila("/sd2/DJI_0001.JPG")], ejecucion_id=2)
+
+    assert resultado.reintentadas == 1
+    fila = manifiesto.todas()[0]
+    assert fila["estado"] == "pendiente"
+    assert fila["motivo_fallo"] is None
+    assert fila["ruta_origen"] == "/sd2/DJI_0001.JPG"
+    assert fila["ejecucion_id"] == 2
+
+
+def test_guarda_metadatos_de_posicion(tmp_path):
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    manifiesto.insertar_o_reabrir([_fila(meta_leida=True, lat=40.5, lon=-3.25,
+                                         gimbal_yaw="+12.50", gimbal_pitch="-90.00",
+                                         altura_relativa="+50.000", ancho_px=640, alto_px=512,
+                                         make="DJI", equipo_estadillo="DJI M300")])
+    fila = manifiesto.todas()[0]
+    assert (fila["make"], fila["equipo_estadillo"]) == ("DJI", "DJI M300")
+    assert (fila["meta_leida"], fila["lat"], fila["lon"]) == (1, 40.5, -3.25)
+    assert (fila["gimbal_yaw"], fila["gimbal_pitch"], fila["altura_relativa"]) == ("+12.50", "-90.00", "+50.000")
+    assert fila["nombre_original"] == "DJI_0001.JPG"
+
+
+def test_angulos_por_vuelo(tmp_path):
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    manifiesto.insertar_o_reabrir([_fila("/o/A.JPG", angulo_giro=270),
+                                   _fila("/o/B.JPG", pb="PB2", vuelo="V03", angulo_giro=0),
+                                   _fila("/o/C.JPG", pb=None, vuelo=None, unassigned=True)])
+    assert manifiesto.angulos_por_vuelo() == {("PB1", "V01"): 270, ("PB2", "V03"): 0}
+
+
+def test_ejecuciones(tmp_path):
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    id_ej = manifiesto.abrir_ejecucion("/media/sd1", "3.4.93")
+    manifiesto.cerrar_ejecucion(id_ej, n_nuevas=5, n_saltadas=2, n_reintentadas=1)
+    ej = manifiesto.ejecuciones()[id_ej]
+    assert (ej["origen"], ej["version_app"]) == ("/media/sd1", "3.4.93")
+    assert (ej["n_nuevas"], ej["n_saltadas"], ej["n_reintentadas"]) == (5, 2, 1)
+    assert ej["inicio"] and ej["fin"]
+
+
+def test_manifiesto_v1_con_ruta_unique_migra_a_clave(tmp_path):
+    """Manifiesto de la versión anterior (UNIQUE en ruta_origen, sin clave):
+    se recrea la tabla conservando filas y estados."""
+    ruta = tmp_path / "m.db"
+    antiguo = sqlite3.connect(ruta)
+    antiguo.executescript("""
+        CREATE TABLE imagenes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ruta_origen TEXT NOT NULL UNIQUE, tipo TEXT NOT NULL,
+            timestamp_exif TEXT, modelo TEXT, pb TEXT, vuelo TEXT,
+            nombre_nuevo TEXT NOT NULL DEFAULT '',
+            angulo_giro INTEGER NOT NULL DEFAULT 0, pct_recorte REAL,
+            comprime INTEGER NOT NULL DEFAULT 0,
+            ruta_salida_original TEXT NOT NULL, ruta_salida_crop TEXT,
+            ruta_salida_tiff TEXT, unassigned INTEGER NOT NULL DEFAULT 0,
+            bytes_origen INTEGER NOT NULL DEFAULT 0,
+            estado TEXT NOT NULL DEFAULT 'pendiente', motivo_fallo TEXT,
+            verificacion TEXT);
+        CREATE INDEX idx_estado ON imagenes(estado);
+        CREATE INDEX idx_vuelo ON imagenes(pb, vuelo);
+        INSERT INTO imagenes (ruta_origen, tipo, timestamp_exif, pb, vuelo,
+                              ruta_salida_original, bytes_origen, estado)
+        VALUES ('/sd1/DJI_0001.JPG', 'RGB', '2026-05-01T10:00:00', 'PB1', 'V01',
+                '/destino/a.JPG', 500, 'hecho');
+    """)
+    antiguo.commit()
+    antiguo.close()
+
+    manifiesto = Manifiesto(ruta)
+    manifiesto.crear_esquema()
+
+    fila = manifiesto.todas()[0]
+    assert fila["estado"] == "hecho"
+    assert fila["clave"] == "DJI_0001.JPG|2026-05-01T10:00:00|500"
+    assert fila["meta_leida"] == 0
+    resultado = manifiesto.insertar_o_reabrir([_fila("/sd2/DJI_0001.JPG", bytes_origen=500)])
+    assert resultado.saltadas == 1
+    # Idempotente: una segunda apertura no vuelve a migrar ni rompe.
+    Manifiesto(ruta).crear_esquema()
+
+
+def test_clave_imagen_rutas_windows_y_gcs():
+    from atom_core.manifiesto import clave_imagen, nombre_de_ruta
+    assert nombre_de_ruta(r"E:\DCIM\DJI_0001.JPG") == "DJI_0001.JPG"
+    assert nombre_de_ruta("gs://b/x/DJI_0001.JPG") == "DJI_0001.JPG"
+    assert clave_imagen("/a/DJI_0001.JPG", None, None) == "DJI_0001.JPG||0"
