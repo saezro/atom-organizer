@@ -103,3 +103,74 @@ def test_cierre_no_relee_imagenes_con_metadatos(tmp_path, make_dji_jpeg, logger,
     monkeypatch.setattr(exif.MetaLocation, "leer_exif_imagen",
                         lambda *a, **k: pytest.fail("releyó una imagen con meta_leida=1"))
     cierre._emitir_meta_location(manifiesto, _cfg(raiz, True), _Cb(), {})
+
+
+def test_carpeta_real_no_recompuesta_por_include_v(tmp_path, make_dji_jpeg, logger):
+    """F5: la carpeta del CSV sale de `ruta_salida_original` (la real), no de
+    recomponer `PB{pb}_{vuelo}`/`PB{pb}_V{vuelo}` con el `include_v` del run
+    ACTUAL. El árbol en disco usa `PB1_V1` (include_v=True); si el cierre
+    corre con `include_v=False` la carpeta recompuesta sería `PB1_1`
+    (inexistente) y el CSV no podría escribirse."""
+    raiz = tmp_path / "d"
+    _arbol(raiz, make_dji_jpeg)
+    manifiesto = _manifiesto(raiz, logger, con_metadatos=False)
+    cfg = _cfg(raiz, calcular=False)
+    cfg.include_v = False  # distinto del árbol real, a propósito
+
+    rutas_emitidas = cierre._emitir_meta_location(manifiesto, cfg, _Cb(), {})
+
+    assert "meta_location" in rutas_emitidas
+    assert (raiz / "RGB" / "PB1" / "PB1_V1" / "PB1_V1_location.csv").exists()
+    assert (raiz / "TERMICA" / "PB1" / "PB1_V1" / "PB1_V1_meta.csv").exists()
+
+
+def test_error_en_un_vuelo_no_tumba_los_demas(tmp_path, make_dji_jpeg, logger, monkeypatch):
+    """F5: un vuelo roto se avisa y se salta; el resto de vuelos sigue
+    generando su meta/location con normalidad."""
+    raiz = tmp_path / "d"
+    _arbol(raiz, make_dji_jpeg)  # PB1/V1
+
+    # Segundo vuelo (PB2/V1) con las mismas imágenes RGB+TERMICA.
+    filas_extra = []
+    for tipo, nombre, lat, lon, yaw, pitch, rel in _IMAGENES:
+        if tipo == "RGB_Extra":
+            continue
+        carpeta = raiz / tipo / "PB2" / "PB2_V1"
+        carpeta.mkdir(parents=True, exist_ok=True)
+        nombre2 = nombre.replace("_100", "_110")
+        ruta = str(carpeta / nombre2)
+        make_dji_jpeg(ruta, lat=lat, lon=lon, gimbal_yaw=yaw, gimbal_pitch=pitch,
+                      relative_altitude=rel, dt_val=dt.datetime(2026, 1, 15, 11, 0, 0))
+        filas_extra.append(FilaManifiesto(
+            ruta_origen=f"/sd/{nombre2}", tipo=tipo, timestamp_exif=None, modelo=None,
+            pb="2", vuelo="1", nombre_nuevo=nombre2, angulo_giro=0, pct_recorte=None,
+            comprime=False, ruta_salida_original=ruta, ruta_salida_crop=None,
+            ruta_salida_tiff=None, unassigned=False, bytes_origen=os.path.getsize(ruta)))
+
+    manifiesto = _manifiesto(raiz, logger, con_metadatos=False)
+    manifiesto.insertar_o_reabrir(filas_extra)
+    for fila in manifiesto.todas():
+        if fila["estado"] != "hecho":
+            manifiesto.marcar_hecha(fila["id"], "")
+
+    avisos = []
+
+    class _CbAviso:
+        def emit(self, msg, *a, **k):
+            avisos.append(msg)
+
+    original_publicar = exif.MetaLocation.publicar_csv
+
+    def publicar_roto(self, df, input_folder, *a, **k):
+        if "PB2" in str(input_folder):
+            raise RuntimeError("disco roto")
+        return original_publicar(self, df, input_folder, *a, **k)
+
+    monkeypatch.setattr(exif.MetaLocation, "publicar_csv", publicar_roto)
+
+    cierre._emitir_meta_location(manifiesto, _cfg(raiz, False), _CbAviso(), {})
+
+    assert any("disco roto" in a for a in avisos if isinstance(a, str)), avisos
+    # El vuelo bueno (PB1/V1) tiene que haber salido pese al error en PB2/V1.
+    assert (raiz / "RGB" / "PB1" / "PB1_V1" / "PB1_V1_location.csv").exists()
+    assert (raiz / "TERMICA" / "PB1" / "PB1_V1" / "PB1_V1_meta.csv").exists()
