@@ -54,6 +54,7 @@ import exif as em
 import sys
 import external_tools
 import dji_worker_pool
+import dji_irp_windows
 from atom_core import almacen, rjpeg, sharding
 
 
@@ -3125,15 +3126,16 @@ class SplitImages:
         --measurefmt float32 -o IMG.raw`. Genera el mismo .raw (buffer plano float32,
         °C, row-major, resolución del sensor) que el ejecutable de Windows.
 
-        En máquinas no-x86 (Raspberry Pi/ARM), donde el SDK de DJI se emula entero
-        bajo box64 + Python x86-64 (ver `external_tools.dji_linux_launcher`), primero
-        intenta el pool de workers persistentes (`dji_worker_pool`): amortiza el
-        arranque del intérprete emulado (~370 ms) entre imágenes en vez de pagarlo en
-        cada una. Si el pool falla por lo que sea (worker muerto, protocolo roto, o
-        error del propio SDK) cae SIEMPRE al subproceso efímero de siempre — la
-        salida es la misma en ambos caminos, verificado byte a byte (ver
-        `_dji_measure_to_raw_linux_subprocess`). Desactivable con
-        `ATOM_DJI_PERSISTENT=0`. En Windows/x86 este intento ni se hace.
+        En todo Linux (Raspberry Pi/ARM con box64 + Python x86-64 emulado, ver
+        `external_tools.dji_linux_launcher`, y también x86-64 nativo en dev/Cloud
+        Run) primero intenta el pool de workers persistentes (`dji_worker_pool`):
+        amortiza el arranque del intérprete (emulado en la Pi, nativo en x86-64)
+        entre imágenes en vez de pagarlo en cada una. Si el pool falla por lo que
+        sea (worker muerto, protocolo roto, o error del propio SDK) cae SIEMPRE al
+        subproceso efímero de siempre — la salida es la misma en ambos caminos,
+        verificado byte a byte (ver `_dji_measure_to_raw_linux_subprocess`).
+        Desactivable con `ATOM_DJI_PERSISTENT=0`. En Windows este intento ni se
+        hace (ver `dji_irp_windows.py`).
         """
         if dji_worker_pool.persistent_enabled():
             try:
@@ -3608,6 +3610,33 @@ class SplitImages:
                 self.organizer_logger.logger.error(_rjpeg_linea)
 
             if _is_windows():
+                # Vía rápida: `libdirp.dll` en proceso (dji_irp_windows), sin el coste
+                # de arrancar dji_irp.exe por imagen. Si escribe un .raw válido, el
+                # .exe se salta entero y seguimos con el flujo normal de lectura del
+                # .raw de abajo. Cualquier fallo (DLL rota, rc != 0, .raw inválido)
+                # cae al .exe exactamente como si esto no existiera.
+                _dji_dll_ok = False
+                if dji_irp_windows.enabled():
+                    try:
+                        dji_irp_windows.measure(
+                            os.path.join(disk_input_folder, image_name), raw_path,
+                            humidity, emissivity, os.path.dirname(dji_utility))
+                        _dji_dll_ok = (
+                            os.path.exists(raw_path)
+                            and os.path.getsize(raw_path) > 0
+                            and os.path.getsize(raw_path) % 4 == 0)
+                    except Exception as _dji_dll_exc:
+                        self.organizer_logger.logger.warning(
+                            "dji_irp_windows (DLL en proceso) ha fallado con {0}, se usa dji_irp.exe: {1}".format(
+                                image_name, _dji_dll_exc))
+                        _dji_dll_ok = False
+                    if not _dji_dll_ok and os.path.exists(raw_path):
+                        try:
+                            os.remove(raw_path)
+                        except OSError:
+                            pass
+
+            if _is_windows() and not _dji_dll_ok:
                 # dji_utility apunta a programas_externos/DJI/dji_irp.exe (carpeta única)
                 subproceso = '"{0}" -s "{1}" -a measure --humidity {2} --emissivity {3} --measurefmt float32 -o "{4}"'.format(
                     dji_utility, os.path.join(disk_input_folder, image_name), humidity, emissivity, raw_path)
@@ -3681,7 +3710,7 @@ class SplitImages:
                             "  -> El SDK de DJI ha rechazado la imagen. Diagnóstico: {0}.\n".format(_causa))
                         self.organizer_logger.logger.error(
                             "SDK DJI rechaza {0}: {1}".format(image_name, _causa))
-            else:
+            elif not _is_windows():
                 # En Linux no hay ejecutable dji_irp: usamos libdirp.so vía ctypes.
                 # Las librerías del SDK viven junto al .exe teórico -> carpeta única del SDK.
                 lib_dir = os.path.dirname(dji_utility)

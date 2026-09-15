@@ -1,17 +1,20 @@
 """
-Pool de procesos persistentes para el SDK térmico DJI en Linux no-x86 (Raspberry
-Pi, box64). Ver `dji_irp_linux.py` para el modo "servidor" que consume este pool.
+Pool de procesos persistentes para el SDK térmico DJI en Linux (Raspberry Pi
+con box64, y Linux x86-64 en dev/Cloud Run). Ver `dji_irp_linux.py` para el
+modo "servidor" que consume este pool.
 
-Motivación: bajo box64+Python x86-64 emulado, arrancar el intérprete cuesta
-~370 ms POR IMAGEN aunque el cómputo real de la térmica sea mucho más barato.
-Manteniendo N procesos vivos (uno por hilo de la fase, creados perezosamente
-según la demanda real de concurrencia) y hablando con ellos por stdin/stdout,
-ese coste se paga una sola vez por proceso en vez de una vez por imagen.
+Motivación: arrancar un intérprete Python nuevo por imagen cuesta, aunque el
+cómputo real de la térmica sea mucho más barato. Bajo box64+Python x86-64
+emulado (Pi) ese coste es ~370 ms por el propio emulador; en Linux x86-64
+nativo (dev, Cloud Run) el coste es menor pero sigue existiendo: arrancar el
+intérprete y cargar `libdirp.so` desde cero en cada imagen. Manteniendo N
+procesos vivos (uno por hilo de la fase, creados perezosamente según la
+demanda real de concurrencia) y hablando con ellos por stdin/stdout, ese
+coste se paga una sola vez por proceso en vez de una vez por imagen.
 
-Solo se activa cuando `external_tools.dji_linux_launcher()` devuelve el
-lanzador emulado (box64 + Python x86-64), es decir, en máquinas no-x86_64. En
-Windows y en Linux x86-64 (dev, Cloud Run) este módulo no interviene: el
-lanzador es el propio intérprete y el ahorro de arranque no existe.
+Aplica a todo Linux (ver `persistent_enabled`), tanto emulado como nativo.
+Windows sigue sin pool: usa `dji_irp_windows.py` (DLL en proceso) en vez de
+este mecanismo.
 
 Desactivable con `ATOM_DJI_PERSISTENT=0` (vuelve al subprocess efímero de
 siempre). Cualquier fallo de un worker (muerte del proceso, protocolo roto, o
@@ -23,6 +26,7 @@ reintenta la imagen por la vía antigua (subprocess efímero de
 import atexit
 import json
 import os
+import sys
 import queue
 import subprocess
 import threading
@@ -41,12 +45,13 @@ _MAX_WORKERS = int(os.environ.get("ATOM_DJI_PERSISTENT_MAX", "64"))
 def persistent_enabled() -> bool:
     """True si esta ejecución debe usar el pool persistente.
 
-    Solo tiene sentido donde hoy se emula el proceso entero (ver
-    `external_tools.dji_linux_launcher`): en x86-64 nativo el lanzador ya es el
-    intérprete actual, así que no hay arranque de box64 que amortizar."""
-    if os.environ.get("ATOM_DJI_PERSISTENT", "1") == "0":
+    Aplica a todo Linux, tanto emulado (box64 en la Pi, donde amortiza el
+    arranque del emulador) como x86-64 nativo (dev, Cloud Run, donde amortiza
+    el arranque del intérprete y la carga de `libdirp.so`). Windows no pasa
+    por aquí: usa `dji_irp_windows.py`."""
+    if sys.platform.startswith("win"):
         return False
-    return not external_tools.is_x86_64()
+    return os.environ.get("ATOM_DJI_PERSISTENT", "1") != "0"
 
 
 class _Worker:
