@@ -956,64 +956,40 @@ class MetaLocation:
             progress_callback.emit("\nWARNING: No se pudo obtener AlturaRelativa (XMP RelativeAltitude) de una imagen.\n")
             return float('nan')
 
-    def gen_meta_location(self, input_folder: str, filename: str, progress_callback, progress_bar, csv_folder, flight_height:float, calculate_proyected_distance: bool) -> None:
-        """
-        Función que genera un archivo csv (normalmente llamado meta o location, junto con el nombre de la carpeta) a partir de los datos
-        exif que se encuentran en las imágenes dentro de la carpeta.
+    def leer_exif_imagen(self, ruta: str, progress_callback) -> tuple:
+        """(coords, gimbal, xmp_data) de una imagen; (None, None, None) sin EXIF.
+        Antes era el cierre `_leer_exif` de `gen_meta_location`."""
+        # `leerLatitudLongitudAltitud_exif_DJI` gestiona `gs://…` por su cuenta
+        # (su propio `abrir_para_lectura`) y necesita la ruta ORIGINAL para
+        # derivar el nombre de la imagen vía `os.path.basename(pathImagen)`;
+        # pasarle aquí el temporal local rompería ese nombre, así que se le
+        # sigue pasando `ruta` tal cual.
+        coords = self.leerLatitudLongitudAltitud_exif_DJI(ruta, progress_callback)
+        if coords is None:
+            return None, None, None
+        # `leer_bloque_xmp`/`get_gimbal_yaw_pitch`/`get_xmp_data` sí abren el
+        # fichero a pelo (no son URI-aware), así que se descarga aquí UNA sola
+        # vez a un temporal local y se reutiliza esa `Path` (como str) para las
+        # tres llamadas, en vez de una lectura del bloque XMP para los dos
+        # parsers, en vez de dos.
+        with abrir_para_lectura(ruta) as ruta_local:
+            bloque = leer_bloque_xmp(str(ruta_local))
+            gimbal = self.exif_management_obj.get_gimbal_yaw_pitch(str(ruta_local), bloque_xmp=bloque)
+            xmp_data = self.exif_management_obj.get_xmp_data(str(ruta_local), bloque_xmp=bloque)
+        return coords, gimbal, xmp_data
 
-        Arguments:
-        ---------
-        - input_folder - carpeta de entrada
-        - filename - nombre del archivo: meta.csv o location.csv
-        - progress_callback - Callback (los signals) que envían, mediante un emit(), información de texto desde el hilo correspondiente.
-        - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
-        """
+    def df_desde_lecturas(self, images, lecturas, progress_callback, progress_bar,
+                          flight_height: float, calculate_proyected_distance: bool) -> pd.DataFrame:
+        """DataFrame meta/location a partir de lecturas ya hechas, en el orden de
+        `images` (índice = posición, igual que siempre). Incluye la corrección
+        de gimbal a cero (`check_gimbal_yaw_pitch_values`)."""
         image_theoretical_position = dict()
-        images = self.utils_obj.get_images_from_dir(input_folder, ["_CROP"], solo_fuente=True)
         # se enviará 0 imágenes.
         if calculate_proyected_distance:
             nombresColumnas = ['Foto','Lat','Lon','GimbalYawDegree','GimbalPitchDegree','AlturaRelativa',"AlturaVuelo", 'CalculatedDistance','LatitudFoto', 'LongitudFoto']
         else:
             nombresColumnas = ['Foto','Lat','Lon','GimbalYawDegree','GimbalPitchDegree','AlturaRelativa']
         df = pd.DataFrame(columns=nombresColumnas)  # Creamos un dataframe para crear posteriormente un csv
-
-        if len(images) > 0:
-            progress_callback.emit("\nProcesando {0} imágenes en directorio {1}".format(len(images), input_folder) + "\n") # Se envía información al iniciar el procesado de un directorio que tenga imágenes.
-            self.organizer_logger.logger.info(f"Procesando {len(images)} imágenes en directorio {input_folder}") # Se envía información al iniciar el procesado de un directorio que tenga imágenes.
-
-        # El EXIF/XMP de cada imagen es independiente del de las demás y es puro I/O
-        # (abrir el fichero y leer la cabecera). En local se notaba poco, pero sobre
-        # gcsfuse cada apertura es un round-trip de red: leerlas de una en una dejaba
-        # esta función como la ÚNICA parte secuencial de todo el pipeline. Se leen en
-        # paralelo con hilos —el GIL no estorba porque el tiempo se va en syscalls— y
-        # el bucle de abajo, que sí depende del orden (`check_gimbal_yaw_pitch_values`
-        # corrige cada fila mirando su vecina), consume los resultados ya cacheados.
-        def _leer_exif(image: str):
-            ruta = unir(input_folder, image)
-            # `leerLatitudLongitudAltitud_exif_DJI` gestiona `gs://…` por su cuenta
-            # (su propio `abrir_para_lectura`) y necesita la ruta ORIGINAL para
-            # derivar el nombre de la imagen vía `os.path.basename(pathImagen)`;
-            # pasarle aquí el temporal local rompería ese nombre, así que se le
-            # sigue pasando `ruta` tal cual.
-            coords = self.leerLatitudLongitudAltitud_exif_DJI(ruta, progress_callback)
-            if coords is None:
-                return None, None, None
-            # `leer_bloque_xmp`/`get_gimbal_yaw_pitch`/`get_xmp_data` sí abren el
-            # fichero a pelo (no son URI-aware), así que se descarga aquí UNA sola
-            # vez a un temporal local y se reutiliza esa `Path` (como str) para las
-            # tres llamadas, en vez de una lectura del bloque XMP para los dos
-            # parsers, en vez de dos.
-            with abrir_para_lectura(ruta) as ruta_local:
-                bloque = leer_bloque_xmp(str(ruta_local))
-                gimbal = self.exif_management_obj.get_gimbal_yaw_pitch(str(ruta_local), bloque_xmp=bloque)
-                xmp_data = self.exif_management_obj.get_xmp_data(str(ruta_local), bloque_xmp=bloque)
-            return coords, gimbal, xmp_data
-
-        if images and not self.stop:
-            with ThreadPoolExecutor(max_workers=utils.max_io_workers()) as executor:
-                exif_por_imagen = list(executor.map(_leer_exif, images))
-        else:
-            exif_por_imagen = [(None, None, None)] * len(images)
 
         for indice, image in enumerate(images):  # Recorremos todas las imágenes del directorio de entrada.
             if not self.stop: # Se comprueba que no se quiere parar el proceso desde la ventana del log.
@@ -1023,7 +999,7 @@ class MetaLocation:
                 progress_callback.emit(".") # Por cada imagen que se va a procesar, se emite un "." a la ventana de log.
                 progress_bar.emit(p) # Por cada imagen que se va a procesar, se emite el procentaje de imágenes procesadas para mostrar en la barra de progreso.
 
-                coords, gimbal, xmp_data = exif_por_imagen[indice]  # Ya leído arriba en paralelo.
+                coords, gimbal, xmp_data = lecturas[indice]  # Ya leído arriba en paralelo.
                 if coords is not None:  # Si no hay datos exif en la imagen, devuelve un None. De este modo no nos da error aunque la imagen no tenga datos.
                     altura_relativa = self.safe_float_altitude(xmp_data, progress_callback)
                     if calculate_proyected_distance:
@@ -1047,43 +1023,88 @@ class MetaLocation:
         if calculate_proyected_distance:
             df = self.check_gimbal_yaw_pitch_values(df, flight_height, progress_callback)
 
-        if len(images) > 0 and not df.empty:  # Comprobamos que hay imágenes en el directorio, y además que hemos obtenido datos de ellas (es decir, hay datos exif).
-            progress_callback.emit("\nGenerando csv: " + filename + "\n")
-            self.organizer_logger.logger.info("Generating csv: " + filename)
-            # df = self.shuffle_csv(df)
-            df = self.reorder_csv_from_date(df)
-            # self.organizer_logger.logger.info(df)
-            nombre_csv = os.path.basename(input_folder) + "_" + filename
-            csv_generado = unir(input_folder, nombre_csv)
-            if es_uri_gcs(input_folder):
-                # No se puede escribir directamente sobre `gs://…`: se vuelca a
-                # un temporal local y se publica en ambos destinos desde ahí.
-                descriptor, nombre_temporal = tempfile.mkstemp(suffix=".csv")
-                os.close(descriptor)
-                ruta_temporal = Path(nombre_temporal)
-                try:
-                    df.to_csv(ruta_temporal, sep = ",", header=False, index=False)
-                    publicar_en(ruta_temporal, csv_generado)
-                    # Copia única. Antes esto era un `for file in os.listdir(...)` que, por cada
-                    # .csv encontrado en la carpeta, copiaba SIEMPRE el mismo fichero al mismo
-                    # destino: el resultado era idéntico, pero se repetía la copia N veces (y
-                    # sobre gcsfuse cada una es una subida completa a GCS).
-                    # `publicar_en` con destino `gs://…` NO detecta "es una carpeta" como sí
-                    # hace en local (un bucket no tiene directorios reales): hay que componer
-                    # la clave completa a mano SIEMPRE, sin dar por hecho que `csv_folder`
-                    # comparte esquema con `input_folder` (si divergieran, el CSV se
-                    # publicaría con el nombre aleatorio del temporal).
-                    destino_csv_folder = unir(csv_folder, nombre_csv)
-                    publicar_en(ruta_temporal, destino_csv_folder)
-                finally:
-                    ruta_temporal.unlink(missing_ok=True)
-            else:
-                df.to_csv(csv_generado, sep = ",", header=False, index=False)
+        return df
+
+    def publicar_csv(self, df: pd.DataFrame, input_folder: str, filename: str,
+                     csv_folder: str, progress_callback) -> str | None:
+        """Ordena por fecha y escribe `<carpeta>_<filename>` en la carpeta y en
+        `csv_folder`, sin cabecera. `None` si no hay filas."""
+        if df.empty:
+            return None
+        progress_callback.emit("\nGenerando csv: " + filename + "\n")
+        self.organizer_logger.logger.info("Generating csv: " + filename)
+        # df = self.shuffle_csv(df)
+        df = self.reorder_csv_from_date(df)
+        # self.organizer_logger.logger.info(df)
+        nombre_csv = os.path.basename(input_folder) + "_" + filename
+        csv_generado = unir(input_folder, nombre_csv)
+        if es_uri_gcs(input_folder):
+            # No se puede escribir directamente sobre `gs://…`: se vuelca a
+            # un temporal local y se publica en ambos destinos desde ahí.
+            descriptor, nombre_temporal = tempfile.mkstemp(suffix=".csv")
+            os.close(descriptor)
+            ruta_temporal = Path(nombre_temporal)
+            try:
+                df.to_csv(ruta_temporal, sep = ",", header=False, index=False)
+                publicar_en(ruta_temporal, csv_generado)
                 # Copia única. Antes esto era un `for file in os.listdir(...)` que, por cada
                 # .csv encontrado en la carpeta, copiaba SIEMPRE el mismo fichero al mismo
                 # destino: el resultado era idéntico, pero se repetía la copia N veces (y
                 # sobre gcsfuse cada una es una subida completa a GCS).
-                shutil.copy2(csv_generado, csv_folder)
+                # `publicar_en` con destino `gs://…` NO detecta "es una carpeta" como sí
+                # hace en local (un bucket no tiene directorios reales): hay que componer
+                # la clave completa a mano SIEMPRE, sin dar por hecho que `csv_folder`
+                # comparte esquema con `input_folder` (si divergieran, el CSV se
+                # publicaría con el nombre aleatorio del temporal).
+                destino_csv_folder = unir(csv_folder, nombre_csv)
+                publicar_en(ruta_temporal, destino_csv_folder)
+            finally:
+                ruta_temporal.unlink(missing_ok=True)
+        else:
+            df.to_csv(csv_generado, sep = ",", header=False, index=False)
+            # Copia única. Antes esto era un `for file in os.listdir(...)` que, por cada
+            # .csv encontrado en la carpeta, copiaba SIEMPRE el mismo fichero al mismo
+            # destino: el resultado era idéntico, pero se repetía la copia N veces (y
+            # sobre gcsfuse cada una es una subida completa a GCS).
+            shutil.copy2(csv_generado, csv_folder)
+        return csv_generado
+
+    def gen_meta_location(self, input_folder: str, filename: str, progress_callback, progress_bar, csv_folder, flight_height:float, calculate_proyected_distance: bool) -> None:
+        """
+        Función que genera un archivo csv (normalmente llamado meta o location, junto con el nombre de la carpeta) a partir de los datos
+        exif que se encuentran en las imágenes dentro de la carpeta.
+
+        Arguments:
+        ---------
+        - input_folder - carpeta de entrada
+        - filename - nombre del archivo: meta.csv o location.csv
+        - progress_callback - Callback (los signals) que envían, mediante un emit(), información de texto desde el hilo correspondiente.
+        - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
+        """
+        images = self.utils_obj.get_images_from_dir(input_folder, ["_CROP"], solo_fuente=True)
+        if len(images) > 0:
+            progress_callback.emit("\nProcesando {0} imágenes en directorio {1}".format(len(images), input_folder) + "\n") # Se envía información al iniciar el procesado de un directorio que tenga imágenes.
+            self.organizer_logger.logger.info(f"Procesando {len(images)} imágenes en directorio {input_folder}") # Se envía información al iniciar el procesado de un directorio que tenga imágenes.
+
+        # El EXIF/XMP de cada imagen es independiente del de las demás y es puro I/O
+        # (abrir el fichero y leer la cabecera). En local se notaba poco, pero sobre
+        # gcsfuse cada apertura es un round-trip de red: leerlas de una en una dejaba
+        # esta función como la ÚNICA parte secuencial de todo el pipeline. Se leen en
+        # paralelo con hilos —el GIL no estorba porque el tiempo se va en syscalls— y
+        # el bucle de abajo, que sí depende del orden (`check_gimbal_yaw_pitch_values`
+        # corrige cada fila mirando su vecina), consume los resultados ya cacheados.
+        if images and not self.stop:
+            with ThreadPoolExecutor(max_workers=utils.max_io_workers()) as executor:
+                lecturas = list(executor.map(
+                    lambda image: self.leer_exif_imagen(unir(input_folder, image), progress_callback), images))
+        else:
+            lecturas = [(None, None, None)] * len(images)
+
+        df = self.df_desde_lecturas(images, lecturas, progress_callback, progress_bar,
+                                    flight_height, calculate_proyected_distance)
+
+        if len(images) > 0:
+            self.publicar_csv(df, input_folder, filename, csv_folder, progress_callback)
 
         # El location.csv NO se copia a la carpeta del vuelo térmico: describe las imágenes
         # RGB (`_W`) y en `TERMICA/<PBX>/<PBX_VXX>/` es un duplicado byte a byte del que ya

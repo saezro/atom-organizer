@@ -24,7 +24,7 @@ import pandas as pd
 
 import utils
 from atom_core.almacen import abrir_para_lectura, es_uri_gcs, existe_ruta, publicar_en, tamano_de, unir
-from atom_core.indice import TIPOS_RGB
+from atom_core.indice import NOMBRE_CARPETA_RGB_EXTRA, TIPOS_RGB, _nombre_carpeta_vuelo
 
 # Columnas exactas del CSV de criterio de giro que hoy escribe
 # `Pipeline.write_videofiles_csv` (pipeline.py:1972). El giro/TIFF térmico lee
@@ -144,58 +144,104 @@ def _emitir_csv_criterio(manifiesto, cfg, progress_callback) -> dict[str, str]:
     return rutas_emitidas
 
 
-def _emitir_meta_location(cfg, progress_callback) -> dict[str, str]:
-    """Emite `meta.csv` y `location.csv` reutilizando `exif.MetaLocation` tal
-    cual la usa hoy `PipelinePhasesMixin.split_images` (`phases.py:627-654`).
+# Mismo recorrido que `MetaLocation.check_input_folder_and_iterate` (exif.py:1119):
+# RGB, TERMICA y, si existe, RGB_Extra, en ESTE orden. El location de RGB_Extra
+# pisa en `CSVs/` al de RGB homónimo igual que hoy.
+_RAICES_META_LOCATION = (("RGB", "location.csv"), ("TERMICA", "meta.csv"),
+                         (NOMBRE_CARPETA_RGB_EXTRA, "location.csv"))
 
-    No se reimplementa la lectura de GPS/gimbal: el manifiesto no guarda esos
-    datos (no le hacen falta al apply) y sacarlos exige reabrir cada imagen,
-    justo lo que el resto del motor plan→apply evita. Aquí solo se decide SI
-    hace falta correrlo (`cfg.gen_meta_location`) y se delega en la clase ya
-    validada. El `import` es perezoso a propósito: `exif.py` arrastra
-    `pyexiv2`/`geopy`/`exifread`, y el resto de `cierre.py` (CSV de criterio,
-    verificaciones) tiene que poder usarse sin esas dependencias cargadas.
-    """
+
+def _lectura_de_fila(meta_location_obj, fila, progress_callback) -> tuple:
+    """(coords, gimbal, xmp_data) como los devolvería `leer_exif_imagen`, pero
+    desde el manifiesto. Filas sin posición leída (migradas, `gs://…`) caen a
+    releer SU fichero de salida, como siempre."""
+    if fila["meta_leida"] and fila["gimbal_yaw"] is not None:
+        if fila["lat"] is None:
+            return None, None, None
+        nombre = os.path.basename(fila["ruta_salida_original"])
+        return ((nombre, fila["lat"], fila["lon"], None),
+                [fila["gimbal_yaw"], fila["gimbal_pitch"]],
+                [fila["altitud_abs"], fila["altura_relativa"]])
+    return meta_location_obj.leer_exif_imagen(fila["ruta_salida_original"], progress_callback)
+
+
+def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None) -> dict[str, str]:
+    """Emite `meta.csv`/`location.csv` desde el manifiesto.
+
+    Antes reabría TODAS las imágenes de salida (≈300 s en MELINESTI). Ahora la
+    posición viene del índice y solo se relee lo que no la tenga. La
+    construcción del DataFrame y la escritura son las MISMAS funciones de
+    `exif.MetaLocation` (`df_desde_lecturas`, `publicar_csv`): mismo orden,
+    misma corrección de gimbal, mismo formato. El `import` es perezoso: `exif.py`
+    arrastra `pyexiv2`/`geopy`/`exifread`."""
     import exif  # noqa: PLC0415 (import perezoso, ver docstring)
+    from natsort import natsorted  # noqa: PLC0415
+    from rjpeg_a_tiff import EXTS_FUENTE  # noqa: PLC0415
 
     organizer_logger = utils.OrganizerLogger("cierre_organizado", create_file_handler=False)
     meta_location_obj = exif.MetaLocation(organizer_logger)
-
     csv_folder = unir(cfg.output_folder, "CSVs")
+
+    if not (existe_ruta(unir(cfg.output_folder, "TERMICA")) and existe_ruta(unir(cfg.output_folder, "RGB"))):
+        progress_callback.emit("\nNo se han podido generar los archivos meta y location.\n")
+        return {}
+
+    grupos: "dict[tuple[str, str, str], list]" = {}
+    for fila in manifiesto.todas():
+        if fila["estado"] != "hecho" or fila["unassigned"] or not fila["pb"] or not fila["vuelo"]:
+            continue
+        grupos.setdefault((fila["tipo"], fila["pb"], fila["vuelo"]), []).append(fila)
+    meta_location_obj.total_images_number = sum(len(f) for f in grupos.values())
+
     rutas_emitidas: dict[str, str] = {}
     try:
-        meta_location_obj.total_images_number = 0
-        ok = meta_location_obj.check_input_folder_and_iterate(
-            cfg.output_folder, progress_callback, progress_callback, csv_folder,
-            cfg.flight_height, cfg.calculate_proyected_distance,
-        )
-        if not ok:
-            progress_callback.emit(
-                "\nNo se han podido generar los archivos meta y location.\n"
-            )
-        else:
-            rutas_emitidas["meta_location"] = csv_folder
-    except Exception as excepcion:  # pragma: no cover - salvaguarda, ver docstring
-        # No tumbar el cierre entero por un fallo al leer EXIF de una imagen
-        # concreta: el CSV de criterio y las verificaciones sí tienen que
-        # completarse aunque meta/location falle.
-        progress_callback.emit(
-            f"\nERROR generando meta/location: {excepcion}\n"
-        )
+        for tipo, nombre_csv in _RAICES_META_LOCATION:
+            for (tipo_grupo, pb, vuelo), filas in grupos.items():
+                if tipo_grupo != tipo:
+                    continue
+                carpeta = unir(cfg.output_folder, tipo, f"PB{pb}",
+                               _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v))
+                # Mismo filtro que `get_images_from_dir(..., ["_CROP"], solo_fuente=True)`.
+                por_nombre = {}
+                for fila in filas:
+                    nombre = os.path.basename(fila["ruta_salida_original"])
+                    if os.path.splitext(nombre)[1].lower() in EXTS_FUENTE and "_CROP" not in nombre:
+                        por_nombre[nombre] = fila
+                images = natsorted(por_nombre)
+                if not images:
+                    continue
+                progress_callback.emit(
+                    "\nProcesando {0} imágenes en directorio {1}".format(len(images), carpeta) + "\n")
+                lecturas = [_lectura_de_fila(meta_location_obj, por_nombre[n], progress_callback)
+                            for n in images]
+                df = meta_location_obj.df_desde_lecturas(
+                    images, lecturas, progress_callback, progress_callback,
+                    cfg.flight_height, cfg.calculate_proyected_distance)
+                meta_location_obj.publicar_csv(df, carpeta, nombre_csv, csv_folder, progress_callback)
+                if proyecciones is not None and cfg.calculate_proyected_distance:
+                    for _indice, linea in df.iterrows():
+                        proyecciones[por_nombre[linea["Foto"]]["ruta_salida_original"]] = (
+                            linea["CalculatedDistance"], linea["LatitudFoto"], linea["LongitudFoto"])
+        rutas_emitidas["meta_location"] = csv_folder
+    except Exception as excepcion:  # pragma: no cover - salvaguarda
+        # No tumbar el cierre entero: criterio y verificaciones tienen que completarse.
+        progress_callback.emit(f"\nERROR generando meta/location: {excepcion}\n")
     return rutas_emitidas
 
 
-def emitir_csvs(manifiesto, cfg, progress_callback) -> dict[str, str]:
+def emitir_csvs(manifiesto, cfg, progress_callback, proyecciones: dict | None = None) -> dict[str, str]:
     """Emite todos los CSV de salida del run desde el manifiesto.
 
     Devuelve un diccionario `{clave: ruta}` con lo emitido: una entrada por
     vuelo para el CSV de criterio (`"PB1_V01": ".../PB1_V01_Videofiles.csv"`)
     y, si `cfg.gen_meta_location`, la entrada `"meta_location"` con la carpeta
-    `CSVs/` donde quedaron `meta.csv`/`location.csv`.
+    `CSVs/` donde quedaron `meta.csv`/`location.csv`. Si `proyecciones` es un
+    dict, se rellena con `{ruta_salida_original: (CalculatedDistance,
+    LatitudFoto, LongitudFoto)}` para el índice Excel.
     """
     rutas_emitidas = _emitir_csv_criterio(manifiesto, cfg, progress_callback)
     if cfg.gen_meta_location:
-        rutas_emitidas.update(_emitir_meta_location(cfg, progress_callback))
+        rutas_emitidas.update(_emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones))
     return rutas_emitidas
 
 
