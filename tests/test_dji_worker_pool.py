@@ -139,10 +139,12 @@ def test_pool_descarta_worker_muerto_y_permite_reintento(tmp_path, stub_pool):
     assert raw_ok.exists()
 
 
-def test_persistent_enabled_false_en_x86_64(monkeypatch):
+def test_persistent_enabled_true_en_x86_64_tambien(monkeypatch):
+    # Desde que el pool amortiza también el arranque del intérprete nativo en
+    # Linux x86-64 (dev/Cloud Run), ya no depende de la arquitectura.
     monkeypatch.setattr(external_tools, "is_x86_64", lambda: True)
     monkeypatch.delenv("ATOM_DJI_PERSISTENT", raising=False)
-    assert dji_worker_pool.persistent_enabled() is False
+    assert dji_worker_pool.persistent_enabled() is True
 
 
 def test_persistent_enabled_true_en_no_x86_salvo_variable_de_entorno(monkeypatch):

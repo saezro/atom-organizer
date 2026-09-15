@@ -36,10 +36,6 @@ import os
 import sys
 
 _DIRP_SUCCESS = 0
-# Defaults del CLI dji_irp para los parámetros que ATOM no pasa (solo humidity y
-# emissivity); igualan a los documentados por el SDK.
-_DEFAULT_DISTANCE = 5.0
-_DEFAULT_REFLECTION = 23.0
 
 
 class _resolution_t(ctypes.Structure):
@@ -130,12 +126,11 @@ def measure(img_path, raw_out, humidity, emissivity, lib_dir):
         ret = dll.dirp_get_measurement_params(handle, ctypes.byref(params))
         if ret != _DIRP_SUCCESS:
             raise RuntimeError("dirp_get_measurement_params rc={0} [{1}]".format(ret, _ctx))
-        # Igual que el CLI: solo se fijan humidity y emissivity; distance y
-        # reflection quedan en los defaults del CLI.
-        params.distance = _DEFAULT_DISTANCE
+        # Igual que el CLI: solo humidity/emissivity sobre los params leídos del
+        # R-JPEG. Forzar distance=5/reflection=23 rompía la paridad con
+        # dji_irp.exe (KL23: hasta 0,76 °C de diferencia; sin forzar, byte a byte).
         params.humidity = float(humidity)
         params.emissivity = float(emissivity)
-        params.reflection = _DEFAULT_REFLECTION
         ret = dll.dirp_set_measurement_params(handle, ctypes.byref(params))
         if ret != _DIRP_SUCCESS:
             raise RuntimeError(
