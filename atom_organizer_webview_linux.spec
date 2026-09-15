@@ -15,6 +15,11 @@ block_cipher = None
 
 # pyexiv2 arrastra su binario nativo (libexiv2) — imprescindible en runtime
 pyexiv2_datas, pyexiv2_binaries, pyexiv2_hidden = collect_all('pyexiv2')
+# numpy/pandas 2.x/3.x reparten módulos Python y extensiones nativas fuera de
+# los caminos que recogían los hooks antiguos. Se fuerzan completos igual que
+# en Windows: el pipeline los importa de forma perezosa al empezar una corrida.
+numpy_datas, numpy_binaries, numpy_hidden = collect_all('numpy')
+pandas_datas, pandas_binaries, pandas_hidden = collect_all('pandas')
 # matplotlib mpl-data (colormaps usados por el pipeline térmico)
 mpl_datas = collect_data_files('matplotlib')
 # openpyxl (índice Excel acumulativo): mismo patrón que pyexiv2, por si acaso
@@ -24,14 +29,14 @@ openpyxl_datas, openpyxl_binaries, openpyxl_hidden = collect_all('openpyxl')
 a = Analysis(
     ['app_webview.py'],
     pathex=[],
-    binaries=pyexiv2_binaries + openpyxl_binaries,
+    binaries=pyexiv2_binaries + numpy_binaries + pandas_binaries + openpyxl_binaries,
     datas=[
         ('webui/dist', 'webui/dist'),          # UI React buildeada (npm run build)
         ('config/Config.ini', 'config'),
         ('Logo_atom_uas_horizonta-02.png', '.'),
         ('assets', 'assets'),
         ('programas_externos', 'programas_externos'),  # DJI/ libdirp.so + deps (Linux)
-    ] + pyexiv2_datas + mpl_datas + openpyxl_datas,
+    ] + pyexiv2_datas + numpy_datas + pandas_datas + mpl_datas + openpyxl_datas,
     hiddenimports=[
         'pyexiv2', 'ipaddress',
         'version', 'atom_core.updater',        # updater: import perezoso desde app_webview
@@ -43,7 +48,7 @@ a = Analysis(
         'PySide6.QtWebEngineWidgets',          # Chromium embebido (imprescindible en Linux)
         'PySide6.QtWebEngineCore',
         'PySide6.QtWebChannel',
-    ] + pyexiv2_hidden + openpyxl_hidden,
+    ] + pyexiv2_hidden + numpy_hidden + pandas_hidden + openpyxl_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
