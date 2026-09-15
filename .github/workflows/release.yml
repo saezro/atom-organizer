@@ -126,8 +126,6 @@ jobs:
           # requirements-linux.txt (NO requirements.txt: esa lleva pywin32, solo-Windows)
           pip install -r requirements-linux.txt
           pip install -r requirements-webview.txt
-          # setuptools<81: PyInstaller 5.13.2 necesita pkg_resources (setuptools 83 lo quitó)
-          pip install "setuptools==80.10.2" "pyinstaller==5.13.2"
       # El client_secret no está en el repo (es público: Google revocaría el
       # cliente por secret-scanning). Se inyecta aquí, solo en el runner.
       - name: Inyectar credenciales OAuth
@@ -141,6 +139,8 @@ jobs:
         run: python inject_ipaddress.py
       - name: Montar AppImage
         run: bash scripts/build_appimage.sh "${{ needs.meta.outputs.version }}"
+      - name: Smoke runtime AppImage (pipeline + índice Excel)
+        run: bash scripts/smoke_appimage_runtime.sh "ATOM_Organizer-${{ needs.meta.outputs.version }}-x86_64.AppImage"
       - uses: actions/upload-artifact@v4
         with:
           name: linux-appimage
