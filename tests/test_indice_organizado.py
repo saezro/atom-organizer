@@ -414,7 +414,7 @@ def test_emite_stats_marker_con_desglose_rgb_extra_separado(tmp_path):
     payload = json.loads(marcadores[0][len(STATS_INDICE_PREFIX):])
     assert payload == {
         "fase": "Índice", "total": 3, "rgb": 1, "termica": 1, "rgb_extra": 1,
-        "sin_asignar": 0, "sin_timestamp": 0, "vuelos": 1,
+        "sin_asignar": 0, "sin_timestamp": 0, "vuelos": 1, "ya_organizadas": 0,
     }
     manifiesto.cerrar()
 

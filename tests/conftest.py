@@ -130,9 +130,10 @@ def _to_deg_minute_sec(value: float):
 def make_dji_jpeg():
     """
     Factory fixture: devuelve una función `_make(path, lat, lon, dt_val,
-    relative_altitude, gimbal_yaw, gimbal_pitch) -> str` que escribe un JPEG con
-    EXIF GPS + DateTimeOriginal (vía piexif) y le añade un bloque XMP DJI en
-    texto plano tras el marcador de fin de JPEG.
+    relative_altitude, gimbal_yaw, gimbal_pitch, make, model) -> str` que
+    escribe un JPEG con EXIF GPS + DateTimeOriginal (vía piexif) y le añade
+    un bloque XMP DJI en texto plano tras el marcador de fin de JPEG.
+    `make`/`model` son opcionales (default `None`: no tocan el EXIF 0th).
     """
     import piexif
     from PIL import Image
@@ -145,6 +146,8 @@ def make_dji_jpeg():
         relative_altitude: float = 50.0,
         gimbal_yaw: float = 12.5,
         gimbal_pitch: float = -90.0,
+        make: str | None = None,
+        model: str | None = None,
     ) -> str:
         if dt_val is None:
             dt_val = dt.datetime(2024, 6, 1, 10, 30, 0)
@@ -167,6 +170,10 @@ def make_dji_jpeg():
         zeroth_ifd = {
             piexif.ImageIFD.DateTime: date_str,
         }
+        if make is not None:
+            zeroth_ifd[piexif.ImageIFD.Make] = make
+        if model is not None:
+            zeroth_ifd[piexif.ImageIFD.Model] = model
         exif_dict = {"0th": zeroth_ifd, "Exif": exif_ifd, "GPS": gps_ifd}
         exif_bytes = piexif.dump(exif_dict)
 
