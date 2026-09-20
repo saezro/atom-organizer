@@ -431,7 +431,11 @@ class TestGuardCarpetaSalidaSplitImages:
     def _run_split(self, monkeypatch, destino):
         monkeypatch.setattr(organize, "HeadlessHost", lambda: self._HostSplitFalso())
         eventos, emit = _emisor()
-        organize.run_task("split_images", {"destino": str(destino)}, emit)
+        # Estadillo obligatorio (gate de `run_task` antes de arrancar ninguna
+        # fase): con `organizar_plan_apply` mockeado a un no-op, la ruta no
+        # necesita existir de verdad, solo estar presente para pasar el gate.
+        organize.run_task(
+            "split_images", {"destino": str(destino), "estadillo": "/no/existe.csv"}, emit)
         return eventos
 
     def test_no_aborta_si_el_destino_solo_tiene_logs_y_manifiesto(self, monkeypatch, tmp_path):

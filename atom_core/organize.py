@@ -601,6 +601,24 @@ def run_task(
         else:
             cfg = _build_generic(config_cls, params)
 
+        # Estadillo OBLIGATORIO en "Organizar completo": sin él,
+        # `organizar_plan_apply` -> `construir_indice` revienta a mitad de la
+        # fase de estructura con un `ValueError` (`combinar_estadillos` sin
+        # rutas). Se corta AQUÍ, antes de arrancar ninguna fase, con la UNIÓN
+        # de los estadillos autodetectados en la carpeta de origen y los que
+        # el usuario haya aportado a mano en el campo de la UI —NUNCA solo
+        # autodetección: `detectar_estadillos` falla en algunos lotes (KL91)
+        # y si el usuario aporta la ruta el lote tiene que poder organizarse.
+        if task == "split_images":
+            from atom_core.estadillo import desempaquetar_rutas, detectar_estadillos
+            _rutas_manuales = desempaquetar_rutas(getattr(cfg, "estad", "") or "")
+            _rutas_auto = detectar_estadillos(getattr(cfg, "input_folder", "") or "")["rutas"]
+            if not _rutas_manuales and not _rutas_auto:
+                emit("error", "No se ha encontrado ningún estadillo: sin estadillo el "
+                              "lote no se puede organizar. Indica la ruta del estadillo "
+                              "o colócalo junto a la carpeta de fotos.")
+                return
+
         # `GenStructFolderConfig` (y cualquier otra config que traiga el campo)
         # no pasa por `_default_split_config`, asi que se valida aqui: mismo
         # motivo que en `_default_split_config` -- fallar ya y no mas abajo, o

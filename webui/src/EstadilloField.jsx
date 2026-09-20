@@ -57,7 +57,7 @@ export default function EstadilloField({ value, onChange, disabled, tactil }) {
     const path = files[0] ?? ''
     return (
       <div className="field">
-        <span className="field-label">Estadillo (opcional)</span>
+        <span className="field-label">Estadillo *</span>
         <div className="field-row">
           <input
             className="glass-input"
@@ -114,7 +114,7 @@ export default function EstadilloField({ value, onChange, disabled, tactil }) {
 
   return (
     <div className="field">
-      <span className="field-label">Estadillos (gana el primero de la lista)</span>
+      <span className="field-label">Estadillos * (gana el primero de la lista)</span>
       <ul className="estad-list">
         {filasVisibles.map(({ path, i }) => (
           <li key={i} className="estad-item">
