@@ -77,8 +77,16 @@ def test_cli_por_defecto_sobrescribe(monkeypatch, tmp_path):
     origen = tmp_path / "in"
     origen.mkdir()
     destino = tmp_path / "out"
+    estadillo = tmp_path / "e.csv"
+    estadillo.write_text("")
 
-    organize_cli.main(["--origen", str(origen), "--destino", str(destino), "--quiet", "--json"])
+    # El estadillo es obligatorio (sin él el CLI corta con return 2 antes de
+    # llegar a `run_task`, ver el gate en `organize_cli.main`); este test solo
+    # comprueba el default de `modo_destino`, así que se pasa uno cualquiera.
+    organize_cli.main([
+        "--origen", str(origen), "--destino", str(destino), "--estadillo", str(estadillo),
+        "--quiet", "--json",
+    ])
 
     assert capturado.get("modo_destino") == utils.MODO_SOBRESCRIBIR
 

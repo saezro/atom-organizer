@@ -29,6 +29,7 @@ def test_todo_repartido_se_rechaza():
     eventos, emit = _emisor()
     organize.run_task("split_images",
                       {"origen": "/no/existe", "destino": "/tmp/x",
+                       "estadillo": "/no/existe.csv",
                        "etapa": "todo", "shard_index": 0, "shard_count": 8},
                       emit)
     errores = _errores(eventos)
@@ -40,6 +41,7 @@ def test_etapa_desconocida_se_rechaza():
     eventos, emit = _emisor()
     organize.run_task("split_images",
                       {"origen": "/no/existe", "destino": "/tmp/x",
+                       "estadillo": "/no/existe.csv",
                        "etapa": "postt"},
                       emit)
     errores = _errores(eventos)
@@ -67,6 +69,7 @@ def test_el_organizado_rechaza_el_reparto_mientras_el_motor_nuevo_no_lo_soporte(
     origen.mkdir()
     organize.run_task("split_images",
                       {"origen": str(origen), "destino": str(tmp_path / "destino"),
+                       "estadillo": "/no/existe.csv",
                        "etapa": etapa, "shard_index": 1, "shard_count": 4},
                       emit)
     assert [e for e in _errores(eventos) if "no se puede repartir todavía" in e], \
@@ -85,7 +88,8 @@ def test_el_guard_de_carpeta_vacia_sigue_activo_sin_reparto(tmp_path):
 
     eventos, emit = _emisor()
     organize.run_task("split_images",
-                      {"origen": str(origen), "destino": str(destino)}, emit)
+                      {"origen": str(origen), "destino": str(destino),
+                       "estadillo": "/no/existe.csv"}, emit)
     assert any("no está vacía" in e for e in _errores(eventos))
 
 
@@ -101,5 +105,6 @@ def test_el_guard_de_carpeta_vacia_no_aplica_con_reparto(tmp_path):
     eventos, emit = _emisor()
     organize.run_task("split_images",
                       {"origen": str(origen), "destino": str(destino),
+                       "estadillo": "/no/existe.csv",
                        "etapa": "post", "shard_index": 0, "shard_count": 4}, emit)
     assert not [e for e in _errores(eventos) if "no está vacía" in e]

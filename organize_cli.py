@@ -310,6 +310,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: el estadillo no existe: {', '.join(faltantes_estadillo)}",
               file=sys.stderr)
         return 2
+
+    # Estadillo OBLIGATORIO: sin él, el pipeline revienta a mitad de la fase
+    # de estructura de carpetas (`combinar_estadillos`). Se corta AQUÍ, antes
+    # de crear el destino o importar el pipeline, con la UNIÓN de los
+    # estadillos autodetectados en `origen` y los pasados a mano por
+    # `--estadillo` —NUNCA solo autodetección: `detectar_estadillos` falla en
+    # algunos lotes (KL91) y si se aporta la ruta a mano el lote tiene que
+    # poder organizarse igual.
+    from atom_core.estadillo import detectar_estadillos
+    rutas_autodetectadas = [] if origen_es_gcs else detectar_estadillos(str(origen))["rutas"]
+    if not rutas_autodetectadas and not args.estadillo:
+        print("error: No se ha encontrado ningún estadillo: sin estadillo el "
+              "lote no se puede organizar. Indica la ruta del estadillo con "
+              "--estadillo o colócalo junto a la carpeta de fotos.",
+              file=sys.stderr)
+        return 2
+
     # En GCS no hay directorios: nada que crear de antemano.
     if not destino_es_gcs:
         destino.mkdir(parents=True, exist_ok=True)
