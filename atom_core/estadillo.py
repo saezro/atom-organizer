@@ -224,7 +224,7 @@ def combinar_estadillos(rutas: list[str]) -> pd.DataFrame:
     """
     rutas = [r for r in (rutas or []) if r]
     if not rutas:
-        raise ValueError("combinar_estadillos: no se ha pasado ninguna ruta de estadillo")
+        raise ValueError("No se ha indicado ningún estadillo: sin estadillo el lote no se puede organizar.")
 
     frames: list[pd.DataFrame] = []
     for ruta in rutas:

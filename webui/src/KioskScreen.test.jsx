@@ -296,7 +296,7 @@ describe('KioskScreen — paso 1 (menú)', () => {
     render(<KioskScreen {...baseProps({ accionInicial: 'organizer' })} />)
     await userEvent.click(screen.getByRole('button', { name: /^organizar$/i }))
     expect(screen.getByText(/elegir carpeta/i)).toBeInTheDocument()
-    expect(screen.getByText(/estadillo \(opcional\)/i)).toBeInTheDocument()
+    expect(screen.getByText(/^estadillo \*$/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /atrás/i })).toBeInTheDocument()
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
   })

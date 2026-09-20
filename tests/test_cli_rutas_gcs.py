@@ -112,6 +112,10 @@ def test_cli_rutas_gcs_llegan_intactas_a_run_task(monkeypatch):
     # `es_carpeta("gs://b/x")` -> `existe_ruta` -> hay algo colgando del
     # prefijo "x/": basta un objeto cualquiera.
     bucket.objetos["x/DJI_0001.JPG"] = b"contenido"
+    # `detectar_estadillos` no sabe autodetectar en gs:// (usa `os.path.isdir`,
+    # que siempre es False para una URI): el estadillo es obligatorio y hay
+    # que aportarlo a mano con `--estadillo` para pasar el gate.
+    bucket.objetos["x/estadillo.csv"] = b"c"
 
     capturado = {}
 
@@ -123,7 +127,8 @@ def test_cli_rutas_gcs_llegan_intactas_a_run_task(monkeypatch):
     monkeypatch.setattr(organize_cli, "run_task", _fake_run_task, raising=False)
 
     codigo = organize_cli.main([
-        "--origen", "gs://b/x", "--destino", "gs://b/y", "--quiet", "--json",
+        "--origen", "gs://b/x", "--destino", "gs://b/y",
+        "--estadillo", "gs://b/x/estadillo.csv", "--quiet", "--json",
     ])
 
     assert codigo != 2
@@ -274,9 +279,12 @@ def test_cli_gcs_con_ingest_secret_no_revienta_y_reporta_basename_de_la_uri(monk
 
     bucket = _sembrar_almacen_gcs("b")
     bucket.objetos["x/DJI_0001.JPG"] = b"contenido"
+    # Estadillo obligatorio; en gs:// no hay autodetección, así que va a mano.
+    bucket.objetos["x/estadillo.csv"] = b"c"
 
     codigo = organize_cli.main([
-        "--origen", "gs://b/x", "--destino", "gs://b/y", "--quiet", "--json",
+        "--origen", "gs://b/x", "--destino", "gs://b/y",
+        "--estadillo", "gs://b/x/estadillo.csv", "--quiet", "--json",
     ])
 
     assert codigo != 2
@@ -292,9 +300,12 @@ def test_cli_local_con_ingest_secret_reporta_basename_de_siempre(tmp_path, monke
     origen = tmp_path / "VUELO_1"
     origen.mkdir()
     destino = tmp_path / "salida"
+    estadillo = tmp_path / "e.csv"
+    estadillo.write_text("")
 
     codigo = organize_cli.main([
-        "--origen", str(origen), "--destino", str(destino), "--quiet", "--json",
+        "--origen", str(origen), "--destino", str(destino),
+        "--estadillo", str(estadillo), "--quiet", "--json",
     ])
 
     assert codigo != 2
