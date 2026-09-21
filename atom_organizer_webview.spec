@@ -173,6 +173,13 @@ a = Analysis(
         # dentro de activo(), la detección estática no lo ve solo si esto ya
         # no basta:
         'atom_core.rgb_gpu',
+        # graphlib (stdlib): lo importa cupy._core._carray/_scalar, extensiones
+        # Cython compiladas (.pyx→.pyd/.so) — el análisis estático de PyInstaller
+        # no ve imports dentro de binarios compilados. Sin esto, `import cupy`
+        # petaba con ModuleNotFoundError: No module named 'graphlib' en el .exe
+        # (confirmado con `python -X importtime -c "import cupy"` sobre
+        # cupy-cuda12x 14.2.0 real: graphlib cuelga de cupy._core._carray).
+        'graphlib',
     ] + pyexiv2_hidden + numpy_hidden + pandas_hidden + pytz_hidden + openpyxl_hidden + ['pytz'] + gpu_hidden,
     hookspath=[],
     hooksconfig={},
