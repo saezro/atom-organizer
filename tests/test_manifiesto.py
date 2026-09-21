@@ -156,6 +156,38 @@ def test_escrituras_concurrentes_no_pierden_filas(tmp_path):
     manifiesto.cerrar()
 
 
+def test_reusar_manifiesto_tras_cerrar_desde_otro_hilo_no_revienta(tmp_path):
+    """`cerrar()` puede llamarse desde un hilo distinto al que abrió una
+    conexión (el motor cierra desde el hilo principal, los workers escriben
+    desde un ThreadPoolExecutor). Si ese hilo worker vuelve a usar el
+    manifiesto después, no debe devolver la conexión ya cerrada."""
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    manifiesto.insertar_muchas([_fila()])
+    id_fila = manifiesto.todas()[0]["id"]
+
+    resultado = {}
+
+    def usar_de_nuevo():
+        try:
+            manifiesto.marcar_hecha(id_fila, verificacion="ok")
+            resultado["ok"] = True
+        except sqlite3.ProgrammingError as exc:
+            resultado["error"] = exc
+
+    # Un solo pool de un worker: ambos envíos corren en el MISMO hilo, así que
+    # `_local.conexion` del segundo submit es la conexión que `cerrar()` ya
+    # cerró desde el hilo principal.
+    with ThreadPoolExecutor(max_workers=1) as ejecutor:
+        ejecutor.submit(manifiesto.marcar_en_curso, id_fila).result()
+        manifiesto.cerrar()
+        ejecutor.submit(usar_de_nuevo).result()
+
+    assert resultado.get("ok") is True, resultado.get("error")
+    assert manifiesto.resumen()["hecho"] == 1
+    manifiesto.cerrar()
+
+
 def test_filas_por_vuelo(tmp_path):
     """El cierre emite un CSV de criterio por vuelo. Necesita pedir las filas
     de un (PB, vuelo) concreto sin releer el manifiesto entero."""
