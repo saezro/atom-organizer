@@ -26,6 +26,7 @@ import KioskAjustes from './KioskAjustes.jsx'
 import KioskLock from './KioskLock.jsx'
 import BarraEstado from './BarraEstado.jsx'
 import BannerConexion from './BannerConexion.jsx'
+import Avatar from './Avatar.jsx'
 import { APPS } from './apps/registry.js'
 
 // Deriva la ruta de destino a partir de la carpeta de origen, añadiendo el
@@ -231,11 +232,13 @@ export default function KioskScreen({
       data-testid="kiosk-avatar"
     >
       {status && status.logged_in && status.estado !== 'sin-credencial' ? (
-        status.picture ? (
-          <img src={status.picture} alt={`Avatar de ${email}`} className="kiosk-avatar-img" />
-        ) : (
-          <span className="kiosk-avatar-fallback">{inicial}</span>
-        )
+        <Avatar
+          src={status.picture}
+          alt={`Avatar de ${email}`}
+          inicial={inicial}
+          imgClassName="kiosk-avatar-img"
+          fallbackClassName="kiosk-avatar-fallback"
+        />
       ) : (
         <span className="kiosk-sin-sesion">Sin sesión</span>
       )}
@@ -524,16 +527,14 @@ export default function KioskScreen({
           <div className="kiosk-perfil">
             <div className="kiosk-perfil-izq">
               <div className="kiosk-perfil-foto-marco">
-                {status?.picture ? (
-                  <img
-                    src={status.picture}
-                    alt={`Foto de ${email}`}
-                    className="kiosk-perfil-foto"
-                    data-testid="kiosk-perfil-foto"
-                  />
-                ) : (
-                  <span className="kiosk-perfil-inicial">{inicial}</span>
-                )}
+                <Avatar
+                  src={status?.picture}
+                  alt={`Foto de ${email}`}
+                  inicial={inicial}
+                  imgClassName="kiosk-perfil-foto"
+                  fallbackClassName="kiosk-perfil-inicial"
+                  testId="kiosk-perfil-foto"
+                />
               </div>
               {nombre && (
                 <span className="kiosk-perfil-nombre" data-testid="kiosk-perfil-nombre">{nombre}</span>
