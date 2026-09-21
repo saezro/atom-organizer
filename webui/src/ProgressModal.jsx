@@ -252,6 +252,9 @@ export default function ProgressModal({
               {p.recursos && recursosLine(p.recursos) && (
                 <div className="pm-recursos">{recursosLine(p.recursos)}</div>
               )}
+              {p.status === 'error' && p.msg && (
+                <div className="pm-stats pm-errmsg">{p.msg}</div>
+              )}
               {p.status === 'active' && !finished && (
                 <>
                   <div className="pm-sub">
