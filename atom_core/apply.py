@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -33,6 +34,7 @@ import pipeline
 from exif import extraer_bloque_xmp_crudo
 from atom_core import indice as indice_mod
 from atom_core import perfil_rgb
+from atom_core import rgb_gpu
 
 #: MB que se le presupone a un item de RGB para el reporte al controlador
 #: adaptativo. Si no se puede leer el tamaño real del origen (p. ej. se
@@ -598,6 +600,13 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
         if controlador is not None:
             controlador.registrar(mb=_tamano_mb(fila["ruta_origen"]))
             controlador.revisar()
+
+    if rgb_gpu.activo():
+        rgb_gpu.aplicar(filas, cfg, pipeline_mod, sys.modules[__name__], _cerrar_fila,
+                        lambda fila: _escribir_salidas_de_fila(fila, cfg, pipeline_mod),
+                        progress_bar, progress_callback)
+        _emitir_resumen_perfil_rgb(progress_callback)
+        return resultado
 
     if controlador is None:
         for indice, fila in enumerate(filas, start=1):
