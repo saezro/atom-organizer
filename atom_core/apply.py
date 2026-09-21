@@ -607,6 +607,12 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
                         progress_bar, progress_callback)
         _emitir_resumen_perfil_rgb(progress_callback)
         return resultado
+    if (os.environ.get("ORGANIZER_RGB_GPU") == "1" and rgb_gpu._ESTADO.get("error")
+            and not rgb_gpu._ESTADO.get("error_logueado")):
+        rgb_gpu._ESTADO["error_logueado"] = True
+        progress_callback.emit(
+            f"\n[gpu] ORGANIZER_RGB_GPU=1 pero no se pudo activar GPU: "
+            f"{rgb_gpu._ESTADO['error']}\n")
 
     if controlador is None:
         for indice, fila in enumerate(filas, start=1):
