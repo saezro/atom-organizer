@@ -74,6 +74,11 @@ a = Analysis(
         'PySide6.QtWebChannel',
         # camino GPU opt-in ORGANIZER_RGB_GPU=1 (rgb_gpu.py)
         'atom_core.rgb_gpu',
+        # graphlib (stdlib): lo importa cupy._core._carray/_scalar, extensiones
+        # Cython compiladas (.pyx→.so) — invisible al análisis estático de
+        # PyInstaller (no mira dentro de binarios compilados). Ver comentario
+        # gemelo en atom_organizer_webview.spec.
+        'graphlib',
     ] + pyexiv2_hidden + numpy_hidden + pandas_hidden + openpyxl_hidden + gpu_hidden,
     hookspath=[],
     hooksconfig={},
