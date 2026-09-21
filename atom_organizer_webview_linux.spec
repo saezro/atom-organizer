@@ -26,17 +26,41 @@ mpl_datas = collect_data_files('matplotlib')
 # el hook genérico se deja algo de sus submódulos.
 openpyxl_datas, openpyxl_binaries, openpyxl_hidden = collect_all('openpyxl')
 
+# --- GPU opt-in (ORGANIZER_RGB_GPU=1, ver atom_core/rgb_gpu.py): cupy +
+# nvImageCodec + las libs nvidia-*-cu12 que necesitan (requirements-gpu.txt).
+# TOLERANTE a propósito: si requirements-gpu.txt no está instalado en el
+# entorno de build (build normal, sin GPU), find_spec da None, no se empaqueta
+# nada de esto y el AppImage sigue igual que hoy — rgb_gpu.activo() ve el
+# ImportError en runtime y cae a CPU. Solo se fuerza collect_all sobre lo que
+# SÍ está instalado al construir.
+import importlib.util as _ilu_gpu
+
+gpu_binaries, gpu_datas, gpu_hidden = [], [], []
+for _gpu_pkg in (
+    'cupy', 'cupy_backends', 'cupyx', 'fastrlock', 'cuda.pathfinder',
+    'nvidia.cuda_runtime', 'nvidia.cuda_nvrtc', 'nvidia.nvjpeg', 'nvidia.nvimgcodec',
+):
+    if _ilu_gpu.find_spec(_gpu_pkg) is None:
+        continue
+    try:
+        _gd, _gb, _gh = collect_all(_gpu_pkg)
+    except Exception:
+        continue
+    gpu_datas += _gd
+    gpu_binaries += _gb
+    gpu_hidden += _gh
+
 a = Analysis(
     ['app_webview.py'],
     pathex=[],
-    binaries=pyexiv2_binaries + numpy_binaries + pandas_binaries + openpyxl_binaries,
+    binaries=pyexiv2_binaries + numpy_binaries + pandas_binaries + openpyxl_binaries + gpu_binaries,
     datas=[
         ('webui/dist', 'webui/dist'),          # UI React buildeada (npm run build)
         ('config/Config.ini', 'config'),
         ('Logo_atom_uas_horizonta-02.png', '.'),
         ('assets', 'assets'),
         ('programas_externos', 'programas_externos'),  # DJI/ libdirp.so + deps (Linux)
-    ] + pyexiv2_datas + numpy_datas + pandas_datas + mpl_datas + openpyxl_datas,
+    ] + pyexiv2_datas + numpy_datas + pandas_datas + mpl_datas + openpyxl_datas + gpu_datas,
     hiddenimports=[
         'pyexiv2', 'ipaddress',
         'version', 'atom_core.updater',        # updater: import perezoso desde app_webview
@@ -48,10 +72,15 @@ a = Analysis(
         'PySide6.QtWebEngineWidgets',          # Chromium embebido (imprescindible en Linux)
         'PySide6.QtWebEngineCore',
         'PySide6.QtWebChannel',
-    ] + pyexiv2_hidden + numpy_hidden + pandas_hidden + openpyxl_hidden,
+        # camino GPU opt-in ORGANIZER_RGB_GPU=1 (rgb_gpu.py)
+        'atom_core.rgb_gpu',
+    ] + pyexiv2_hidden + numpy_hidden + pandas_hidden + openpyxl_hidden + gpu_hidden,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    # pyi_rth_cuda.py (raíz del repo): en Linux solo fija CUPY_CACHE_DIR si no
+    # está ya definida (no toca LD_LIBRARY_PATH). Tolerante: no falla si no
+    # hay GPU ni paquetes GPU empaquetados.
+    runtime_hooks=['pyi_rth_cuda.py'],
     excludes=[
         'IPython', 'ipykernel', 'jupyter_client', 'jupyter_core',
         'debugpy', 'jedi', 'parso',

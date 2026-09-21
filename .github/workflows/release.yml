@@ -25,6 +25,10 @@ on:
         description: 'Marcar como pre-release'
         type: boolean
         default: true
+      publicar:
+        description: 'Publicar la release (si no, solo se construyen y suben los artifacts)'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -35,6 +39,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
       prerelease: ${{ steps.v.outputs.prerelease }}
+      publicar: ${{ steps.v.outputs.publicar }}
     steps:
       - id: v
         run: |
@@ -50,9 +55,13 @@ jobs:
             esac
             echo "version=$V" >> "$GITHUB_OUTPUT"
             echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
+            # Push de tag SIEMPRE publica — `publicar` es solo un dial manual del
+            # workflow_dispatch, no cambia el comportamiento del push.
+            echo "publicar=true" >> "$GITHUB_OUTPUT"
           else
             echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
             echo "prerelease=${{ inputs.prerelease }}" >> "$GITHUB_OUTPUT"
+            echo "publicar=${{ inputs.publicar }}" >> "$GITHUB_OUTPUT"
           fi
 
   # Puerta de calidad ANTES de gastar los dos builds. Nació de v3.4.24: un
@@ -126,6 +135,11 @@ jobs:
           # requirements-linux.txt (NO requirements.txt: esa lleva pywin32, solo-Windows)
           pip install -r requirements-linux.txt
           pip install -r requirements-webview.txt
+          # cupy + nvImageCodec para el camino GPU opt-in (ORGANIZER_RGB_GPU=1,
+          # atom_core/rgb_gpu.py). Va aparte y DESPUÉS: si algún día deja de
+          # instalar, el spec (collect_all tolerante) sigue construyendo el
+          # AppImage sin GPU en vez de tumbar el job entero.
+          pip install -r requirements-gpu.txt
       # El client_secret no está en el repo (es público: Google revocaría el
       # cliente por secret-scanning). Se inyecta aquí, solo en el runner.
       - name: Inyectar credenciales OAuth
@@ -175,6 +189,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-webview.txt
+          # cupy + nvImageCodec para el camino GPU opt-in (ORGANIZER_RGB_GPU=1,
+          # atom_core/rgb_gpu.py). Va aparte y DESPUÉS: si algún día deja de
+          # instalar, el spec (collect_all tolerante) sigue construyendo el
+          # .exe sin GPU en vez de tumbar el job entero.
+          pip install -r requirements-gpu.txt
           # NO reinstalar PyInstaller aqui: manda el pin de requirements.txt
           # (6.22.2 + pyinstaller-hooks-contrib 2026.6). El 6.6.0 que habia
           # fijado desde la v3.4.32 degradaba esa version y sus hooks son
@@ -322,7 +341,11 @@ jobs:
   release:
     # incluye `checks`: los builds ahora arrancan en paralelo con los tests, pero
     # no se publica nada si los tests fallan.
+    # `publicar=false` (solo posible por workflow_dispatch manual, ver `meta`):
+    # se saltan la publicación y el tag — los artifacts (AppImage/.exe) quedan
+    # subidos igualmente por build-linux/build-windows para descargarlos a mano.
     needs: [meta, checks, build-linux, build-windows]
+    if: needs.meta.outputs.publicar == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
