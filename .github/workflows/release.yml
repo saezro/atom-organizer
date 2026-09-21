@@ -220,6 +220,20 @@ jobs:
         run: python scripts/inject_oauth_client.py
       - name: PyInstaller (onedir Qt/QtWebEngine)
         run: pyinstaller --clean --noconfirm atom_organizer_webview.spec
+      # Solo para builds de validación (publicar=false): Inno Setup 6.7.0 no lo
+      # abre ningún extractor, así que sin esto no hay forma de probar el .exe
+      # sin instalar. Se sube el onedir crudo (dist/ATOM-Organizer) comprimido.
+      - name: Comprimir onedir (build de validación)
+        if: inputs.publicar == false
+        shell: pwsh
+        run: Compress-Archive -Path dist\ATOM-Organizer -DestinationPath windows-onedir.zip
+      - uses: actions/upload-artifact@v4
+        if: inputs.publicar == false
+        with:
+          name: windows-onedir
+          path: windows-onedir.zip
+          if-no-files-found: error
+          retention-days: 7
       - name: Construir instalador (Inno Setup)
         shell: pwsh
         run: |
