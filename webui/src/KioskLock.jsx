@@ -31,6 +31,10 @@ export default function KioskLock({ modo = 'verificar', onOk, onCancelar }) {
   const [error, setError] = useState('')
   const [espera, setEspera] = useState(0)
   const [ocupado, setOcupado] = useState(false)
+  // Contador que se incrementa en cada fallo: usado como `key` para
+  // reiniciar la animacion del marco rojo y del shake aunque el fallo
+  // anterior no haya terminado de desvanecerse.
+  const [fallo, setFallo] = useState(0)
 
   // El pad puede recibir varios toques seguidos antes de que React llegue a
   // repintar (en un panel resistivo real, o en un test sin await entre
@@ -51,6 +55,16 @@ export default function KioskLock({ modo = 'verificar', onOk, onCancelar }) {
 
   const bloqueado = espera > 0 || ocupado
 
+  // Fallo (PIN incorrecto, repeticion que no coincide, guardado fallido): el
+  // mensaje va a un texto solo-lectores (no ocupa layout) y dispara el marco
+  // rojo a pantalla completa + el shake de los puntos. El PIN tecleado ya
+  // esta vacio en todas las llamadas (se limpia al entrar a `completar`, o
+  // aqui mismo para "no coinciden").
+  function marcarError(msg) {
+    setError(msg)
+    setFallo((f) => f + 1)
+  }
+
   async function completar(valor) {
     const actual = pasos[pasoRef.current]
     pinRef.current = ''
@@ -60,13 +74,13 @@ export default function KioskLock({ modo = 'verificar', onOk, onCancelar }) {
       const res = await api.pinVerificar(valor).catch(() => ({ ok: false, error: 'No responde.' }))
       setOcupado(false)
       if (res?.ok) { onOk?.(); return }
-      setError(res?.error || 'PIN incorrecto.')
+      marcarError(res?.error || 'PIN incorrecto.')
       setEspera(res?.espera_segundos || 0)
       return
     }
     if (actual === 'repetir') {
       if (valor !== previosRef.current.nuevo) {
-        setError('Los PIN no coinciden.')
+        marcarError('Los PIN no coinciden.')
         pasoRef.current = pasos.indexOf('nuevo')
         setPaso(pasoRef.current)
         return
@@ -77,7 +91,7 @@ export default function KioskLock({ modo = 'verificar', onOk, onCancelar }) {
         : await api.pinFijar(valor).catch(() => ({ ok: false, error: 'No responde.' }))
       setOcupado(false)
       if (res?.ok) { onOk?.(); return }
-      setError(res?.error || 'No se pudo guardar el PIN.')
+      marcarError(res?.error || 'No se pudo guardar el PIN.')
       setEspera(res?.espera_segundos || 0)
       pasoRef.current = 0
       setPaso(0)
@@ -105,18 +119,37 @@ export default function KioskLock({ modo = 'verificar', onOk, onCancelar }) {
     setPin(valor)
   }
 
+  function borrarTodo() {
+    if (bloqueado) return
+    pinRef.current = ''
+    setPin('')
+  }
+
   const puntos = Array.from({ length: LONGITUD }, (_, i) => (
     <span key={i} className={i < pin.length ? 'kiosk-pin-punto lleno' : 'kiosk-pin-punto'} />
   ))
 
   return (
     <div className="kiosk kiosk-pin" data-testid="kiosk-pin">
+      {/* Marco rojo a pantalla completa: fixed, pointer-events none, se
+          desvanece solo en ~1s. `key` reinicia la animacion en cada fallo
+          aunque el anterior no haya terminado de desvanecerse. */}
+      {fallo > 0 && <div key={fallo} className="kiosk-pin-flash" aria-hidden="true" />}
       <h2 className="kiosk-pin-titulo">{TITULOS[pasos[paso]] || TITULOS.verificar}</h2>
-      <div className="kiosk-pin-puntos">{puntos}</div>
-      {error && <p className="kiosk-pin-error" data-testid="kiosk-pin-error">{error}</p>}
-      {espera > 0 && (
-        <p className="kiosk-pin-espera">Demasiados intentos. Espera {espera} s.</p>
-      )}
+      <div
+        key={`puntos-${fallo}`}
+        className={fallo > 0 ? 'kiosk-pin-puntos kiosk-pin-shake' : 'kiosk-pin-puntos'}
+      >
+        {puntos}
+      </div>
+      {/* El error ya no ocupa hueco visual (antes desplazaba el teclado):
+          solo para lectores de pantalla, el marco rojo es la senal visible. */}
+      <p className="kiosk-pin-sr" role="alert" data-testid="kiosk-pin-error">{error}</p>
+      <div className="kiosk-pin-mensaje">
+        {espera > 0 && (
+          <p className="kiosk-pin-espera">Demasiados intentos. Espera {espera} s.</p>
+        )}
+      </div>
       <div className="kiosk-pin-pad">
         {FILAS.flat().map((d) => (
           <BotonToque
@@ -157,8 +190,14 @@ export default function KioskLock({ modo = 'verificar', onOk, onCancelar }) {
           aria-label="Borrar"
           disabled={bloqueado}
           onActivar={borrar}
+          onPulsarLargo={borrarTodo}
         >
-          Borrar
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+               strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M21 4H8l-7 8 7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z" />
+            <line x1="18" y1="9" x2="12" y2="15" />
+            <line x1="12" y1="9" x2="18" y2="15" />
+          </svg>
         </BotonToque>
       </div>
     </div>
