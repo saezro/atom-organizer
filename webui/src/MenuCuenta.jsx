@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import Avatar from './Avatar.jsx'
 
 // Avatar de la esquina superior derecha (mismo papel que en el kiosco, ver
 // `KioskScreen.jsx`) con el menú de la cuenta: Ajustes y Cerrar sesión.
@@ -6,7 +7,6 @@ import { useEffect, useRef, useState } from 'react'
 // que en el WebView sin GPU lagean.
 export default function MenuCuenta({ cuenta, invitado, onAjustes, onSalir }) {
   const [abierto, setAbierto] = useState(false)
-  const [fotoRota, setFotoRota] = useState(false)
   const cajaRef = useRef(null)
 
   useEffect(() => {
@@ -25,12 +25,6 @@ export default function MenuCuenta({ cuenta, invitado, onAjustes, onSalir }) {
     }
   }, [abierto])
 
-  // Si cambia la cuenta (o su foto), se le da otra oportunidad a la <img>:
-  // el fallo previo era de esa URL concreta, no de esta.
-  useEffect(() => {
-    setFotoRota(false)
-  }, [cuenta?.picture])
-
   const email = cuenta?.email || ''
   const inicial = (cuenta?.nombre || email || '?').trim().charAt(0).toUpperCase()
   const cabecera = invitado ? 'Sin cuenta' : email || 'Cuenta de Google'
@@ -47,16 +41,12 @@ export default function MenuCuenta({ cuenta, invitado, onAjustes, onSalir }) {
         title={cabecera}
         data-testid="cuenta-avatar"
       >
-        {!invitado && cuenta?.picture && !fotoRota ? (
-          <img
-            src={cuenta.picture}
-            alt=""
-            className="cuenta-avatar-img"
-            onError={() => setFotoRota(true)}
-          />
-        ) : (
-          <span className="cuenta-avatar-inicial">{invitado ? '·' : inicial}</span>
-        )}
+        <Avatar
+          src={!invitado ? cuenta?.picture : null}
+          inicial={invitado ? '·' : inicial}
+          imgClassName="cuenta-avatar-img"
+          fallbackClassName="cuenta-avatar-inicial"
+        />
       </button>
       {abierto && (
         <div className="cuenta-menu" role="menu" data-testid="cuenta-menu">
