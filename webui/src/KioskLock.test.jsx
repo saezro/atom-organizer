@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 
 const pinVerificar = vi.fn()
 const pinFijar = vi.fn()
@@ -64,6 +64,39 @@ describe('KioskLock', () => {
     teclear('9999')
     await vi.waitFor(() => expect(screen.getByText(/pin incorrecto/i)).toBeTruthy())
     expect(onOk).not.toHaveBeenCalled()
+  })
+
+  it('el error de PIN no pinta texto visible que desplace el teclado: solo el marco rojo', async () => {
+    pinVerificar.mockResolvedValue({ ok: false, error: 'PIN incorrecto.', espera_segundos: 0 })
+    const { container } = render(<KioskLock modo="verificar" onOk={() => {}} />)
+    teclear('9999')
+    // El marco rojo a pantalla completa (fixed, fuera del flujo) es la senal visible.
+    await vi.waitFor(() => expect(container.querySelector('.kiosk-pin-flash')).toBeTruthy())
+    // El texto del error sigue en el DOM (para lectores de pantalla) pero
+    // fuera del flujo visual: nunca en un <p> normal que empuje el teclado.
+    const nodoError = screen.getByTestId('kiosk-pin-error')
+    expect(nodoError.className).toBe('kiosk-pin-sr')
+    expect(nodoError.textContent).toMatch(/pin incorrecto/i)
+    // El teclado sigue intacto: los 10 digitos y Borrar siguen ahi.
+    for (const d of '0123456789') {
+      expect(screen.getByRole('button', { name: d })).toBeTruthy()
+    }
+  })
+
+  it('mantener pulsado Borrar borra todo el PIN tecleado', async () => {
+    vi.useFakeTimers()
+    render(<KioskLock modo="verificar" onOk={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: '1' }))
+    fireEvent.click(screen.getByRole('button', { name: '2' }))
+    const borrar = screen.getByRole('button', { name: /borrar/i })
+    fireEvent.mouseDown(borrar)
+    vi.advanceTimersByTime(650)
+    fireEvent.mouseUp(borrar)
+    vi.useRealTimers()
+    for (const d of '3456') {
+      fireEvent.click(screen.getByRole('button', { name: d }))
+    }
+    await vi.waitFor(() => expect(pinVerificar).toHaveBeenCalledWith('3456'))
   })
 
   it('en modo fijar pide repetir el PIN antes de guardarlo', async () => {
