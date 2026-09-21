@@ -76,12 +76,15 @@ import sys
 # FreeLibrary): otros componentes (cupy, nvimgcodec) los siguen usando.
 _PRELOADED_HANDLES = []
 
-# (nombre_pathfinder, subpaquete nvidia-*-cu12, subdir, patrón Linux, patrón Windows)
-# Orden intencional: cudart -> nvrtc -> nvjpeg (ver docstring).
+# (nombre_pathfinder, subpaquete nvidia-*-cu12, subdir Linux, subdir Windows,
+#  patrón Linux, patrón Windows)
+# Orden intencional: cudart -> nvrtc -> nvjpeg (ver docstring). En el onedir
+# Windows las DLL cuelgan de "bin" (nvidia/<paquete>/bin/*.dll), no de "lib"
+# (que solo tiene __init__.py) — en Linux sí es "lib" (nvidia/<paquete>/lib/*.so*).
 _GPU_LIBS_TO_PRELOAD = (
-    ("cudart", "cuda_runtime", "lib", "libcudart.so*", "cudart64_*.dll"),
-    ("nvrtc", "cuda_nvrtc", "lib", "libnvrtc.so*", "nvrtc64_*.dll"),
-    ("nvjpeg", "nvjpeg", "lib", "libnvjpeg.so*", "nvjpeg64_*.dll"),
+    ("cudart", "cuda_runtime", "lib", "bin", "libcudart.so*", "cudart64_*.dll"),
+    ("nvrtc", "cuda_nvrtc", "lib", "bin", "libnvrtc.so*", "nvrtc64_*.dll"),
+    ("nvjpeg", "nvjpeg", "lib", "bin", "libnvjpeg.so*", "nvjpeg64_*.dll"),
 )
 
 
@@ -92,9 +95,10 @@ def _preload_gpu_dynamic_libs(base):
     salta y se sigue con las demás — nunca debe impedir el arranque.
     """
     is_windows = sys.platform == "win32"
-    for _pathfinder_name, _subpkg, _subdir, _pattern_linux, _pattern_win in _GPU_LIBS_TO_PRELOAD:
+    for _pathfinder_name, _subpkg, _subdir_linux, _subdir_win, _pattern_linux, _pattern_win in _GPU_LIBS_TO_PRELOAD:
         try:
             _pattern = _pattern_win if is_windows else _pattern_linux
+            _subdir = _subdir_win if is_windows else _subdir_linux
             _search_dir = os.path.join(base, "nvidia", _subpkg, _subdir)
             _matches = sorted(glob.glob(os.path.join(_search_dir, _pattern)))
             if not _matches:
