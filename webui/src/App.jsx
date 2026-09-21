@@ -457,6 +457,14 @@ function App() {
         }
         case 'error':
           setRunning(false)
+          // Si el error corta con una fase activa en el checklist (p.ej. sin
+          // estadillo, cortado en "Índice"), esa fila pasa a rojo con el
+          // mensaje real en vez de quedarse en "escaneando…" para siempre.
+          setPhases((prev) =>
+            prev.some((p) => p.status === 'active')
+              ? prev.map((p) => (p.status === 'active' ? { ...p, status: 'error', msg: d.text } : p))
+              : prev
+          )
           setFinished({ ok: false, msg: d.text })
           break
         default:
