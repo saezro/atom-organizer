@@ -240,11 +240,32 @@ class Manifiesto:
     def __init__(self, ruta_db: str | Path) -> None:
         self.ruta_db = str(ruta_db)
         self._local = threading.local()
+        # `cerrar()` puede llamarse desde un hilo distinto al de los workers
+        # (apply.py escribe el manifiesto desde varios hilos de un
+        # ThreadPoolExecutor). Como la conexión es thread-local, cerrar()
+        # solo veía la suya propia y dejaba las de los workers abiertas hasta
+        # que el GC las recogiera, lo que dejaba -wal/-shm huérfanos en el
+        # destino. Aquí se registran TODAS las conexiones abiertas para
+        # poder cerrarlas explícitamente desde donde sea.
+        self._conexiones_abiertas: list[sqlite3.Connection] = []
+        self._lock_conexiones = threading.Lock()
+        # Generación: `cerrar()` la incrementa. Si un hilo guarda en su local
+        # una conexión de una generación anterior (porque `cerrar()` se llamó
+        # mientras ese hilo dormía, o el manifiesto se reutiliza tras
+        # cerrarlo), `_conexion()` la descarta y reconecta en vez de devolver
+        # una conexión ya cerrada.
+        self._generacion = 0
 
     def _conexion(self) -> sqlite3.Connection:
         conexion = getattr(self._local, "conexion", None)
+        if conexion is not None and getattr(self._local, "generacion", None) != self._generacion:
+            conexion = None
         if conexion is None:
-            conexion = sqlite3.connect(self.ruta_db, timeout=30.0)
+            # check_same_thread=False: cada conexión sigue usándose solo desde
+            # su hilo salvo en `cerrar()`, que las cierra todas desde el hilo
+            # que cierra el manifiesto (normalmente ya no coincide con el de
+            # los workers, que han terminado para entonces).
+            conexion = sqlite3.connect(self.ruta_db, timeout=30.0, check_same_thread=False)
             conexion.row_factory = sqlite3.Row
             # WAL: lectores y escritor conviven. busy_timeout evita que dos
             # workers que coinciden en el mismo instante aborten con
@@ -254,6 +275,9 @@ class Manifiesto:
             conexion.execute("PRAGMA busy_timeout=30000")
             conexion.execute("PRAGMA synchronous=NORMAL")
             self._local.conexion = conexion
+            with self._lock_conexiones:
+                self._local.generacion = self._generacion
+                self._conexiones_abiertas.append(conexion)
         return conexion
 
     def crear_esquema(self) -> None:
@@ -499,7 +523,18 @@ class Manifiesto:
         )
 
     def cerrar(self) -> None:
-        conexion = getattr(self._local, "conexion", None)
-        if conexion is not None:
+        """Cierra TODAS las conexiones abiertas por esta instancia (una por
+        hilo), no solo la del hilo que llama. Antes de cerrar, vuelca el WAL
+        a la base principal (`TRUNCATE`) para no dejar `-wal`/`-shm`
+        colgando en el destino tras el último cierre del run."""
+        with self._lock_conexiones:
+            conexiones = self._conexiones_abiertas
+            self._conexiones_abiertas = []
+            self._generacion += 1
+        for conexion in conexiones:
+            try:
+                conexion.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.Error:
+                pass
             conexion.close()
-            self._local.conexion = None
+        self._local.conexion = None
