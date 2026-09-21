@@ -95,6 +95,30 @@ for _src in _px_api:
 # matplotlib mpl-data (colormaps usados por el pipeline)
 mpl_datas = collect_data_files('matplotlib')
 
+# --- GPU opt-in (ORGANIZER_RGB_GPU=1, ver atom_core/rgb_gpu.py): cupy +
+# nvImageCodec + las libs nvidia-*-cu12 que necesitan (requirements-gpu.txt).
+# TOLERANTE a propósito: si requirements-gpu.txt no está instalado en el
+# entorno de build (build normal, sin GPU), find_spec da None, no se empaqueta
+# nada de esto y el .exe sigue igual que hoy — rgb_gpu.activo() ve el
+# ImportError en runtime y cae a CPU. Solo se fuerza collect_all sobre lo que
+# SÍ está instalado al construir.
+import importlib.util as _ilu_gpu
+
+gpu_binaries, gpu_datas, gpu_hidden = [], [], []
+for _gpu_pkg in (
+    'cupy', 'cupy_backends', 'cupyx', 'fastrlock', 'cuda.pathfinder',
+    'nvidia.cuda_runtime', 'nvidia.cuda_nvrtc', 'nvidia.nvjpeg', 'nvidia.nvimgcodec',
+):
+    if _ilu_gpu.find_spec(_gpu_pkg) is None:
+        continue
+    try:
+        _gd, _gb, _gh = collect_all(_gpu_pkg)
+    except Exception:
+        continue
+    gpu_datas += _gd
+    gpu_binaries += _gb
+    gpu_hidden += _gh
+
 # CAUSA RAÍZ del bridge muerto en Windows (pw=N con WebView2 Y con Qt): PyInstaller
 # empaquetaba webview/ SIN sus assets JS internos (webview/js/*.js). Esos scripts son
 # los que inyectan `window.pywebview` / `window.pywebview.api` en la página; sin ellos
@@ -122,14 +146,14 @@ for _d in _vc_dlls:
 a = Analysis(
     ['app_webview.py'],
     pathex=[],
-    binaries=pyexiv2_binaries + vcruntime_binaries + numpy_binaries + pandas_binaries + pytz_binaries + openpyxl_binaries,
+    binaries=pyexiv2_binaries + vcruntime_binaries + numpy_binaries + pandas_binaries + pytz_binaries + openpyxl_binaries + gpu_binaries,
     datas=[
         ('webui/dist', 'webui/dist'),          # UI React buildeada (npm run build)
         ('config/Config.ini', 'config'),
         ('Logo_atom_uas_horizonta-02.png', '.'),
         ('assets', 'assets'),                  # atom-icon.svg, check.svg, dot.svg, fonts/ (los referencia gui.py)
         ('programas_externos', 'programas_externos'),
-    ] + pyexiv2_datas + mpl_datas + webview_datas + pyexiv2_native + numpy_datas + pandas_datas + pytz_datas + openpyxl_datas,
+    ] + pyexiv2_datas + mpl_datas + webview_datas + pyexiv2_native + numpy_datas + pandas_datas + pytz_datas + openpyxl_datas + gpu_datas,
     hiddenimports=[
         'pyexiv2', 'ipaddress',
         'version', 'atom_core.updater',   # updater: import perezoso desde app_webview
@@ -145,10 +169,17 @@ a = Analysis(
         'pythoncom', 'pywintypes', 'win32gui', 'win32con',
         'win32com', 'win32com.shell',
         'win32comext.shell', 'win32comext.shell.shell', 'win32comext.shell.shellcon',
-    ] + pyexiv2_hidden + numpy_hidden + pandas_hidden + pytz_hidden + openpyxl_hidden + ['pytz'],
+        # camino GPU opt-in ORGANIZER_RGB_GPU=1 (rgb_gpu.py); import perezoso
+        # dentro de activo(), la detección estática no lo ve solo si esto ya
+        # no basta:
+        'atom_core.rgb_gpu',
+    ] + pyexiv2_hidden + numpy_hidden + pandas_hidden + pytz_hidden + openpyxl_hidden + ['pytz'] + gpu_hidden,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    # pyi_rth_cuda.py (raíz del repo): registra las carpetas de DLL nvidia-*-cu12
+    # con os.add_dll_directory y fija CUPY_CACHE_DIR si no está ya definida.
+    # Tolerante: no falla si no hay GPU ni paquetes GPU empaquetados.
+    runtime_hooks=['pyi_rth_cuda.py'],
     excludes=[
         'IPython', 'ipykernel', 'jupyter_client', 'jupyter_core',
         'debugpy', 'jedi', 'parso',

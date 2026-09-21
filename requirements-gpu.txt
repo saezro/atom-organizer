@@ -1,0 +1,38 @@
+# requirements-gpu.txt
+#
+# Camino opt-in ORGANIZER_RGB_GPU=1 (atom_core/rgb_gpu.py): CuPy + nvImageCodec
+# para decodificar/recortar/girar/codificar JPEG en GPU NVIDIA. Se instala
+# ADEMÁS de requirements.txt / requirements-linux.txt (no lo sustituye) y solo
+# en los builds Windows/Linux — la Pi (Cloud Run Job) no lleva GPU.
+#
+# SOLO CUDA 12: cupy-cuda13x exige CUDA 13, que NVIDIA dejó de soportar Pascal
+# (sm_61, la GTX 1070 de referencia). El runtime CUDA 12.x sí compila sm_61
+# (ver install/cupy_builder/_compiler.py de cupy: la rama `cuda_version >=
+# 12000` sigue generando ('compute_61', 'sm_61') en cupy 14.x). Se pinnea el
+# 14.2.0 (última estable) en vez de 13.x porque el soporte de Pascal no cambió
+# entre ambas series — solo se retiró código de CUDA 11.
+#
+# No se usa el extra `cupy-cuda12x[ctk]`: desde cupy 14 ese extra tira de
+# `cuda-toolkit[cublas,cudart,cufft,curand,cusolver,cusparse,nvrtc]`, que
+# incluye cuBLAS/cuSOLVER/cuFFT/cuRAND (cientos de MB) que rgb_gpu.py no usa
+# (solo indexado/rot90/contiguous, sin álgebra lineal ni FFT). Se pinnean a
+# mano solo las dos piezas que CuPy necesita en runtime:
+#   - nvidia-cuda-runtime-cu12: cudart (arranque del contexto CUDA).
+#   - nvidia-cuda-nvrtc-cu12: NVRTC, IMPRESCINDIBLE — CuPy compila sus
+#     ufuncs/kernels (incl. `cp.rot90`) al vuelo vía NVRTC, no van
+#     precompilados en el wheel.
+# `cuda-pathfinder` es dependencia dura de cupy-cuda12x (localiza las libs
+# nvidia-*-cu12 instaladas por pip en vez de buscar un CUDA Toolkit del
+# sistema); va explícito para que quede pinneado igual que el resto.
+cupy-cuda12x==14.2.0
+cuda-pathfinder==1.3.4
+nvidia-cuda-runtime-cu12==12.6.77
+nvidia-cuda-nvrtc-cu12==12.6.77
+
+# nvImageCodec: decode/encode JPEG por lotes en GPU (nv.Decoder/nv.Encoder en
+# rgb_gpu.py, con destino ".jpg"). El extra [nvjpeg] trae el backend nvJPEG
+# que hace el trabajo real; sin él nvimgcodec no tiene con qué decodificar/
+# codificar JPEG en GPU. No se instalan nvjpeg2k/nvtiff/libnvcomp (otros
+# extras de nvimgcodec): el pipeline solo produce salidas .jpg.
+nvidia-nvimgcodec-cu12==0.9.0.20
+nvidia-nvjpeg-cu12==12.4.0.76
