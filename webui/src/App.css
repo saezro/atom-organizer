@@ -555,6 +555,10 @@ select.glass-input option {
   padding: 0.05rem 0.45rem;
   white-space: nowrap;
 }
+/* Mensaje de error de la fase que cortó el run (en vez de "escaneando…"). */
+.pm-errmsg {
+  color: #f87171;
+}
 /* Fase con errores: en rojo, como el estado de error. */
 .pm-error {
   color: var(--text);

@@ -601,24 +601,6 @@ def run_task(
         else:
             cfg = _build_generic(config_cls, params)
 
-        # Estadillo OBLIGATORIO en "Organizar completo": sin él,
-        # `organizar_plan_apply` -> `construir_indice` revienta a mitad de la
-        # fase de estructura con un `ValueError` (`combinar_estadillos` sin
-        # rutas). Se corta AQUÍ, antes de arrancar ninguna fase, con la UNIÓN
-        # de los estadillos autodetectados en la carpeta de origen y los que
-        # el usuario haya aportado a mano en el campo de la UI —NUNCA solo
-        # autodetección: `detectar_estadillos` falla en algunos lotes (KL91)
-        # y si el usuario aporta la ruta el lote tiene que poder organizarse.
-        if task == "split_images":
-            from atom_core.estadillo import desempaquetar_rutas, detectar_estadillos
-            _rutas_manuales = desempaquetar_rutas(getattr(cfg, "estad", "") or "")
-            _rutas_auto = detectar_estadillos(getattr(cfg, "input_folder", "") or "")["rutas"]
-            if not _rutas_manuales and not _rutas_auto:
-                emit("error", "No se ha encontrado ningún estadillo: sin estadillo el "
-                              "lote no se puede organizar. Indica la ruta del estadillo "
-                              "o colócalo junto a la carpeta de fotos.")
-                return
-
         # `GenStructFolderConfig` (y cualquier otra config que traiga el campo)
         # no pasa por `_default_split_config`, asi que se valida aqui: mismo
         # motivo que en `_default_split_config` -- fallar ya y no mas abajo, o
@@ -827,6 +809,33 @@ def run_task(
         plan_names = _active_split_phases(cfg, etapa) if task == "split_images" else []
         if plan_names:
             emit("plan", plan_names)
+
+        # Estadillo OBLIGATORIO en "Organizar completo": sin él,
+        # `organizar_plan_apply` -> `construir_indice` revienta a mitad de la
+        # fase de estructura con un `ValueError` (`combinar_estadillos` sin
+        # rutas). Se corta AQUÍ con la UNIÓN de los estadillos autodetectados
+        # en la carpeta de origen y los que el usuario haya aportado a mano en
+        # el campo de la UI —NUNCA solo autodetección: `detectar_estadillos`
+        # falla en algunos lotes (KL91) y si el usuario aporta la ruta el lote
+        # tiene que poder organizarse.
+        #
+        # Se evalúa DESPUÉS de `plant`/`plan` (no antes, como en su día): el
+        # checklist de fases del modal tiene que pintarse primero, y el corte
+        # se marca en la fase "Índice" (ahí es donde el modal enseña los datos
+        # del estadillo) en vez de salir como un banner de error suelto sin
+        # checklist detrás.
+        if task == "split_images":
+            from atom_core.estadillo import desempaquetar_rutas, detectar_estadillos
+            _rutas_manuales = desempaquetar_rutas(getattr(cfg, "estad", "") or "")
+            _rutas_auto = detectar_estadillos(getattr(cfg, "input_folder", "") or "")["rutas"]
+            if not _rutas_manuales and not _rutas_auto:
+                emit("phase", {"index": 1, "total": len(plan_names),
+                               "name": plan_names[0] if plan_names else "Índice",
+                               "prev": None})
+                emit("error", "No hay estadillo: sin estadillo el lote no se puede "
+                              "organizar. Indica la ruta del estadillo o colócalo "
+                              "junto a la carpeta de fotos.")
+                return
 
         # Interceptar el inicio de cada fase (prefijo en el canal summary) y
         # re-emitirlo como evento estructurado `phase` para el modal.
