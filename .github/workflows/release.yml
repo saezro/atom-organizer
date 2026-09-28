@@ -233,7 +233,14 @@ jobs:
         run: python -m venv .venv
       - name: Python deps
         if: steps.cache-venv.outputs.cache-hit != 'true'
+        # pwsh NO corta con el exit code de pip: un pip fallido (timeout de PyPI)
+        # dejaba el paso en verde, venv sin pyinstaller y el fallo salía después.
+        env:
+          PIP_RETRIES: '10'
+          PIP_DEFAULT_TIMEOUT: '60'
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           .venv\Scripts\python.exe -m pip install --upgrade pip
           .venv\Scripts\pip.exe install -r requirements.txt
           .venv\Scripts\pip.exe install -r requirements-webview.txt
