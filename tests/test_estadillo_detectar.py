@@ -64,6 +64,33 @@ def test_ignora_temporal_de_office(tmp_path):
     assert str(temporal) not in res["descartados"]
 
 
+def test_incluir_recibidos_suma_los_de_la_carpeta_de_estadillos_recibidos(tmp_path, monkeypatch):
+    """`incluir_recibidos=True` (solo escritorio, `app_webview.estadillos_detectar`)
+    suma como candidatos los CSV/XLSX sueltos en `estadillos_recibidos_dir()`,
+    además de los de la carpeta del vuelo. Sin el flag (default), esa carpeta
+    ni se mira."""
+    from atom_core import google_auth
+
+    carpeta_vuelo = tmp_path / "vuelo"
+    carpeta_vuelo.mkdir()
+    e_vuelo = _csv(carpeta_vuelo / "e_vuelo.csv", [("1", "1", "2026:03:17", "10:00:00", "10:05:00")])
+
+    carpeta_recibidos = tmp_path / "estadillos_recibidos"
+    carpeta_recibidos.mkdir()
+    e_recibido = _csv(
+        carpeta_recibidos / "e_recibido.csv", [("2", "1", "2026:03:18", "11:00:00", "11:05:00")]
+    )
+    monkeypatch.setattr(google_auth, "estadillos_recibidos_dir", lambda: carpeta_recibidos)
+
+    # Sin el flag: el recibido no aparece.
+    res_sin = estadillo.detectar_estadillos(str(carpeta_vuelo))
+    assert res_sin["rutas"] == [e_vuelo]
+
+    # Con el flag: se suma.
+    res_con = estadillo.detectar_estadillos(str(carpeta_vuelo), incluir_recibidos=True)
+    assert res_con["rutas"] == sorted([e_vuelo, e_recibido])
+
+
 def test_detecta_estadillo_en_carpeta_padre(tmp_path):
     """KL19/estadillo.csv con KL19/FOTOS como origen: se encuentra; las
     carpetas hermanas NO se barren."""

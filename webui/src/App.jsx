@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { api, isServerMode, onAnalisis, onCloud, onProgress, registerPicker, whenBridgeReady } from './bridge'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { api, isServerMode, onAnalisis, onCloud, onControlCarpeta, onControlUi, onProgress, registerPicker, whenBridgeReady } from './bridge'
 import ProgressModal from './ProgressModal'
 import PreflightModal from './PreflightModal'
 import UpdateModal from './UpdateModal'
@@ -264,6 +264,12 @@ function App() {
   // string suelto (así lo consume `EstadilloField`, que sustituye al input
   // de texto plano que había aquí antes).
   const [kioskEstadillo, setKioskEstadillo] = useState([])
+  // Resumen rico del estadillo recibido por red (planta/fechas/pilotos/
+  // drones/vuelos/tiempo total): solo se rellena cuando `kioskEstadillo`
+  // viene de `EsperaEstadillo` (`onRecibido`, segundo argumento). Se limpia
+  // en cuanto la selección cambia por cualquier otro camino (autodetección,
+  // quitar, cambio de carpeta), ver `kioskSetEstadillo` más abajo.
+  const [kioskEstadilloInfo, setKioskEstadilloInfo] = useState(null)
   const [kioskInspeccion, setKioskInspeccion] = useState(null)
   // Estado de sesión cloud + catálogo de inspecciones para el kiosco. Se
   // replica aquí lo que ya hace `BucketScreen` (misma llamada, mismo shape)
@@ -393,6 +399,15 @@ function App() {
       switch (d.kind) {
         case 'plant':
           setPlant(d.text || '')
+          // Un `organizar` lanzado en remoto (`/api/control/organizar`)
+          // arranca `run_task` sin pasar por `startRun`: sin esto el modal
+          // de progreso y el estado "ocupado" del kiosco no se enteraban
+          // hasta el primer `phase`. `plant` es el primer evento del run,
+          // así que entra en la vista de progreso ya desde ahí. Repetir
+          // `setModalOpen`/`setRunning` en un run local (ya puestos por
+          // `startRun`) es inocuo: mismo valor.
+          setModalOpen(true)
+          setRunning(true)
           break
         case 'plan':
           setPhases((d.data || []).map((name) => ({ name, status: 'pending' })))
@@ -570,17 +585,49 @@ function App() {
   // vuelos. Fail-open: si no se detecta nada se sigue eligiendo a mano. Al
   // cambiar de carpeta se vacía el estadillo anterior (era de otro vuelo).
   const [kioskSufijos, setKioskSufijos] = useState(null)
+  // Indicador «¿hay estadillo en esta carpeta?» junto al selector del
+  // kiosco (KioskScreen): reusa la misma detección de arriba, solo que aquí
+  // se guarda encontrado/nombre/buscando para pintarlo en vez de rellenar el
+  // campo. `recibidoLan` sale de `estadillo_espera_estado` (mismo dato que
+  // expone `GET /api/estadillo/espera` como `recibido`): si ya llegó un
+  // estadillo por LAN pendiente de mover, se avisa aunque la carpeta no
+  // traiga ninguno a mano.
+  const [kioskEstadilloEnCarpeta, setKioskEstadilloEnCarpeta] = useState({
+    buscando: false, encontrado: false, nombre: null, recibidoLan: false,
+  })
+  // Único punto que toca `kioskEstadillo`: si llega `info` (segundo
+  // argumento, solo lo manda `EsperaEstadillo` vía `onRecibido`) se guarda el
+  // resumen rico; cualquier otro camino (autodetección, elegir/quitar a
+  // mano, cambio de carpeta) lo limpia — la tarjeta de solo lectura de
+  // `EstadilloField` solo tiene sentido mientras el fichero actual es
+  // exactamente el que se acaba de recibir.
+  function kioskSetEstadillo(rutas, info) {
+    setKioskEstadillo(rutas)
+    setKioskEstadilloInfo(info || null)
+  }
+
   useEffect(() => {
     if (!kiosco || !kioskCarpeta) return
     let vivo = true
     setKioskEstadillo([])
+    setKioskEstadilloInfo(null)
     setKioskSufijos(null)
+    setKioskEstadilloEnCarpeta({ buscando: true, encontrado: false, nombre: null, recibidoLan: false })
     api.estadillosDetectar(kioskCarpeta)
       .then((r) => {
         const rutas = Array.isArray(r?.rutas) ? r.rutas : []
         // No pisar una elección manual hecha mientras se buscaba.
         if (vivo && !r?.error && rutas.length) setKioskEstadillo((prev) => (prev.length ? prev : rutas))
+        if (vivo) {
+          setKioskEstadilloEnCarpeta((prev) => ({
+            ...prev, buscando: false, encontrado: rutas.length > 0,
+            nombre: rutas.length ? rutas[0].split(/[/\\]/).pop() : null,
+          }))
+        }
       })
+      .catch(() => { if (vivo) setKioskEstadilloEnCarpeta((prev) => ({ ...prev, buscando: false })) })
+    api.estadilloEsperaEstado?.()
+      .then((r) => { if (vivo) setKioskEstadilloEnCarpeta((prev) => ({ ...prev, recibidoLan: Boolean(r?.recibido) })) })
       .catch(() => {})
     const off = onAnalisis((d) => {
       if (d.scope !== 'suffixes' || !vivo) return
@@ -595,10 +642,80 @@ function App() {
     return () => { vivo = false; off() }
   }, [kiosco, kioskCarpeta])
 
+  // Devuelve la ruta elegida (o null si se cancela): la usa tanto el botón
+  // «Elegir carpeta…» de `KioskScreen` como el «Elige carpeta» que enseña
+  // `EsperaEstadillo` mientras espera un estadillo sin carpeta todavía —
+  // mismo selector, sin duplicarlo.
   async function kioskPickCarpeta() {
     const path = await api.pickFolder()
+    // `carpeta_trabajo_fijar` es el estado único de carpeta de trabajo que
+    // leen las rutas remotas `/api/control/*` (ver `bridge.js`): se
+    // mantiene sincronizado con lo elegido en pantalla, path elegido o
+    // `null` si se cancela el selector. Fire-and-forget, igual que el resto
+    // de llamadas de este flujo (`estadilloEsperaCarpeta` más abajo).
+    api.carpetaTrabajoFijar?.(path || null)?.catch?.(() => {})
     if (path) setKioskCarpeta(path)
+    return path
   }
+
+  // El portátil puede fijar la carpeta de trabajo del kiosco sin tocar la
+  // pantalla (`/api/control/carpeta`, remoto): el servidor avisa por
+  // `atom:control_carpeta` y aquí se refleja igual que una elección a mano,
+  // SIN volver a llamar al backend (ya la fijó él, es quien avisó). Basta
+  // con `setKioskCarpeta`: el efecto de autodetección de arriba está
+  // indexado por `kioskCarpeta` y re-detecta el estadillo de la nueva
+  // carpeta solo. `?.` porque no todos los mocks de test exponen
+  // `onControlCarpeta` todavía.
+  // Marco azul de "control remoto activo" (Task «control remoto del kiosco»):
+  // se enciende PLENO con CUALQUIER accion remota (`atom:control_ui` o el
+  // `atom:control_carpeta` ya existente). Sin eventos nuevos, a los 15s se
+  // atenúa (opacidad, ~5s) hasta un estado TENUE que se QUEDA así — ya NO se
+  // desmonta solo (pedido de Rodrigo: antes desaparecía del todo a los 20s;
+  // ahora solo un toque/tecla LOCAL lo quita, ver efecto de abajo, que es la
+  // señal de que ha vuelto una persona delante del kiosco). Un evento nuevo
+  // (`encenderControlRemoto` de nuevo) lo vuelve a poner pleno.
+  // `encenderControlRemotoRef` vive en un ref (no una nueva suscripción por
+  // canal) para poder llamarlo desde el listener de `onControlCarpeta` de
+  // aquí abajo SIN abrir una segunda suscripción a ese mismo canal (algunos
+  // stubs de test, y el SSE real cuando llega por polling, solo esperan un
+  // handler por canal).
+  const [controlRemotoVisible, setControlRemotoVisible] = useState(false)
+  const [controlRemotoDesvanecido, setControlRemotoDesvanecido] = useState(false)
+  const timerDesvanecerRef = useRef(null)
+  const limpiarTimersControlRemoto = useCallback(() => {
+    if (timerDesvanecerRef.current) clearTimeout(timerDesvanecerRef.current)
+    timerDesvanecerRef.current = null
+  }, [])
+  const encenderControlRemoto = useCallback(() => {
+    limpiarTimersControlRemoto()
+    setControlRemotoVisible(true)
+    setControlRemotoDesvanecido(false)
+    timerDesvanecerRef.current = setTimeout(() => setControlRemotoDesvanecido(true), 15000)
+  }, [limpiarTimersControlRemoto])
+  // Toque o tecla LOCAL (no el `pointerdown`/`keydown` sintético de un
+  // toque remoto, que no pasa por el hardware): apaga el marco al instante,
+  // sin esperar el desvanecido, y cancela los temporizadores en curso.
+  useEffect(() => {
+    const apagarLocal = () => {
+      limpiarTimersControlRemoto()
+      setControlRemotoVisible(false)
+      setControlRemotoDesvanecido(false)
+    }
+    window.addEventListener('pointerdown', apagarLocal)
+    window.addEventListener('keydown', apagarLocal)
+    return () => {
+      window.removeEventListener('pointerdown', apagarLocal)
+      window.removeEventListener('keydown', apagarLocal)
+    }
+  }, [limpiarTimersControlRemoto])
+  useEffect(() => limpiarTimersControlRemoto, [limpiarTimersControlRemoto])
+
+  useEffect(() => onControlCarpeta?.((d) => {
+    encenderControlRemoto()
+    if (d?.path !== undefined) setKioskCarpeta(d.path || '')
+  }), [encenderControlRemoto])
+
+  useEffect(() => onControlUi?.(() => encenderControlRemoto()), [encenderControlRemoto])
 
   // En cuanto el kiosco tiene carpeta E inspección elegidas, se lanza el
   // listado del bucket EN BACKGROUND (fire-and-forget): así, cuando el
@@ -756,6 +873,14 @@ function App() {
     // regla anti-seleccion de texto cubre tambien lo que se monta fuera de
     // `.kiosk` (AvisoSesion, SplashInicio) y lo que se anada en el futuro.
     <div className={kiosco ? 'app app-kiosco' : 'app'}>
+      {controlRemotoVisible && (
+        <div
+          className={'kiosk-control-marco' + (controlRemotoDesvanecido ? ' kiosk-control-marco-desvanecido' : '')}
+          aria-hidden="true"
+        >
+          <span className="kiosk-control-marco-texto">Control remoto</span>
+        </div>
+      )}
       {sesionRemota?.activa && (
         <SesionRemota motivo={sesionRemota.motivo} desde={sesionRemota.desde} />
       )}
@@ -842,7 +967,9 @@ function App() {
               onSelectInspeccion={setKioskInspeccion}
               onActualizarInspecciones={kioskCargarInspecciones}
               estadillo={kioskEstadillo}
-              onEstadillo={setKioskEstadillo}
+              onEstadillo={kioskSetEstadillo}
+              estadilloInfo={kioskEstadilloInfo}
+              estadilloEnCarpeta={kioskEstadilloEnCarpeta}
               onOrganizar={kioskOrganizar}
               onSubirCrudo={kioskSubirCrudo}
               onComprobarSubida={kioskComprobarSubida}

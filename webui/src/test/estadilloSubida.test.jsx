@@ -34,7 +34,10 @@ const api = {
   })),
   pickFolder: vi.fn(async () => '/home/saez/Descargas/ANTOLIN'),
   folderIsEmpty: vi.fn(async () => ({ empty: true })),
-  pickFile: vi.fn(async () => '/home/saez/Descargas/estadillo.xlsx'),
+  // Sin selector de fichero ni input tecleable (pedido de Rodrigo,
+  // 2026-09-22): el estadillo llega por autodetección en la carpeta del
+  // vuelo (`estadillosDetectar`), mockeada por test según el escenario.
+  estadillosDetectar: vi.fn(async () => ({ rutas: [] })),
   cloudPrepareStart: vi.fn(async () => ({ started: true })),
   analisisReset: vi.fn(async () => ({ ok: true })),
   analisisCancel: vi.fn(async () => ({ ok: true })),
@@ -76,6 +79,8 @@ vi.mock('../bridge', () => ({
   onUpdate: () => () => {},
   registerPicker: vi.fn(),
   isServerMode: () => false,
+  onControlCarpeta: () => () => {},
+  onControlUi: () => () => {},
 }))
 
 const App = (await import('../App')).default
@@ -99,7 +104,8 @@ const emitirPlanOk = () =>
 // pueda depender de verdad de `estadCheck?.ok` en vez de quedar deshabilitado
 // por `!prefijo`: sin este paso cualquier test sobre ese botón estaría verde
 // en falso.
-async function irAEstadilloConFichero(user) {
+async function irAEstadilloConFichero(user, ruta = '/home/saez/Descargas/estadillo.xlsx') {
+  api.estadillosDetectar.mockResolvedValue({ rutas: [ruta] })
   render(<App />)
 
   // La app arranca en «Inicio»: hay que entrar a «Trabajo» antes de que
@@ -117,10 +123,11 @@ async function irAEstadilloConFichero(user) {
   // contra un plan real.
   await user.click(await screen.findByText('Subir al bucket'))
 
-  // El botón «Elegir…» del campo Estadillo es el segundo de la pantalla (el
-  // primero, el de «Carpeta del vuelo», ya se ha usado arriba).
-  const elegirBotones = await screen.findAllByRole('button', { name: /elegir/i })
-  await user.click(elegirBotones[1])
+  // Sin selector de fichero ni input tecleable (pedido de Rodrigo,
+  // 2026-09-22): el estadillo llega solo por autodetección en la carpeta del
+  // vuelo, mockeada arriba para devolver `ruta`. Espera a que el campo
+  // (de solo lectura) lo pinte.
+  await screen.findByTestId('estadillo-actual')
 }
 
 // Además del estadillo, «Subir al bucket» exige un plan de carpeta válido
@@ -137,7 +144,7 @@ async function completarPlanCarpeta() {
 describe('Estadillo (ubicación canónica del bucket)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    api.pickFile.mockResolvedValue('/home/saez/Descargas/estadillo.xlsx')
+    api.estadillosDetectar.mockResolvedValue({ rutas: [] })
     api.pickFolder.mockResolvedValue('/home/saez/Descargas/ANTOLIN')
     api.cloudPrepareStart.mockResolvedValue({ started: true })
     api.estadilloExistente.mockResolvedValue({ existe: false })

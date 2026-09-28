@@ -5,6 +5,9 @@ import userEvent from '@testing-library/user-event'
 // Esta suite prueba la estructura/flujo del componente con click normal
 // (modo escritorio). El comportamiento de pulsacion larga en modo servidor
 // se cubre aparte en KioskScreen.pulsacion.test.jsx.
+// `estadilloEsperaIniciar`/`Estado`/`Cancelar` van como `vi.fn()` (no
+// resueltos por defecto) para poder controlar su resolución por test al
+// probar el wiring de «Recibir estadillo» (`EsperaEstadillo`).
 vi.mock('./bridge.js', () => ({
   isServerMode: () => false,
   api: {
@@ -14,15 +17,20 @@ vi.mock('./bridge.js', () => ({
     // (cubierto en PairScreen.test.jsx).
     cloudPairStart: () => new Promise(() => {}),
     cloudPairPoll: () => new Promise(() => {}),
-    // `EstadilloField` solo la usa al pulsar "Elegir…"; no se pulsa en esta
-    // suite, pero se deja resuelta (nunca colgada) por si algún test futuro
-    // la dispara.
+    // `EstadilloField` ya no tiene selector de fichero local; `pickFile` no
+    // se usa en esta suite, pero se deja resuelta (nunca colgada) por si
+    // algún test futuro la dispara desde otro picker (p.ej. carpeta).
     pickFile: () => Promise.resolve(''),
+    estadilloEsperaIniciar: vi.fn(() => Promise.resolve({})),
+    estadilloEsperaEstado: vi.fn(() => new Promise(() => {})),
+    estadilloEsperaCancelar: vi.fn(() => Promise.resolve({})),
+    estadilloEsperaCarpeta: vi.fn(() => Promise.resolve({ ok: true })),
   },
 }))
-// `EstadilloField.jsx` importa `./bridge` (sin extensión); mismo módulo que
-// `./bridge.js` para el resolutor de vitest, pero hay que mockear ambas
-// rutas para que ambos imports vean el mismo mock.
+// `EstadilloField.jsx`/`EsperaEstadillo.jsx` importan `./bridge`/`../bridge`
+// (sin extensión); mismo módulo que `./bridge.js` para el resolutor de
+// vitest, pero hay que mockear ambas rutas para que ambos imports vean el
+// mismo mock.
 vi.mock('./bridge', () => ({
   isServerMode: () => false,
   api: {
@@ -30,9 +38,17 @@ vi.mock('./bridge', () => ({
     cloudPairStart: () => new Promise(() => {}),
     cloudPairPoll: () => new Promise(() => {}),
     pickFile: () => Promise.resolve(''),
+    estadilloEsperaIniciar: vi.fn(() => Promise.resolve({})),
+    estadilloEsperaEstado: vi.fn(() => new Promise(() => {})),
+    estadilloEsperaCancelar: vi.fn(() => Promise.resolve({})),
+    estadilloEsperaCarpeta: vi.fn(() => Promise.resolve({ ok: true })),
   },
 }))
 
+// `EsperaEstadillo`/`EstadilloField` importan sin extensión (`'../bridge'`/
+// `'./bridge'`): el `api` que controlan los tests nuevos tiene que ser ESE
+// objeto, no el de `'./bridge.js'` que usa `KioskScreen.jsx` directamente.
+import { api } from './bridge'
 import KioskScreen, { derivarDestino } from './KioskScreen.jsx'
 
 // Shape real de `api.cloudInspecciones()`: lo que consume `InspeccionSelector`
@@ -296,7 +312,9 @@ describe('KioskScreen — paso 1 (menú)', () => {
     render(<KioskScreen {...baseProps({ accionInicial: 'organizer' })} />)
     await userEvent.click(screen.getByRole('button', { name: /^organizar$/i }))
     expect(screen.getByText(/elegir carpeta/i)).toBeInTheDocument()
-    expect(screen.getByText(/^estadillo \*$/i)).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /recibir estadillo/i })
+    ).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /atrás/i })).toBeInTheDocument()
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
   })
@@ -322,10 +340,99 @@ describe('KioskScreen — paso 2 (organizar)', () => {
     expect(screen.getByText('/home/pi/vuelo/PLANTA_ORGANIZADO')).toBeInTheDocument()
   })
 
-  it('sin carpeta no muestra destino y el botón "Organizar" está deshabilitado', () => {
+  it('sin carpeta no muestra destino y el botón "Organizar" no se renderiza', () => {
     render(<KioskScreen {...baseProps({ accionInicial: 'organizar', carpeta: '' })} />)
     expect(screen.queryByText(/_ORGANIZADO/)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /^organizar$/i })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /^organizar$/i })).not.toBeInTheDocument()
+  })
+
+  // Indicador «¿hay estadillo en esta carpeta?» junto al selector (App.jsx
+  // manda `estadilloEnCarpeta`, calculado con `api.estadillosDetectar`).
+  describe('indicador de estadillo en la carpeta', () => {
+    it('mientras busca, dice "Buscando estadillo…"', () => {
+      render(
+        <KioskScreen
+          {...baseProps({
+            accionInicial: 'organizar',
+            carpeta: '/home/pi/vuelo/PLANTA',
+            estadilloEnCarpeta: { buscando: true, encontrado: false, nombre: null, recibidoLan: false },
+          })}
+        />
+      )
+      expect(screen.getByTestId('kiosk-estadillo-en-carpeta')).toHaveTextContent('Buscando estadillo…')
+    })
+
+    it('con estadillo encontrado, muestra su nombre', () => {
+      render(
+        <KioskScreen
+          {...baseProps({
+            accionInicial: 'organizar',
+            carpeta: '/home/pi/vuelo/PLANTA',
+            estadilloEnCarpeta: {
+              buscando: false, encontrado: true, nombre: '20260920_estadillo_Rebeca.csv', recibidoLan: false,
+            },
+          })}
+        />
+      )
+      const indicador = screen.getByTestId('kiosk-estadillo-en-carpeta')
+      expect(indicador).toHaveTextContent('Estadillo encontrado: 20260920_estadillo_Rebeca.csv')
+      expect(indicador.className).toMatch(/hint-ok/)
+    })
+
+    it('sin estadillo en la carpeta, avisa en ámbar', () => {
+      render(
+        <KioskScreen
+          {...baseProps({
+            accionInicial: 'organizar',
+            carpeta: '/home/pi/vuelo/PLANTA',
+            estadilloEnCarpeta: { buscando: false, encontrado: false, nombre: null, recibidoLan: false },
+          })}
+        />
+      )
+      const indicador = screen.getByTestId('kiosk-estadillo-en-carpeta')
+      expect(indicador).toHaveTextContent('Sin estadillo en la carpeta')
+      expect(indicador.className).toMatch(/hint-warn/)
+    })
+
+    it('con un estadillo recibido por LAN pendiente, lo avisa aparte', () => {
+      render(
+        <KioskScreen
+          {...baseProps({
+            accionInicial: 'organizar',
+            carpeta: '/home/pi/vuelo/PLANTA',
+            estadilloEnCarpeta: { buscando: false, encontrado: false, nombre: null, recibidoLan: true },
+          })}
+        />
+      )
+      expect(screen.getByTestId('kiosk-estadillo-en-carpeta')).toHaveTextContent(
+        'Estadillo recibido por red: se añadirá al organizar'
+      )
+    })
+
+    it('sin carpeta no se pinta el indicador', () => {
+      render(<KioskScreen {...baseProps({ accionInicial: 'organizar', carpeta: '' })} />)
+      expect(screen.queryByTestId('kiosk-estadillo-en-carpeta')).not.toBeInTheDocument()
+    })
+  })
+
+  // El botón «Elegir…» (`EstadilloField`, `permitirElegir`) es SOLO de
+  // escritorio (`PasoEstadillo.jsx`): el kiosco nunca pasa esa prop, así que
+  // no puede aparecer aquí, ni sin estadillo (donde antes se pintaba) ni con
+  // uno ya en la lista.
+  it('nunca ofrece el botón «Elegir…» (solo escritorio, `PasoEstadillo`)', () => {
+    render(
+      <KioskScreen
+        {...baseProps({
+          accionInicial: 'organizar',
+          carpeta: '/home/pi/vuelo/PLANTA',
+          estadillo: ['/home/pi/estadillos_recibidos/estadillo.csv'],
+        })}
+      />
+    )
+    // Regex acotada a "Elegir…" (con puntos suspensivos, el texto exacto del
+    // botón de `EstadilloField`): "Elegir carpeta" es un botón distinto y sí
+    // debe seguir presente en el kiosco.
+    expect(screen.queryByRole('button', { name: /^elegir…$/i })).toBeNull()
   })
 
   it('botón "Organizar" llama a onOrganizar con origen/destino/estadillo (array)', async () => {
@@ -351,21 +458,105 @@ describe('KioskScreen — paso 2 (organizar)', () => {
 
   it('el campo de estadillo empieza vacío (array vacío) y no deshabilita "Organizar"', () => {
     render(<KioskScreen {...baseProps({ accionInicial: 'organizar', estadillo: [] })} />)
-    expect(screen.getByPlaceholderText(/si se indica, organiza por planta/i)).toHaveValue('')
+    expect(screen.queryByTestId('estadillo-actual')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^organizar$/i })).not.toBeDisabled()
   })
 
-  it('EstadilloField llama a onEstadillo con el array nuevo al escribir una ruta', async () => {
-    const onEstadillo = vi.fn()
-    render(<KioskScreen {...baseProps({ accionInicial: 'organizar', estadillo: [], onEstadillo })} />)
-    const input = screen.getByPlaceholderText(/si se indica, organiza por planta/i)
-    await userEvent.type(input, 'x')
-    // `onChange` se dispara una vez por tecla; basta comprobar que llegó
-    // como array (no string suelto).
-    expect(onEstadillo).toHaveBeenCalledWith(['x'])
+  it('con un estadillo detectado/recibido, EstadilloField lo pinta de solo lectura (sin tecleo)', () => {
+    render(
+      <KioskScreen
+        {...baseProps({ accionInicial: 'organizar', estadillo: ['/home/pi/estadillo.xlsx'] })}
+      />
+    )
+    expect(screen.getByTestId('estadillo-actual')).toHaveTextContent('estadillo.xlsx')
+    expect(screen.queryByRole('textbox')).toBeNull()
   })
 
-  it('con busy=true, "Elegir carpeta…" y "Organizar" están deshabilitados', () => {
+  it('sin carpeta, "Recibir estadillo" sigue habilitado (la espera puede arrancar sin carpeta)', () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizar', carpeta: '' })} />)
+    expect(screen.getByRole('button', { name: /recibir estadillo/i })).toBeEnabled()
+  })
+
+  it('pulsar "Recibir estadillo" arranca la espera y sustituye el campo', async () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizar', carpeta: '/home/pi/vuelo/PLANTA' })} />)
+    await userEvent.click(screen.getByRole('button', { name: /recibir estadillo/i }))
+    expect(api.estadilloEsperaIniciar).toHaveBeenCalledWith('/home/pi/vuelo/PLANTA', null)
+    expect(await screen.findByTestId('espera-estadillo')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /recibir estadillo/i })
+    ).not.toBeInTheDocument()
+  })
+
+  it('al recibir el estadillo, rellena onEstadillo con la ruta y vuelve al campo normal', async () => {
+    // Primera respuesta: la del chequeo al montar (sin espera activa, no
+    // debe reabrir nada). Segunda: la PRIMERA respuesta del poll real que
+    // arranca el click (el test no espera los 2 s del intervalo).
+    // `mockResolvedValueOnce`, no `mockResolvedValue`, para no dejar esta
+    // implementación contaminando los tests siguientes.
+    api.estadilloEsperaEstado.mockResolvedValueOnce({ esperando: false, caducado: false })
+    api.estadilloEsperaEstado.mockResolvedValueOnce({
+      recibido: true,
+      rutas: ['/tmp/recibido/estadillo.csv'],
+      fase: 'recibido_ok',
+    })
+    const onEstadillo = vi.fn()
+    render(
+      <KioskScreen
+        {...baseProps({ accionInicial: 'organizar', carpeta: '/home/pi/vuelo/PLANTA', onEstadillo })}
+      />
+    )
+    await userEvent.click(screen.getByRole('button', { name: /recibir estadillo/i }))
+    // El botón "OK, seguir" del estado `recibido_ok` salta el retraso automático.
+    await userEvent.click(await screen.findByRole('button', { name: /^ok, seguir$/i }))
+    // Segundo argumento: el resumen (vacío aquí, el mock no manda `resumen`/
+    // `info`) que `EstadilloField` usaría para la tarjeta de recibido.
+    expect(onEstadillo).toHaveBeenCalledWith(
+      ['/tmp/recibido/estadillo.csv'],
+      expect.objectContaining({ origen: 'recibido' })
+    )
+    expect(
+      screen.getByRole('button', { name: /recibir estadillo/i })
+    ).toBeInTheDocument()
+  })
+
+  it('"Cancelar" en la espera llama a estadilloEsperaCancelar y vuelve al campo normal', async () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizar', carpeta: '/home/pi/vuelo/PLANTA' })} />)
+    await userEvent.click(screen.getByRole('button', { name: /recibir estadillo/i }))
+    await screen.findByTestId('espera-estadillo')
+    await userEvent.click(screen.getByRole('button', { name: /cancelar/i }))
+    expect(api.estadilloEsperaCancelar).toHaveBeenCalled()
+    expect(
+      screen.getByRole('button', { name: /recibir estadillo/i })
+    ).toBeInTheDocument()
+  })
+
+  it('salir del paso con la espera activa (Atrás) cancela la espera', async () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizar', carpeta: '/home/pi/vuelo/PLANTA' })} />)
+    await userEvent.click(screen.getByRole('button', { name: /recibir estadillo/i }))
+    await screen.findByTestId('espera-estadillo')
+    await userEvent.click(screen.getByRole('button', { name: /atrás/i }))
+    expect(api.estadilloEsperaCancelar).toHaveBeenCalled()
+  })
+
+  // Retomar tras recargar Chromium (o desbloquear el PIN, que desmonta y
+  // vuelve a montar este componente entero): si el backend ya tenía una
+  // espera activa, se abre EsperaEstadillo directo al montar, sin volver a
+  // llamar a `estadillo_espera_iniciar` (eso resetearía la caducidad).
+  it('con espera activa en el backend al montar, abre EsperaEstadillo directo (sin reiniciarla)', async () => {
+    api.estadilloEsperaEstado.mockResolvedValue({ esperando: true, caducado: false, fase: 'esperando' })
+    render(<KioskScreen {...baseProps({ accionInicial: null, carpeta: '/home/pi/vuelo/PLANTA' })} />)
+    expect(await screen.findByTestId('espera-estadillo')).toBeInTheDocument()
+    expect(api.estadilloEsperaIniciar).not.toHaveBeenCalled()
+  })
+
+  it('sin espera activa (o caducada) al montar, no abre EsperaEstadillo', async () => {
+    api.estadilloEsperaEstado.mockResolvedValue({ esperando: false, caducado: true })
+    render(<KioskScreen {...baseProps({ accionInicial: null, carpeta: '/home/pi/vuelo/PLANTA' })} />)
+    await Promise.resolve()
+    expect(screen.queryByTestId('espera-estadillo')).not.toBeInTheDocument()
+  })
+
+  it('con busy=true, "Elegir carpeta" y "Organizar" están deshabilitados', () => {
     render(<KioskScreen {...baseProps({ accionInicial: 'organizar', carpeta: '/x/y', busy: true })} />)
     expect(screen.getByRole('button', { name: /elegir carpeta/i })).toBeDisabled()
     expect(screen.getByRole('button', { name: /^organizar$/i })).toBeDisabled()
@@ -451,7 +642,7 @@ describe('KioskScreen — paso 2 (subir en crudo)', () => {
     expect(onSubirCrudo).toHaveBeenCalledWith({ carpeta: '/home/pi/vuelo/PLANTA', inspeccion })
   })
 
-  it('con busy=true, "Elegir carpeta…" y "Subir" están deshabilitados', () => {
+  it('con busy=true, "Elegir carpeta" y "Subir" están deshabilitados', () => {
     render(
       <KioskScreen
         {...baseProps({

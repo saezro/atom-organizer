@@ -127,7 +127,7 @@ function conectarEventos() {
   // acepta como alternativa para clientes no loopback.
   const url = tokenRemotoActual ? `/events?t=${encodeURIComponent(tokenRemotoActual)}` : '/events'
   fuenteEventos = new EventSource(url)
-  for (const canal of ['atom:progress', 'atom:update', 'atom:cloud', 'atom:analisis']) {
+  for (const canal of ['atom:progress', 'atom:update', 'atom:cloud', 'atom:analisis', 'atom:control_carpeta', 'atom:control_ui']) {
     fuenteEventos.addEventListener(canal, (e) => {
       window.dispatchEvent(new CustomEvent(canal, { detail: JSON.parse(e.data) }))
     })
@@ -142,23 +142,80 @@ function conectarEventos() {
 // eventos solo los emite Python en respuesta a una accion, y toda accion pasa
 // por `call`, que espera a `whenBridgeReady`.
 
+// Plazo por defecto de toda llamada al bridge: sin esto, una llamada que se
+// queda colgada (backend muerto, hilo Qt atascado, fetch que nunca resuelve)
+// deja la UI esperando en silencio para siempre — el mismo síntoma que
+// `conPlazo` (plazo.js) ya evita en varios call sites concretos, pero aquí a
+// nivel de bridge, para que NINGUNA llamada quede desprotegida por olvido.
+// `timeoutMs: 0` en `callOpts` lo desactiva para las pocas llamadas donde 20 s
+// es demasiado poco por motivos legítimos (ver `TIMEOUTS_METODO` abajo).
+const DEFAULT_TIMEOUT_MS = 20000
+
+// Overrides por método: casi todo pasa por el plazo por defecto, pero hay
+// llamadas que de verdad pueden tardar más de 20 s sin que nada esté roto:
+//   - pick_folder/pick_file: diálogo nativo de Windows, el usuario puede
+//     tardar minutos eligiendo carpeta (el propio backend le da 600 s,
+//     `_win_dialog`/`app_webview.py`). Sin límite: es interacción humana, no
+//     una llamada colgada.
+//   - red_conectar: nmcli puede tardar hasta 60 s (y hay un reintento que lo
+//     dobla), `app_webview.py:red_conectar`. 75 s de margen en el cliente.
+//   - read_estadillo_info: lectura de CSV/EXIF ya protegida en el call site
+//     (`App.jsx`, `conPlazo(..., ESPERA_ESTADILLO_MS)` = 60 s); el plazo del
+//     bridge no debe disparar antes y tapar ese mensaje con uno genérico.
+//   - run_task: arranque del pipeline ya protegido en el call site
+//     (`App.jsx`, `conPlazo(..., ESPERA_ARRANQUE_MS)` = 25 s); mismo motivo.
+const TIMEOUTS_METODO = {
+  pick_folder: 0,
+  pick_file: 0,
+  red_conectar: 75000,
+  read_estadillo_info: 65000,
+  run_task: 30000,
+}
+
 async function call(method, ...args) {
   await whenBridgeReady()
-  if (modoServidor) {
-    const headers = { 'Content-Type': 'application/json' }
-    if (tokenRemotoActual) headers['X-Atom-Token'] = tokenRemotoActual
-    const r = await fetch(`/api/${method}`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ args }),
-    })
-    const cuerpo = await r.json()
-    if (!r.ok) throw new Error(cuerpo.error || `Error llamando a «${method}»`)
-    return cuerpo.result
+  const timeoutMs = method in TIMEOUTS_METODO ? TIMEOUTS_METODO[method] : DEFAULT_TIMEOUT_MS
+  const ejecutar = async () => {
+    if (modoServidor) {
+      const headers = { 'Content-Type': 'application/json' }
+      if (tokenRemotoActual) headers['X-Atom-Token'] = tokenRemotoActual
+      let r
+      try {
+        r = await fetch(`/api/${method}`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ args }),
+          signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
+        })
+      } catch (e) {
+        if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+          throw new Error('El Organizer no responde.')
+        }
+        throw e
+      }
+      const cuerpo = await r.json()
+      if (!r.ok) throw new Error(cuerpo.error || `Error llamando a «${method}»`)
+      return cuerpo.result
+    }
+    const fn = window.pywebview.api[method]
+    if (!fn) throw new Error(`El bridge no expone «${method}»`)
+    return fn(...args)
   }
-  const fn = window.pywebview.api[method]
-  if (!fn) throw new Error(`El bridge no expone «${method}»`)
-  return fn(...args)
+  // La rama pywebview no admite `AbortSignal` (no hay red real que cortar):
+  // se acota con un `Promise.race`, igual que `conPlazo` (plazo.js), que sí
+  // deja resolver la llamada real si acaba llegando tarde pero ya no importa.
+  if (!timeoutMs || modoServidor) return ejecutar()
+  let temporizador = null
+  try {
+    return await Promise.race([
+      ejecutar().finally(() => clearTimeout(temporizador)),
+      new Promise((_, rechazar) => {
+        temporizador = setTimeout(() => rechazar(new Error('El Organizer no responde.')), timeoutMs)
+      }),
+    ])
+  } finally {
+    clearTimeout(temporizador)
+  }
 }
 
 // En modo servidor (Raspberry Pi) no hay diálogo nativo de ficheros: la webui
@@ -174,16 +231,19 @@ export function registerPicker(fn) {
 // El modo se consulta con `whenBridgeReady` YA resuelto, no con la heuristica
 // sincrona: elegir explorador es una decision funcional, y bajo `file://` la
 // heuristica puede decir «servidor» en falso mientras Qt inyecta.
-async function pick(mode, method) {
+async function pick(mode, method, ...args) {
   await whenBridgeReady()
   if (modoServidor && pickerUI) return pickerUI(mode)
-  return call(method)
+  return call(method, ...args)
 }
 
 export const api = {
   ping: (who) => call('ping', who),
   pickFolder: () => pick('folder', 'pick_folder'),
-  pickFile: () => pick('file', 'pick_file'),
+  // `filtro` (opcional): 'csv_xlsx' restringe el diálogo nativo a
+  // CSV/XLSX/XLS (elegir estadillo a mano en escritorio). En modo servidor
+  // (Pi, `pickerUI`) se ignora: ese picker in-app no filtra por extensión.
+  pickFile: (filtro) => pick('file', 'pick_file', filtro ?? null),
   // Listado de un directorio para el explorador in-app (`FolderPicker`), la
   // alternativa al diálogo nativo en modo servidor. Sin argumento lista el
   // home del usuario. Devuelve {ok, path, parent, dirs[], files[]} |
@@ -280,6 +340,11 @@ export const api = {
   pinFijar: (nuevo) => call('pin_fijar', nuevo),
   pinVerificar: (pin) => call('pin_verificar', pin),
   pinCambiar: (actual, nuevo) => call('pin_cambiar', actual, nuevo),
+  // Telemetria de un intento completo de PIN (ver KioskLock.jsx), para saber
+  // en campo si reaparece el fallo "PIN correcto falla al primer intento".
+  // Fire-and-forget: el llamador debe tragar el error, nunca bloquear la UI.
+  // NUNCA lleva los digitos del PIN ni su longitud/composicion.
+  pinTelemetria: (datos) => call('pin_telemetria', datos),
   cloudInspecciones: () => call('cloud_inspecciones'),
   cloudPrepare: (folder, prefix) => call('cloud_prepare', folder, prefix ?? null),
   cloudPrepareStart: (folder, prefix) => call('cloud_prepare_start', folder, prefix ?? null),
@@ -306,15 +371,49 @@ export const api = {
   // Fail-open: {existe, error} — con `error` relleno se trata como `existe:
   // false` sin bloquear al operador (ver App.jsx, useEffect sobre `prefijo`).
   estadilloExistente: (prefijo) => call('estadillo_existente', prefijo),
+  // Baja a disco el/los estadillo(s) ya subidos de esa inspección (contraparte
+  // de lectura de `estadilloSubir`). SOLO escritorio: no está en
+  // `METODOS_EXPUESTOS` de `webserver.py`, así que en modo servidor (Pi) esta
+  // llamada ni siquiera resuelve. Devuelve {ok, rutas:[{ruta, nombre}], error}.
+  estadilloBajarNube: (prefijo) => call('estadillo_bajar_nube', prefijo),
   // Escanea una carpeta (2 niveles) y devuelve los estadillos que encuentra YA
   // resumidos: {rutas, n_estadillos, info, error}, con `info` = el mismo objeto
   // de `read_estadillo_info` (fechas, pilotos, drones, num_vuelos...). No
   // encontrar ninguno no es un error: `n_estadillos: 0`, `info: null`.
-  estadillosDetectar: (carpeta) => call('estadillos_detectar', carpeta),
+  // `incluirRecibidos` (opcional, solo `PasoEstadillo.jsx` en escritorio): si
+  // es `true` suma como candidatos los CSV/XLSX sueltos en la carpeta de
+  // "Estadillo Digital" recibidos por LAN (`estadillos_recibidos_dir()`), no
+  // solo los de la carpeta del vuelo. El kiosco nunca lo pasa.
+  estadillosDetectar: (carpeta, incluirRecibidos) =>
+    call('estadillos_detectar', carpeta, incluirRecibidos ?? false),
   // Variante en hilo de estadillosDetectar: no bloquea la ventana en carpetas
   // grandes. Devuelve {started} al instante; el resultado llega por el
   // evento `atom:analisis` (scope 'estadillos', kind 'done').
   estadillosDetectarStart: (carpeta) => call('estadillos_detectar_start', carpeta),
+  // Modo «recibir del portátil»: en vez de elegir el fichero a mano, se
+  // espera a que otro equipo de la misma red (`organizer.local`) lo envíe.
+  // `estadilloEsperaIniciar` arranca la espera para la inspección elegida;
+  // `estadilloEsperaEstado` se poll-ea desde `EsperaEstadillo` cada 2 s y
+  // devuelve {esperando, inspeccion, fotos:{total, primera, ultima,
+  // calculando}, recibido, rutas, errores}. Al ver `recibido:true` el front
+  // toma `rutas` y sigue por el mismo camino de validación que un CSV
+  // elegido a mano.
+  estadilloEsperaIniciar: (carpeta, inspeccion) => call('estadillo_espera_iniciar', carpeta, inspeccion),
+  estadilloEsperaCancelar: () => call('estadillo_espera_cancelar'),
+  estadilloEsperaEstado: () => call('estadillo_espera_estado'),
+  // Cambia la carpeta de la espera EN CURSO sin tocar su caducidad ni
+  // reiniciarla (a diferencia de volver a llamar `estadilloEsperaIniciar`):
+  // pensado para arrancar la espera sin carpeta y elegirla después, o para
+  // cambiarla mientras se sigue esperando. `carpeta` a `null`/`undefined` la
+  // quita (vuelve a quedar sin carpeta seleccionada).
+  estadilloEsperaCarpeta: (carpeta) => call('estadillo_espera_carpeta', carpeta ?? null),
+  // Estado único de la carpeta de trabajo en el servidor: lo leen las rutas
+  // remotas `/api/control/*` (el portátil elige carpeta/lanza organizar sin
+  // tocar la pantalla del kiosco). `null` la limpia. El propio backend emite
+  // el evento `atom:control_carpeta` cuando la fija por esa vía remota (ver
+  // `onControlCarpeta` más abajo); esta llamada es la dirección contraria,
+  // desde el kiosco hacia el servidor.
+  carpetaTrabajoFijar: (carpeta) => call('carpeta_trabajo_fijar', carpeta ?? null),
   // Apaga o reinicia el EQUIPO (la Pi), no la app. `modo` in {poweroff,
   // reboot}; el backend valida y no necesita sudo (polkit).
   sistemaApagar: (modo) => call('sistema_apagar', modo),
@@ -422,4 +521,25 @@ export function onAnalisis(handler) {
   const wrapped = (e) => handler(e.detail)
   window.addEventListener('atom:analisis', wrapped)
   return () => window.removeEventListener('atom:analisis', wrapped)
+}
+
+// El portátil fija la carpeta de trabajo del kiosco por `/api/control/carpeta`
+// (remoto, sin tocar la pantalla): el servidor lo refleja con este evento para
+// que el kiosco actualice su carpeta elegida como si hubiera sido un toque en
+// pantalla. detail = { path }.
+export function onControlCarpeta(handler) {
+  const wrapped = (e) => handler(e.detail)
+  window.addEventListener('atom:control_carpeta', wrapped)
+  return () => window.removeEventListener('atom:control_carpeta', wrapped)
+}
+
+// El portátil también dispara acciones "como si las hiciera una persona"
+// delante del kiosco (login, elegir carpeta, organizar, cancelar): el
+// servidor las refleja con este evento para que la pantalla las VISUALICE
+// (rellenar el PIN paso a paso, marco de "control remoto activo"…), no solo
+// para que surtan efecto en silencio. detail = { accion, path? }.
+export function onControlUi(handler) {
+  const wrapped = (e) => handler(e.detail)
+  window.addEventListener('atom:control_ui', wrapped)
+  return () => window.removeEventListener('atom:control_ui', wrapped)
 }

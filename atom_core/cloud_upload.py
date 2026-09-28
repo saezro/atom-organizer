@@ -55,6 +55,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 import urllib.error
@@ -80,6 +81,7 @@ __all__ = [
     "upload_plan",
     "objetos_en_prefijo",
     "listar_objetos_remotos",
+    "descargar_objeto",
     "reconciliar",
 ]
 
@@ -273,6 +275,27 @@ def objetos_en_prefijo(bucket: str, prefix: str, auth, *,
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode("utf-8") or "{}")
     return len(data.get("items") or [])
+
+
+def descargar_objeto(bucket: str, name: str, auth, dest_path: "Path", *,
+                     base: str = "https://storage.googleapis.com",
+                     timeout: int = TIMEOUT) -> None:
+    """Baja UN objeto del bucket a `dest_path` (JSON API, `alt=media`).
+
+    Contraparte de lectura de `upload_file`: mismo esquema de auth
+    (`auth.access_token()`) y mismo `urllib` de stdlib, sin dependencias
+    nuevas. Escribe directo a `dest_path`; quien llama decide el nombre final
+    (no pisa nada por sí sola).
+    """
+    url = (f"{base.rstrip('/')}/storage/v1/b/{urllib.parse.quote(bucket)}/o/"
+           f"{urllib.parse.quote(name, safe='')}?alt=media")
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Authorization", f"Bearer {auth.access_token()}")
+    req.add_header("User-Agent", USER_AGENT)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open(dest_path, "wb") as f:
+            shutil.copyfileobj(resp, f)
 
 
 @dataclass(frozen=True)

@@ -286,14 +286,57 @@ def test_todas_las_filas_de_un_vuelo_comparten_angulo(tmp_path):
     manifiesto.cerrar()
 
 
-def test_colision_pb_vuelo_aborta_sin_escribir_nada(tmp_path):
-    """Con una colisión (mismo PB+Vuelo, fecha distinta tras fusionar
-    estadillos) `construir_indice` debe lanzar `ErrorColisionEstadillo` ANTES
-    de escribir ninguna fila, no a mitad como hacía el motor viejo."""
+def test_colision_pb_vuelo_fecha_distinta_resuelve_con_sufijo(tmp_path):
+    """Mismo PB+Vuelo en dos estadillos DISTINTOS con fecha distinta: YA NO
+    aborta -se resuelve con el sufijo de fecha, igual que `pipeline.
+    GenStructFolder.gen_folder_struct`-, y cada fecha acaba en SU carpeta de
+    salida, coherente con el nombre de carpeta que generaría el motor viejo."""
     ruta_a = tmp_path / "estadillo_a.csv"
     ruta_b = tmp_path / "estadillo_b.csv"
     _escribir_estadillo(ruta_a, [("1", "1", "2024:06:01", "10:00:00", "10:10:00")])
-    _escribir_estadillo(ruta_b, [("1", "01", "2024:06:02", "10:00:00", "10:10:00")])
+    _escribir_estadillo(ruta_b, [("1", "1", "2024:06:02", "11:00:00", "11:10:00")])
+
+    from atom_core import estadillo as estadillo_mod
+    estad_empaquetado = estadillo_mod.empaquetar_rutas([str(ruta_a), str(ruta_b)])
+    cfg = _cfg(tmp_path, estad=estad_empaquetado)
+    ruta_dia1 = _crear_imagen(cfg.input_folder, "DJI_0001_D.JPG")
+    ruta_dia2 = _crear_imagen(cfg.input_folder, "DJI_0002_D.JPG")
+
+    ventanas = {
+        ("2024:06:01", "10:00:00", "10:10:00"): (
+            dt.datetime(2024, 6, 1, 10, 0, 0), dt.datetime(2024, 6, 1, 10, 10, 0)),
+        ("2024:06:02", "11:00:00", "11:10:00"): (
+            dt.datetime(2024, 6, 2, 11, 0, 0), dt.datetime(2024, 6, 2, 11, 10, 0)),
+    }
+    pipeline = _PipelineDePrueba(ventanas)
+    exif = _ExifDePrueba(timestamps={
+        ruta_dia1: dt.datetime(2024, 6, 1, 10, 5, 0),
+        ruta_dia2: dt.datetime(2024, 6, 2, 11, 5, 0),
+    })
+    manifiesto = _manifiesto(tmp_path)
+
+    construir_indice(cfg, pipeline, exif, manifiesto, _Signal(), _Signal(), _Signal())
+
+    filas = {fila["ruta_origen"]: fila for fila in manifiesto.todas()}
+    assert filas[ruta_dia1]["vuelo"] == "1"
+    assert filas[ruta_dia2]["vuelo"] == "1"
+    assert filas[ruta_dia1]["unassigned"] == 0
+    assert filas[ruta_dia2]["unassigned"] == 0
+    assert filas[ruta_dia1]["ruta_salida_original"] != filas[ruta_dia2]["ruta_salida_original"]
+    assert "PB1_V1_20240601" in filas[ruta_dia1]["ruta_salida_original"]
+    assert "PB1_V1_20240602" in filas[ruta_dia2]["ruta_salida_original"]
+    manifiesto.cerrar()
+
+
+def test_colision_pb_vuelo_mismo_dia_distinto_origen_aborta(tmp_path):
+    """Dos estadillos DISTINTOS con el mismo PB+Vuelo EL MISMO día (dos
+    pilotos que de verdad chocan) no tienen sufijo que los distinga -sería
+    idéntico para ambos-: sigue abortando ANTES de escribir nada, con los dos
+    ficheros de origen en el mensaje."""
+    ruta_a = tmp_path / "estadillo_a.csv"
+    ruta_b = tmp_path / "estadillo_b.csv"
+    _escribir_estadillo(ruta_a, [("1", "1", "2024:06:01", "10:00:00", "10:10:00")])
+    _escribir_estadillo(ruta_b, [("1", "1", "2024:06:01", "11:00:00", "11:10:00")])
 
     from atom_core import estadillo as estadillo_mod
     estad_empaquetado = estadillo_mod.empaquetar_rutas([str(ruta_a), str(ruta_b)])
@@ -304,9 +347,11 @@ def test_colision_pb_vuelo_aborta_sin_escribir_nada(tmp_path):
     exif = _ExifDePrueba()
     manifiesto = _manifiesto(tmp_path)
 
-    with pytest.raises(ErrorColisionEstadillo):
+    with pytest.raises(ErrorColisionEstadillo) as excinfo:
         construir_indice(cfg, pipeline, exif, manifiesto, _Signal(), _Signal(), _Signal())
 
+    assert "estadillo_a.csv" in str(excinfo.value)
+    assert "estadillo_b.csv" in str(excinfo.value)
     assert manifiesto.todas() == []
     manifiesto.cerrar()
 

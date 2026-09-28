@@ -7,8 +7,9 @@ vi.mock('../bridge', () => ({
     estadilloSubir: vi.fn(),
     estadilloExistente: vi.fn(),
     estadillosDetectar: vi.fn(),
-    pickFile: vi.fn(),
+    estadilloBajarNube: vi.fn(),
   },
+  isServerMode: vi.fn(() => false),
   onCloud: (h) => {
     const w = (e) => h(e.detail)
     window.addEventListener('atom:cloud', w)
@@ -22,15 +23,16 @@ function emitirCloud(detail) {
   act(() => { window.dispatchEvent(new CustomEvent('atom:cloud', { detail })) })
 }
 
-// Mismo camino que `estadilloSubida.test.jsx` usa a nivel de `BucketScreen`:
-// el campo Estadillo elige el fichero pulsando su botón «Elegir…», que llama
-// a `api.pickFile()`. Aquí no hay más campos «Elegir…» en pantalla (a
-// diferencia de `BucketScreen`, que también tiene el de «Carpeta a subir»),
-// así que basta con el primero que aparezca.
+// Sin campo de texto editable (pedido de Rodrigo, 2026-09-22): en
+// `PasoEstadillo` el estadillo llega por autodetección en la carpeta del
+// vuelo (`estadillosDetectar`, mockeada aquí para devolver `ruta`; también
+// mira la carpeta de recibidos por LAN, `incluirRecibidos: true`) o eligiendo
+// a mano con el botón «Elegir…» (`permitirElegir`, solo aquí, nunca en el
+// kiosco). Los tests que necesitan poblar la selección pasan `carpeta` al
+// render y esperan a que el campo (de solo lectura) la pinte.
 async function elegirEstadillo(ruta = '/home/saez/Descargas/estadillo.xlsx') {
-  api.pickFile.mockResolvedValueOnce(ruta)
-  fireEvent.click(await screen.findByRole('button', { name: /elegir/i }))
-  await waitFor(() => expect(api.pickFile).toHaveBeenCalled())
+  api.estadillosDetectar.mockResolvedValue({ rutas: [ruta] })
+  await screen.findByTestId('estadillo-actual')
 }
 
 beforeEach(() => {
@@ -41,19 +43,19 @@ beforeEach(() => {
 
 describe('PasoEstadillo', () => {
   it('valida el estadillo al elegirlo y reporta listo', async () => {
+    api.estadillosDetectar.mockResolvedValue({ rutas: ['/vuelo/estadillo.xlsx'] })
     api.estadilloValidar.mockResolvedValue({ ok: true, vuelos_detectados: 3 })
     const onEstado = vi.fn()
     const { rerender } = render(
-      <PasoEstadillo prefijo="ACME--P--2026--T" onEstado={onEstado} />)
-    // el componente expone su onChange vía EstadilloField; simula la elección
-    // usando el mismo camino que estadilloSubida.test.jsx usa para BucketScreen.
+      <PasoEstadillo prefijo="ACME--P--2026--T" carpeta="/vuelo" onEstado={onEstado} />)
+    // la selección llega sola por autodetección de la carpeta del vuelo.
     await elegirEstadillo()
     await waitFor(() => {
       const ultimo = onEstado.mock.calls.at(-1)[0]
       expect(ultimo.listo).toBe(true)
     })
     await waitFor(() => expect(onEstado).toHaveBeenCalled())
-    rerender(<PasoEstadillo prefijo="ACME--P--2026--T" onEstado={onEstado} />)
+    rerender(<PasoEstadillo prefijo="ACME--P--2026--T" carpeta="/vuelo" onEstado={onEstado} />)
   })
 
   it('marca listo si se omite el estadillo', async () => {
@@ -91,13 +93,15 @@ describe('PasoEstadillo', () => {
   })
 
   it('subir() rechaza si el backend dice que no arrancó', async () => {
+    api.estadillosDetectar.mockResolvedValue({ rutas: ['/vuelo/estadillo.xlsx'] })
     api.estadilloValidar.mockResolvedValue({ ok: true, vuelos_detectados: 1 })
     api.estadilloSubir.mockResolvedValue({ started: false, reason: 'ya hay una subida' })
     let estado = null
-    render(<PasoEstadillo prefijo="ACME--P--2026--T" onEstado={(e) => { estado = e }} />)
+    render(
+      <PasoEstadillo prefijo="ACME--P--2026--T" carpeta="/vuelo" onEstado={(e) => { estado = e }} />)
     await waitFor(() => expect(estado).toBeTruthy())
-    // este caso requiere ficheros elegidos; usa el mismo helper que
-    // estadilloSubida.test.jsx para poblarlos antes de llamar a subir().
+    // este caso requiere ficheros elegidos: llegan solos por autodetección
+    // de la carpeta del vuelo (mockeada arriba).
     await elegirEstadillo()
     await waitFor(() => expect(estado.rutas.length).toBe(1))
 
@@ -105,10 +109,11 @@ describe('PasoEstadillo', () => {
   })
 
   it('vacía la selección de estadillo al cambiar de inspección', async () => {
+    api.estadillosDetectar.mockResolvedValue({ rutas: ['/vuelo/estadillo.xlsx'] })
     api.estadilloValidar.mockResolvedValue({ ok: true, vuelos_detectados: 1 })
     const onEstado = vi.fn()
     const { rerender } = render(
-      <PasoEstadillo prefijo="ACME--P--2026--T" onEstado={onEstado} />)
+      <PasoEstadillo prefijo="ACME--P--2026--T" carpeta="/vuelo" onEstado={onEstado} />)
     await elegirEstadillo()
     await waitFor(() => {
       const ultimo = onEstado.mock.calls.at(-1)[0]
@@ -116,6 +121,9 @@ describe('PasoEstadillo', () => {
     })
 
     onEstado.mockClear()
+    // Sin `carpeta` en el rerender para no relanzar la autodetección y poder
+    // aislar el reseteo por cambio de inspección (comportamiento ya
+    // verificado en los tests de autodetección más abajo).
     rerender(<PasoEstadillo prefijo="OTRA--P--2026--T" onEstado={onEstado} />)
 
     await waitFor(() => {
@@ -162,7 +170,9 @@ describe('PasoEstadillo', () => {
         carpeta="/vuelo"
         onEstado={(e) => { estado = e }}
       />)
-    await waitFor(() => expect(api.estadillosDetectar).toHaveBeenCalledWith('/vuelo'))
+    // `true` = `incluirRecibidos`: en escritorio (`PasoEstadillo`) la
+    // autodetección también mira la carpeta de estadillos recibidos por LAN.
+    await waitFor(() => expect(api.estadillosDetectar).toHaveBeenCalledWith('/vuelo', true))
     expect(await screen.findByText(/estadillo detectado en la carpeta del vuelo/i)).toBeTruthy()
     await waitFor(() => expect(estado.rutas).toEqual(['/vuelo/estadillo.xlsx']))
   })
@@ -191,6 +201,37 @@ describe('PasoEstadillo', () => {
     ).toBeTruthy()
   })
 
+  it('si estadillosDetectar se queda colgado (plazo vencido), sale de "buscando" con boton reintentar', async () => {
+    vi.useFakeTimers()
+    try {
+      api.estadillosDetectar.mockReturnValue(new Promise(() => {})) // nunca resuelve
+      render(
+        <PasoEstadillo prefijo="ACME--P--2026--T" carpeta="/vuelo" onEstado={vi.fn()} />)
+      expect(screen.getByText(/buscando el estadillo/i)).toBeTruthy()
+      await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+      expect(screen.getByRole('alert')).toBeTruthy()
+      const reintentar = screen.getByTestId('autodeteccion-reintentar')
+      expect(reintentar).toBeTruthy()
+
+      // Reintentar vuelve a llamar al backend: si esta vez responde, sale
+      // del estado de error.
+      api.estadillosDetectar.mockResolvedValue({ rutas: [] })
+      fireEvent.click(reintentar)
+      await act(async () => { await Promise.resolve() })
+      expect(api.estadillosDetectar).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ofrece el botón «Elegir…» para volver a elegir el estadillo a mano', async () => {
+    // `permitirElegir` (decisión de Rodrigo, 2026-09-22): SOLO en escritorio,
+    // recupera la posibilidad de elegir el fichero a mano cuando la
+    // autodetección no acierta.
+    render(<PasoEstadillo prefijo="ACME--P--2026--T" onEstado={vi.fn()} />)
+    expect(await screen.findByRole('button', { name: /elegir/i })).toBeTruthy()
+  })
+
   it('sin prop carpeta no llama a estadillosDetectar', async () => {
     let estado = null
     render(
@@ -198,5 +239,41 @@ describe('PasoEstadillo', () => {
     await waitFor(() => expect(estado).toBeTruthy())
     await act(async () => { await Promise.resolve() })
     expect(api.estadillosDetectar).not.toHaveBeenCalled()
+  })
+
+  it('«Bajar de la nube» solo aparece cuando ya hay estadillo subido para la inspección', async () => {
+    api.estadilloExistente.mockResolvedValue({ existe: false })
+    render(<PasoEstadillo prefijo="ACME--P--2026--T" onEstado={vi.fn()} />)
+    await waitFor(() => expect(api.estadilloExistente).toHaveBeenCalled())
+    await act(async () => { await Promise.resolve() })
+    expect(screen.queryByRole('button', { name: /bajar de la nube/i })).toBeNull()
+  })
+
+  it('«Bajar de la nube» descarga y añade la ruta a la selección', async () => {
+    api.estadilloExistente.mockResolvedValue({ existe: true })
+    api.estadilloBajarNube.mockResolvedValue({
+      ok: true, error: null, rutas: [{ ruta: '/home/op/estadillos_recibidos/nube/01__abc.csv', nombre: '01__abc.csv' }],
+    })
+    api.estadilloValidar.mockResolvedValue({ ok: true, vuelos_detectados: 2 })
+    let estado = null
+    render(
+      <PasoEstadillo prefijo="ACME--P--2026--T" onEstado={(e) => { estado = e }} />)
+
+    const boton = await screen.findByRole('button', { name: /bajar de la nube/i })
+    fireEvent.click(boton)
+
+    await waitFor(() => expect(api.estadilloBajarNube).toHaveBeenCalledWith('ACME--P--2026--T'))
+    await waitFor(() => expect(estado.rutas).toEqual(['/home/op/estadillos_recibidos/nube/01__abc.csv']))
+  })
+
+  it('«Bajar de la nube» muestra el error en una línea si falla', async () => {
+    api.estadilloExistente.mockResolvedValue({ existe: true })
+    api.estadilloBajarNube.mockResolvedValue({ ok: false, error: 'sin red', rutas: [] })
+    render(<PasoEstadillo prefijo="ACME--P--2026--T" onEstado={vi.fn()} />)
+
+    const boton = await screen.findByRole('button', { name: /bajar de la nube/i })
+    fireEvent.click(boton)
+
+    expect(await screen.findByText('sin red')).toBeTruthy()
   })
 })

@@ -51,6 +51,21 @@ export default function BotonToque({
   const destello = useRef(null)
   const largo = useRef(null)
   const largoDisparado = useRef(false)
+  // Estado del toque en curso: id del puntero capturado y punto de partida,
+  // para poder distinguir en el soltar un toque legitimo (con temblor) de un
+  // arrastre real hacia una tecla vecina, y para ignorar un `pointerup` que
+  // no venga precedido de un `pointerdown` en este mismo boton (sin
+  // `setPointerCapture` eso activaba la tecla vecina).
+  const presionado = useRef(false)
+  const punteroId = useRef(null)
+  const inicio = useRef({ x: 0, y: 0 })
+  // Si `setPointerCapture` se pidió sin reventar en este gesto. No se
+  // consulta `hasPointerCapture` (jsdom no lo implementa de verdad, y en
+  // Chromium real también puede perderse la captura sin disparar
+  // `lostpointercapture` en algún borde raro del panel resistivo): se lleva
+  // la cuenta a mano, optimista, para saber en `onPointerLeave` si hace
+  // falta resetear el gesto o si el `pointerup` va a seguir llegando aquí.
+  const capturado = useRef(false)
 
   const apagar = useCallback(() => {
     if (destello.current) clearTimeout(destello.current)
@@ -62,6 +77,18 @@ export default function BotonToque({
     if (largo.current) clearTimeout(largo.current)
     largo.current = null
   }, [])
+
+  // pointercancel / lostpointercapture: el toque se pierde sin soltar sobre
+  // el boton (llamada entrante, gesto del sistema...). Se resetea el estado
+  // sin activar nada.
+  const resetSinActivar = useCallback(() => {
+    presionado.current = false
+    punteroId.current = null
+    arrastrado.current = false
+    capturado.current = false
+    cancelarLargo()
+    apagar()
+  }, [cancelarLargo, apagar])
 
   const armarLargo = useCallback(() => {
     if (!onPulsarLargo) return
@@ -103,6 +130,20 @@ export default function BotonToque({
       className={tocando ? `${className} pulsable pulsando` : `${className} pulsable`}
       onPointerDown={(e) => {
         arrastrado.current = false
+        presionado.current = true
+        punteroId.current = e.pointerId
+        inicio.current = { x: e.clientX, y: e.clientY }
+        // Con la captura, el pointerup llega a ESTE boton aunque el dedo
+        // tiemble hasta la tecla vecina (panel resistivo): sin esto, un
+        // pointerup que cae sobre la vecina la activaba a ella sin haber
+        // tenido nunca su propio pointerdown.
+        try {
+          const soportaCaptura = typeof e.currentTarget.setPointerCapture === 'function'
+          if (soportaCaptura) e.currentTarget.setPointerCapture(e.pointerId)
+          capturado.current = soportaCaptura
+        } catch {
+          capturado.current = false
+        }
         armarLargo()
         e.currentTarget.dataset.y0 = String(e.clientY)
         // La onda nace donde cae el dedo, no en el centro: se lee como "he
@@ -134,20 +175,54 @@ export default function BotonToque({
           apagar()
         }
       }}
-      onPointerUp={() => {
+      onPointerUp={(e) => {
         cancelarLargo()
         if (largoDisparado.current) {
           largoDisparado.current = false
+          presionado.current = false
+          punteroId.current = null
+          capturado.current = false
           return
         }
+        // Sin pointerdown previo en este boton (o de otro dedo/puntero): no
+        // se activa. Esto es lo que antes dejaba activar la tecla vecina.
+        if (!presionado.current || e.pointerId !== punteroId.current) return
+        presionado.current = false
+        punteroId.current = null
+        capturado.current = false
         if (arrastrado.current) {
           arrastrado.current = false
           return
         }
+        // Sin `cancelarAlMover` (botones del kiosco, teclado del PIN) no hay
+        // cancelacion en vivo por movimiento porque no hay gesto de scroll
+        // que desambiguar; aun asi, al soltar, un recorrido total mayor a un
+        // umbral generoso es un arrastre real (dedo que fue a otra tecla),
+        // no el temblor del resistivo, y se descarta.
+        if (!cancelarAlMover) {
+          const dx = e.clientX - inicio.current.x
+          const dy = e.clientY - inicio.current.y
+          if (Math.hypot(dx, dy) > pxDeRem(1.5)) return
+        }
         onActivar()
       }}
-      onPointerCancel={() => { arrastrado.current = false; cancelarLargo(); apagar() }}
-      onPointerLeave={() => { arrastrado.current = true; cancelarLargo(); apagar() }}
+      onPointerCancel={resetSinActivar}
+      onLostPointerCapture={resetSinActivar}
+      onPointerLeave={(e) => {
+        cancelarLargo()
+        apagar()
+        // Con la captura activa (el caso normal, `setPointerCapture` en
+        // `onPointerDown`) el `pointerup` sigue llegando a ESTE boton aunque
+        // el dedo salga de sus limites -el temblor del resistivo que este
+        // componente ya asume-, así que no hay nada más que resetear aquí:
+        // `onPointerUp` cierra el gesto igual. Pero SIN captura (falla
+        // `setPointerCapture`, navegador sin soporte) el `pointerup` real
+        // puede caer en otro sitio o no llegar nunca, y sin este reset el
+        // boton se quedaba "armado" (`presionado`/`punteroId`) para
+        // SIEMPRE: ni este boton volvía a aceptar un toque limpio, ni nada
+        // más lo desatascaba.
+        if (!capturado.current) resetSinActivar()
+      }}
       // El click sintetizado al soltar llega DESPUES de onPointerUp; ya hemos
       // actuado nosotros, asi que se neutraliza para no activar dos veces.
       onClick={(e) => e.preventDefault()}

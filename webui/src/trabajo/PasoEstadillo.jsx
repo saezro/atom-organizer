@@ -1,14 +1,32 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, onCloud } from '../bridge'
+import { api, isServerMode, onCloud } from '../bridge'
+import { conPlazo } from '../plazo'
 import EstadilloField from '../EstadilloField'
+import EsperaEstadillo from './EsperaEstadillo'
+
+// Plazo de la autodetección del estadillo en la carpeta del vuelo
+// (`estadillosDetectar`, sincrónica en el backend: `os.walk` + parseo con
+// pandas de cada candidato). En una carpeta enorme puede tardar de verdad
+// -bridge.js ya no la deja colgada para siempre con su plazo por defecto de
+// 20 s-, pero sin esto la UI se quedaba en "Buscando…" sin más salida que
+// recargar la app entera. Por debajo del plazo por defecto del bridge (20 s,
+// `bridge.js`) para que sea ESTE plazo quien gane la carrera casi siempre y
+// el mensaje sea siempre el mismo.
+const ESPERA_AUTODETECCION_MS = 15000
 
 // Estadillo → ubicación canónica del bucket: acción propia, no depende de
 // haber organizado ni de la carpeta a subir de arriba. Preview obligatorio
 // (`estadCheck`) antes de poder subir: el resumen se invalida en cuanto
 // cambia la lista de ficheros, para no subir con un resumen que ya no
 // corresponde a la selección.
-export default function PasoEstadillo({ prefijo, carpeta, disabled, onEstado }) {
+export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, onEstado }) {
   const [estadRutas, setEstadRutas] = useState([])
+  // Modo «Recibir del portátil»: sustituye la selección manual
+  // (`EstadilloField`) por la pantalla de espera (`EsperaEstadillo`) mientras
+  // dura. Al llegar el estadillo, `EsperaEstadillo` avisa con las rutas y
+  // este paso vuelve a modo normal, ya con `estadRutas` rellenas — de ahí en
+  // adelante sigue el mismo camino de validación que un CSV elegido a mano.
+  const [esperando, setEsperando] = useState(false)
   const [estadCheck, setEstadCheck] = useState(null) // null | {ok, error, vuelos_detectados, filas_con_problemas}
   const [estadComprobando, setEstadComprobando] = useState(false)
   // `estadSubiendo` es la única guarda de doble-click: `estadillo_subir` en
@@ -28,6 +46,12 @@ export default function PasoEstadillo({ prefijo, carpeta, disabled, onEstado }) 
   // que saberlo de memoria.
   const [omitirEstadillo, setOmitirEstadillo] = useState(false)
   const [estadPrevio, setEstadPrevio] = useState(null) // null | {existe, error, _prefijo}
+  // «Bajar de la nube»: contraparte de lectura de «Recibir del portátil»,
+  // solo escritorio (`estadilloBajarNube` no está en `METODOS_EXPUESTOS` del
+  // modo servidor). Descarga el estadillo ya subido para esta inspección y
+  // lo añade a `estadRutas`, como si se hubiera elegido a mano.
+  const [estadBajando, setEstadBajando] = useState(false)
+  const [estadBajarError, setEstadBajarError] = useState(null)
   // Resultado de la autodetección en la carpeta del vuelo, solo para el
   // rótulo: null (silencio) | {estado:'buscando'|'encontrado'|'nada', n}.
   const [autoDeteccion, setAutoDeteccion] = useState(null)
@@ -57,6 +81,11 @@ export default function PasoEstadillo({ prefijo, carpeta, disabled, onEstado }) 
   // volvemos a poner, y si cambia de inspección (que vacía la selección)
   // vuelve a detectarse.
   const autoDeteccionRef = useRef(null)
+  // Contador que solo sirve para forzar que el efecto de autodetección se
+  // relance desde el botón «Reintentar»: sus dependencias reales (`carpeta`,
+  // `prefijo`) no cambian al reintentar, así que sin esto no habría forma de
+  // volver a intentarlo sin cambiar de carpeta.
+  const [autoDeteccionTick, setAutoDeteccionTick] = useState(0)
   // La autodetección resuelve de forma asíncrona y su efecto no reacciona ni
   // a `estadRutas` ni a `omitirEstadillo` (relanzarlo con cada cambio de
   // selección sería un bucle). Estas refs le dan el valor VIGENTE al aplicar,
@@ -102,6 +131,9 @@ export default function PasoEstadillo({ prefijo, carpeta, disabled, onEstado }) 
     prefijoAnteriorRef.current = prefijo
     cambiarEstadRutas([])
     setOmitirEstadillo(false)
+    // Cambiar de inspección deja sin sentido una espera en curso: era para
+    // la inspección anterior. `EsperaEstadillo` cancela sola al desmontarse.
+    setEsperando(false)
     // `estadPrevio` es de la inspección ANTERIOR hasta que resuelva el fetch
     // de abajo. Sin limpiarlo aquí, el efecto de auto-marcado corre en este
     // mismo flush (reacciona a `prefijo`), pisa el `false` de arriba con el
@@ -130,7 +162,16 @@ export default function PasoEstadillo({ prefijo, carpeta, disabled, onEstado }) 
     setAutoDeteccion({ estado: 'buscando' })
     ;(async () => {
       try {
-        const r = await api.estadillosDetectar(carpeta)
+        // `incluirRecibidos: true` (solo aquí, escritorio): además de la
+        // carpeta del vuelo, suma como candidatos los CSV/XLSX que haya en
+        // la carpeta de "Estadillo Digital" recibidos por LAN. El kiosco
+        // (`KioskScreen`/`App.jsx`) usa `estadillosDetectarStart`, que no
+        // pasa este flag.
+        const r = await conPlazo(
+          api.estadillosDetectar(carpeta, true),
+          ESPERA_AUTODETECCION_MS,
+          'La búsqueda del estadillo ha tardado demasiado.'
+        )
         if (cancelado) return
         const rutas = Array.isArray(r?.rutas) ? r.rutas : []
         // No pisar una decisión ya tomada mientras la búsqueda estaba en
@@ -147,17 +188,25 @@ export default function PasoEstadillo({ prefijo, carpeta, disabled, onEstado }) 
         }
         cambiarEstadRutas(rutas)
         setAutoDeteccion({ estado: 'encontrado', n: rutas.length })
-      } catch {
-        // Fail-open: si la detección falla se sigue pudiendo elegir a mano,
-        // que es exactamente lo que se hacía antes de que existiera.
-        if (!cancelado) setAutoDeteccion({ estado: 'nada' })
+      } catch (e) {
+        if (cancelado) return
+        // El plazo vencido (el propio de aquí arriba, o de respaldo el plazo
+        // por defecto del bridge, `bridge.js`) sí se distingue: sin una
+        // salida explícita se quedaría "buscando" para siempre. Un error
+        // normal del backend sigue siendo fail-open y silencioso, como
+        // antes: el operario puede elegir a mano.
+        if (/tardad|tard[oó]|no responde/i.test(e?.message || '')) {
+          setAutoDeteccion({ estado: 'error', mensaje: e.message })
+        } else {
+          setAutoDeteccion({ estado: 'nada' })
+        }
       }
     })()
     return () => {
       cancelado = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [carpeta, prefijo])
+  }, [carpeta, prefijo, autoDeteccionTick])
 
   // Detecta si la inspección elegida ya tiene un estadillo subido en el
   // bucket, para auto-marcar «omitir estadillo» en una resubida y cambiar la
@@ -261,6 +310,28 @@ export default function PasoEstadillo({ prefijo, carpeta, disabled, onEstado }) 
     }
   }
 
+  // Baja el/los estadillo(s) ya subidos al bucket para esta inspección y los
+  // añade a la selección (sin duplicar rutas ya presentes), reusando el mismo
+  // camino de validación que una selección manual.
+  async function bajarEstadilloNube() {
+    setEstadBajarError(null)
+    setEstadBajando(true)
+    try {
+      const r = await api.estadilloBajarNube(prefijo)
+      if (!r || r.ok !== true) {
+        setEstadBajarError(r?.error || 'No se pudo bajar el estadillo de la nube.')
+        return
+      }
+      const nuevas = (r.rutas || []).map((f) => f.ruta)
+      const combinadas = [...estadRutas, ...nuevas.filter((ruta) => !estadRutas.includes(ruta))]
+      cambiarEstadRutas(combinadas)
+    } catch (e) {
+      setEstadBajarError(String(e))
+    } finally {
+      setEstadBajando(false)
+    }
+  }
+
   // El PRIMER argumento es el PREFIJO de la inspección elegida (`prefijo`),
   // NO `carpeta` (la carpeta local del vuelo a subir) ni ninguna otra ruta de
   // disco: `estadillo_subir(folder, rutas)` pasa ese primer argumento tal
@@ -341,6 +412,24 @@ export default function PasoEstadillo({ prefijo, carpeta, disabled, onEstado }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [estadRutas, estadCheck, estadSubiendo, omitirEstadillo, prefijo, onEstado])
 
+  if (esperando) {
+    return (
+      <div className="field">
+        <span className="field-label">Estadillo (ubicación canónica del bucket)</span>
+        <EsperaEstadillo
+          carpeta={carpeta}
+          inspeccion={inspeccion}
+          disabled={disabled}
+          onRecibido={(rutas) => {
+            setEsperando(false)
+            cambiarEstadRutas(rutas)
+          }}
+          onCancelar={() => setEsperando(false)}
+        />
+      </div>
+    )
+  }
+
   return (
     <div className="field">
       <span className="field-label">Estadillo (ubicación canónica del bucket)</span>
@@ -348,7 +437,35 @@ export default function PasoEstadillo({ prefijo, carpeta, disabled, onEstado }) 
         value={estadRutas}
         onChange={cambiarEstadRutas}
         disabled={disabled || estadSubiendo || omitirEstadillo}
+        // Solo en escritorio (este es el único caller que lo pasa): recupera
+        // el botón «Elegir…» para volver a elegir el estadillo a mano cuando
+        // la autodetección no acierta. El kiosco (`KioskScreen`) nunca lo
+        // pasa, así que el botón no puede aparecer ahí.
+        permitirElegir
       />
+      <button
+        type="button"
+        className="btn-ghost btn-recibir-estadillo"
+        disabled={disabled || estadSubiendo || omitirEstadillo}
+        onClick={() => setEsperando(true)}
+      >
+        Recibir del portátil
+      </button>
+      {!isServerMode() && prefijo && estadPrevio?.existe === true && (
+        <button
+          type="button"
+          className="btn-ghost btn-bajar-estadillo"
+          disabled={disabled || estadSubiendo || estadBajando}
+          onClick={bajarEstadilloNube}
+        >
+          {estadBajando ? 'Bajando de la nube…' : 'Bajar de la nube'}
+        </button>
+      )}
+      {estadBajarError && (
+        <span className="field-hint hint-warn" role="alert">
+          {estadBajarError}
+        </span>
+      )}
       <label className="check">
         <input
           type="checkbox"
@@ -380,7 +497,24 @@ export default function PasoEstadillo({ prefijo, carpeta, disabled, onEstado }) 
       )}
       {autoDeteccion?.estado === 'nada' && (
         <span className="field-hint">
-          No se ha encontrado ningún estadillo en la carpeta del vuelo; elígelo a mano.
+          No se ha encontrado ningún estadillo en la carpeta del vuelo. Puedes «Subir sin
+          estadillo» o recibirlo del portátil.
+        </span>
+      )}
+      {autoDeteccion?.estado === 'error' && (
+        <span className="field-hint hint-warn" role="alert">
+          {autoDeteccion.mensaje || 'No se pudo buscar el estadillo automáticamente.'}{' '}
+          <button
+            type="button"
+            className="btn-ghost"
+            data-testid="autodeteccion-reintentar"
+            onClick={() => {
+              autoDeteccionRef.current = null
+              setAutoDeteccionTick((t) => t + 1)
+            }}
+          >
+            Reintentar
+          </button>
         </span>
       )}
       {estadComprobando && <span className="field-hint">Comprobando el estadillo…</span>}
