@@ -89,6 +89,19 @@ class ErrorColisionEstadillo(Exception):
     ver `_nombre_carpeta_vuelo`."""
 
 
+class ErrorEstadillosMismaCarpeta(Exception):
+    """Dos o más ficheros de estadillo detectados/aportados viven en la MISMA
+    carpeta (`estadillo.agrupar_rutas_por_carpeta`). Antes se fusionaban en
+    silencio con `combinar_estadillos` (gana el primero en los solapes); eso
+    es justo el caso que motivó el scoping por carpeta -la carpeta es la
+    unidad de "un estadillo"-, así que dos ficheros ahí dentro casi siempre
+    es un despiste (dos pilotos que no separaron sus CSV en subcarpetas
+    propias), nunca una decisión deliberada. `construir_indice` aborta ANTES
+    de leer ninguna imagen ni escribir ninguna fila, con la carpeta y los
+    nombres de los ficheros en conflicto en el mensaje (decisión de
+    Rodrigo)."""
+
+
 class ErrorModeloSinRecorte(Exception):
     """El recorte automático de RGB está activado (`cfg.cropping_rgb` +
     `cfg.cropping_mode_auto`) pero alguna imagen trae un modelo EXIF de dron
@@ -1014,13 +1027,54 @@ def construir_indice(
 
     # Scoping por carpeta: cada imagen solo compite contra las ventanas del
     # estadillo cuyo directorio es su ancestro más cercano (ver
-    # `_ventanas_para_imagen`/`_bajo_carpeta`). Varios estadillos en la MISMA
-    # carpeta se funden entre ellos (mismo criterio que `combinar_estadillos`
-    # de siempre); un estadillo cuyo directorio no es ancestro de NINGUNA
-    # imagen del lote (p.ej. uno elegido a mano desde otra ubicación) cae en
-    # el pool `ventanas_sin_carpeta`, comparado por timestamp contra TODAS
-    # sus filas -el comportamiento de siempre, sin scoping-.
+    # `_ventanas_para_imagen`/`_bajo_carpeta`). Un estadillo cuyo directorio
+    # no es ancestro de NINGUNA imagen del lote (p.ej. uno elegido a mano
+    # desde otra ubicación) cae en el pool `ventanas_sin_carpeta`, comparado
+    # por timestamp contra TODAS sus filas -el comportamiento de siempre,
+    # sin scoping-, salvo que sea un estadillo AUTODETECTADO dentro del árbol
+    # de `cfg.input_folder` (ver más abajo): ese caso ya no entra en el pool.
     grupos_carpeta = estadillo_mod.agrupar_rutas_por_carpeta(rutas_estadillo)
+
+    # Estadillos AUTODETECTABLES dentro del propio `cfg.input_folder` (mismo
+    # escaneo que ofrece la UI antes de elegir, `estadillo.detectar_estadillos`):
+    # si el directorio de uno de estos no es ancestro de NINGUNA imagen del
+    # lote, no es "un estadillo elegido a mano desde otra ubicación" (el caso
+    # que sí debe caer en `ventanas_sin_carpeta`), es un estadillo que vive
+    # DENTRO del árbol que se está organizando pero sin fotos debajo -un
+    # despiste casi seguro (carpeta equivocada, CSV suelto)-, así que sus
+    # ventanas NO entran en el pool compartido y no pueden reclamar imágenes
+    # de otro sitio. Solo se avisa (no aborta): a diferencia de
+    # `ErrorEstadillosMismaCarpeta`, aquí no hay ambigüedad que resolver, solo
+    # un estadillo que se queda sin usar.
+    # Comparadas por `estadillo_mod.clave_ruta` (no como strings crudos):
+    # `cfg.estad` puede traer una ruta relativa, con otra capitalización o
+    # con `\` en vez de `/` (CLI `--estadillo`), y aun así referirse al MISMO
+    # fichero que devuelve `detectar_estadillos` en `abspath`. Sin normalizar,
+    # un estadillo que SÍ está dentro de `cfg.input_folder` se trataba como
+    # externo (bug: se saltaba `ErrorEstadillosMismaCarpeta` y el WARNING de
+    # "sin fotos", acabando reclamando imágenes huérfanas).
+    rutas_autodetectables = set(
+        estadillo_mod.clave_ruta(r)
+        for r in estadillo_mod.detectar_estadillos(cfg.input_folder)["rutas"])
+
+    # Dos o más ficheros de estadillo en la MISMA carpeta: hasta ahora se
+    # fusionaban en silencio (`combinar_estadillos`, gana el primero en los
+    # solapes). Eso es justo el caso contrario a lo que persigue el scoping
+    # por carpeta -la carpeta es la unidad de "un estadillo"-, así que ahora
+    # bloquea ANTES de leer ninguna imagen: casi siempre es un despiste (dos
+    # pilotos sin separar sus CSV en subcarpetas propias), nunca una decisión
+    # deliberada (decisión de Rodrigo). Solo aplica a estadillos AUTODETECTADOS
+    # dentro de `cfg.input_folder`: uno elegido a mano desde fuera (p.ej.
+    # `--estadillo` apuntando a una carpeta compartida por varios pilotos) no
+    # es un despiste de organización del lote, así que conserva el
+    # comportamiento de siempre (fusión con sufijo de fecha si colisiona).
+    rutas_estadillo_autodetectadas = [
+        r for r in rutas_estadillo if estadillo_mod.clave_ruta(r) in rutas_autodetectables]
+    aviso_misma_carpeta = estadillo_mod.aviso_estadillos_misma_carpeta(
+        rutas_estadillo_autodetectadas)
+    if aviso_misma_carpeta:
+        raise ErrorEstadillosMismaCarpeta(aviso_misma_carpeta)
+
     ventanas_por_carpeta: dict[str, list[dict]] = {}
     ventanas_sin_carpeta: list[dict] = []
     for directorio, rutas_grupo in grupos_carpeta.items():
@@ -1029,8 +1083,16 @@ def construir_indice(
         ventanas_grupo = _ventanas_por_vuelo(sub_df, nombres_columnas_grupo, pipeline, cfg,
                                              progress_callback, colisiones_pb_vuelo)
         ventanas_por_carpeta[directorio] = ventanas_grupo
-        if not any(_bajo_carpeta(directorio, imagen) for imagen in imagenes):
-            ventanas_sin_carpeta.extend(ventanas_grupo)
+        if any(_bajo_carpeta(directorio, imagen) for imagen in imagenes):
+            continue
+        es_autodetectado = all(
+            estadillo_mod.clave_ruta(r) in rutas_autodetectables for r in rutas_grupo)
+        if es_autodetectado:
+            progress_callback.emit(
+                f"\nWARNING: El estadillo {', '.join(rutas_grupo)} no tiene "
+                "imágenes en su carpeta; no se ha usado.\n")
+            continue
+        ventanas_sin_carpeta.extend(ventanas_grupo)
 
     ventanas = [v for lista in ventanas_por_carpeta.values() for v in lista]
 

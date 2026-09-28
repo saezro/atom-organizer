@@ -17,7 +17,7 @@ import os
 import pytest
 
 from atom_core import estadillo as estadillo_mod
-from atom_core.indice import ErrorColisionEstadillo, construir_indice
+from atom_core.indice import ErrorColisionEstadillo, ErrorEstadillosMismaCarpeta, construir_indice
 from atom_core.manifiesto import Manifiesto
 from utils import SplitImagesConfig
 
@@ -401,3 +401,291 @@ def test_detectar_colisiones_mismo_dia_mismo_origen_no_colisiona():
     })
     cols = {"PB": "PB", "Vuelo": "Vuelo", "Fecha": "Fecha"}
     assert estadillo_mod.detectar_colisiones_mismo_dia(df, cols) == {}
+
+
+# --- Decisión Rodrigo 1: 2+ estadillos en la MISMA carpeta bloquea -----------
+
+class _SignalGrabador:
+    """Como `_Signal`, pero guarda cada `emit(...)` para poder comprobar que
+    salió el aviso esperado (WARNING) sin abortar el run."""
+
+    def __init__(self):
+        self.mensajes: list[str] = []
+
+    def emit(self, *args, **kwargs):
+        if args:
+            self.mensajes.append(str(args[0]))
+
+
+def test_dos_estadillos_en_la_misma_carpeta_bloquea_antes_de_organizar(tmp_path):
+    """Dos ficheros de estadillo sueltos en la MISMA carpeta (el despiste de
+    no separar cada piloto en su propia subcarpeta): antes se fusionaban en
+    silencio con `combinar_estadillos` (gana el primero); ahora bloquea ANTES
+    de leer ninguna imagen, con la carpeta y los dos nombres en el mensaje."""
+    sel = tmp_path / "sel"
+    _escribir_estadillo(sel / "piloto_a.csv", [
+        ("1", "1", "2024:06:01", "10:00:00", "10:10:00"),
+    ])
+    _escribir_estadillo(sel / "piloto_b.csv", [
+        ("2", "1", "2024:06:01", "11:00:00", "11:10:00"),
+    ])
+    estad = estadillo_mod.empaquetar_rutas([
+        str(sel / "piloto_a.csv"), str(sel / "piloto_b.csv")])
+    cfg = _cfg(tmp_path, sel, estad)
+    _crear_imagen(sel / "DCIM", "DJI_0001_D.JPG")
+
+    pipeline = _PipelineDePrueba({})
+    exif = _ExifDePrueba()
+    manifiesto = _manifiesto(tmp_path)
+
+    with pytest.raises(ErrorEstadillosMismaCarpeta) as excinfo:
+        construir_indice(cfg, pipeline, exif, manifiesto, _Signal(), _Signal(), _Signal())
+
+    mensaje = str(excinfo.value)
+    assert "piloto_a.csv" in mensaje
+    assert "piloto_b.csv" in mensaje
+    assert str(sel) in mensaje
+    assert manifiesto.todas() == []
+    manifiesto.cerrar()
+
+
+def test_dos_estadillos_externos_en_la_misma_carpeta_no_bloquea(tmp_path):
+    """Dos ficheros de estadillo en la MISMA carpeta pero FUERA de
+    `input_folder` (elegidos a mano vía `--estadillo`, p.ej. una carpeta
+    compartida por varios pilotos que ninguno de los dos vive dentro del
+    árbol que se está organizando): el bloqueo de `ErrorEstadillosMismaCarpeta`
+    (decisión Rodrigo 1) solo aplica a estadillos AUTODETECTADOS dentro de
+    `input_folder` -estos dos no lo son-, así que el run NO aborta y conserva
+    el comportamiento de siempre (fusión con sufijo de fecha si colisionan)."""
+    compartida = tmp_path / "compartida"
+    _escribir_estadillo(compartida / "piloto_a.csv", [
+        ("1", "1", "2024:06:01", "10:00:00", "10:10:00"),
+    ])
+    _escribir_estadillo(compartida / "piloto_b.csv", [
+        ("1", "1", "2024:06:02", "11:00:00", "11:10:00"),
+    ])
+    estad = estadillo_mod.empaquetar_rutas([
+        str(compartida / "piloto_a.csv"), str(compartida / "piloto_b.csv")])
+    origen = tmp_path / "origen"
+    cfg = _cfg(tmp_path, origen, estad)
+    ruta_dia1 = _crear_imagen(origen, "DJI_0001_D.JPG")
+    ruta_dia2 = _crear_imagen(origen, "DJI_0002_D.JPG")
+
+    ventanas = {
+        ("2024:06:01", "10:00:00", "10:10:00"): (
+            dt.datetime(2024, 6, 1, 10, 0, 0), dt.datetime(2024, 6, 1, 10, 10, 0)),
+        ("2024:06:02", "11:00:00", "11:10:00"): (
+            dt.datetime(2024, 6, 2, 11, 0, 0), dt.datetime(2024, 6, 2, 11, 10, 0)),
+    }
+    pipeline = _PipelineDePrueba(ventanas)
+    exif = _ExifDePrueba(timestamps={
+        ruta_dia1: dt.datetime(2024, 6, 1, 10, 5, 0),
+        ruta_dia2: dt.datetime(2024, 6, 2, 11, 5, 0),
+    })
+    manifiesto = _manifiesto(tmp_path)
+
+    construir_indice(cfg, pipeline, exif, manifiesto, _Signal(), _Signal(), _Signal())
+
+    filas = {fila["ruta_origen"]: fila for fila in manifiesto.todas()}
+    assert filas[ruta_dia1]["vuelo"] == "1"
+    assert filas[ruta_dia2]["vuelo"] == "1"
+    assert filas[ruta_dia1]["unassigned"] == 0
+    assert filas[ruta_dia2]["unassigned"] == 0
+    manifiesto.cerrar()
+
+
+# --- Decisión Rodrigo 2: estadillo autodetectado sin fotos no reclama ajenas -
+
+def test_estadillo_autodetectado_sin_fotos_no_reclama_imagenes_ajenas(tmp_path):
+    """Un estadillo AUTODETECTADO (vive dentro de `input_folder`, lo habría
+    ofrecido `estadillo.detectar_estadillos`) sin ninguna foto debajo de su
+    propia carpeta: antes caía en `ventanas_sin_carpeta` y podía reclamar
+    fotos de cualquier otro sitio del lote por timestamp. Ahora se avisa y
+    NO se usa -las fotos de la otra carpeta (con SU propio estadillo) quedan
+    con su asignación normal, sin contaminar-."""
+    sel = tmp_path / "sel"
+    vacio = sel / "ESTADILLO_SIN_FOTOS"
+    con_fotos = sel / "PILOTO_A"
+    _escribir_estadillo(vacio / "suelto.csv", [
+        ("9", "9", "2024:06:01", "10:00:00", "10:10:00"),
+    ])
+    _escribir_estadillo(con_fotos / "estadillo.csv", [
+        ("1", "1", "2024:06:01", "10:00:00", "10:10:00"),
+    ])
+    estad = estadillo_mod.empaquetar_rutas([
+        str(vacio / "suelto.csv"), str(con_fotos / "estadillo.csv")])
+    cfg = _cfg(tmp_path, sel, estad)
+    ruta = _crear_imagen(con_fotos / "DCIM", "DJI_0001_D.JPG")
+
+    ventanas = {
+        ("2024:06:01", "10:00:00", "10:10:00"): (
+            dt.datetime(2024, 6, 1, 10, 0, 0), dt.datetime(2024, 6, 1, 10, 10, 0)),
+    }
+    pipeline = _PipelineDePrueba(ventanas)
+    exif = _ExifDePrueba(timestamps={ruta: dt.datetime(2024, 6, 1, 10, 5, 0)})
+    manifiesto = _manifiesto(tmp_path)
+    grabador = _SignalGrabador()
+
+    construir_indice(cfg, pipeline, exif, manifiesto, grabador, _Signal(), _Signal())
+
+    fila = manifiesto.todas()[0]
+    # La foto de PILOTO_A se asigna con su propio estadillo (PB1_V1), NUNCA
+    # con el del estadillo huérfano (PB9_V9) -sin scoping/sin la regla nueva,
+    # el pool compartido se la habría llevado por timestamp-.
+    assert fila["pb"] == "1"
+    assert fila["vuelo"] == "1"
+    assert any("no tiene imágenes en su carpeta" in m for m in grabador.mensajes)
+    manifiesto.cerrar()
+
+
+def test_layout3_regresion_pilotos_a_b_horas_solapadas_siguen_separados(tmp_path):
+    """Regresión explícita: el layout 3 (PILOTO_A/PILOTO_B, mismo día, horas
+    SOLAPADAS, cada uno en su propia subcarpeta con un único estadillo) sigue
+    intacto con las dos reglas nuevas -ni el bloqueo de "misma carpeta" (aquí
+    cada carpeta tiene solo 1 fichero) ni el aviso de "sin fotos" (las dos
+    tienen fotos debajo) deben tocarlo-."""
+    sel = tmp_path / "sel"
+    piloto_a = sel / "PILOTO_A"
+    piloto_b = sel / "PILOTO_B"
+    _escribir_estadillo(piloto_a / "estadillo.csv", [
+        ("1", "1", "2024:06:01", "10:00:00", "10:20:00"),
+    ])
+    _escribir_estadillo(piloto_b / "estadillo.csv", [
+        ("2", "1", "2024:06:01", "10:00:00", "10:20:00"),
+    ])
+    estad = estadillo_mod.empaquetar_rutas([
+        str(piloto_a / "estadillo.csv"), str(piloto_b / "estadillo.csv")])
+    cfg = _cfg(tmp_path, sel, estad)
+    ruta_a = _crear_imagen(piloto_a / "DCIM", "DJI_0001_D.JPG", contenido=b"A")
+    ruta_b = _crear_imagen(piloto_b / "DCIM", "DJI_0001_D.JPG", contenido=b"BB")
+
+    ventanas = {
+        ("2024:06:01", "10:00:00", "10:20:00"): (
+            dt.datetime(2024, 6, 1, 10, 0, 0), dt.datetime(2024, 6, 1, 10, 20, 0)),
+    }
+    pipeline = _PipelineDePrueba(ventanas)
+    ts_solapado = dt.datetime(2024, 6, 1, 10, 5, 0)
+    exif = _ExifDePrueba(timestamps={ruta_a: ts_solapado, ruta_b: ts_solapado})
+    manifiesto = _manifiesto(tmp_path)
+
+    construir_indice(cfg, pipeline, exif, manifiesto, _Signal(), _Signal(), _Signal())
+
+    filas = {fila["ruta_origen"]: fila for fila in manifiesto.todas()}
+    assert filas[ruta_a]["pb"] == "1"
+    assert filas[ruta_b]["pb"] == "2"
+    manifiesto.cerrar()
+
+
+# --- Regresión: `cfg.estad` sin normalizar frente a `detectar_estadillos` ----
+# (rutas abspath) -bug real: comparar strings crudos hacía que un estadillo
+# DENTRO de `input_folder` se tratara como externo si `--estadillo` llegaba
+# relativo, con otra capitalización o con separadores distintos-.
+
+def test_estadillo_relativo_en_la_misma_carpeta_bloquea(tmp_path, monkeypatch):
+    """`--estadillo` relativo (como llega desde `organize_cli.py`) a un
+    fichero que está en la MISMA carpeta que otro estadillo AUTODETECTADO:
+    debe seguir bloqueando con `ErrorEstadillosMismaCarpeta` igual que con
+    rutas absolutas -antes del fix, al comparar por string crudo contra
+    `detectar_estadillos` (abspath), la ruta relativa no calificaba como
+    autodetectada y el bloqueo se saltaba."""
+    sel = tmp_path / "sel"
+    _escribir_estadillo(sel / "piloto_a.csv", [
+        ("1", "1", "2024:06:01", "10:00:00", "10:10:00"),
+    ])
+    _escribir_estadillo(sel / "piloto_b.csv", [
+        ("2", "1", "2024:06:01", "11:00:00", "11:10:00"),
+    ])
+    monkeypatch.chdir(tmp_path)
+    estad = estadillo_mod.empaquetar_rutas([
+        os.path.join("sel", "piloto_a.csv"), os.path.join("sel", "piloto_b.csv")])
+    cfg = _cfg(tmp_path, sel, estad)
+    _crear_imagen(sel / "DCIM", "DJI_0001_D.JPG")
+
+    pipeline = _PipelineDePrueba({})
+    exif = _ExifDePrueba()
+    manifiesto = _manifiesto(tmp_path)
+
+    with pytest.raises(ErrorEstadillosMismaCarpeta) as excinfo:
+        construir_indice(cfg, pipeline, exif, manifiesto, _Signal(), _Signal(), _Signal())
+
+    mensaje = str(excinfo.value)
+    assert "piloto_a.csv" in mensaje
+    assert "piloto_b.csv" in mensaje
+    assert manifiesto.todas() == []
+    manifiesto.cerrar()
+
+
+def test_estadillo_relativo_sin_fotos_avisa_y_no_reclama_huerfanas(tmp_path, monkeypatch):
+    """Mismo caso que `test_estadillo_autodetectado_sin_fotos_no_reclama_imagenes_ajenas`
+    pero con `--estadillo` en rutas RELATIVAS: el WARNING de "sin fotos" debe
+    seguir saltando (y sin reclamar imágenes de la otra carpeta) aunque
+    `cfg.estad` no llegue en abspath."""
+    sel = tmp_path / "sel"
+    vacio = sel / "ESTADILLO_SIN_FOTOS"
+    con_fotos = sel / "PILOTO_A"
+    _escribir_estadillo(vacio / "suelto.csv", [
+        ("9", "9", "2024:06:01", "10:00:00", "10:10:00"),
+    ])
+    _escribir_estadillo(con_fotos / "estadillo.csv", [
+        ("1", "1", "2024:06:01", "10:00:00", "10:10:00"),
+    ])
+    monkeypatch.chdir(tmp_path)
+    estad = estadillo_mod.empaquetar_rutas([
+        os.path.join("sel", "ESTADILLO_SIN_FOTOS", "suelto.csv"),
+        os.path.join("sel", "PILOTO_A", "estadillo.csv")])
+    cfg = _cfg(tmp_path, sel, estad)
+    ruta = _crear_imagen(con_fotos / "DCIM", "DJI_0001_D.JPG")
+
+    ventanas = {
+        ("2024:06:01", "10:00:00", "10:10:00"): (
+            dt.datetime(2024, 6, 1, 10, 0, 0), dt.datetime(2024, 6, 1, 10, 10, 0)),
+    }
+    pipeline = _PipelineDePrueba(ventanas)
+    exif = _ExifDePrueba(timestamps={ruta: dt.datetime(2024, 6, 1, 10, 5, 0)})
+    manifiesto = _manifiesto(tmp_path)
+    grabador = _SignalGrabador()
+
+    construir_indice(cfg, pipeline, exif, manifiesto, grabador, _Signal(), _Signal())
+
+    fila = manifiesto.todas()[0]
+    assert fila["pb"] == "1"
+    assert fila["vuelo"] == "1"
+    assert any("no tiene imágenes en su carpeta" in m for m in grabador.mensajes)
+    manifiesto.cerrar()
+
+
+def test_estadillo_normcase_windows_simulado_bloquea(tmp_path, monkeypatch):
+    """Simula Windows (case-insensitive) con `os.path.normcase` parcheado:
+    un `--estadillo` con capitalización distinta a la de disco debe seguir
+    calificando como "el mismo fichero" que devuelve `detectar_estadillos`
+    a efectos del bloqueo de misma carpeta.
+
+    Linux es case-sensitive de verdad, así que se escribe también el
+    fichero en mayúsculas para que `combinar_estadillos` pueda leerlo del
+    disco -lo que se simula con `normcase` es solo la COMPARACIÓN de rutas,
+    no el filesystem-."""
+    sel = tmp_path / "sel"
+    _escribir_estadillo(sel / "piloto_a.csv", [
+        ("1", "1", "2024:06:01", "10:00:00", "10:10:00"),
+    ])
+    _escribir_estadillo(sel / "PILOTO_A.CSV", [
+        ("1", "1", "2024:06:01", "10:00:00", "10:10:00"),
+    ])
+    _escribir_estadillo(sel / "piloto_b.csv", [
+        ("2", "1", "2024:06:01", "11:00:00", "11:10:00"),
+    ])
+    estad = estadillo_mod.empaquetar_rutas([
+        str(sel / "PILOTO_A.CSV"), str(sel / "piloto_b.csv")])
+    cfg = _cfg(tmp_path, sel, estad)
+    _crear_imagen(sel / "DCIM", "DJI_0001_D.JPG")
+
+    monkeypatch.setattr(estadillo_mod.os.path, "normcase", lambda p: str(p).lower())
+
+    pipeline = _PipelineDePrueba({})
+    exif = _ExifDePrueba()
+    manifiesto = _manifiesto(tmp_path)
+
+    with pytest.raises(ErrorEstadillosMismaCarpeta):
+        construir_indice(cfg, pipeline, exif, manifiesto, _Signal(), _Signal(), _Signal())
+
+    manifiesto.cerrar()

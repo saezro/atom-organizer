@@ -318,13 +318,24 @@ def main(argv: list[str] | None = None) -> int:
     # `--estadillo` —NUNCA solo autodetección: `detectar_estadillos` falla en
     # algunos lotes (KL91) y si se aporta la ruta a mano el lote tiene que
     # poder organizarse igual.
-    from atom_core.estadillo import detectar_estadillos
+    from atom_core.estadillo import detectar_estadillos, detectar_estadillos_en_padre
     rutas_autodetectadas = [] if origen_es_gcs else detectar_estadillos(str(origen))["rutas"]
     if not rutas_autodetectadas and not args.estadillo:
-        print("error: No se ha encontrado ningún estadillo: sin estadillo el "
-              "lote no se puede organizar. Indica la ruta del estadillo con "
-              "--estadillo o colócalo junto a la carpeta de fotos.",
-              file=sys.stderr)
+        # NUNCA se coge el estadillo del padre en automático (decisión de
+        # Rodrigo, caso Marcos): si hay candidatos sueltos ahí, se avisa con
+        # su ruta completa pero solo se usan pasándolos por --estadillo.
+        candidatos_padre = [] if origen_es_gcs else detectar_estadillos_en_padre(str(origen))["rutas"]
+        if candidatos_padre:
+            print("error: No se ha encontrado ningún estadillo DENTRO de la carpeta de "
+                  "origen. Hay candidato(s) en la carpeta PADRE, pero no se usan en "
+                  "automático: " + ", ".join(candidatos_padre) + ". Si quieres usar uno, "
+                  "pásalo explícito con --estadillo.",
+                  file=sys.stderr)
+        else:
+            print("error: No se ha encontrado ningún estadillo: sin estadillo el "
+                  "lote no se puede organizar. Indica la ruta del estadillo con "
+                  "--estadillo o colócalo junto a la carpeta de fotos.",
+                  file=sys.stderr)
         return 2
 
     # En GCS no hay directorios: nada que crear de antemano.

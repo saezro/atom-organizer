@@ -147,6 +147,12 @@ def detectar_estadillos(
     absolutas ordenadas alfabéticamente. `max_profundidad=0` limita el
     escaneo a la propia `carpeta` (sin bajar a subcarpetas); `1` añade un
     nivel de subcarpetas, etc.
+
+    NO mira la carpeta padre de `carpeta`: un estadillo que el usuario sacó
+    a propósito fuera de la carpeta seleccionada nunca se usa en automático
+    (decisión de Rodrigo, caso Marcos). Esos candidatos sueltos del padre los
+    da `detectar_estadillos_en_padre`, para que la UI los muestre con su ruta
+    completa y el usuario confirme uno explícitamente si quiere usarlo.
     """
     vacio = {"rutas": [], "descartados": []}
     if not carpeta or not os.path.isdir(carpeta):
@@ -174,18 +180,6 @@ def detectar_estadillos(
                 continue
             candidatos.append(os.path.join(dirpath, nombre))
 
-    # El estadillo suele vivir junto a la carpeta de fotos (KL19/estadillo.csv
-    # con KL19/FOTOS como origen): mirar también la carpeta padre, solo su
-    # nivel (sin recursión, para no barrer hermanas).
-    padre = os.path.dirname(raiz_normalizada)
-    if padre and padre != raiz_normalizada and os.path.isdir(padre):
-        for nombre in os.listdir(padre):
-            ruta_padre = os.path.join(padre, nombre)
-            if nombre.startswith(".") or nombre.startswith("~$") or not os.path.isfile(ruta_padre):
-                continue
-            if os.path.splitext(nombre)[1].lower() in _EXTENSIONES_CANDIDATAS:
-                candidatos.append(ruta_padre)
-
     if incluir_recibidos:
         from atom_core.google_auth import estadillos_recibidos_dir
 
@@ -207,6 +201,52 @@ def detectar_estadillos(
             df = _read_dataframe(ruta)
             _validar_columnas_esenciales(df, ruta)
         except Exception:  # noqa: BLE001 — cualquier fallo por fichero = "no es un estadillo"
+            descartados.append(os.path.abspath(ruta))
+            continue
+        rutas.append(os.path.abspath(ruta))
+
+    return {"rutas": sorted(set(rutas)), "descartados": sorted(set(descartados))}
+
+
+def detectar_estadillos_en_padre(carpeta: str) -> dict:
+    """Candidatos a estadillo sueltos en la carpeta PADRE de `carpeta` (solo
+    su nivel, sin recursión, sin barrer hermanas): el caso KL19/estadillo.csv
+    con KL19/FOTOS como `carpeta` seleccionada.
+
+    Misma validación que `detectar_estadillos` (columnas esenciales vía
+    `_validar_columnas_esenciales`), pero estos candidatos NUNCA se usan en
+    automático: son del padre, no de dentro de `carpeta`. Solo sirven para
+    que la UI los muestre con su ruta completa y el usuario confirme
+    explícitamente si quiere usar alguno (nunca fallback silencioso, caso
+    Marcos: estadillos antiguos que él había sacado a propósito al padre).
+
+    Devuelve `{"rutas": [...], "descartados": [...]}`, mismo formato que
+    `detectar_estadillos`.
+    """
+    vacio = {"rutas": [], "descartados": []}
+    if not carpeta or not os.path.isdir(carpeta):
+        return vacio
+
+    raiz_normalizada = os.path.normpath(carpeta)
+    padre = os.path.dirname(raiz_normalizada)
+    if not padre or padre == raiz_normalizada or not os.path.isdir(padre):
+        return vacio
+
+    candidatos: list[str] = []
+    for nombre in os.listdir(padre):
+        ruta_padre = os.path.join(padre, nombre)
+        if nombre.startswith(".") or nombre.startswith("~$") or not os.path.isfile(ruta_padre):
+            continue
+        if os.path.splitext(nombre)[1].lower() in _EXTENSIONES_CANDIDATAS:
+            candidatos.append(ruta_padre)
+
+    rutas: list[str] = []
+    descartados: list[str] = []
+    for ruta in candidatos:
+        try:
+            df = _read_dataframe(ruta)
+            _validar_columnas_esenciales(df, ruta)
+        except Exception:  # noqa: BLE001 — igual que detectar_estadillos
             descartados.append(os.path.abspath(ruta))
             continue
         rutas.append(os.path.abspath(ruta))
@@ -366,22 +406,64 @@ def detectar_colisiones_mismo_dia(df: pd.DataFrame, nombres_columnas: dict) -> d
     return {clave: origenes for clave, origenes in origenes_por_clave.items() if len(origenes) > 1}
 
 
+def clave_ruta(ruta: str) -> str:
+    """Clave canónica para COMPARAR rutas de estadillo (nunca para abrirlas ni
+    para mostrarlas: eso siempre con la ruta original).
+
+    Normaliza absoluta + separadores + capitalización
+    (`os.path.normcase(os.path.normpath(os.path.abspath(ruta)))`) para que una
+    misma ruta relativa/absoluta, con `\\` o `/`, o con distinta
+    capitalización en Windows, compare igual. Único punto de esta lógica:
+    la usan tanto `agrupar_rutas_por_carpeta` (aquí abajo) como
+    `indice.construir_indice` para decidir si un estadillo elegido a mano
+    coincide con uno autodetectado dentro de `cfg.input_folder`."""
+    return os.path.normcase(os.path.normpath(os.path.abspath(ruta)))
+
+
 def agrupar_rutas_por_carpeta(rutas: list[str]) -> dict[str, list[str]]:
     """Agrupa `rutas` de estadillo por su carpeta contenedora (ruta absoluta
     normalizada), preservando el orden relativo de `rutas` tanto entre
     grupos (por primera aparición) como dentro de cada grupo.
 
     Es la base del scoping por carpeta (`indice._ventanas_para_imagen`): cada
-    grupo es "un estadillo" a efectos de a qué imágenes reclama -varios
-    ficheros en la MISMA carpeta se tratan como uno solo, fusionados entre
-    ellos, igual que hace `combinar_estadillos`."""
+    grupo es "un estadillo" a efectos de a qué imágenes reclama. Un grupo con
+    MÁS de un fichero ya NO se fusiona en silencio (decisión de Rodrigo):
+    `indice.construir_indice` aborta con `ErrorEstadillosMismaCarpeta` antes
+    de organizar nada -ver también `aviso_estadillos_misma_carpeta`, para
+    avisar de esto pronto, antes de arrancar el run."""
     grupos: dict[str, list[str]] = {}
     for ruta in rutas or []:
         if not ruta:
             continue
-        carpeta = os.path.normcase(os.path.normpath(os.path.dirname(os.path.abspath(ruta))))
+        carpeta = os.path.dirname(clave_ruta(ruta))
         grupos.setdefault(carpeta, []).append(ruta)
     return grupos
+
+
+def aviso_estadillos_misma_carpeta(rutas: list[str]) -> str | None:
+    """Aviso temprano (no bloqueante) para la UI: ¿hay 2+ ficheros de
+    estadillo en la MISMA carpeta dentro de `rutas`? Mismo criterio que el
+    bloqueo real de `indice.construir_indice` (`ErrorEstadillosMismaCarpeta`,
+    vía `agrupar_rutas_por_carpeta`), pero se puede llamar ANTES de arrancar
+    el run -p.ej. justo tras `detectar_estadillos`- para que el operario lo
+    vea y separe los ficheros antes de intentarlo, en vez de enterarse ya con
+    el run abortado.
+
+    Devuelve el mensaje en español listo para mostrar, o `None` si no hay
+    ninguna carpeta con más de un estadillo."""
+    grupos = agrupar_rutas_por_carpeta(rutas)
+    carpetas_con_varios = {
+        carpeta: rutas_grupo for carpeta, rutas_grupo in grupos.items() if len(rutas_grupo) > 1
+    }
+    if not carpetas_con_varios:
+        return None
+    detalle = "; ".join(
+        f"{carpeta}: {', '.join(os.path.basename(r) for r in rutas_grupo)}"
+        for carpeta, rutas_grupo in carpetas_con_varios.items())
+    return (
+        f"Hay varios estadillos en la misma carpeta ({detalle}). Sepáralos en "
+        "una carpeta por piloto (cada estadillo junto a sus fotos) y vuelve a "
+        "intentarlo.")
 
 
 def sufijo_fecha(fecha: str) -> str:
