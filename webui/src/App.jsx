@@ -593,7 +593,7 @@ function App() {
   // estadillo por LAN pendiente de mover, se avisa aunque la carpeta no
   // traiga ninguno a mano.
   const [kioskEstadilloEnCarpeta, setKioskEstadilloEnCarpeta] = useState({
-    buscando: false, encontrado: false, nombre: null, recibidoLan: false,
+    buscando: false, encontrado: false, nombre: null, recibidoLan: false, candidatosPadre: [],
   })
   // Único punto que toca `kioskEstadillo`: si llega `info` (segundo
   // argumento, solo lo manda `EsperaEstadillo` vía `onRecibido`) se guarda el
@@ -606,13 +606,31 @@ function App() {
     setKioskEstadilloInfo(info || null)
   }
 
+  // Confirma un candidato de la carpeta PADRE (`kioskEstadilloEnCarpeta.
+  // candidatosPadre`, ver más abajo) como estadillo del trabajo: mismo camino
+  // que una elección manual (`kioskSetEstadillo`/`EstadilloField`), nunca se
+  // añade solo. Guard de doble-click con `includes`, igual que
+  // `PasoEstadillo.subirEstadillo`'s análogo de escritorio (`cambiarEstadRutas`
+  // con `candidatosPadre` filtrado tras usar): un segundo click sobre el mismo
+  // candidato no lo duplica.
+  function kioskUsarCandidatoPadre(ruta) {
+    setKioskEstadillo((prev) => (prev.includes(ruta) ? prev : [...prev, ruta]))
+    setKioskEstadilloInfo(null)
+    setKioskEstadilloEnCarpeta((prev) => ({
+      ...prev,
+      candidatosPadre: (prev.candidatosPadre || []).filter((r) => r !== ruta),
+    }))
+  }
+
   useEffect(() => {
     if (!kiosco || !kioskCarpeta) return
     let vivo = true
     setKioskEstadillo([])
     setKioskEstadilloInfo(null)
     setKioskSufijos(null)
-    setKioskEstadilloEnCarpeta({ buscando: true, encontrado: false, nombre: null, recibidoLan: false })
+    setKioskEstadilloEnCarpeta({
+      buscando: true, encontrado: false, nombre: null, recibidoLan: false, aviso: null, candidatosPadre: [],
+    })
     api.estadillosDetectar(kioskCarpeta)
       .then((r) => {
         const rutas = Array.isArray(r?.rutas) ? r.rutas : []
@@ -622,6 +640,13 @@ function App() {
           setKioskEstadilloEnCarpeta((prev) => ({
             ...prev, buscando: false, encontrado: rutas.length > 0,
             nombre: rutas.length ? rutas[0].split(/[/\\]/).pop() : null,
+            // 2+ estadillos en la MISMA carpeta (`aviso_estadillos_misma_carpeta`):
+            // van a abortar el run más tarde, se avisa ya aquí.
+            aviso: r?.aviso_misma_carpeta || null,
+            // Estadillos válidos sueltos en la carpeta PADRE (`candidatos_padre`):
+            // nunca se añaden solos (decisión de Rodrigo, caso Marcos), solo se
+            // avisan con su ruta completa hasta que el operario los confirme.
+            candidatosPadre: Array.isArray(r?.candidatos_padre) ? r.candidatos_padre : [],
           }))
         }
       })
@@ -970,6 +995,7 @@ function App() {
               onEstadillo={kioskSetEstadillo}
               estadilloInfo={kioskEstadilloInfo}
               estadilloEnCarpeta={kioskEstadilloEnCarpeta}
+              onUsarCandidatoPadre={kioskUsarCandidatoPadre}
               onOrganizar={kioskOrganizar}
               onSubirCrudo={kioskSubirCrudo}
               onComprobarSubida={kioskComprobarSubida}

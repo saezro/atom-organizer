@@ -55,6 +55,16 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
   // Resultado de la autodetección en la carpeta del vuelo, solo para el
   // rótulo: null (silencio) | {estado:'buscando'|'encontrado'|'nada', n}.
   const [autoDeteccion, setAutoDeteccion] = useState(null)
+  // Estadillos válidos sueltos en la carpeta PADRE de `carpeta`
+  // (`candidatos_padre` de `estadillosDetectar`): NUNCA se añaden solos a
+  // `estadRutas` (decisión de Rodrigo, caso Marcos), solo se avisan con su
+  // ruta completa para que el operario confirme uno a mano si quiere.
+  const [candidatosPadre, setCandidatosPadre] = useState([])
+  // Aviso temprano (no bloqueante) de `estadillo.aviso_estadillos_misma_carpeta`:
+  // 2+ estadillos detectados en la MISMA carpeta van a abortar el run más
+  // tarde en `construir_indice` (`ErrorEstadillosMismaCarpeta`). Se avisa ya
+  // aquí, antes de arrancar nada, para que el operario los separe.
+  const [avisoMismaCarpeta, setAvisoMismaCarpeta] = useState(null)
   // Puente entre el `await` de `subirEstadilloEsperando` y el evento
   // `atom:cloud` (`scope: 'estadillo'`) que trae el resultado real: la llamada
   // a `estadillo_subir` solo devuelve `{started}`, así que la promesa se
@@ -76,6 +86,11 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
   // todavía) y solo hacerlo cuando el operador cambia de inspección de
   // verdad.
   const prefijoAnteriorRef = useRef(prefijo)
+  // Igual que `prefijoAnteriorRef` pero para `carpeta`: cambiar de carpeta
+  // dentro de la MISMA inspección (reelegir origen) deja el candidato de
+  // autodetección de la carpeta vieja parpadeando hasta que resuelve la
+  // detección nueva si no se limpia aquí también.
+  const carpetaAnteriorRef = useRef(carpeta)
   // Clave `carpeta|prefijo` para la que ya corrió la autodetección. Una sola
   // pasada por combinación: si el operador borra a mano lo detectado no se lo
   // volvemos a poner, y si cambia de inspección (que vacía la selección)
@@ -127,8 +142,9 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
   // subida sin estadillo. No corre en el primer montaje (nada que limpiar
   // todavía, y `estadPrevio` aún no se ha resuelto ni auto-marcado nada).
   useEffect(() => {
-    if (prefijoAnteriorRef.current === prefijo) return
+    if (prefijoAnteriorRef.current === prefijo && carpetaAnteriorRef.current === carpeta) return
     prefijoAnteriorRef.current = prefijo
+    carpetaAnteriorRef.current = carpeta
     cambiarEstadRutas([])
     setOmitirEstadillo(false)
     // Cambiar de inspección deja sin sentido una espera en curso: era para
@@ -145,8 +161,10 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
     // El rótulo de la detección anterior habla de una selección que se acaba
     // de vaciar; la detección se relanza sola porque su clave lleva `prefijo`.
     setAutoDeteccion(null)
+    setCandidatosPadre([])
+    setAvisoMismaCarpeta(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prefijo])
+  }, [prefijo, carpeta])
 
   // Autodetección: el estadillo casi siempre viaja dentro de la propia
   // carpeta del vuelo, así que en cuanto hay carpeta se busca ahí y se
@@ -160,6 +178,11 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
     autoDeteccionRef.current = clave
     let cancelado = false
     setAutoDeteccion({ estado: 'buscando' })
+    // Limpia los candidatos de la detección anterior ANTES de lanzar esta:
+    // si esta detección falla o no encuentra padre, un `candidatosPadre` de
+    // una carpeta ya abandonada se quedaría mostrándose como si fuera de la
+    // carpeta actual.
+    setCandidatosPadre([])
     ;(async () => {
       try {
         // `incluirRecibidos: true` (solo aquí, escritorio): además de la
@@ -174,6 +197,10 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
         )
         if (cancelado) return
         const rutas = Array.isArray(r?.rutas) ? r.rutas : []
+        // Candidatos sueltos en la carpeta PADRE: solo informativo, nunca se
+        // añaden solos a `estadRutas` (ver declaración de `candidatosPadre`).
+        setCandidatosPadre(Array.isArray(r?.candidatos_padre) ? r.candidatos_padre : [])
+        setAvisoMismaCarpeta(r?.aviso_misma_carpeta || null)
         // No pisar una decisión ya tomada mientras la búsqueda estaba en
         // vuelo: ni ficheros elegidos a mano, ni una resubida que el
         // auto-marcado de `estadPrevio` acaba de eximir de estadillo. En ese
@@ -517,6 +544,31 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
           </button>
         </span>
       )}
+      {avisoMismaCarpeta && (
+        <span className="field-hint hint-warn" role="alert">
+          {avisoMismaCarpeta}
+        </span>
+      )}
+      {/* Candidatos del padre: nunca se añaden solos (decisión de Rodrigo,
+          caso Marcos), un aviso por candidato con su ruta completa y el
+          botón para confirmarlo explícitamente. */}
+      {candidatosPadre.map((ruta) => (
+        <span key={ruta} className="field-hint hint-warn" role="alert">
+          Estadillo encontrado FUERA de la carpeta seleccionada: {ruta}{' '}
+          <button
+            type="button"
+            className="btn-ghost"
+            disabled={disabled || estadSubiendo || omitirEstadillo}
+            onClick={() => {
+              if (estadRutas.includes(ruta)) return
+              cambiarEstadRutas([...estadRutas, ruta])
+              setCandidatosPadre((prev) => prev.filter((r) => r !== ruta))
+            }}
+          >
+            Usar este estadillo
+          </button>
+        </span>
+      ))}
       {estadComprobando && <span className="field-hint">Comprobando el estadillo…</span>}
       {estadCheck?.ok && (
         <span className="field-hint hint-ok">

@@ -919,16 +919,36 @@ class Api:
 
         No encontrar ninguno NO es un error (el operario aún puede elegir a
         mano): `{"rutas": [], "n_estadillos": 0, "info": None, "error": None}`.
+
+        `candidatos_padre` (rutas completas) son estadillos válidos sueltos en
+        la carpeta PADRE de `carpeta` (ver
+        `atom_core.estadillo.detectar_estadillos_en_padre`): NUNCA se mezclan
+        con `rutas` ni se usan en automático — el front los muestra con su
+        ruta completa y solo entran si el operario confirma uno a mano (caso
+        Marcos: estadillos antiguos sacados a propósito al padre).
         """
         try:
             # El candado de `precargar_pandas` serializa el primer import de pandas
             # con el resto de hilos (ver atom_core/precarga.py).
             precarga.precargar_pandas()
-            from atom_core.estadillo import detectar_estadillos, read_estadillo_info
+            from atom_core.estadillo import (
+                aviso_estadillos_misma_carpeta,
+                detectar_estadillos,
+                detectar_estadillos_en_padre,
+                read_estadillo_info,
+            )
             detectado = detectar_estadillos(carpeta, incluir_recibidos=incluir_recibidos)
             rutas = detectado["rutas"]
+            candidatos_padre = detectar_estadillos_en_padre(carpeta)["rutas"]
             info = read_estadillo_info(rutas) if rutas else None
-            return {"rutas": rutas, "n_estadillos": len(rutas), "info": info, "error": None}
+            # Aviso temprano (no bloqueante): 2+ estadillos detectados en la
+            # MISMA carpeta abortarán el run más tarde en `construir_indice`
+            # (`ErrorEstadillosMismaCarpeta`) — mejor que el operario lo vea
+            # ya aquí y separe los ficheros antes de arrancar nada.
+            aviso_misma_carpeta = aviso_estadillos_misma_carpeta(rutas)
+            return {"rutas": rutas, "n_estadillos": len(rutas), "info": info, "error": None,
+                    "candidatos_padre": candidatos_padre,
+                    "aviso_misma_carpeta": aviso_misma_carpeta}
         except Exception as exc:  # noqa: BLE001 — se reenvía al front
             return {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -946,11 +966,21 @@ class Api:
                 # El candado de `precargar_pandas` serializa el primer import de pandas
                 # con el resto de hilos (ver atom_core/precarga.py).
                 precarga.precargar_pandas()
-                from atom_core.estadillo import detectar_estadillos, read_estadillo_info
+                from atom_core.estadillo import (
+                    aviso_estadillos_misma_carpeta,
+                    detectar_estadillos,
+                    detectar_estadillos_en_padre,
+                    read_estadillo_info,
+                )
                 detectado = detectar_estadillos(carpeta)
                 rutas = detectado["rutas"]
+                candidatos_padre = detectar_estadillos_en_padre(carpeta)["rutas"]
                 info = read_estadillo_info(rutas) if rutas else None
-                data = {"rutas": rutas, "n_estadillos": len(rutas), "info": info, "error": None}
+                # Mismo aviso temprano que `estadillos_detectar` (ver ahí el porqué).
+                aviso_misma_carpeta = aviso_estadillos_misma_carpeta(rutas)
+                data = {"rutas": rutas, "n_estadillos": len(rutas), "info": info, "error": None,
+                        "candidatos_padre": candidatos_padre,
+                        "aviso_misma_carpeta": aviso_misma_carpeta}
                 self._push_analisis({"kind": "done", "scope": "estadillos", "data": data})
             except Exception as exc:  # noqa: BLE001 - llega a la UI como error
                 self._push_analisis({"kind": "error", "scope": "estadillos", "text": str(exc)})
@@ -2028,6 +2058,16 @@ class Api:
         # subir nada, no a mitad (ver atom_core/lotes.py).
         rutas_estadillos = estadillo_mod.detectar_estadillos(folder)["rutas"]
         if not rutas_estadillos:
+            # NUNCA se coge el estadillo del padre en automático (decisión de
+            # Rodrigo, caso Marcos): si hay candidatos sueltos ahí se avisa
+            # con su ruta completa, pero no se usan ni se aceptan solos.
+            candidatos_padre = estadillo_mod.detectar_estadillos_en_padre(folder)["rutas"]
+            if candidatos_padre:
+                return {"started": False,
+                        "reason": ("No se ha encontrado ningún estadillo DENTRO de la "
+                                  "carpeta. Hay candidato(s) en la carpeta PADRE, pero no "
+                                  "se usan en automático: " + ", ".join(candidatos_padre) +
+                                  ". Confírmalo explícitamente en la UI si quieres usarlo.")}
             return {"started": False,
                     "reason": ("No se ha encontrado ningún estadillo en la "
                               "carpeta: sin estadillo el lote no se puede "
