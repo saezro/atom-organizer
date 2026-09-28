@@ -93,9 +93,23 @@ a = Analysis(
         'IPython', 'ipykernel', 'jupyter_client', 'jupyter_core',
         'debugpy', 'jedi', 'parso',
         'clr', 'pythonnet',                    # pythonnet/WebView2: solo Windows
-        # pesados que el pipeline no usa (QtWebEngine SÍ se mantiene)
-        'PySide6.Qt3DCore', 'PySide6.QtCharts', 'PySide6.QtMultimedia',
-        'PySide6.QtQuick3D', 'PySide6.QtDataVisualization',
+        # pesados que el pipeline no usa (QtWebEngine SÍ se mantiene). Mismo
+        # criterio verificado por grep que en atom_organizer_webview.spec: no
+        # se toca nada de lo que QtWebEngine necesita internamente
+        # (QtNetwork/QtGui/QtWidgets/QtCore/QtPrintSupport/QtPositioning/
+        # QtQml/QtQuick).
+        'PySide6.Qt3DCore', 'PySide6.Qt3DAnimation', 'PySide6.Qt3DExtras',
+        'PySide6.Qt3DInput', 'PySide6.Qt3DLogic', 'PySide6.Qt3DRender',
+        'PySide6.QtCharts', 'PySide6.QtDataVisualization',
+        'PySide6.QtMultimedia', 'PySide6.QtMultimediaWidgets',
+        'PySide6.QtQuick3D',
+        'PySide6.QtBluetooth', 'PySide6.QtNfc', 'PySide6.QtSensors',
+        'PySide6.QtSerialPort', 'PySide6.QtSql', 'PySide6.QtTest',
+        'PySide6.QtDesigner', 'PySide6.QtUiTools', 'PySide6.QtHelp',
+        'PySide6.QtPdf', 'PySide6.QtPdfWidgets',
+        'PySide6.QtSpatialAudio', 'PySide6.QtTextToSpeech',
+        'PySide6.QtRemoteObjects', 'PySide6.QtScxml', 'PySide6.QtStateMachine',
+        'PySide6.QtHttpServer', 'PySide6.QtGraphs', 'PySide6.QtGraphsWidgets',
         # atom_core.almacen_gcs importa 'google.cloud.storage' de forma perezosa
         # (dentro de AlmacenGCS.__init__, no a nivel de módulo): SOLO lo trae la
         # imagen del Cloud Run Job. El escritorio no lo necesita (sube vía
