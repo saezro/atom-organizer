@@ -110,7 +110,10 @@ if _os_px.environ.get('ATOM_BUILD_GPU') == '1':
         'cupy', 'cupy_backends', 'cupyx', 'fastrlock', 'cuda.pathfinder',
         'nvidia.cuda_runtime', 'nvidia.cuda_nvrtc', 'nvidia.nvjpeg', 'nvidia.nvimgcodec',
     ):
-        if _ilu_gpu.find_spec(_gpu_pkg) is None:
+        try:
+            if _ilu_gpu.find_spec(_gpu_pkg) is None:
+                continue
+        except ModuleNotFoundError:  # paquete padre (cuda/nvidia) ausente
             continue
         try:
             _gd, _gb, _gh = collect_all(_gpu_pkg)
