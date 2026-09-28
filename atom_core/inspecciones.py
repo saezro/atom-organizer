@@ -91,6 +91,13 @@ class Inspeccion:
     tipo: str = ""
     id: int | None = None
     fase: str = ""
+    # `plantas_pv.orientacion` ("Horizontal", "Vertical", "Varias"). Regla de
+    # Rodrigo (2026-09-28): Horizontal NUNCA se gira (ver
+    # `atom_core.indice._consenso_de_angulo_por_vuelo`). Vacío mientras
+    # `lib/organizer-catalogo.js` de Atom-suite no mande el campo -el backend
+    # de hoy no lo selecciona ni proyecta (server.js:2423,
+    # lib/organizer-catalogo.js:28-65)-.
+    orientacion: str = ""
 
     @property
     def prefijo(self) -> str:
@@ -175,6 +182,7 @@ def _desde_json(data: dict) -> list[Inspeccion]:
             tipo=str(fila.get("tipo") or ""),
             id=fila.get("id") if isinstance(fila.get("id"), int) else None,
             fase=str(fila.get("fase") or ""),
+            orientacion=str(fila.get("orientacion") or ""),
         )
         if ins.prefijo:
             out.append(ins)

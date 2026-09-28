@@ -14,9 +14,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, isServerMode } from './bridge.js'
 import BotonToque, { pxDeRem, UMBRAL_REM } from './pulsacion.jsx'
+import FolderPicker from './FolderPicker.jsx'
 import PairScreen from './PairScreen.jsx'
 import InspeccionSelector, { COLOR_FASE, COLOR_FASE_DEFECTO, ORDEN_FASES, chip } from './InspeccionSelector.jsx'
 import EstadilloField from './EstadilloField.jsx'
+import EsperaEstadillo from './trabajo/EsperaEstadillo.jsx'
 import { formatBytes, formatDuracion } from './formato.js'
 import MenuApps from './MenuApps.jsx'
 import BotonAtras from './BotonAtras.jsx'
@@ -28,6 +30,20 @@ import BarraEstado from './BarraEstado.jsx'
 import BannerConexion from './BannerConexion.jsx'
 import Avatar from './Avatar.jsx'
 import { APPS } from './apps/registry.js'
+
+// Tiempos de la reproduccion visual de `accionRemota` (control remoto del
+// kiosco, Task «se ve como se mueve a los sitios»): pasos de navegacion
+// (menu -> pantalla) y resaltado de botones.
+const PASO_MS = 450
+// Tras entrar en la pantalla Organizer (accion='organizar'), tiempo que se
+// deja a la vista antes de abrir el FolderPicker en modo reproduccion: que
+// de tiempo a leerse el cambio de pantalla antes de que aparezca el overlay.
+const ANTES_DE_ABRIR_SELECTOR_MS = 800
+// Cuanto se resalta (pulso azul) el boton "Recibir estadillo" al terminar
+// una reproduccion remota de carpeta, antes de "pulsarlo" de verdad (mismo
+// patron que `resaltarSelector` de arriba, duracion propia porque aqui SI
+// hace falta esperar a que se vea antes de disparar la accion).
+const PULSO_ESTADILLO_MS = 1200
 
 // Deriva la ruta de destino a partir de la carpeta de origen, añadiendo el
 // sufijo "_ORGANIZADO". Función pura: sin efectos, sin acceso a props/estado.
@@ -48,6 +64,15 @@ export default function KioskScreen({
   onActualizarInspecciones,
   estadillo,
   onEstadillo,
+  // Resumen rico del estadillo recibido por red (planta/fechas/pilotos/
+  // drones/vuelos/tiempo total, ver `EsperaEstadillo.jsx`): `null` cuando el
+  // estadillo actual viene de autodetección o elección a mano. Se pinta
+  // como tarjeta de solo lectura en `EstadilloField` en vez del selector.
+  estadilloInfo,
+  // `{buscando, encontrado, nombre, recibidoLan}` de la carpeta elegida
+  // (App.jsx, autodetección al cambiar `kioskCarpeta`): indicador junto al
+  // selector de carpeta, ver `.kiosk-carpeta` más abajo.
+  estadilloEnCarpeta = null,
   onOrganizar,
   onSubirCrudo,
   onComprobarSubida,
@@ -72,6 +97,13 @@ export default function KioskScreen({
   onRunTask,
   // Solo para pruebas: permite montar el componente directamente en un paso.
   accionInicial = null,
+  // Accion remota en cola a reproducir (`KioskGuard`, Task «control remoto
+  // del kiosco: se ve como se mueve a los sitios»): {accion, path?, _id} o
+  // null si no hay ninguna pendiente. `onAccionRemotaConsumida` avisa a
+  // `KioskGuard` de que ya se reprodujo entera, para que saque la siguiente
+  // de la cola (llegan de una en una, nunca en paralelo).
+  accionRemota = null,
+  onAccionRemotaConsumida,
 }) {
   // El puntero de X sigue al dedo en el panel resistivo y se queda clavado
   // donde tocaste. `cursor: none` sobre `.kiosk` no basta: el hueco entre las
@@ -113,6 +145,136 @@ export default function KioskScreen({
   const [apagando, setApagando] = useState(false)
   const [errorSistema, setErrorSistema] = useState(null)
   const [comprobando, setComprobando] = useState(false)
+  // Flujo «Organizar»: en vez de elegir el estadillo a mano (`EstadilloField`),
+  // «Recibir desde Estadillo Digital» pone la Pi en espera del CSV que manda
+  // el portátil (`EsperaEstadillo`, mismo componente que `PasoEstadillo` en
+  // escritorio). Al llegar rellena el estadillo del flujo (`onEstadillo`) y
+  // vuelve a la vista normal; al cancelar/desmontarse (salir del paso), la
+  // propia `EsperaEstadillo` cancela la espera en el backend.
+  const [esperandoEstadillo, setEsperandoEstadillo] = useState(false)
+  // Si la espera ya estaba activa en el backend (retomada al montar, ver
+  // efecto de abajo), `EsperaEstadillo` no debe reiniciarla.
+  const [retomarEspera, setRetomarEspera] = useState(false)
+
+  // Mientras la espera está activa, cualquier cambio de la carpeta del
+  // kiosco (el botón «Elegir carpeta…» de arriba, o el que enseña
+  // `EsperaEstadillo` cuando aún no hay ninguna) se propaga al backend: la
+  // espera puede arrancarse sin carpeta y elegirla después sin perder la
+  // cuenta atrás (`estadillo_espera_carpeta`, no reinicia caducidad).
+  // Fire-and-forget, igual que el resto de llamadas de este flujo.
+  useEffect(() => {
+    if (!esperandoEstadillo) return
+    api.estadilloEsperaCarpeta(carpeta || null).catch(() => {})
+  }, [carpeta, esperandoEstadillo])
+
+  // Retoma la espera de estadillo si Chromium se recargó (o el PIN estaba
+  // bloqueado) mientras el backend seguía esperando: sin esto la UI se
+  // queda en el paso 1 del kiosco aunque el portátil siga mandando datos.
+  // Solo al montar: `KioskGuard` desmonta este componente entero mientras el
+  // PIN está bloqueado, así que un solo chequeo al montar cubre también el
+  // caso "se retoma tras desbloquear".
+  useEffect(() => {
+    let vivo = true
+    Promise.resolve(api.estadilloEsperaEstado?.())
+      .then((r) => {
+        if (!vivo) return
+        if (r?.esperando && !r?.caducado) {
+          setRetomarEspera(true)
+          setAccion('organizar')
+          setEsperandoEstadillo(true)
+        }
+      })
+      .catch(() => {})
+    return () => { vivo = false }
+  }, [])
+
+  // Reproduccion visual de acciones remotas (`KioskGuard`, cola
+  // `accionRemota`): cada una "se ve" en pantalla como si la tocara una
+  // persona, no solo surte efecto en silencio. Van siempre a la vista
+  // Organizer (mismo camino que el boton del menu), con pasos fijos de
+  // ~450ms para que de tiempo a leer el movimiento en un panel de 480x320.
+  // `carpeta` abre ademas el `FolderPicker` en modo reproduccion (mas abajo,
+  // `carpetaRepro`): esa es la unica accion que NO se marca consumida aqui,
+  // la marca `terminarCarpetaRepro` cuando el propio picker termina de
+  // recorrer los segmentos.
+  const [carpetaRepro, setCarpetaRepro] = useState(null)
+  const [resaltarSelector, setResaltarSelector] = useState(null)
+  useEffect(() => {
+    if (!accionRemota) return undefined
+    let cancelado = false
+    const timers = []
+    const tras = (ms, fn) => { timers.push(setTimeout(() => { if (!cancelado) fn() }, ms)) }
+    const acabar = () => { if (!cancelado) onAccionRemotaConsumida?.() }
+
+    if (accionRemota.accion === 'carpeta') {
+      setAccion('organizer')
+      tras(PASO_MS, () => setAccion('organizar'))
+      tras(PASO_MS + ANTES_DE_ABRIR_SELECTOR_MS, () => setCarpetaRepro(accionRemota.path || ''))
+    } else if (accionRemota.accion === 'organizar') {
+      setAccion('organizer')
+      tras(PASO_MS, () => setResaltarSelector('[data-control-resaltar="organizar"]'))
+      tras(PASO_MS + 600, () => { setResaltarSelector(null); acabar() })
+    } else if (accionRemota.accion === 'cancelar') {
+      // No hay navegacion: se resalta el boton de cancelar que YA este
+      // visible en la pantalla actual (si hay alguno) y nada mas — el
+      // backend ya cancelo el analisis, aqui solo se enseña.
+      setResaltarSelector('[data-control-resaltar="cancelar"]')
+      tras(600, () => { setResaltarSelector(null); acabar() })
+    } else {
+      acabar()
+    }
+    return () => { cancelado = true; timers.forEach(clearTimeout) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accionRemota])
+
+  // Pinta la clase de pulso azul sobre el elemento real del DOM que marca
+  // `resaltarSelector`: mas simple que enhebrar una prop de resaltado por
+  // cada boton candidato (viven en pantallas y hasta ficheros distintos,
+  // `EsperaEstadillo.jsx` incluido).
+  useEffect(() => {
+    if (!resaltarSelector) return undefined
+    const el = document.querySelector(resaltarSelector)
+    if (!el) return undefined
+    el.classList.add('kiosk-control-pulso')
+    return () => el.classList.remove('kiosk-control-pulso')
+  }, [resaltarSelector])
+
+  // Timer del "pulso" de "Recibir estadillo" al terminar una reproduccion
+  // remota de carpeta: en un ref para poder limpiarlo si la pantalla se
+  // desmonta a medio pulso (navegacion) o si otra reproduccion arranca antes
+  // de que termine.
+  const pulsoEstadilloRef = useRef(null)
+  useEffect(() => () => { if (pulsoEstadilloRef.current) clearTimeout(pulsoEstadilloRef.current) }, [])
+
+  // Al terminar de "enseñar" una carpeta recibida por control remoto
+  // (`accionRemota.accion === 'carpeta'`, ver el `FolderPicker` de mas
+  // abajo): si esa carpeta NO tiene ya un estadillo detectado, el kiosco
+  // "pulsa" solo el boton "Recibir estadillo" -mismo pulso azul que resalta
+  // acciones remotas reales, `.kiosk-control-pulso`- y, tras dejarlo ver
+  // ~1200ms, dispara EL MISMO handler que un toque real (arranca la espera
+  // del estadillo, `estadillo_espera_iniciar`), para que quede esperando
+  // sin que haga falta otro toque. Con estadillo ya encontrado en la
+  // carpeta no hace nada: no tiene sentido esperar uno que ya esta.
+  const terminarCarpetaRepro = useCallback(() => {
+    setCarpetaRepro(null)
+    onAccionRemotaConsumida?.()
+    if (pulsoEstadilloRef.current) {
+      clearTimeout(pulsoEstadilloRef.current)
+      pulsoEstadilloRef.current = null
+    }
+    if (accion !== 'organizar' || esperandoEstadillo) return
+    if (estadilloEnCarpeta?.encontrado) return
+    const el = document.querySelector('.kiosk-card-estadillo')
+    if (!el) return
+    el.classList.add('kiosk-control-pulso')
+    pulsoEstadilloRef.current = setTimeout(() => {
+      pulsoEstadilloRef.current = null
+      el.classList.remove('kiosk-control-pulso')
+      setRetomarEspera(false)
+      setEsperandoEstadillo(true)
+    }, PULSO_ESTADILLO_MS)
+  }, [onAccionRemotaConsumida, accion, esperandoEstadillo, estadilloEnCarpeta])
+
   const destino = derivarDestino(carpeta)
   const email = status?.email || ''
   const nombre = status?.nombre || ''
@@ -593,6 +755,7 @@ export default function KioskScreen({
             tactil={tactil}
             onActivar={() => setAccion('organizar')}
             disabled={busy}
+            data-control-resaltar="organizar"
           >
             Organizar
           </BotonToque>
@@ -932,7 +1095,11 @@ export default function KioskScreen({
   return (
     <div className="kiosk">
       <div className="kiosk-header kiosk-header-paso">
-        <BotonAtras tactil={tactil} onActivar={() => setAccion('organizer')} disabled={busy} />
+        <BotonAtras
+          tactil={tactil}
+          onActivar={() => { setEsperandoEstadillo(false); setRetomarEspera(false); setAccion('organizer') }}
+          disabled={busy}
+        />
         <span className="kiosk-titulo">{esOrganizar ? 'Organizar' : 'Subir en crudo'}</span>
       </div>
       {bannerConexion}
@@ -953,32 +1120,161 @@ export default function KioskScreen({
         </div>
       )}
 
-      <div className="kiosk-carpeta">
-        <BotonToque className="btn-ghost kiosk-btn-carpeta" tactil={tactil} onActivar={onPickCarpeta} disabled={busy}>
-          Elegir carpeta…
-        </BotonToque>
-        <span className="kiosk-carpeta-actual">{carpeta || 'Sin carpeta'}</span>
-        {esOrganizar && carpeta && <span className="kiosk-destino">{destino}</span>}
-      </div>
+      {/* Mientras se espera el estadillo del portátil, o ya con uno recibido
+          (`EstadilloField` pinta la tarjeta «Estadillo recibido», que en
+          480x320 necesita TODO el hueco de `.kiosk-estadillo` — ver
+          `RECIBIDO_FILAS_POR_PAGINA` en `EstadilloField.jsx`), el control de
+          carpeta deja de pintarse: la carpeta ya se eligió antes de llegar
+          aquí (es el paso previo del propio flujo) y volver a mostrarla aquí
+          solo le robaba altura a la tarjeta — con RECIBIDO_FILAS_POR_PAGINA=2
+          hacían falta hasta 5 páginas para ver un estadillo de 3 vuelos
+          (queja de Rodrigo, 2026-09-23: "esta full cortado... lo de elegir
+          carpeta se queda fijo"). Solo se rescata como línea mínima (sin
+          engordar, un botón + texto) en el caso raro de haber arrancado la
+          espera SIN carpeta todavía (`EsperaEstadillo` avisa "Elige carpeta
+          arriba" en ese caso, `faltaCarpeta`): ahí sí hace falta un sitio
+          desde el que elegirla sin salir de la espera. */}
+      {(esperandoEstadillo || (esOrganizar && estadillo?.length === 1 && estadilloInfo)) && !carpeta ? (
+        <div className="kiosk-carpeta kiosk-carpeta-compacta">
+          <BotonToque className="btn-ghost kiosk-btn-carpeta" tactil={tactil} onActivar={onPickCarpeta} disabled={busy}>
+            Elegir carpeta
+          </BotonToque>
+        </div>
+      ) : esperandoEstadillo || (esOrganizar && estadillo?.length === 1 && estadilloInfo) ? null : (
+        // Dos tarjetas táctiles grandes lado a lado (pedido de Rodrigo,
+        // 2026-09-22): "Elegir carpeta" y "Recibir estadillo" en vez de un
+        // botón suelto + texto aparte. En "Subir en crudo" solo existe la de
+        // carpeta (no hay estadillo que recibir en ese flujo), así que ocupa
+        // el ancho entero (`.kiosk-cards-una`).
+        <div className={esOrganizar ? 'kiosk-cards' : 'kiosk-cards kiosk-cards-una'}>
+          <BotonToque
+            className="kiosk-card kiosk-card-carpeta"
+            tactil={tactil}
+            onActivar={onPickCarpeta}
+            disabled={busy}
+            aria-label="Elegir carpeta"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                 strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+            <span className="kiosk-card-texto">
+              <span className="kiosk-card-label">Elegir carpeta</span>
+              {/* Estado corto ya existente: destino derivado si ya hay
+                  carpeta (organizar), o la propia carpeta/«Sin carpeta». */}
+              <span className="kiosk-card-estado">
+                {esOrganizar && carpeta ? destino : (carpeta || 'Sin carpeta')}
+              </span>
+            </span>
+          </BotonToque>
+
+          {esOrganizar && (
+            <BotonToque
+              className="kiosk-card kiosk-card-estadillo"
+              tactil={tactil}
+              onActivar={() => { setRetomarEspera(false); setEsperandoEstadillo(true) }}
+              disabled={busy}
+              aria-label="Recibir estadillo"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                   strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M5 12.55a11 11 0 0 1 14.08 0" />
+                <path d="M1.42 9a16 16 0 0 1 21.16 0" />
+                <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+                <line x1="12" y1="20" x2="12.01" y2="20" />
+              </svg>
+              <span className="kiosk-card-texto">
+                <span className="kiosk-card-label">Recibir estadillo</span>
+                {/* Indicador de estadillo en la carpeta elegida (pedido de
+                    Rodrigo): «si aplica» — sin carpeta no hay nada que decir
+                    todavía. */}
+                {carpeta && estadilloEnCarpeta && (
+                  <span
+                    className={
+                      'field-hint kiosk-card-estado kiosk-estadillo-en-carpeta ' +
+                      (estadilloEnCarpeta.buscando
+                        ? ''
+                        : estadilloEnCarpeta.encontrado ? 'hint-ok' : 'hint-warn')
+                    }
+                    data-testid="kiosk-estadillo-en-carpeta"
+                  >
+                    {estadilloEnCarpeta.buscando
+                      ? 'Buscando estadillo…'
+                      : estadilloEnCarpeta.encontrado
+                        ? `Estadillo encontrado: ${estadilloEnCarpeta.nombre}`
+                        : 'Sin estadillo en la carpeta'}
+                    {estadilloEnCarpeta.recibidoLan && (
+                      <span className="kiosk-estadillo-lan-pendiente">
+                        {' '}· Estadillo recibido por red: se añadirá al organizar
+                      </span>
+                    )}
+                  </span>
+                )}
+              </span>
+            </BotonToque>
+          )}
+        </div>
+      )}
 
       {esOrganizar && (
         <div className="kiosk-estadillo">
-          <EstadilloField value={estadillo} onChange={onEstadillo} disabled={busy} tactil={tactil} />
+          {esperandoEstadillo ? (
+            <EsperaEstadillo
+              carpeta={carpeta}
+              inspeccion={null}
+              disabled={busy}
+              retomar={retomarEspera}
+              onRecibido={(rutas, resumen) => { setEsperandoEstadillo(false); setRetomarEspera(false); onEstadillo(rutas, resumen) }}
+              onCancelar={() => { setEsperandoEstadillo(false); setRetomarEspera(false) }}
+            />
+          ) : (
+            <EstadilloField
+              value={estadillo}
+              onChange={onEstadillo}
+              disabled={busy}
+              tactil={tactil}
+              infoRecibido={estadilloInfo}
+            />
+          )}
         </div>
       )}
 
       {barraProgreso}
 
-      <div className="kiosk-acciones">
-        <BotonToque
-          className={'kiosk-btn ' + (esOrganizar ? 'kiosk-btn-organizar' : 'kiosk-btn-subir-crudo')}
-          tactil={tactil}
-          onActivar={confirmar}
-          disabled={!listo || busy || comprobando}
-        >
-          {esOrganizar ? 'Organizar' : comprobando ? 'Comprobando…' : 'Subir'}
-        </BotonToque>
-      </div>
+      {/* Mientras se espera el estadillo del portátil, "Organizar" no pinta
+          nada (no hay nada que organizar todavía) y en 480x320 competía por
+          el mismo hueco que el panel de espera: se oculta entero mientras
+          `esperandoEstadillo` está activo. Sus propias acciones
+          (Cancelar/Empezar) siguen visibles en `.espera-pie`, ver
+          EsperaEstadillo.jsx. */}
+      {(!esOrganizar || carpeta) && !esperandoEstadillo && (
+        <div className="kiosk-acciones">
+          <BotonToque
+            className={'kiosk-btn ' + (esOrganizar ? 'kiosk-btn-organizar' : 'kiosk-btn-subir-crudo')}
+            tactil={tactil}
+            onActivar={confirmar}
+            disabled={!listo || busy || comprobando}
+          >
+            {esOrganizar ? 'Organizar' : comprobando ? 'Comprobando…' : 'Subir'}
+          </BotonToque>
+        </div>
+      )}
+
+      {/* Reproduccion de una accion remota "carpeta" (`accionRemota`, ver
+          arriba): el backend YA fijo la carpeta (`kioskCarpeta` llega por
+          `atom:control_carpeta`, sincronizada en `App.jsx`), este picker
+          solo la ENSEÑA recorriendo sus segmentos sola, ignorando toques
+          reales — nunca llama al backend para fijar. */}
+      {carpetaRepro !== null && (
+        <FolderPicker
+          mode="folder"
+          reproduccion
+          rutaObjetivo={carpetaRepro}
+          onPick={() => {}}
+          onCancel={() => {}}
+          onFinReproduccion={terminarCarpetaRepro}
+        />
+      )}
     </div>
   )
 }

@@ -4,6 +4,7 @@ import urllib.request
 
 import pytest
 
+from atom_core import webserver
 from atom_core.event_sink import QueueSink
 from atom_core.webserver import METODOS_EXPUESTOS, crear_servidor
 
@@ -11,6 +12,7 @@ from atom_core.webserver import METODOS_EXPUESTOS, crear_servidor
 class _ApiFalsa:
     def __init__(self):
         self.llamadas = []
+        self._ap_token = ""
 
     def ping(self, who="?"):
         self.llamadas.append(("ping", who))
@@ -30,7 +32,9 @@ class _ApiFalsa:
 def servidor(tmp_path):
     (tmp_path / "index.html").write_text("<html>ATOM</html>", encoding="utf-8")
     api = _ApiFalsa()
-    srv = crear_servidor(api, str(tmp_path), "127.0.0.1", 0, QueueSink())
+    sink = QueueSink()
+    srv = crear_servidor(api, str(tmp_path), "127.0.0.1", 0, sink)
+    srv.sink = sink  # expuesto solo para que los tests suscriban la cola SSE
     import threading
     hilo = threading.Thread(target=srv.serve_forever, daemon=True)
     hilo.start()
@@ -38,11 +42,11 @@ def servidor(tmp_path):
     srv.shutdown()
 
 
-def _post(base, metodo, args):
+def _post(base, metodo, args, headers=None):
     req = urllib.request.Request(
         f"{base}/api/{metodo}",
         data=json.dumps({"args": args}).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **(headers or {})},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=5) as r:
@@ -59,6 +63,31 @@ def test_llama_a_un_metodo_de_la_api_con_argumentos(servidor):
     _, api, base = servidor
     assert _post(base, "ping", ["rebeca"])["result"]["msg"] == "pong rebeca"
     assert api.llamadas == [("ping", "rebeca")]
+
+
+def test_llamada_local_no_emite_marco_azul(servidor):
+    # El kiosco (loopback) llama a `/api/<metodo>` sin token: no es "la Pi
+    # usada por API desde fuera", no debe encender el marco azul remoto.
+    srv, api, base = servidor
+    q = srv.sink.subscribe()
+    _post(base, "ping", ["local"])
+    with pytest.raises(Exception):
+        q.get(timeout=0.3)
+
+
+def test_llamada_remota_via_token_emite_atom_control_ui_api_remota(servidor, monkeypatch):
+    # `ping` esta en `METODOS_REMOTOS`: alcanzable por un cliente NO loopback
+    # con token de AP valido. Debe marcar actividad remota igual que
+    # `/api/control/*` (mismo evento, ver `webserver._marcar_actividad_remota`).
+    srv, api, base = servidor
+    monkeypatch.setattr(webserver, "_IPS_LOOPBACK", frozenset())
+    api._ap_token = "tok123"
+    q = srv.sink.subscribe()
+    resultado = _post(base, "ping", ["remoto"], {"X-Atom-Token": "tok123"})
+    assert resultado["result"]["msg"] == "pong remoto"
+    evento, detalle = q.get(timeout=5)
+    assert evento == "atom:control_ui"
+    assert detalle == {"accion": "api_remota"}
 
 
 def test_metodo_sin_argumentos(servidor):

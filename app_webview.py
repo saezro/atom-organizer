@@ -31,6 +31,7 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from atom_core import cola_subidas
 from atom_core.credencial import (
@@ -39,10 +40,23 @@ from atom_core.credencial import (
 )
 from atom_core.event_sink import WebviewSink
 from atom_core.google_auth import AuthError
+from atom_core import estado_lan
 from atom_core import pin_kiosco
 from atom_core import precarga
 from atom_core import render_state, window_state
 from atom_core import sesion_remota
+
+# Hora local de la Pi/kiosco (regla del equipo: SIEMPRE Europe/Madrid en lo
+# que se enseña al operario). Solo para el modo "esperando estadillo"
+# (`Api.estadillo_espera_*`): `caduca_en` viaja como ISO en esta zona.
+_TZ_ESTADILLO = ZoneInfo("Europe/Madrid")
+
+# Fichero de telemetria de intentos de PIN (ver `Api.pin_telemetria`), dentro
+# de la misma carpeta que ya usa el historial de procesos (`user_log_dir()`).
+# Nombre sin el prefijo `atom-organizer-run_*` para que `logs_listar` (que
+# filtra por ese patron) no lo confunda con un log de corrida.
+_LOG_TELEMETRIA_PIN = "pin_telemetria.jsonl"
+_LIMITE_TELEMETRIA_PIN = 1 * 1024 * 1024  # 1 MB, rotacion simple a .1
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +149,38 @@ def _disco_externo() -> str | None:
 
     if validos:
         return sorted(validos)[0]
+    return None
+
+
+# Carpetas de "ruidos de sistema" de los discos externos que llegan al kiosco
+# (fabricadas por Windows/macOS al formatear/usar el disco, o por el propio
+# Linux): no aportan nada a quien busca la carpeta de la inspeccion y en una
+# pantalla de 480x320 son puro ruido. No empiezan por "." (eso ya se filtra
+# aparte), asi que necesitan lista explicita. Comparacion en minusculas.
+_CARPETAS_SISTEMA_OCULTAS = {
+    "$recycle.bin", "system volume information", "lost+found",
+    ".trashes", ".spotlight-v100", ".fseventsd",
+}
+
+
+def _disco_que_contiene(ruta_real: str, discos: list[dict]) -> dict | None:
+    """¿`ruta_real` (ya resuelta con `os.path.realpath`) cae dentro de alguno
+    de `discos` (shape de `estado_lan.discos_externos`)? Devuelve el disco
+    (con su `realpath` añadido) o `None`.
+
+    Es la puerta de confinamiento del selector de carpetas en el kiosco: el
+    backend, no el front, decide que es "dentro de un disco externo" — un
+    front hostil o con bug no puede colarse fuera reescribiendo la ruta.
+    """
+    for disco in discos:
+        try:
+            raiz_real = os.path.realpath(disco["punto_montaje"])
+        except OSError:
+            continue
+        if ruta_real == raiz_real or ruta_real.startswith(raiz_real + os.sep):
+            con_realpath = dict(disco)
+            con_realpath["realpath"] = raiz_real
+            return con_realpath
     return None
 
 
@@ -449,6 +495,16 @@ class Api:
         self._verifying = False
         self._uploading = False
         self._cancel_upload = False
+        # `estadillo_subir` no tenía mutex propio (a diferencia de
+        # `cloud_upload`/`self._uploading`): dos clicks seguidos (doble-tap
+        # del tactil resistivo, o un `call()` del bridge que reintenta tras
+        # un plazo vencido cuyo hilo de verdad seguía vivo) arrancaban dos
+        # hilos escribiendo los mismos objetos del bucket a la vez. La UI ya
+        # se protegía con `estadSubiendo` (`PasoEstadillo.jsx`), pero eso es
+        # solo un candado en el CLIENTE: no protege contra dos pestañas, dos
+        # dispositivos remotos (móvil + kiosco) o una llamada colada por
+        # detrás del candado de React.
+        self._estadillo_subiendo = False
         self._analizando = False
         self._cancel_analisis = False
         # Batcher de eventos de progreso (ver `_push`). El pipeline emite DOS
@@ -476,6 +532,48 @@ class Api:
         self._ap_token: str = ""
         self._ap_timer: threading.Timer | None = None
         self._ap_conexion_previa: str = ""
+        # Modo "esperando estadillo" (app Electron "Estadillo Digital" de
+        # Christian, LAN, sin token). `None` = no hay espera activa; con
+        # espera activa, dict con carpeta/inspeccion/fotos/recibido/rutas/
+        # errores (ver `estadillo_espera_iniciar`). Lock porque lo tocan el
+        # hilo HTTP (webserver) y el hilo de fondo que calcula el EXIF.
+        self._estadillo_espera: dict | None = None
+        self._estadillo_espera_lock = threading.Lock()
+        # Log de actividad remota del modo espera (lo enseña el kiosco, no la
+        # app "Estadillo Digital"): últimos 10 eventos y el último contacto,
+        # para saber si "alguien está ahí" aunque no haya llegado el
+        # estadillo todavía. Vive fuera de `_estadillo_espera` a propósito:
+        # sobrevive a `estadillo_espera_cancelar()` (el 'cancelado' queda en
+        # el propio log) y a que se reinicie la espera.
+        self._estadillo_eventos: list[dict] = []
+        self._estadillo_ultimo_contacto: dict | None = None
+        # Indicador "¿hay estadillo en esta carpeta?" (selector del kiosco):
+        # caché por carpeta (`os.path.normpath` -> {encontrado, nombre,
+        # buscando}) para no repetir el escaneo en cada poll de
+        # `estadillo_espera_estado`, y el set de carpetas con un escaneo en
+        # marcha (evita lanzar dos hilos para la misma carpeta).
+        self._estadillo_carpeta_cache: dict[str, dict] = {}
+        self._estadillo_carpeta_lock = threading.Lock()
+        self._estadillo_carpeta_hilos: set[str] = set()
+        # Reloj inyectable (para tests de caducidad sin `sleep`): por defecto
+        # la hora real de Madrid. `datetime.datetime.now(_TZ_ESTADILLO)`.
+        self._estadillo_reloj = lambda: datetime.datetime.now(_TZ_ESTADILLO)
+        # Carpeta de trabajo del panel de control remoto (`/api/control/*`,
+        # `atom_core/webserver.py`), fijada por `carpeta_trabajo_fijar`. Vive
+        # en `Api` (no en una closure del handler HTTP) para que
+        # `/api/control/carpeta`, `/api/control/estado` y
+        # `/api/control/organizar` compartan siempre la misma carpeta, y para
+        # que el kiosco (React) pueda fijarla tambien via `METODOS_EXPUESTOS`
+        # el dia que deje de vivir solo como estado local.
+        self._carpeta_trabajo: str | None = None
+        # Ultimo evento de progreso/fase/error del run en curso (o del
+        # ultimo terminado), para que `GET /api/control/estado` pueda
+        # informar sin necesitar SSE: se actualiza en `_push`, el mismo sitio
+        # que emite `atom:progress` (ver `_flush_push`). Se reinicia al
+        # arrancar un run nuevo (`run_task`).
+        self._control_fase: dict | None = None
+        self._control_progreso: int | None = None
+        self._control_ultimo_error: str | None = None
 
     def bind_window(self, window) -> None:
         self._window = window
@@ -583,10 +681,18 @@ class Api:
             return self._win_dialog(_MODERN_FOLDER_CS + cuerpo)
         return elegido
 
-    def _win_pick_file(self) -> str | None:
+    def _win_pick_file(self, filtro: str | None = None) -> str | None:
+        # `filtro='csv_xlsx'` es el único valor soportado hoy (elegir estadillo
+        # a mano en escritorio, `EstadilloField.jsx`/`PasoEstadillo.jsx`); sin
+        # filtro se mantiene "Todos los archivos", igual que antes.
+        filtro_ps = (
+            "Estadillos (*.csv;*.xlsx;*.xls)|*.csv;*.xlsx;*.xls|Todos los archivos (*.*)|*.*"
+            if filtro == "csv_xlsx"
+            else "Todos los archivos (*.*)|*.*"
+        )
         return self._win_dialog(
             "$d=New-Object System.Windows.Forms.OpenFileDialog;"
-            "$d.Title='Selecciona el archivo';$d.Filter='Todos los archivos (*.*)|*.*';"
+            f"$d.Title='Selecciona el archivo';$d.Filter='{filtro_ps}';"
             "if($d.ShowDialog($o) -eq [System.Windows.Forms.DialogResult]::OK)"
             "{[Console]::Out.Write($d.FileName)}"
         )
@@ -605,12 +711,19 @@ class Api:
                         "text": f"No se pudo abrir el diálogo de carpeta: {type(exc).__name__}: {exc}"})
             return None
 
-    def pick_file(self) -> str | None:
+    def pick_file(self, filtro: str | None = None) -> str | None:
         try:
             if platform.system() == "Windows":
-                return self._win_pick_file()
+                return self._win_pick_file(filtro)
             webview = _import_webview()
-            res = self._window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False)
+            file_types = (
+                ("Estadillos (*.csv;*.xlsx;*.xls)", "Todos los archivos (*.*)")
+                if filtro == "csv_xlsx"
+                else ()
+            )
+            res = self._window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=False, file_types=file_types
+            )
             return res[0] if res else None
         except Exception as exc:  # noqa: BLE001 — se traza y se avisa al front
             import traceback
@@ -619,13 +732,106 @@ class Api:
                         "text": f"No se pudo abrir el diálogo de archivo: {type(exc).__name__}: {exc}"})
             return None
 
+    def _listado_raiz_discos_pi(self) -> dict:
+        """Nivel superior del selector en el kiosco: la lista de discos
+        externos montados, no el sistema de ficheros. `path=None` en Linux
+        entra siempre por aqui (ver `list_dir`)."""
+        discos = estado_lan.discos_externos()
+        dirs = [
+            {
+                "name": disco["nombre"],
+                "path": os.path.realpath(disco["punto_montaje"]),
+                "libre_gb": disco.get("libre_gb"),
+                "total_gb": disco.get("total_gb"),
+            }
+            for disco in discos
+        ]
+        return {
+            "ok": True, "path": None, "parent": None,
+            "dirs": dirs, "files": [],
+            "is_root": True, "disk_name": None, "rel_parts": [],
+        }
+
+    def _list_dir_confinado_pi(self, path: str | None) -> dict:
+        """`list_dir` para Linux/kiosco: confinado a discos externos.
+
+        Sin `path`, la lista de discos (`_listado_raiz_discos_pi`). Con
+        `path`, solo se sirve si cae dentro de un disco montado ahora mismo
+        (comprobado con `realpath`, asi que un symlink que escape del disco
+        tambien se rechaza, tanto como raiz como colandose entre las
+        entradas listadas).
+        """
+        if not path:
+            return self._listado_raiz_discos_pi()
+
+        discos = estado_lan.discos_externos()
+        try:
+            real = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+        except OSError:
+            return {"ok": False, "error": f"Ruta inválida: {path}"}
+
+        disco = _disco_que_contiene(real, discos)
+        if disco is None:
+            return {"ok": False, "error": "Fuera de los discos externos montados."}
+        if not os.path.isdir(real):
+            return {"ok": False, "error": f"No es una carpeta: {real}"}
+
+        dirs, files = [], []
+        try:
+            entradas = sorted(os.listdir(real), key=str.lower)
+        except OSError as exc:
+            return {"ok": False, "error": f"No se pudo leer: {exc}"}
+        for nombre in entradas:
+            if nombre.startswith(".") or nombre.lower() in _CARPETAS_SISTEMA_OCULTAS:
+                continue  # ocultos y ruido de sistema (RECYCLE.BIN, etc.) fuera
+            completo = os.path.join(real, nombre)
+            try:
+                completo_real = os.path.realpath(completo)
+                if _disco_que_contiene(completo_real, discos) is None:
+                    continue  # symlink que se escapa del disco: fuera
+                if os.path.isdir(completo):
+                    dirs.append({"name": nombre, "path": completo})
+                else:
+                    files.append({"name": nombre, "path": completo,
+                                  "size": os.stat(completo).st_size})
+            except OSError:
+                continue  # permisos, enlace roto, unidad desconectada
+
+        raiz_disco = disco["realpath"]
+        # En la raiz del disco no hay ".. subir": subir mas es salirse del
+        # confinamiento. Volver a la lista de discos lo hace el front por el
+        # breadcrumb, no por esta fila.
+        parent = None if real == raiz_disco else os.path.dirname(real)
+        rel = os.path.relpath(real, raiz_disco)
+        rel_parts = [] if rel == "." else rel.split(os.sep)
+        return {
+            "ok": True,
+            "path": real,
+            "parent": parent,
+            "dirs": dirs,
+            "files": files,
+            "is_root": False,
+            "disk_name": disco["nombre"],
+            "rel_parts": rel_parts,
+        }
+
     def list_dir(self, path: str | None = None) -> dict:
         """Lista un directorio para el explorador de la UI.
 
         En modo servidor no hay dialogo nativo de ficheros (eso lo daba Qt), y
         en una pantalla de 480x320 manejada con el dedo tampoco seria usable.
         El explorador vive en la webui y esto es lo que lo alimenta.
+
+        En Linux (kiosco Raspberry Pi) el listado queda CONFINADO a los
+        discos externos montados: sin `path` devuelve la lista de discos (el
+        nivel superior es esa lista, no el sistema de ficheros), y con `path`
+        solo se sirve si la ruta -resuelta con `realpath`, symlinks incluidos-
+        cae dentro de un disco montado ahora mismo. Es autoridad de backend:
+        un front con bug o manipulado no puede escapar reescribiendo la ruta.
+        En Windows/escritorio el comportamiento no cambia.
         """
+        if estado_lan.es_raspberry():
+            return self._list_dir_confinado_pi(path)
         destino = os.path.abspath(os.path.expanduser(path or "~"))
         if not os.path.isdir(destino):
             return {"ok": False, "error": f"No es una carpeta: {destino}"}
@@ -664,25 +870,14 @@ class Api:
         latencia percibida).
 
         En Windows (pywebview/Qt, produccion actual) el comportamiento debe
-        quedar EXACTAMENTE igual que antes: arranca en el home. Esto solo
-        cambia en Linux (Raspberry Pi), donde las inspecciones llegan por
-        disco USB externo y forzar al operador a navegar desde el home cada
-        vez es friccion innecesaria.
+        quedar EXACTAMENTE igual que antes: arranca en el home. En Linux
+        (Raspberry Pi) arranca en la lista de discos externos montados
+        (nivel superior del confinamiento de `list_dir`): el operador nunca
+        empieza navegando el sistema de ficheros.
         """
-        home = os.path.expanduser("~")
-        if not sys.platform.startswith("linux"):
-            return {"ok": True, "path": home}
-
-        try:
-            destino = _disco_externo()
-            if destino is not None:
-                resultado = self.list_dir(destino)
-                if resultado.get("ok"):
-                    return resultado
-        except Exception:  # noqa: BLE001 — un disco raro no puede tumbar el selector
-            pass
-
-        return self.list_dir(home)
+        if not estado_lan.es_raspberry():
+            return {"ok": True, "path": os.path.expanduser("~")}
+        return self.list_dir(None)
 
     def folder_is_empty(self, path: str) -> dict:
         """¿Está vacía la carpeta de salida? El front avisa al elegirla (una
@@ -712,11 +907,15 @@ class Api:
         except Exception as exc:  # noqa: BLE001 — se reenvía al front
             return {"error": f"{type(exc).__name__}: {exc}"}
 
-    def estadillos_detectar(self, carpeta: str) -> dict:
+    def estadillos_detectar(self, carpeta: str, incluir_recibidos: bool = False) -> dict:
         """Escanea `carpeta` buscando estadillos sin que el operario tenga que
         elegirlos a mano: base de "detectados N estadillos, M días de vuelo..."
         antes de subir. Sincrónico, como `read_estadillo_info` (mismo módulo,
         no arrastra gui/PySide).
+
+        `incluir_recibidos=True` (solo `PasoEstadillo.jsx`, escritorio; el
+        kiosco nunca lo pasa) suma como candidatos los CSV/XLSX sueltos en
+        `estadillos_recibidos_dir()`, ver `atom_core.estadillo.detectar_estadillos`.
 
         No encontrar ninguno NO es un error (el operario aún puede elegir a
         mano): `{"rutas": [], "n_estadillos": 0, "info": None, "error": None}`.
@@ -726,7 +925,7 @@ class Api:
             # con el resto de hilos (ver atom_core/precarga.py).
             precarga.precargar_pandas()
             from atom_core.estadillo import detectar_estadillos, read_estadillo_info
-            detectado = detectar_estadillos(carpeta)
+            detectado = detectar_estadillos(carpeta, incluir_recibidos=incluir_recibidos)
             rutas = detectado["rutas"]
             info = read_estadillo_info(rutas) if rutas else None
             return {"rutas": rutas, "n_estadillos": len(rutas), "info": info, "error": None}
@@ -1292,7 +1491,16 @@ class Api:
         return {"ok": True}
 
     def pin_verificar(self, pin: str) -> dict:
+        # Nunca los digitos del PIN: solo longitud recibida y numero de
+        # intento consecutivo (0-based en `_fallos`, de ahi el +1), que es
+        # lo unico util para depurar el pad del kiosco sin exponer el PIN.
+        longitud = len(pin) if isinstance(pin, str) else -1
+        n_intento = self._pin_intentos._fallos + 1
         if self._pin_intentos.bloqueado():
+            logger.warning(
+                "[pin] verificar bloqueado: longitud=%s intento=%s espera=%ss",
+                longitud, n_intento, self._pin_intentos.espera_segundos(),
+            )
             return {
                 "ok": False,
                 "error": "Demasiados intentos.",
@@ -1301,11 +1509,14 @@ class Api:
         try:
             correcto = pin_kiosco.verificar(self._store_pin(), pin)
         except Exception as exc:  # noqa: BLE001
+            logger.warning("[pin] verificar error: longitud=%s intento=%s", longitud, n_intento)
             return {"ok": False, "error": str(exc)}
         if correcto:
+            logger.info("[pin] verificar OK: longitud=%s intento=%s", longitud, n_intento)
             self._pin_intentos.acierto()
             return {"ok": True}
         self._pin_intentos.fallo()
+        logger.warning("[pin] verificar fallo: longitud=%s intento=%s", longitud, n_intento)
         return {
             "ok": False,
             "error": "PIN incorrecto.",
@@ -1335,6 +1546,70 @@ class Api:
                 "espera_segundos": self._pin_intentos.espera_segundos(),
             }
         self._pin_intentos.acierto()
+        return {"ok": True}
+
+    def pin_telemetria(self, datos: dict) -> dict:
+        """Telemetria de un intento COMPLETO de PIN (KioskLock.jsx), para
+        saber en campo si reaparece el fallo "PIN correcto falla al primer
+        intento". Fire-and-forget desde el front: cualquier fallo aqui se
+        traga, nunca debe tumbar el kiosco.
+
+        SEGURIDAD: nunca llegan ni se guardan los digitos del PIN tecleado
+        ni su longitud/composicion, solo timing y contadores. Se descarta
+        cualquier clave no esperada y cualquier valor con tipo incorrecto.
+        """
+        if not isinstance(datos, dict):
+            return {"ok": False}
+        tipos_esperados = {
+            "ts": str,
+            "ok": bool,
+            "n_intento": int,
+            "toques_aceptados": int,
+            "toques_descartados_debounce": int,
+            "toques_descartados_arrastre": int,
+            "borrados": int,
+            "intervalos_ms": list,
+            "duracion_total_ms": (int, float),
+        }
+        limpio: dict = {}
+        for clave, tipo in tipos_esperados.items():
+            if clave not in datos:
+                continue
+            valor = datos[clave]
+            # bool es subclase de int: se comprueba aparte para no colar un
+            # 0/1 como si fuera el booleano `ok`.
+            if tipo is bool and not isinstance(valor, bool):
+                continue
+            if tipo is not bool and isinstance(valor, bool):
+                continue
+            if not isinstance(valor, tipo):
+                continue
+            if clave == "intervalos_ms":
+                if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in valor):
+                    continue
+                valor = [float(v) for v in valor]
+            limpio[clave] = valor
+        if "ts" not in limpio or "ok" not in limpio:
+            return {"ok": False}
+        limpio["ts_servidor"] = datetime.datetime.now(_TZ_ESTADILLO).isoformat()
+        try:
+            from external_tools import user_log_dir
+            carpeta = user_log_dir()
+            os.makedirs(carpeta, exist_ok=True)
+            ruta = os.path.join(carpeta, _LOG_TELEMETRIA_PIN)
+            try:
+                if os.path.exists(ruta) and os.path.getsize(ruta) > _LIMITE_TELEMETRIA_PIN:
+                    rotado = ruta + ".1"
+                    if os.path.exists(rotado):
+                        os.remove(rotado)
+                    os.replace(ruta, rotado)
+            except OSError:
+                pass  # rotacion best-effort: nunca bloquea el registro
+            with open(ruta, "a", encoding="utf-8") as f:
+                f.write(json.dumps(limpio, ensure_ascii=False) + "\n")
+        except Exception as exc:  # noqa: BLE001 - nunca tumbar el kiosco
+            logger.warning("[pin] No se pudo escribir la telemetria: %s", exc)
+            return {"ok": False}
         return {"ok": True}
 
     def _olvidar_pin(self) -> None:
@@ -2048,6 +2323,12 @@ class Api:
         from atom_core import cloud_config
         from atom_core import estadillo as estadillo_mod
 
+        # Lock no bloqueante, igual que `cloud_upload`/`self._uploading`: sin
+        # esto un doble-click (o dos dispositivos a la vez) arrancaba dos
+        # hilos subiendo el mismo estadillo en paralelo.
+        if self._estadillo_subiendo:
+            return {"started": False, "reason": "Ya hay una subida en curso."}
+
         # Todo lo previo al arranque del hilo (chequeo de sesión, validación)
         # va envuelto: su contrato con la UI es devolver siempre
         # `{"started": False, "reason": ...}` ante cualquier problema, nunca
@@ -2070,6 +2351,8 @@ class Api:
                 return {"started": False, "reason": validacion["error"]}
         except Exception as exc:  # noqa: BLE001 - contrato: nunca reventar el IPC
             return {"started": False, "reason": str(exc)}
+
+        self._estadillo_subiendo = True
 
         def worker():
             self._subir_estadillo_worker(folder, rutas, validacion)
@@ -2102,69 +2385,679 @@ class Api:
         except Exception as exc:  # noqa: BLE001 - fail-open, la UI solo pre-marca un checkbox
             return {"existe": False, "error": str(exc)}
 
+    def estadillo_bajar_nube(self, prefijo: str) -> dict:
+        """Baja a disco el/los estadillo(s) ya subidos de esa inspección.
+
+        Solo escritorio: es la contraparte de `estadillo_subir`, síncrona
+        también a propósito (son 1-2 ficheros pequeños, no una jornada
+        entera). Misma construcción de prefijo que `estadillo_existente`.
+        Filtra `manifest.json`/`estadillo.json` (metadatos internos, no lo
+        que el operario subió) y solo baja CSV/XLSX. Nunca sobrescribe: si el
+        nombre ya existe en destino, añade un sufijo numérico.
+
+        Devuelve `{ok, rutas: [{ruta, nombre}], error}`. `error` puesto y
+        `ok: False` cuando no hay login, no hay ningún estadillo en el
+        prefijo, o falla la descarga.
+        """
+        from atom_core import cloud_config, cloud_upload, estadillo_canonico, google_auth
+
+        try:
+            auth = self._get_auth()
+            if auth is None:
+                return {"ok": False, "rutas": [], "error": cloud_config.missing_client_help()}
+            if not auth.is_logged_in():
+                return {"ok": False, "rutas": [],
+                        "error": "Primero inicia sesión con tu cuenta de Aerotools."}
+
+            prefix = (f"{estadillo_canonico.prefijo_planta(prefijo)}/"
+                     f"{estadillo_canonico.CARPETA_ACTUAL}/")
+            remotos = cloud_upload.listar_objetos_remotos(
+                cloud_config.BUCKET_DATOS, prefix, auth)
+
+            excluidos = {estadillo_canonico.NOMBRE_MANIFEST,
+                        estadillo_canonico.NOMBRE_NORMALIZADO}
+            candidatos = sorted(
+                nombre for nombre in remotos
+                if nombre.rsplit("/", 1)[-1] not in excluidos
+                and nombre.lower().endswith((".csv", ".xlsx"))
+            )
+            if not candidatos:
+                return {"ok": False, "rutas": [],
+                        "error": "No hay ningún estadillo subido para esta inspección."}
+
+            destino_dir = google_auth.estadillos_recibidos_dir() / "nube"
+            destino_dir.mkdir(parents=True, exist_ok=True)
+
+            rutas = []
+            for nombre_remoto in candidatos:
+                base = nombre_remoto.rsplit("/", 1)[-1]
+                stem, ext = os.path.splitext(base)
+                objetivo = destino_dir / base
+                sufijo = 1
+                while objetivo.exists():
+                    objetivo = destino_dir / f"{stem}_{sufijo}{ext}"
+                    sufijo += 1
+                cloud_upload.descargar_objeto(
+                    cloud_config.BUCKET_DATOS, nombre_remoto, auth, objetivo)
+                rutas.append({"ruta": str(objetivo), "nombre": objetivo.name})
+
+            return {"ok": True, "rutas": rutas, "error": None}
+        except Exception as exc:  # noqa: BLE001 - contrato: nunca reventar el IPC
+            return {"ok": False, "rutas": [], "error": str(exc)}
+
+    # ---- estadillo: modo "esperando estadillo" (LAN, sin token) -----------
+    # La app "Estadillo Digital" (Christian) consulta/manda el estadillo por
+    # HTTP desde cualquier IP de la LAN (`atom_core/webserver.py`,
+    # `_RUTAS_LAN_ABIERTAS`); estos 3 métodos los llama el propio kiosco
+    # (loopback, `METODOS_EXPUESTOS`) para abrir/cerrar esa ventana y ver su
+    # estado. `_estadillo_recibir` lo llama el handler HTTP directamente, no
+    # el kiosco: no está en `METODOS_EXPUESTOS`.
+    def estadillo_espera_iniciar(self, carpeta: str, inspeccion: dict | None,
+                                  segundos: int = 600) -> dict:
+        """Arranca el modo espera: desde este momento las rutas LAN abiertas
+        responden, durante `segundos` (10 min por defecto) o hasta que
+        llegue un estadillo valido. El recuento de fotos y su rango EXIF se
+        calculan en un hilo aparte (puede haber miles de fotos) para no
+        bloquear la llamada ni el servidor.
+
+        Volver a llamar a este metodo (el kiosco reinicia la espera)
+        resetea el contador de caducidad y sustituye el estado anterior
+        entero, aunque no hubiera caducado."""
+        ahora = self._estadillo_reloj()
+        estado = {
+            "carpeta": carpeta,
+            "inspeccion": inspeccion or {},
+            "fotos": {"total": 0, "primera": None, "ultima": None, "calculando": True},
+            "recibido": False,
+            "rutas": [],
+            "errores": [],
+            "caduca_en": ahora + datetime.timedelta(seconds=max(1, int(segundos))),
+        }
+        with self._estadillo_espera_lock:
+            self._estadillo_espera = estado
+
+        def worker():
+            from exif import rango_horas_exif
+
+            try:
+                total, primera, ultima = rango_horas_exif(carpeta)
+                fotos = {"total": total, "primera": primera, "ultima": ultima, "calculando": False}
+            except Exception as exc:  # noqa: BLE001 — no debe tumbar el hilo de fondo
+                with self._estadillo_espera_lock:
+                    if self._estadillo_espera is estado:
+                        estado["errores"].append(str(exc))
+                        estado["fotos"]["calculando"] = False
+                return
+            with self._estadillo_espera_lock:
+                if self._estadillo_espera is estado:
+                    estado["fotos"] = fotos
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"ok": True}
+
+    def estadillo_espera_cancelar(self) -> dict:
+        with self._estadillo_espera_lock:
+            self._estadillo_espera = None
+        self._estadillo_registrar_evento(None, "cancelado")
+        return {"ok": True}
+
+    def estadillo_espera_carpeta(self, carpeta: str | None) -> dict:
+        """Actualiza la carpeta de la espera EN CURSO sin tocar su caducidad
+        ni ningun otro campo (ni "reinicia" el contador como haria volver a
+        llamar a `estadillo_espera_iniciar`).
+
+        Pensado para el caso en que el kiosco arranca la espera antes de
+        elegir carpeta (o la cambia despues): en cuanto React tenga una
+        carpeta nueva, llama aqui y la espera "se entera sola". `carpeta`
+        puede venir `None`/`""` para quitarla (vuelve a quedar sin carpeta
+        seleccionada). Si no hay espera activa es un no-op explicito, no un
+        error: el kiosco puede llamar esto en cualquier momento.
+        """
+        with self._estadillo_espera_lock:
+            estado = self._estadillo_espera
+            if estado is None:
+                return {"ok": False, "motivo": "No hay modo espera activo."}
+            estado["carpeta"] = carpeta or None
+        return {"ok": True}
+
+    def carpeta_trabajo_fijar(self, path: str | None) -> dict:
+        """Fija la "carpeta de trabajo" del panel de control remoto
+        (`/api/control/carpeta`, `atom_core/webserver.py`): estado unico en
+        `Api`, no una closure por handler HTTP, para que `/api/control/carpeta`,
+        `/api/control/estado` y `/api/control/organizar` vean siempre la misma
+        carpeta. En `METODOS_EXPUESTOS` (local) para que el kiosco pueda
+        llamarla el dia que elija la carpeta desde su propia pantalla.
+
+        Reutiliza `estadillo_espera_carpeta`: si hay una espera de estadillo
+        activa, tambien se entera de la carpeta nueva (sin reiniciar su
+        caducidad), igual que hacia antes el handler HTTP a mano -asi
+        `_mover_estadillo_espera_si_toca` sigue funcionando."""
+        self._carpeta_trabajo = path or None
+        try:
+            self.estadillo_espera_carpeta(self._carpeta_trabajo)
+        except Exception:  # noqa: BLE001 — no debe tumbar la fijacion de carpeta
+            logger.warning("carpeta_trabajo_fijar: estadillo_espera_carpeta fallo para %s", self._carpeta_trabajo)
+        return {"ok": True, "carpeta": self._carpeta_trabajo}
+
+    def _carpeta_trabajo_actual(self) -> str | None:
+        """Carpeta de trabajo actual del panel de control remoto (ver
+        `carpeta_trabajo_fijar`), o `None` si no se ha elegido ninguna. Solo
+        para uso interno (`atom_core/webserver.py`), sin exponer al bridge
+        JS: no hay motivo para que el front la LEA por su cuenta, solo la
+        fija (`carpeta_trabajo_fijar`) y se entera de los cambios por SSE
+        (`atom:control_carpeta`)."""
+        return self._carpeta_trabajo
+
+    def _estadillo_en_carpeta(self, carpeta: str | None) -> dict:
+        """`{encontrado, nombre, buscando}` para el indicador del selector de
+        carpeta del kiosco. Reusa `estadillo.detectar_estadillos` (la misma
+        detección de `PasoEstadillo`/`estadillos_detectar`), pero SIN
+        bloquear esta llamada: el resultado se cachea por carpeta y, si aún
+        no hay caché, se lanza un escaneo en hilo aparte y se responde
+        `buscando: True` -el siguiente poll de `estadillo_espera_estado`
+        recoge el resultado ya calculado.
+        """
+        vacio = {"encontrado": False, "nombre": None, "buscando": False}
+        if not carpeta or not os.path.isdir(carpeta):
+            return vacio
+        carpeta_norm = os.path.normpath(carpeta)
+        with self._estadillo_carpeta_lock:
+            cacheado = self._estadillo_carpeta_cache.get(carpeta_norm)
+            if cacheado is not None:
+                return dict(cacheado)
+            if carpeta_norm in self._estadillo_carpeta_hilos:
+                return {"encontrado": False, "nombre": None, "buscando": True}
+            self._estadillo_carpeta_hilos.add(carpeta_norm)
+
+        def worker() -> None:
+            try:
+                # El candado de `precargar_pandas` serializa el primer import
+                # de pandas con el resto de hilos (ver atom_core/precarga.py).
+                precarga.precargar_pandas()
+                from atom_core.estadillo import detectar_estadillos
+
+                rutas = detectar_estadillos(carpeta_norm)["rutas"]
+                resultado = {
+                    "encontrado": bool(rutas),
+                    "nombre": os.path.basename(rutas[0]) if rutas else None,
+                    "buscando": False,
+                }
+            except Exception as exc:  # noqa: BLE001 — indicador informativo, nunca rompe
+                logger.warning("estadillo_en_carpeta: fallo detectando en %s: %s",
+                               carpeta_norm, exc)
+                resultado = {"encontrado": False, "nombre": None, "buscando": False}
+            with self._estadillo_carpeta_lock:
+                self._estadillo_carpeta_cache[carpeta_norm] = resultado
+                self._estadillo_carpeta_hilos.discard(carpeta_norm)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"encontrado": False, "nombre": None, "buscando": True}
+
+    # Ventanas de recencia para derivar `fase` a partir del log de eventos:
+    # cuanto se considera "acaba de pasar" antes de volver a "esperando".
+    _ESTADILLO_VENTANA_CONECTADO_S = 30
+    _ESTADILLO_VENTANA_RECHAZADO_S = 30
+    _ESTADILLO_VENTANA_RECIBIENDO_S = 3
+
+    # Tope de espera de `_estadillo_calcular_validacion` al escaneo EXIF de
+    # la carpeta: pasado esto, el POST responde `pendiente: True` y el hilo
+    # sigue en segundo plano (ver su docstring).
+    _ESTADILLO_VALIDACION_TIMEOUT_S = 5
+
+    # Margen a cada lado de [Hora_de_inicio, Hora_final] al filtrar los
+    # vuelos del estadillo por tarjeta (`_estadillo_filtrar_por_tarjeta`):
+    # el piloto arranca a grabar unos segundos antes/después de la hora que
+    # apunta a mano, así que exigir el intervalo exacto descartaría vuelos
+    # reales. 5 min es margen suficiente sin solapar con el vuelo siguiente
+    # en una campaña normal (vuelos separados por >=10-15 min).
+    _ESTADILLO_FILTRO_TARJETA_MARGEN_S = 300
+
+    # IPs de loopback: peticiones del propio Chromium del kiosco a su
+    # servidor local, nunca un portatil real conectado por la LAN/hotspot.
+    _ESTADILLO_IPS_LOOPBACK = frozenset({"127.0.0.1", "::1"})
+
+    def _estadillo_registrar_evento(self, ip: str | None, tipo: str, detalle: str = "") -> None:
+        """Añade un evento al log de actividad del modo espera (últimos 10) y,
+        si es un contacto remoto real (`ping`/`consulta`/`envio`), actualiza
+        `ultimo_contacto`. Lo llama el handler HTTP con la IP del cliente en
+        cada petición a `/api/estadillo/*`; las acciones puramente locales
+        (`cancelado`, `caducado`) se registran con `ip=None`. Un contacto
+        desde loopback (127.0.0.1/::1) no es un portatil real -es el propio
+        Chromium del kiosco- y por tanto tampoco actualiza `ultimo_contacto`.
+        """
+        ahora = self._estadillo_reloj()
+        evento = {"cuando_dt": ahora, "ip": ip, "tipo": tipo, "detalle": detalle}
+        with self._estadillo_espera_lock:
+            self._estadillo_eventos.append(evento)
+            del self._estadillo_eventos[:-10]
+            if tipo in ("ping", "consulta", "envio") and ip not in self._ESTADILLO_IPS_LOOPBACK:
+                self._estadillo_ultimo_contacto = {"ip": ip, "cuando_dt": ahora, "accion": tipo}
+
+    @staticmethod
+    def _estadillo_evento_pub(evento: dict) -> dict:
+        return {
+            "cuando": evento["cuando_dt"].isoformat(timespec="seconds"),
+            "ip": evento["ip"],
+            "tipo": evento["tipo"],
+            "detalle": evento.get("detalle") or "",
+        }
+
+    def estadillo_espera_estado(self) -> dict:
+        """Estado del modo espera. `esperando` es `False` tanto si nunca se
+        inicio como si caduco (`caducado` distingue los dos casos) o si ya
+        se recibio el estadillo con exito y por tanto ya no admite mas POST
+        -en ese caso `esperando` sigue `True` para que el kiosco/pagina LAN
+        puedan seguir enseñando "recibido", pero `recibido` es `True`. Este
+        `recibido` no caduca a efectos de PANTALLA (el operario puede tardar
+        en pulsar OK y no debe perder la tarjeta de "recibido"); el corte
+        real de si un nuevo POST puede aceptarse como espera limpia pasado
+        `caduca_en` vive en el handler HTTP (`webserver.py`,
+        `_estadillo_recibir_post`), que compara `segundos_restantes` antes
+        de responder 409 `estadillo_ya_recibido` (bug 2026-09-23).
+
+        Ademas de lo anterior (compatible con lo que ya habia), añade:
+        - `fase`: 'inactivo'|'esperando'|'conectado'|'recibiendo'|
+          'recibido_ok'|'rechazado'|'caducado'. Derivada, no se guarda.
+        - `ultimo_contacto`: `{ip, cuando, accion}` del ultimo `ping`,
+          `consulta` o `envio` remoto, o `None` si no ha habido ninguno.
+        - `eventos`: los ultimos 10 `{cuando, ip, tipo, detalle}` del log
+          (sobrevive a que la espera actual termine o se cancele).
+        - `resumen`: solo si `recibido` es `True` (lo que devolvio
+          `_estadillo_recibir` al aceptar el POST).
+        """
+        with self._estadillo_espera_lock:
+            estado = self._estadillo_espera
+            eventos_snapshot = list(self._estadillo_eventos)
+            ultimo_contacto_snapshot = (
+                dict(self._estadillo_ultimo_contacto) if self._estadillo_ultimo_contacto else None
+            )
+            ahora = self._estadillo_reloj()
+
+            if estado is None:
+                fase = "inactivo"
+                resultado = {"esperando": False, "caducado": False}
+            else:
+                restante = (estado["caduca_en"] - ahora).total_seconds()
+                # Caducar no es un `recibido`: si ya llego el estadillo, la
+                # espera "termino con exito" y el cronometro deja de importar
+                # PARA LA PANTALLA (el kiosco sigue enseñando "recibido"
+                # aunque el operario tarde en pulsar OK). El corte real para
+                # aceptar un POST nuevo como espera limpia esta en
+                # `webserver.py` (`_estadillo_recibir_post`), no aqui.
+                if restante <= 0 and not estado["recibido"]:
+                    fase = "caducado"
+                    resultado = {"esperando": False, "caducado": True}
+                    if not estado.get("_evento_caducado_registrado"):
+                        estado["_evento_caducado_registrado"] = True
+                        evento = {"cuando_dt": ahora, "ip": None, "tipo": "caducado", "detalle": ""}
+                        self._estadillo_eventos.append(evento)
+                        del self._estadillo_eventos[:-10]
+                        eventos_snapshot = list(self._estadillo_eventos)
+                elif estado["recibido"]:
+                    fase = "recibido_ok"
+                    resultado = {
+                        "esperando": True,
+                        "caducado": False,
+                        "inspeccion": estado["inspeccion"],
+                        "fotos": dict(estado["fotos"]),
+                        "recibido": True,
+                        "rutas": list(estado["rutas"]),
+                        "errores": list(estado["errores"]),
+                        "caduca_en": estado["caduca_en"].isoformat(timespec="seconds"),
+                        "segundos_restantes": max(0, int(restante)),
+                    }
+                    if estado.get("resumen"):
+                        resultado["resumen"] = estado["resumen"]
+                    if estado.get("validacion") is not None:
+                        resultado["validacion"] = estado["validacion"]
+                else:
+                    ultimo_evento = eventos_snapshot[-1] if eventos_snapshot else None
+                    if (ultimo_evento and ultimo_evento["tipo"] == "envio"
+                            and (ahora - ultimo_evento["cuando_dt"]).total_seconds()
+                            <= self._ESTADILLO_VENTANA_RECIBIENDO_S):
+                        fase = "recibiendo"
+                    elif (ultimo_evento and ultimo_evento["tipo"] == "rechazado"
+                            and (ahora - ultimo_evento["cuando_dt"]).total_seconds()
+                            <= self._ESTADILLO_VENTANA_RECHAZADO_S):
+                        fase = "rechazado"
+                    elif (ultimo_contacto_snapshot
+                            and (ahora - ultimo_contacto_snapshot["cuando_dt"]).total_seconds()
+                            <= self._ESTADILLO_VENTANA_CONECTADO_S):
+                        fase = "conectado"
+                    else:
+                        fase = "esperando"
+                    resultado = {
+                        "esperando": True,
+                        "caducado": False,
+                        "inspeccion": estado["inspeccion"],
+                        "fotos": dict(estado["fotos"]),
+                        "recibido": False,
+                        "rutas": list(estado["rutas"]),
+                        "errores": list(estado["errores"]),
+                        "caduca_en": estado["caduca_en"].isoformat(timespec="seconds"),
+                        "segundos_restantes": max(0, int(restante)),
+                    }
+
+        # La carpeta seleccionada solo se conoce si ya se inicio la espera
+        # (llega como argumento a `estadillo_espera_iniciar`); antes de eso
+        # el backend no tiene forma de saber que carpeta eligio el kiosco (es
+        # estado local de React, `KioskScreen`). `carpeta_seleccionada` exige
+        # ademas que la ruta exista de verdad en disco (pudo borrarse tras
+        # iniciar la espera).
+        carpeta_valor = estado["carpeta"] if estado is not None else None
+        carpeta_seleccionada = bool(carpeta_valor) and os.path.isdir(carpeta_valor)
+        resultado["carpeta_seleccionada"] = carpeta_seleccionada
+        resultado["carpeta"] = carpeta_valor
+        if resultado.get("esperando") and not carpeta_seleccionada:
+            resultado["aviso"] = "No hay carpeta seleccionada en el Organizer"
+
+        # Indicador para el selector de carpeta del kiosco: ¿hay algún
+        # estadillo YA en la carpeta elegida? (no confundir con `recibido`,
+        # que es el que llegó por LAN y aún no se ha movido, ver
+        # `_mover_estadillo_espera_si_toca`).
+        resultado["estadillo_en_carpeta"] = self._estadillo_en_carpeta(carpeta_valor)
+
+        resultado["fase"] = fase
+        resultado["ultimo_contacto"] = (
+            {"ip": ultimo_contacto_snapshot["ip"],
+             "cuando": ultimo_contacto_snapshot["cuando_dt"].isoformat(timespec="seconds"),
+             "accion": ultimo_contacto_snapshot["accion"]}
+            if ultimo_contacto_snapshot else None
+        )
+        resultado["eventos"] = [self._estadillo_evento_pub(e) for e in eventos_snapshot]
+
+        from atom_core import red_info
+
+        try:
+            resultado["red"] = red_info.info_red()
+        except Exception:  # noqa: BLE001 — informativo, nunca debe romper el estado
+            resultado["red"] = {"hostname": "", "puerto": red_info.PUERTO_PUBLICO, "ips": [], "url": ""}
+        return resultado
+
+    def _estadillo_filtrar_por_tarjeta(self, vuelos: list, carpeta: str | None) -> tuple[list, dict]:
+        """Se queda solo con los vuelos del estadillo recibido cuyo horario
+        coincide con fotos reales de `carpeta` (la que el kiosco tiene
+        elegida, la tarjeta que se está organizando): la app de Christian
+        manda TODOS los vuelos de la campaña/día, no solo los de esta
+        tarjeta/SD.
+
+        Reutiliza `atom_core.validacion_vuelos.validar` -mismo criterio de
+        ventana [Hora_de_inicio, Hora_final] + margen que ya usa el aviso
+        previo a subir- para decidir, vuelo a vuelo: "tiene alguna foto en
+        su horario" (estado != `sin_fotos`) -> se queda; si no, se descarta.
+
+        Las horas del estadillo y el EXIF `DateTimeOriginal` de las DJI se
+        asumen ya en la MISMA hora local (España, Europe/Madrid): ninguna de
+        las dos trae zona horaria en origen, así que se comparan tal cual,
+        sin convertir (ver `validacion_vuelos._a_madrid_naive`).
+
+        Si `carpeta` no está seleccionada, no existe en disco, o no se puede
+        leer NINGÚN EXIF con hora (tarjeta recién insertada, fotos sin el
+        tag) no se filtra nada -se devuelven todos los vuelos recibidos tal
+        cual- y se avisa: mejor procesar de más que perder vuelos por un
+        fallo de lectura."""
+        from atom_core import estadillo as estadillo_mod, validacion_vuelos
+        import exif as exif_mod
+
+        avisos: list[str] = []
+        vuelos_recibidos = len(vuelos)
+
+        tiempos: list = []
+        if carpeta and os.path.isdir(carpeta):
+            try:
+                tiempos = exif_mod.listar_horas_exif(carpeta)
+            except Exception as exc:  # noqa: BLE001 — fail-open, nunca debe tumbar la recepcion
+                avisos.append(f"No se pudo leer el EXIF de la carpeta para filtrar por tarjeta: {exc}")
+                tiempos = []
+
+        if not tiempos:
+            avisos.append(
+                "No se ha podido leer la hora EXIF de ninguna foto de la carpeta elegida"
+                if carpeta else
+                "No hay ninguna carpeta seleccionada en el Organizer"
+            )
+            avisos.append(
+                "No se ha filtrado por tarjeta: se han aceptado TODOS los vuelos recibidos."
+            )
+            return list(vuelos), {
+                "vuelos_recibidos": vuelos_recibidos,
+                "vuelos_en_tarjeta": vuelos_recibidos,
+                "vuelos_descartados": [],
+                "avisos": avisos,
+            }
+
+        normalizados = [estadillo_mod._fila_json_a_csv(v) for v in vuelos]
+        # `Fecha` llega tal cual la manda la app (puede traer `:` estilo
+        # EXIF, `/` o `-`) y `validacion_vuelos._combinar_fecha_hora` exige
+        # `YYYY-MM-DD`: se normaliza con la MISMA función que usa
+        # `filas_para_suite` para el body que se le manda a la Suite, así
+        # las dos rutas leen la fecha igual.
+        ventanas = [{
+            "pb": n.get("PB") or "",
+            "num_vuelo": n.get("Vuelo") or "",
+            "fecha": estadillo_mod._normalizar_fecha_suite(n.get("Fecha") or "") or "",
+            "hora_inicio": n.get("Hora_de_inicio") or "",
+            "hora_fin": n.get("Hora_final") or "",
+        } for n in normalizados]
+
+        resultado = validacion_vuelos.validar(
+            ventanas, tiempos, margen_s=self._ESTADILLO_FILTRO_TARJETA_MARGEN_S)
+        # `validar` procesa los vuelos EN EL MISMO ORDEN que se le pasan
+        # (`ventanas`, que es paralela a `vuelos`), así que basta con
+        # emparejar por posición -no hace falta reconstruir el id, que
+        # puede llevar un sufijo `#N` si hay pb+vuelo duplicados.
+        estados_por_indice = [v["estado"] for v in resultado["vuelos"]]
+
+        vuelos_filtrados = []
+        descartados = []
+        for i, vuelo in enumerate(vuelos):
+            estado_v = estados_por_indice[i] if i < len(estados_por_indice) else "sin_fotos"
+            if estado_v == "sin_fotos":
+                n = normalizados[i]
+                descartados.append({
+                    "pb": n.get("PB"), "vuelo": n.get("Vuelo"),
+                    "hora_inicio": n.get("Hora_de_inicio"), "hora_fin": n.get("Hora_final"),
+                })
+            else:
+                vuelos_filtrados.append(vuelo)
+
+        if descartados:
+            avisos.append(
+                f"{len(descartados)} vuelo{'s' if len(descartados) != 1 else ''} del estadillo "
+                "descartado(s) por tarjeta: su horario no coincide con ninguna foto de la "
+                "carpeta elegida."
+            )
+
+        return vuelos_filtrados, {
+            "vuelos_recibidos": vuelos_recibidos,
+            "vuelos_en_tarjeta": len(vuelos_filtrados),
+            "vuelos_descartados": descartados,
+            "avisos": avisos,
+        }
+
+    def _estadillo_recibir(self, vuelos: list) -> dict:
+        """N `FlightRecord` (JSON de "Estadillo Digital") -> CSV temporal con
+        cabeceras ES + mismo gate de validación que un CSV subido a mano
+        (`estadillo.validar_para_subida`). Solo lo llama el handler HTTP de
+        `/api/estadillo`, que ya ha comprobado que hay modo espera activo.
+
+        Antes de escribir el CSV, filtra los vuelos recibidos a los de ESTA
+        tarjeta (`_estadillo_filtrar_por_tarjeta`): la app de Christian
+        manda el estadillo de la campaña entera, no solo el de la SD que se
+        está organizando."""
+        from atom_core import estadillo as estadillo_mod
+        from atom_core.google_auth import estadillos_recibidos_dir
+
+        with self._estadillo_espera_lock:
+            estado = self._estadillo_espera
+        if estado is None:
+            return {"ok": False, "errores": ["No hay modo espera activo."]}
+
+        vuelos_filtrados, filtro = self._estadillo_filtrar_por_tarjeta(vuelos, estado.get("carpeta"))
+
+        try:
+            ruta = estadillo_mod.escribir_csv_desde_json(vuelos_filtrados, estadillos_recibidos_dir())
+        except ValueError as exc:
+            with self._estadillo_espera_lock:
+                if self._estadillo_espera is estado:
+                    estado["errores"] = [str(exc)]
+            return {"ok": False, "errores": [str(exc)]}
+
+        validacion = estadillo_mod.validar_para_subida([ruta])
+        if not validacion["ok"]:
+            with self._estadillo_espera_lock:
+                if self._estadillo_espera is estado:
+                    estado["errores"] = [validacion["error"]]
+            return {"ok": False, "errores": [validacion["error"]]}
+
+        info = estadillo_mod.read_estadillo_info(ruta)
+        resumen = {
+            "planta": info.get("trabajo", ""),
+            "fecha": info.get("fecha", ""),
+            # Campaña de varios días: la lista completa, no solo la primera
+            # fecha (`fecha` se mantiene por compatibilidad con clientes que
+            # ya lo leían así).
+            "fechas": info.get("fechas", []),
+            "pilotos": info.get("pilotos", []),
+            "drones": info.get("drones", []),
+            "n_vuelos": info.get("num_vuelos", 0),
+            # Lista de vuelos con su hora de inicio/fin (`{pb, vuelo, fecha,
+            # inicio, final, cruza_medianoche}`, misma forma que devuelve
+            # `read_estadillo_info`): el frontend la usa para pintar el
+            # resumen tras recibir el estadillo (`EsperaEstadillo.jsx`) y
+            # calcular el tiempo de vuelo total.
+            "vuelos": info.get("vuelos", []),
+            # Filtro por tarjeta (`_estadillo_filtrar_por_tarjeta`): cuántos
+            # vuelos mandó la app de Christian en total, cuántos quedaron
+            # tras filtrar por las fotos de la carpeta elegida, cuáles se
+            # descartaron y por qué (`avisos`).
+            "vuelos_recibidos": filtro["vuelos_recibidos"],
+            "vuelos_en_tarjeta": filtro["vuelos_en_tarjeta"],
+            "vuelos_descartados": filtro["vuelos_descartados"],
+            "avisos": filtro["avisos"],
+        }
+        val_fotos = self._estadillo_calcular_validacion(estado, validacion["vuelos"])
+        with self._estadillo_espera_lock:
+            if self._estadillo_espera is estado:
+                estado["recibido"] = True
+                estado["rutas"] = [ruta]
+                estado["errores"] = []
+                estado["resumen"] = resumen
+                estado["validacion"] = val_fotos
+
+        return {"ok": True, "resumen": resumen, "validacion": val_fotos}
+
+    def _estadillo_calcular_validacion(self, estado: dict, vuelos_estadillo: list) -> dict:
+        """Compara `vuelos_estadillo` (forma de `estadillo.filas_para_suite`)
+        contra las fotos EXIF de `estado["carpeta"]` (`validacion_vuelos.
+        validar`). Nunca rechaza nada -solo avisa-, así que corre EN LA
+        MISMA llamada de `_estadillo_recibir`, con un tope de 5 s: carpetas
+        con miles de fotos pueden tardar más en leer todo el EXIF, y el
+        hilo HTTP no puede quedarse bloqueado indefinidamente. Si no da
+        tiempo, el hilo sigue en segundo plano y termina escribiendo
+        `estado["validacion"]` igualmente -el polling de
+        `estadillo_espera_estado` lo recoge en cuanto termine-, y aquí se
+        devuelve `pendiente: True` mientras tanto."""
+        from atom_core import validacion_vuelos
+
+        carpeta = estado.get("carpeta")
+        resultado_hilo: dict = {}
+
+        def worker():
+            import exif
+
+            try:
+                tiempos = exif.listar_horas_exif(carpeta) if carpeta else []
+                resultado_hilo["valor"] = validacion_vuelos.validar(vuelos_estadillo, tiempos)
+            except Exception as exc:  # noqa: BLE001 — fail-open, nunca debe tumbar la recepción
+                resultado_hilo["valor"] = {
+                    "ok": False, "pendiente": False, "vuelos": [], "fotos_fuera": 0,
+                    "avisos": [f"No se pudo comparar el estadillo con las fotos de la carpeta: {exc}"],
+                }
+            with self._estadillo_espera_lock:
+                if self._estadillo_espera is estado:
+                    estado["validacion"] = resultado_hilo["valor"]
+
+        hilo = threading.Thread(target=worker, daemon=True)
+        hilo.start()
+        hilo.join(self._ESTADILLO_VALIDACION_TIMEOUT_S)
+        if "valor" in resultado_hilo:
+            return resultado_hilo["valor"]
+        return {"ok": False, "pendiente": True, "vuelos": [], "fotos_fuera": 0, "avisos": []}
+
     def _subir_estadillo_worker(self, folder: str, rutas: list[str], validacion: dict):
         from datetime import datetime, timezone
 
         from atom_core import cloud_upload, estadillo_canonico
 
         self._push_cloud({"kind": "start", "scope": "estadillo"})
+        # `finally` es lo que libera el candado de `estadillo_subir`
+        # (`self._estadillo_subiendo`): con dos `return` intermedios (error de
+        # subida, `res["ok"]` falso) y el camino feliz al final, cualquier
+        # salida que no pasara por aquí dejaba la subida "en curso" para
+        # siempre y la UI sin poder reintentar (`Ya hay una subida en curso.`
+        # de por vida).
         try:
-            locales = []
-            for i, ruta in enumerate(rutas, start=1):
-                locales.append(
-                    {
-                        "orden": i,
-                        "ruta": ruta,
-                        "nombre_original": os.path.basename(ruta),
-                        "md5_b64": cloud_upload._file_md5_b64(ruta),
-                        "bytes": os.path.getsize(ruta),
-                        "ext": os.path.splitext(ruta)[1],
-                    }
+            try:
+                locales = []
+                for i, ruta in enumerate(rutas, start=1):
+                    locales.append(
+                        {
+                            "orden": i,
+                            "ruta": ruta,
+                            "nombre_original": os.path.basename(ruta),
+                            "md5_b64": cloud_upload._file_md5_b64(ruta),
+                            "bytes": os.path.getsize(ruta),
+                            "ext": os.path.splitext(ruta)[1],
+                        }
+                    )
+
+                plan = estadillo_canonico.plan_subida(
+                    planta=folder,
+                    ficheros_locales=locales,
+                    vuelos=validacion["vuelos"],
+                    validacion=validacion,
+                    ahora=datetime.now(timezone.utc),
+                    subido_por=self._cuenta_actual(),
                 )
 
-            plan = estadillo_canonico.plan_subida(
-                planta=folder,
-                ficheros_locales=locales,
-                vuelos=validacion["vuelos"],
-                validacion=validacion,
-                ahora=datetime.now(timezone.utc),
-                subido_por=self._cuenta_actual(),
-            )
-
-            res = estadillo_canonico.ejecutar_plan(
-                plan,
-                subir_fichero=self._subir_objeto_fichero,
-                subir_json=self._subir_objeto_json,
-            )
-        except Exception as exc:
-            self._push_cloud({"kind": "error", "scope": "estadillo", "error": str(exc)})
-            return
-
-        if not res["ok"]:
-            self._push_cloud({"kind": "error", "scope": "estadillo", "error": res["error"]})
-            return
-
-        # Fail-open de principio a fin, como el `_notificar_estadillo` que esto
-        # sustituye: el crudo ya está en el bucket, así que un fallo avisando a
-        # la Suite no puede dejar al operario sin el evento `done`.
-        try:
-            reporter = self._reporter_actual()
-            if reporter is not None:
-                reporter.estadillo(
-                    validacion["vuelos"],
-                    ruta_manifest=res["ruta_manifest"],
+                res = estadillo_canonico.ejecutar_plan(
+                    plan,
+                    subir_fichero=self._subir_objeto_fichero,
+                    subir_json=self._subir_objeto_json,
                 )
-        except Exception:  # noqa: BLE001 - fail-open
-            pass
+            except Exception as exc:
+                self._push_cloud({"kind": "error", "scope": "estadillo", "error": str(exc)})
+                return
 
-        self._push_cloud(
-            {
-                "kind": "done",
-                "scope": "estadillo",
-                "ruta_manifest": res["ruta_manifest"],
-                "vuelos_detectados": validacion["vuelos_detectados"],
-            }
-        )
+            if not res["ok"]:
+                self._push_cloud({"kind": "error", "scope": "estadillo", "error": res["error"]})
+                return
+
+            # Fail-open de principio a fin, como el `_notificar_estadillo` que
+            # esto sustituye: el crudo ya está en el bucket, así que un fallo
+            # avisando a la Suite no puede dejar al operario sin el evento
+            # `done`.
+            try:
+                reporter = self._reporter_actual()
+                if reporter is not None:
+                    reporter.estadillo(
+                        validacion["vuelos"],
+                        ruta_manifest=res["ruta_manifest"],
+                    )
+            except Exception:  # noqa: BLE001 - fail-open
+                pass
+
+            self._push_cloud(
+                {
+                    "kind": "done",
+                    "scope": "estadillo",
+                    "ruta_manifest": res["ruta_manifest"],
+                    "vuelos_detectados": validacion["vuelos_detectados"],
+                }
+            )
+        finally:
+            self._estadillo_subiendo = False
 
     def _cuenta_actual(self) -> str | None:
         """El email de la sesión de Google activa, o None sin login."""
@@ -2338,6 +3231,12 @@ class Api:
         if self._running:
             return {"started": False, "reason": "Ya hay un proceso en curso."}
         self._running = True
+        # Estado del panel de control remoto (`GET /api/control/estado`): un
+        # run nuevo empieza limpio, sin arrastrar la fase/progreso/error del
+        # anterior (`_push` los va actualizando mientras corre).
+        self._control_fase = None
+        self._control_progreso = None
+        self._control_ultimo_error = None
         threading.Thread(
             target=self._run_task_worker, args=(task, params, advanced), daemon=True
         ).start()
@@ -2373,6 +3272,8 @@ class Api:
             precarga.precargar_pandas()
             from atom_core.organize import run_task
 
+            if task == "split_images":
+                params = self._mover_estadillo_espera_si_toca(params)
             run_task(task, params, emit, advanced or None)
         except Exception as exc:  # noqa: BLE001 — el front tiene que enterarse SIEMPRE
             logger.exception("El task %s murió antes de poder informar", task)
@@ -2383,6 +3284,57 @@ class Api:
             # emitir no llegaria nunca: el vaciado lo dispara el evento
             # SIGUIENTE, y despues del ultimo no hay ninguno.
             self._flush_push()
+
+    def _mover_estadillo_espera_si_toca(self, params: dict) -> dict:
+        """Si hay un estadillo recibido por LAN (modo espera, ver
+        `_estadillo_recibir`) pendiente para ESTA carpeta, lo mueve de
+        `estadillos_recibidos_dir()` a la carpeta que se va a organizar
+        (`params["origen"]`) justo AHORA, al empezar -nunca antes: hasta
+        este momento el fichero se queda donde "Estadillo Digital" lo dejó.
+
+        Solo mueve el estadillo asociado a la espera/inspección actual: si
+        la carpeta de la espera no coincide con la de este run (otra
+        carpeta, u otra espera ya cancelada/sustituida), no toca nada. Si el
+        move falla o no aplica, el run sigue con `params` tal cual -nunca
+        bloquea- y queda un warning en el log.
+        """
+        try:
+            with self._estadillo_espera_lock:
+                estado = self._estadillo_espera
+                if estado is None or not estado.get("recibido") or not estado.get("rutas"):
+                    return params
+                origen = (params.get("origen") or params.get("input_folder") or "").strip()
+                carpeta_espera = estado.get("carpeta")
+                if not origen or not os.path.isdir(origen):
+                    return params
+                if not carpeta_espera or os.path.normpath(carpeta_espera) != os.path.normpath(origen):
+                    return params  # estadillo de otra carpeta/espera: no es el de este run
+                ruta_vieja = estado["rutas"][0]
+
+            from atom_core import estadillo as estadillo_mod
+
+            ruta_nueva = estadillo_mod.mover_estadillo_recibido_a_carpeta(ruta_vieja, origen)
+            if not ruta_nueva:
+                logger.warning(
+                    "No se pudo mover el estadillo recibido por LAN (%s) a %s: "
+                    "el run sigue con la ruta original.", ruta_vieja, origen)
+                return params
+
+            with self._estadillo_espera_lock:
+                if self._estadillo_espera is estado:
+                    estado["rutas"] = [ruta_nueva]
+
+            nuevos = dict(params)
+            rutas_actuales = estadillo_mod.desempaquetar_rutas(nuevos.get("estadillo") or nuevos.get("estad") or "")
+            rutas_actuales = [ruta_nueva if r == ruta_vieja else r for r in rutas_actuales]
+            if "estadillo" in nuevos:
+                nuevos["estadillo"] = estadillo_mod.empaquetar_rutas(rutas_actuales)
+            if "estad" in nuevos:
+                nuevos["estad"] = estadillo_mod.empaquetar_rutas(rutas_actuales)
+            return nuevos
+        except Exception as exc:  # noqa: BLE001 — nunca debe bloquear el run
+            logger.warning("Fallo moviendo el estadillo recibido por LAN: %s", exc)
+            return params
 
     # Cada cuanto (segundos) y cada cuantos eventos se vacia el buffer de
     # progreso. 0,15 s es el limite por debajo del cual el ojo ya no distingue
@@ -2406,6 +3358,16 @@ class Api:
         vaciado: marcan cambios de estado que la UI no puede mostrar con retraso,
         y `done` ademas cierra la corrida.
         """
+        # Ultimo progreso/fase/error para `GET /api/control/estado`: se
+        # guarda pase o no `self._sink` (el panel de control puede consultar
+        # `/estado` aunque nadie este escuchando el SSE ahora mismo).
+        kind = detail.get("kind")
+        if kind == "progress":
+            self._control_progreso = detail.get("value")
+        elif kind in ("phase", "plan"):
+            self._control_fase = detail.get("data")
+        elif kind == "error":
+            self._control_ultimo_error = detail.get("text")
         if not self._sink:
             return
         with self._push_lock:
@@ -3247,6 +4209,8 @@ def main() -> None:
         # journal, y el log de la app es lo único que queda de un arranque roto.
         configurar_log_a_fichero(nivel)
         instalar_capturas_de_excepcion()
+        from atom_core.google_auth import migrar_estadillos_recibidos_legacy
+        migrar_estadillos_recibidos_legacy()
         # En el hilo principal y antes de que `servir` levante nada: ver
         # atom_core/precarga.py.
         precarga.precargar_en_arranque()
@@ -3264,6 +4228,9 @@ def main() -> None:
     instalar_capturas_de_excepcion()
     logger.info("ATOM Organizer v%s arrancando (log: %s)",
                 _app_version_for_title(), _ruta_log or "sin fichero")
+
+    from atom_core.google_auth import migrar_estadillos_recibidos_legacy
+    migrar_estadillos_recibidos_legacy()
 
     # Precarga de pandas en un hilo de fondo: importarlo cuesta más de un segundo
     # y hacerlo aquí retrasaba la aparición de la ventana. El `Lock` de

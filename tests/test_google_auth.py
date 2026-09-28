@@ -684,3 +684,70 @@ def test_cerrar_sesion_a_media_comprobacion_no_da_un_falso_valida(tmp_path, monk
 
     assert not valida
     assert "No hay sesión iniciada" in texto
+
+
+# ---- estadillos_recibidos: carpeta visible en el home, migración legacy ----
+
+def test_estadillos_recibidos_dir_es_visible_bajo_el_home_no_bajo_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+
+    destino = ga.estadillos_recibidos_dir()
+
+    assert destino == tmp_path / "estadillos_recibidos"
+    assert destino.is_dir()
+    assert ".config" not in destino.parts
+
+
+def test_migrar_estadillos_recibidos_legacy_mueve_ficheros_y_borra_la_vieja(tmp_path, monkeypatch):
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+
+    vieja = tmp_path / ".config" / "atom-organizer" / "estadillos_recibidos"
+    vieja.mkdir(parents=True)
+    (vieja / "20260920_estadillo_Rebeca.csv").write_text("a;b\n1;2\n")
+
+    ga.migrar_estadillos_recibidos_legacy()
+
+    nueva = tmp_path / "estadillos_recibidos"
+    assert (nueva / "20260920_estadillo_Rebeca.csv").read_text() == "a;b\n1;2\n"
+    assert not vieja.exists()
+
+
+def test_migrar_estadillos_recibidos_legacy_no_sobrescribe_si_choca_el_nombre(tmp_path, monkeypatch):
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+
+    vieja = tmp_path / ".config" / "atom-organizer" / "estadillos_recibidos"
+    vieja.mkdir(parents=True)
+    (vieja / "20260920_estadillo_Rebeca.csv").write_text("legacy")
+
+    nueva = tmp_path / "estadillos_recibidos"
+    nueva.mkdir(parents=True)
+    (nueva / "20260920_estadillo_Rebeca.csv").write_text("ya-migrado")
+
+    ga.migrar_estadillos_recibidos_legacy()
+
+    assert (nueva / "20260920_estadillo_Rebeca.csv").read_text() == "ya-migrado"
+    assert (nueva / "20260920_estadillo_Rebeca_1.csv").read_text() == "legacy"
+
+
+def test_migrar_estadillos_recibidos_legacy_es_idempotente_sin_carpeta_vieja(tmp_path, monkeypatch):
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+
+    ga.migrar_estadillos_recibidos_legacy()
+    ga.migrar_estadillos_recibidos_legacy()
+
+    assert not (tmp_path / ".config").exists()
+
+
+def test_migrar_estadillos_recibidos_legacy_nunca_revienta_el_arranque(tmp_path, monkeypatch):
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+
+    vieja = tmp_path / ".config" / "atom-organizer" / "estadillos_recibidos"
+    vieja.mkdir(parents=True)
+    (vieja / "x.csv").write_text("x")
+
+    def revienta(*a, **k):
+        raise OSError("disco lleno")
+
+    monkeypatch.setattr(ga.shutil, "move", revienta)
+
+    ga.migrar_estadillos_recibidos_legacy()  # no debe lanzar

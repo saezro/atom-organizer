@@ -1,5 +1,7 @@
 """Endpoints del PIN del kiosco en la capa Api."""
 
+import logging
+
 from app_webview import Api
 from atom_core.session_store import SessionStore
 
@@ -117,3 +119,18 @@ def test_fijar_respeta_el_bloqueo_por_intentos(tmp_path):
     res = api.pin_fijar("0000")
     assert res["ok"] is False
     assert res.get("espera_segundos", 0) > 0
+
+
+def test_pin_verificar_no_deja_el_pin_en_los_logs(tmp_path, caplog):
+    """`pin_verificar` loguea longitud e intento, nunca los digitos."""
+    api = _api(tmp_path)
+    api.pin_fijar("1234")
+    with caplog.at_level(logging.INFO):
+        api.pin_verificar("1234")  # acierto -> logger.info
+        api.pin_verificar("0000")  # fallo -> logger.warning
+
+    mensajes = "\n".join(r.getMessage() for r in caplog.records)
+    assert "1234" not in mensajes
+    assert "0000" not in mensajes
+    assert "longitud" in mensajes
+    assert "intento" in mensajes

@@ -13,6 +13,7 @@ const puente = {
     pinVerificar: vi.fn().mockResolvedValue({ ok: true }),
     pinFijar: vi.fn().mockResolvedValue({ ok: true }),
     pinCambiar: vi.fn().mockResolvedValue({ ok: true }),
+    pinTelemetria: vi.fn().mockResolvedValue({ ok: true }),
   },
 }
 vi.mock('./bridge.js', () => puente)

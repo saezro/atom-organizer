@@ -40,6 +40,7 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import socket
 import sys
 import threading
@@ -118,6 +119,53 @@ def user_data_dir() -> Path:
     else:
         base = Path(os.path.expanduser("~")) / ".config" / "atom-organizer"
     return base
+
+
+def estadillos_recibidos_dir() -> Path:
+    """Carpeta donde se guardan los estadillos recibidos por LAN ("Estadillo
+    Digital"). Visible en el `home` del operario, NUNCA bajo `.config`: antes
+    vivía en `user_data_dir()/"estadillos_recibidos"` (invisible salvo con
+    ficheros ocultos activados); ahora en `Path.home()/"estadillos_recibidos"`.
+    """
+    destino = Path.home() / "estadillos_recibidos"
+    destino.mkdir(parents=True, exist_ok=True)
+    return destino
+
+
+def migrar_estadillos_recibidos_legacy() -> None:
+    """Migración de arranque, única vez: mueve lo que hubiera en la carpeta
+    vieja (bajo `.config`, invisible) a la nueva (visible en el `home`).
+
+    Idempotente: si la carpeta vieja no existe o ya está vacía, no hace nada.
+    Nunca lanza — cualquier fallo (permisos, disco, lo que sea) se registra
+    como warning y el arranque sigue; perder este movimiento no es motivo
+    para tumbar la app.
+    """
+    try:
+        origen = user_data_dir() / "estadillos_recibidos"
+        if not origen.is_dir():
+            return
+
+        ficheros = [f for f in origen.iterdir() if f.is_file()]
+        if ficheros:
+            destino = estadillos_recibidos_dir()
+            for fichero in ficheros:
+                objetivo = destino / fichero.name
+                sufijo = 1
+                while objetivo.exists():
+                    objetivo = destino / f"{fichero.stem}_{sufijo}{fichero.suffix}"
+                    sufijo += 1
+                shutil.move(str(fichero), str(objetivo))
+
+        # Solo se borra si queda vacía: si hay subcarpetas raras o algo que no
+        # se ha movido, se deja tal cual para no perder nada.
+        try:
+            if not any(origen.iterdir()):
+                origen.rmdir()
+        except OSError:
+            pass
+    except Exception:  # noqa: BLE001 — migración best-effort, nunca rompe el arranque
+        logger.warning("No se pudo migrar estadillos_recibidos legacy", exc_info=True)
 
 
 # --------------------------------------------------------------------------

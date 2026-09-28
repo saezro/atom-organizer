@@ -1082,6 +1082,12 @@ class SplitImagesConfig:
     # (sufijos `_1`) NO es una opcion aqui — era la causa de que reorganizar
     # PRUEBA dejara 5.049 objetos a partir de 2.516.
     modo_destino: str = MODO_SOBRESCRIBIR
+    # `plantas_pv.orientacion` de la inspección elegida ("Horizontal",
+    # "Vertical", "Varias"), tal cual, sin normalizar -eso lo hace quien la
+    # consume (`atom_core.indice._orientacion_normalizada`). Vacío si no hay
+    # inspección elegida o si la API de la Suite todavía no manda el campo
+    # (ver `atom_core/inspecciones.py`, decisión 2026-09-28).
+    orientacion: str = ""
 
 
 @dataclass(frozen=True)

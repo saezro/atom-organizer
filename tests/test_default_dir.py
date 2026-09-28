@@ -11,16 +11,25 @@ def test_no_linux_devuelve_siempre_el_home(monkeypatch):
     assert res == {"ok": True, "path": os.path.expanduser("~")}
 
 
-def test_linux_sin_candidatos_devuelve_el_listado_del_home(monkeypatch):
+def test_linux_no_raspberry_devuelve_siempre_el_home(monkeypatch):
+    # PC/AppImage de escritorio en Linux: aunque sys.platform sea "linux",
+    # sin ser una Raspberry real el comportamiento es el mismo que en
+    # Windows (navegacion libre, arranca en home), no el confinamiento
+    # a discos externos del kiosco.
     monkeypatch.setattr(sys, "platform", "linux")
-    import glob
+    monkeypatch.setattr(app_webview.estado_lan, "es_raspberry", lambda: False)
+    res = app_webview.Api().default_dir()
+    assert res == {"ok": True, "path": os.path.expanduser("~")}
 
-    monkeypatch.setattr(glob, "glob", lambda patron: [])
+
+def test_raspberry_sin_discos_devuelve_la_lista_vacia_de_discos(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(app_webview.estado_lan, "es_raspberry", lambda: True)
+    monkeypatch.setattr(app_webview.estado_lan, "discos_externos", lambda: [])
     res = app_webview.Api().default_dir()
     assert res["ok"] is True
-    assert res["path"] == os.path.expanduser("~")
-    # Mismo shape que list_dir(): dirs/files/parent, no solo ok/path.
-    assert "dirs" in res and "files" in res and "parent" in res
+    assert res["is_root"] is True
+    assert res["dirs"] == []
 
 
 def test_linux_candidato_en_el_mismo_dispositivo_se_descarta(monkeypatch, tmp_path):
@@ -44,87 +53,24 @@ def test_linux_candidato_en_el_mismo_dispositivo_se_descarta(monkeypatch, tmp_pa
     assert res["path"] == os.path.expanduser("~")
 
 
-def test_linux_candidato_en_otro_dispositivo_se_usa(monkeypatch, tmp_path):
+def test_raspberry_con_un_disco_devuelve_la_lista_de_discos_no_su_contenido(monkeypatch, tmp_path):
+    # default_dir() en la Raspberry es list_dir(None): el nivel superior es
+    # SIEMPRE la lista de discos (aunque haya solo uno), nunca se entra sola
+    # dentro de el -eso lo decide el operador tocando en la UI-.
     monkeypatch.setattr(sys, "platform", "linux")
-    import glob
+    monkeypatch.setattr(app_webview.estado_lan, "es_raspberry", lambda: True)
 
     disco = tmp_path / "media" / "pi" / "USB"
     disco.mkdir(parents=True)
     (disco / "archivo.txt").write_text("x", encoding="utf-8")
 
-    monkeypatch.setattr(
-        glob, "glob",
-        lambda patron: [str(disco)] if patron == "/media/*/*" else [],
-    )
-
-    real_stat = os.stat
-
-    def _stat_fake(ruta, *a, **kw):
-        original = real_stat(ruta, *a, **kw)
-        if str(ruta) == str(disco):
-            # Mismo stat real (para que isdir/etc sigan funcionando), pero
-            # con st_dev distinto al de la raiz: es lo que lo marca como
-            # "disco extra".
-            campos = list(original)
-            campos[2] = real_stat("/").st_dev + 1
-            return os.stat_result(campos)
-        return original
-
-    monkeypatch.setattr(os, "stat", _stat_fake)
+    lista = [{"nombre": "USB", "punto_montaje": str(disco), "libre_gb": 1.0, "total_gb": 2.0}]
+    monkeypatch.setattr(app_webview.estado_lan, "discos_externos", lambda: lista)
 
     res = app_webview.Api().default_dir()
     assert res["ok"] is True
-    assert res["path"] == str(disco)
-    # Ya trae el listado del disco, sin necesitar una segunda llamada.
-    assert [f["name"] for f in res["files"]] == ["archivo.txt"]
-    assert res["dirs"] == []
-
-
-def test_linux_no_lee_el_disco_entero_para_ver_si_esta_vacio(monkeypatch, tmp_path):
-    # Regresion: la comprobacion de "esta vacio" debe pararse en la primera
-    # entrada (scandir perezoso), no leer el directorio completo (listdir)
-    # como antes. El listado final SI usa listdir (una vez, dentro de
-    # list_dir, para construir la respuesta), asi que lo que se comprueba
-    # aqui es que os.listdir se llama como mucho una vez sobre el
-    # candidato (la del listado final), no dos (chequeo + listado).
-    monkeypatch.setattr(sys, "platform", "linux")
-    import glob
-
-    disco = tmp_path / "media" / "pi" / "USB"
-    disco.mkdir(parents=True)
-    (disco / "archivo.txt").write_text("x", encoding="utf-8")
-
-    monkeypatch.setattr(
-        glob, "glob",
-        lambda patron: [str(disco)] if patron == "/media/*/*" else [],
-    )
-
-    real_stat = os.stat
-
-    def _stat_fake(ruta, *a, **kw):
-        original = real_stat(ruta, *a, **kw)
-        if str(ruta) == str(disco):
-            campos = list(original)
-            campos[2] = real_stat("/").st_dev + 1
-            return os.stat_result(campos)
-        return original
-
-    monkeypatch.setattr(os, "stat", _stat_fake)
-
-    real_listdir = os.listdir
-    llamadas = []
-
-    def _listdir_contado(ruta, *a, **kw):
-        if str(ruta) == str(disco):
-            llamadas.append(ruta)
-        return real_listdir(ruta, *a, **kw)
-
-    monkeypatch.setattr(os, "listdir", _listdir_contado)
-
-    res = app_webview.Api().default_dir()
-    assert res["ok"] is True
-    assert res["path"] == str(disco)
-    assert len(llamadas) == 1
+    assert res["is_root"] is True
+    assert [d["name"] for d in res["dirs"]] == ["USB"]
 
 
 def test_linux_excepcion_en_el_escaneo_cae_al_home(monkeypatch):

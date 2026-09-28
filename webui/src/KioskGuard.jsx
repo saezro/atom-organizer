@@ -1,6 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { cloneElement, useCallback, useEffect, useRef, useState } from 'react'
 import KioskLock from './KioskLock.jsx'
-import { api } from './bridge.js'
+import { api, onControlUi } from './bridge.js'
+
+// Acciones que `KioskScreen` reproduce EN PANTALLA "como si las hiciera una
+// persona" (Task «se ve como se mueve a los sitios»). 'login' no entra aqui:
+// la anima este mismo componente (`simularEntrada`, ver abajo).
+const ACCIONES_REPRODUCIBLES = ['carpeta', 'organizar', 'cancelar']
 
 export const INACTIVIDAD_MS = 10 * 60 * 1000
 
@@ -24,6 +29,31 @@ export default function KioskGuard({ status, ocupado, desbloqueadoInicial = fals
   const [desbloqueado, setDesbloqueado] = useState(desbloqueadoInicial)
   const [ultimoToque, setUltimoToque] = useState(() => Date.now())
   const [intento, setIntento] = useState(0)
+  // Login por control remoto (`atom:control_ui` accion 'login', portátil
+  // vinculado): cada incremento dispara en `KioskLock` la animacion de
+  // rellenar el PIN "como si lo tecleara una persona" y, al terminar, el
+  // MISMO camino de exito que el pad (ver `KioskLock.jsx`). Solo tiene
+  // sentido si el kiosco esta bloqueado ahora mismo: si ya esta
+  // desbloqueado no hay nada que animar.
+  const [simularEntrada, setSimularEntrada] = useState(0)
+
+  // Cola de acciones remotas "carpeta"/"organizar"/"cancelar": si llegan
+  // mientras el kiosco esta bloqueado (PIN), `KioskScreen` ni siquiera esta
+  // montado para reproducirlas — se acumulan aqui (este componente NUNCA se
+  // desmonta) y se entregan de una en una en cuanto `children` vuelve a
+  // pintarse, via `cloneElement` (`accionRemota`/`onAccionRemotaConsumida`
+  // abajo). Si el kiosco ya estaba desbloqueado se entregan igual, sin
+  // esperar nada: la cola no es solo para el caso bloqueado.
+  const [colaRemota, setColaRemota] = useState([])
+  const idColaRef = useRef(0)
+  useEffect(() => onControlUi?.((d) => {
+    if (!ACCIONES_REPRODUCIBLES.includes(d?.accion)) return
+    idColaRef.current += 1
+    setColaRemota((prev) => [...prev, { ...d, _id: idColaRef.current }])
+  }), [])
+  const consumirAccionRemota = useCallback(() => {
+    setColaRemota((prev) => prev.slice(1))
+  }, [])
 
   const reintentar = useCallback(() => {
     setHayPin(null)
@@ -60,6 +90,19 @@ export default function KioskGuard({ status, ocupado, desbloqueadoInicial = fals
     return () => clearTimeout(t)
   }, [desbloqueado, ocupado, ultimoToque])
 
+  // El portátil dispara el login "a distancia" (ya validado por el
+  // backend, ver `atom_core`): si el kiosco esta bloqueado ahora mismo se
+  // dispara la animacion de `KioskLock`; si ya esta desbloqueado no hay
+  // nada que hacer. `desbloqueadoRef` evita el cierre obsoleto del handler
+  // (el listener se monta una sola vez).
+  const desbloqueadoRef = useRef(desbloqueado)
+  useEffect(() => { desbloqueadoRef.current = desbloqueado }, [desbloqueado])
+  useEffect(() => onControlUi?.((d) => {
+    if (d?.accion !== 'login') return
+    if (desbloqueadoRef.current) return
+    setSimularEntrada((n) => n + 1)
+  }), [])
+
   if (hayPin === null) return null
 
   if (hayPin === 'error') {
@@ -75,7 +118,13 @@ export default function KioskGuard({ status, ocupado, desbloqueadoInicial = fals
   }
 
   if (hayPin && !desbloqueado) {
-    return <KioskLock modo="verificar" onOk={() => { setUltimoToque(Date.now()); setDesbloqueado(true) }} />
+    return (
+      <KioskLock
+        modo="verificar"
+        simularEntrada={simularEntrada}
+        onOk={() => { setUltimoToque(Date.now()); setDesbloqueado(true) }}
+      />
+    )
   }
 
   // Sin PIN: hasta que no sepamos si hay sesion no se decide nada. Pasar
@@ -88,5 +137,8 @@ export default function KioskGuard({ status, ocupado, desbloqueadoInicial = fals
     }
   }
 
-  return children
+  return cloneElement(children, {
+    accionRemota: colaRemota[0] || null,
+    onAccionRemotaConsumida: consumirAccionRemota,
+  })
 }
