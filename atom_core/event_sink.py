@@ -28,12 +28,42 @@ class EventSink:
 
 
 class WebviewSink(EventSink):
-    """Transporte historico: ejecuta el dispatchEvent dentro de la ventana."""
+    """Transporte historico: ejecuta el dispatchEvent dentro de la ventana.
+
+    `evaluate_js` antes de que la ventana termine de cargar (evento
+    `window.events.loaded`) es lo que colgaba el arranque en 3.4.102: un hilo
+    de fondo (comprobación de credencial al arrancar) podía disparar el
+    primer push ANTES de que pywebview hubiera inicializado la ventana nativa
+    (`webview.start()` aún no había corrido), y esa llamada se quedaba
+    bloqueada hasta el timeout de `WebViewException: Main window failed to
+    start`. Mientras no haya `loaded`, los eventos se encolan en orden y se
+    drenan de golpe en cuanto llega — nunca se llama a `evaluate_js` antes.
+    """
 
     def __init__(self, window) -> None:
         self._window = window
+        self._lock = threading.Lock()
+        self._cargado = False
+        self._cola: list[str] = []
+        try:
+            window.events.loaded += self._on_loaded
+        except Exception as exc:  # noqa: BLE001 — sin este hook, mejor entregar
+            # directo (comportamiento previo) que quedarse mudo para siempre.
+            logger.warning("no se pudo enganchar events.loaded, entrega directa (%s): %s",
+                           type(exc).__name__, exc)
+            self._cargado = True
 
-    def _run(self, js: str) -> None:
+    def _on_loaded(self, *_args) -> None:
+        with self._lock:
+            if self._cargado:
+                return
+            self._cargado = True
+            pendientes = self._cola
+            self._cola = []
+        for js in pendientes:
+            self._entregar(js)
+
+    def _entregar(self, js: str) -> None:
         try:
             self._window.evaluate_js(js)
         except Exception as exc:  # noqa: BLE001 — perder un evento no puede tumbar el pipeline
@@ -44,6 +74,13 @@ class WebviewSink(EventSink):
             # que se le pide al usuario cuando reporta un cuelgue.
             logger.warning("no se pudo entregar el evento a la ventana (%s): %s",
                            type(exc).__name__, exc)
+
+    def _run(self, js: str) -> None:
+        with self._lock:
+            if not self._cargado:
+                self._cola.append(js)
+                return
+        self._entregar(js)
 
     def dispatch(self, event: str, detail: dict) -> None:
         self._run(f"window.dispatchEvent(new CustomEvent({json.dumps(event)},"

@@ -4229,8 +4229,13 @@ def main() -> None:
     logger.info("ATOM Organizer v%s arrancando (log: %s)",
                 _app_version_for_title(), _ruta_log or "sin fichero")
 
+    # En un hilo daemon, como `precarga`: es I/O de disco (mover ficheros
+    # legacy) e idempotente/nunca lanza, no hay motivo para bloquear el hilo
+    # principal antes de `webview.start()` (incidente 3.4.102: cualquier
+    # trabajo síncrono aquí retrasa la ventana y compite con la carrera del
+    # sink de eventos).
     from atom_core.google_auth import migrar_estadillos_recibidos_legacy
-    migrar_estadillos_recibidos_legacy()
+    threading.Thread(target=migrar_estadillos_recibidos_legacy, daemon=True).start()
 
     # Precarga de pandas en un hilo de fondo: importarlo cuesta más de un segundo
     # y hacerlo aquí retrasaba la aparición de la ventana. El `Lock` de
