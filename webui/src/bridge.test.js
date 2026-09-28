@@ -137,6 +137,41 @@ describe('bridge en modo pywebview (Windows)', () => {
     expect(res.msg).toBe('pong qt')
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
+
+  // El bridge Qt puede quedarse colgado (hilo atascado, backend muerto): sin
+  // plazo por defecto la promesa no resuelve nunca y la UI espera en
+  // silencio para siempre.
+  it('una llamada que nunca responde rechaza con un mensaje claro tras el plazo por defecto', async () => {
+    window.pywebview = { api: { ping: () => new Promise(() => {}) } } // nunca resuelve
+    const { api } = await import('./bridge.js')
+    vi.useFakeTimers()
+    try {
+      const pendiente = expect(api.ping('rebeca')).rejects.toThrow(/no responde/i)
+      await vi.advanceTimersByTimeAsync(20000)
+      await pendiente
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // `pick_folder`/`pick_file` son diálogo NATIVO: el usuario puede tardar
+  // minutos eligiendo carpeta, así que están excluidos del plazo por
+  // defecto (ver `TIMEOUTS_METODO`, bridge.js).
+  it('pickFolder no tiene plazo: sigue esperando al usuario mas alla del plazo por defecto', async () => {
+    window.pywebview = { api: { pick_folder: () => new Promise(() => {}) } } // nunca resuelve
+    const { api } = await import('./bridge.js')
+    vi.useFakeTimers()
+    try {
+      const pedido = api.pickFolder()
+      await vi.advanceTimersByTimeAsync(60000)
+      let resuelto = false
+      pedido.then(() => { resuelto = true }).catch(() => { resuelto = true })
+      await Promise.resolve()
+      expect(resuelto).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 // Regresion de Windows (v3.4.54): desde pywebview 6 el shell de escritorio

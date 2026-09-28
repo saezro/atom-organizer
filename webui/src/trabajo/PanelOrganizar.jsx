@@ -71,7 +71,13 @@ export default function PanelOrganizar({ origen, estadillos, inspeccion, ready, 
     // fichero de estadillo. `_derive_plant` lo prioriza en el backend; si no
     // llega (p.ej. "Nueva inspección"), cae solo al estadillo como siempre.
     const nombreInspeccion = inspeccion?.etiqueta || inspeccion?.prefijo || ''
-    onRun('split_images', { origen, destino, estadillo: estadillos, rename, inspeccion: nombreInspeccion }, advanced)
+    // Orientación de la planta ("Horizontal" nunca gira, ver
+    // atom_core.indice._consenso_de_angulo_por_vuelo): vacía mientras el
+    // catálogo de la Suite no mande el campo (lib/organizer-catalogo.js).
+    onRun('split_images', {
+      origen, destino, estadillo: estadillos, rename,
+      inspeccion: nombreInspeccion, orientacion: inspeccion?.orientacion || '',
+    }, advanced)
   }
 
   return (

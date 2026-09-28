@@ -5,6 +5,14 @@ import Paginador from './Paginador.jsx'
 import CodigoQr from './CodigoQr.jsx'
 import TecladoPantalla from './TecladoPantalla.jsx'
 import { api, esRemoto } from './bridge.js'
+import { conPlazo } from './plazo.js'
+
+// `red_conectar` ya lleva su propio plazo en el bridge (`bridge.js`,
+// `TIMEOUTS_METODO`, 75 s), pero un plazo aquí también deja el mensaje de
+// error en el sitio correcto (`errorConexion`) si algo se rompe antes de
+// llegar al bridge, y documenta el margen esperado junto a la pantalla que
+// lo enseña.
+const ESPERA_CONEXION_MS = 75000
 
 // App «Red» del kiosco: escanear WiFi y conectar. La Pi no tiene teclado
 // físico, así que la pantalla de contraseña trae su propio teclado en
@@ -246,7 +254,11 @@ export default function KioskRed({ tactil, onVolver }) {
     setSsidConectando(ssid)
     setErrorConexion('')
     try {
-      const r = await api.redConectar(ssid, password)
+      const r = await conPlazo(
+        api.redConectar(ssid, password),
+        ESPERA_CONEXION_MS,
+        'El Organizer no responde. Vuelve a intentarlo.'
+      )
       if (r?.ok) {
         setVista('lista')
         setRedSel(null)

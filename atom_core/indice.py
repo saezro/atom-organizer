@@ -22,7 +22,7 @@ import os
 import re
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import exifread
 import PIL.Image
@@ -45,6 +45,19 @@ NOMBRE_CARPETA_RGB_EXTRA = "RGB_Extra"
 # de ningún vuelo del estadillo.
 NOMBRE_CARPETA_SIN_ORDENAR = "SIN_ORDENAR"
 
+# Carpeta de destino, HERMANA de TERMICA/RGB/RGB_Extra en la raíz de
+# `output_folder`, de las imágenes cuyo PB en el estadillo es "GENERALES"
+# (fotos de contexto de la planta, no de un vuelo concreto): planas, sin
+# subcarpeta PB/vuelo, sin girar (ver `_es_pb_generales`/`_construir_fila`).
+# Formato confirmado en bucket (`gs://plantas_pv_nl/KL88|CELSO/.../2026/
+# FOTOS_GENERALES/`): exacto, mayúsculas y guion bajo.
+NOMBRE_CARPETA_GENERALES = "FOTOS_GENERALES"
+
+# Variantes de escritura del PB "genérico" que el estadillo puede traer,
+# todas normalizadas (`strip().upper()`) antes de comparar en
+# `_es_pb_generales`.
+_PB_GENERALES_VARIANTES = frozenset({"GENERALES", "GENERAL", "FOTOS GENERALES", "FOTOS_GENERALES"})
+
 # Tipos que reciben tratamiento de RGB (compresión + recorte): además de
 # "RGB", el tercer grupo de sufijos ("RGB_Extra") corre por el MISMO camino
 # en el motor viejo -`iterate_folders_for_rgb_cropping` (pipeline.py:4003)
@@ -62,10 +75,31 @@ STATS_INDICE_PREFIX = "---> STATS_INDICE: "
 
 
 class ErrorColisionEstadillo(Exception):
-    """Se han fusionado estadillos con el mismo (PB, vuelo) y fechas
-    distintas. `construir_indice` aborta con esta excepción ANTES de escribir
-    ninguna fila en el manifiesto, no a mitad como hacía el motor viejo (que
-    ya había movido parte de las imágenes cuando se topaba con la colisión)."""
+    """Se han fusionado estadillos con el mismo (PB, vuelo) Y LA MISMA fecha
+    procedentes de ficheros de origen DISTINTOS (dos pilotos con el mismo
+    PB+Vuelo el mismo día: `estadillo.detectar_colisiones_mismo_dia`), un
+    choque que el sufijo de fecha no puede desambiguar. `construir_indice`
+    aborta con esta excepción ANTES de escribir ninguna fila en el
+    manifiesto, no a mitad como hacía el motor viejo (que ya había movido
+    parte de las imágenes cuando se topaba con la colisión).
+
+    Una colisión con FECHA DISTINTA entre estadillos (`estadillo.
+    detectar_colisiones_pb_vuelo`) YA NO aborta: se resuelve con el mismo
+    sufijo de fecha que aplica `pipeline.GenStructFolder.gen_folder_struct`,
+    ver `_nombre_carpeta_vuelo`."""
+
+
+class ErrorModeloSinRecorte(Exception):
+    """El recorte automático de RGB está activado (`cfg.cropping_rgb` +
+    `cfg.cropping_mode_auto`) pero alguna imagen trae un modelo EXIF de dron
+    sin entrada en `Config.ini` (`percentage_by_models`). Antes, esto
+    reventaba tarde con un `KeyError` crudo dentro de `Pipeline.
+    get_percentage_by_model` (pipeline.py:4328), después de que el pool de
+    hilos ya hubiese leído el EXIF completo de TODAS las imágenes — todo ese
+    tiempo perdido por una imagen. `construir_indice` valida los modelos
+    justo después de leer los metadatos y ANTES de montar ninguna fila, así
+    que aborta en un único golpe con la lista completa de modelos que
+    faltan por configurar."""
 
 
 @dataclass
@@ -136,13 +170,23 @@ def _termina_en_sufijo(base: str, sufijos: str) -> bool:
     return False
 
 
-def _nombre_carpeta_vuelo(pb: str, vuelo: str, include_v: bool) -> str:
-    """Mismo patrón que `GenStructFolder.gen_folder_struct` (pipeline.py:1317-1322),
-    sin el sufijo de fecha de colisión: `construir_indice` aborta ANTES de
-    llegar a necesitarlo (ver `ErrorColisionEstadillo`)."""
-    if include_v:
-        return f"PB{pb}_V{vuelo}"
-    return f"PB{pb}_{vuelo}"
+def _es_pb_generales(pb: str | None) -> bool:
+    """¿Es `pb` alguna variante de "GENERALES" (fotos de contexto, sin vuelo
+    real)? Normaliza `strip().upper()` antes de comparar contra
+    `_PB_GENERALES_VARIANTES`, igual que el resto de comparaciones de PB
+    (`pb = str(...).strip()` en `_ventanas_por_vuelo`)."""
+    return bool(pb) and pb.strip().upper() in _PB_GENERALES_VARIANTES
+
+
+def _nombre_carpeta_vuelo(pb: str, vuelo: str, include_v: bool, sufijo: str | None = None) -> str:
+    """Mismo patrón que `GenStructFolder.gen_folder_struct` (pipeline.py:1317-1322).
+    `sufijo` (el de `estadillo.sufijo_fecha`) solo llega no-`None` cuando este
+    (pb, vuelo) colisiona entre estadillos fusionados con fecha distinta
+    (`estadillo.detectar_colisiones_pb_vuelo`): es la MISMA regla que aplica
+    `gen_folder_struct`, para que el nombre de carpeta salga idéntico en
+    índice y en el motor viejo."""
+    base = f"PB{pb}_V{vuelo}" if include_v else f"PB{pb}_{vuelo}"
+    return f"{base}_{sufijo}" if sufijo else base
 
 
 def _listar_imagenes(input_folder: str) -> list[str]:
@@ -438,19 +482,27 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
 
 
 def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
-                        progress_callback) -> list[dict]:
+                        progress_callback, colisiones_pb_vuelo: dict | None = None) -> list[dict]:
     """Franja horaria y (pb, vuelo) de cada fila del estadillo fusionado, EN
     EL ORDEN DEL ESTADILLO (ese orden es el desempate cuando dos vuelos
     solapan: gana el primero, igual que `obtenerListaImagenesVuelo`). Una
     fila sin hora de inicio o fin legible se descarta con un aviso, igual que
     hace `gen_folder_struct` (pipeline.py:1301-1311), en vez de reventar el
-    índice entero por una celda vacía."""
+    índice entero por una celda vacía.
+
+    `colisiones_pb_vuelo` (salida de `estadillo.detectar_colisiones_pb_vuelo`
+    sobre el estadillo fusionado GLOBAL, no sobre este `estadillo_df` -que
+    puede ser solo el de una carpeta escopada-) marca qué (pb, vuelo) llevan
+    sufijo de fecha (`ventana["sufijo"]`) porque colisionan con OTRO
+    estadillo fusionado con fecha distinta; el resto de filas quedan con
+    `sufijo=None`, igual que siempre."""
     col_pb = nombres_columnas["PB"]
     col_vuelo = nombres_columnas["Vuelo"]
     col_fecha = nombres_columnas["Fecha"]
     col_inicio = nombres_columnas["Hora_de_inicio"]
     col_final = nombres_columnas["Hora_final"]
     col_equipo = nombres_columnas.get("Equipo_de_vuelo")
+    colisiones_pb_vuelo = colisiones_pb_vuelo or {}
 
     ventanas: list[dict] = []
     for indice in range(len(estadillo_df)):
@@ -478,8 +530,11 @@ def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
             texto = str(estadillo_df[col_equipo].iloc[indice]).strip()
             equipo = texto if texto and texto.lower() != "nan" else None
 
+        sufijo = (estadillo_mod.sufijo_fecha(fecha)
+                  if (pb, vuelo) in colisiones_pb_vuelo else None)
+
         ventanas.append({"pb": pb, "vuelo": vuelo, "inicio": inicio, "fin": fin,
-                         "equipo": equipo})
+                         "equipo": equipo, "fecha": fecha, "sufijo": sufijo})
     return ventanas
 
 
@@ -488,13 +543,61 @@ def _asignar_vuelo(dato: _MetadatosImagen, ventanas: list[dict]) -> dict | None:
     ESTRICTAMENTE el timestamp de la imagen, igual que
     `obtenerListaImagenesVuelo` (pipeline.py:1528: `inicio < ts < fin`). Sin
     timestamp, o sin ninguna ventana que la reclame, la imagen es
-    `unassigned`."""
+    `unassigned`.
+
+    `ventanas` ya viene ESCOPADA a la carpeta que le corresponde a `dato`
+    (ver `_ventanas_para_imagen`): solo se compara contra las ventanas del
+    estadillo cuyo directorio es el ancestro más cercano de la imagen, no
+    contra TODOS los estadillos fusionados -eso es lo que evita que una
+    imagen de un piloto se cuele en el vuelo de otro piloto con horas
+    solapadas el mismo día (ver `agrupar_rutas_por_carpeta`)."""
     if dato.timestamp is None:
         return None
     for ventana in ventanas:
         if ventana["inicio"] < dato.timestamp < ventana["fin"]:
             return ventana
     return None
+
+
+def _bajo_carpeta(directorio: str, ruta: str) -> bool:
+    """¿Vive `ruta` dentro del árbol de `directorio` (a cualquier
+    profundidad)? Comparación por prefijo de ruta normalizada
+    (`os.path.normcase` + `os.sep` de separador), no por `Path.is_relative_to`
+    -no existe en todas las versiones de Python que corre esta app-, así que
+    funciona igual en Windows (rutas case-insensitive) y en Linux/mac."""
+    d = os.path.normcase(os.path.normpath(directorio))
+    r = os.path.normcase(os.path.normpath(ruta))
+    return r == d or r.startswith(d + os.sep)
+
+
+def _ventanas_para_imagen(ruta_imagen: str, ventanas_por_carpeta: dict[str, list[dict]],
+                          ventanas_sin_carpeta: list[dict]) -> list[dict]:
+    """El grupo de ventanas contra el que se compara ESTA imagen: el del
+    directorio de estadillo ANCESTRO MÁS CERCANO de `ruta_imagen` (el más
+    profundo de los que la contienen), o `ventanas_sin_carpeta` -el pool de
+    estadillos cuyo directorio no es ancestro de NINGUNA imagen del lote,
+    p.ej. un `--estadillo` elegido a mano desde una ubicación ajena al árbol
+    que se está organizando- si ninguno de los directorios de estadillo es
+    ancestro de esta imagen.
+
+    Esto es justo el scoping por carpeta: dos pilotos el mismo día, cada uno
+    en su carpeta con su propio estadillo, no se contaminan aunque sus horas
+    de vuelo se solapen -cada imagen solo compite contra las ventanas de SU
+    carpeta-."""
+    mejor_directorio = None
+    for directorio in ventanas_por_carpeta:
+        if _bajo_carpeta(directorio, ruta_imagen):
+            if mejor_directorio is None or len(directorio) > len(mejor_directorio):
+                mejor_directorio = directorio
+    if mejor_directorio is not None:
+        return ventanas_por_carpeta[mejor_directorio]
+    return ventanas_sin_carpeta
+
+
+def _orientacion_normalizada(valor) -> str:
+    """`cfg.orientacion` normalizada para comparar: strip + lower. `""` si no
+    hay valor (planta desconocida o inspección sin seleccionar)."""
+    return str(valor or "").strip().lower()
 
 
 def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dict | None]],
@@ -504,6 +607,18 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
     todas las filas de ese vuelo (RGB y térmica): este reparto por vuelo, no
     por carpeta, es lo que corrige el bug que motiva el proyecto entero (hoy
     el TIFF y su JPG pueden acabar con criterios de giro distintos).
+
+    Regla de Rodrigo (2026-09-28, caso KL88 -`plantas_pv.orientacion` =
+    'Horizontal', 1986/1986 imágenes giradas por yaw cuando no debían-):
+    una planta `Horizontal` **nunca se gira**, ángulo 0 para todas sus
+    imágenes (térmica, RGB, JPG térmico), decisión que manda sobre
+    cualquier consenso por yaw o CSV de un re-proceso anterior. El resto
+    de orientaciones (`Vertical`, `Varias`, desconocida) sigue el
+    comportamiento de siempre: consenso por yaw. Si la orientación no se
+    conoce (inspección sin elegir, o API de la Suite sin el campo
+    -`lib/organizer-catalogo.js` de Atom-suite todavía no lo manda-) se seguirá
+    girando por yaw como hasta ahora, pero se avisa (ver abajo): es un giro
+    decidido a ciegas, sin saber si la planta es Horizontal.
 
     Si ya existe el CSV de criterio de un re-proceso anterior, se reutiliza
     con `pipeline.read_auto_rotate_degree` (nunca reinventa lo que ya se
@@ -515,15 +630,29 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
     `gen_thumbnails_add_to_angle` / `gen_thumbnails_subs_to_angle`, y se
     necesita superar `gen_thumbnails_max_error`% de las imágenes del vuelo
     para que una banda gane. Sin consenso claro, o en modo manual
-    desactivado, 0."""
-    yaws_por_vuelo: dict[tuple[str, str], list[float]] = {}
+    desactivado, 0.
+
+    La clave es `(pb, vuelo, sufijo)`, no solo `(pb, vuelo)`: cuando dos
+    estadillos fusionados colisionan con fecha distinta (`ventana["sufijo"]`,
+    ver `_ventanas_por_vuelo`) son carpetas de salida DISTINTAS
+    (`_nombre_carpeta_vuelo`), y cada una necesita su propio consenso -
+    fundirlas en una sola clave mezclaría los yaw de dos vuelos que ni
+    siquiera comparten fecha."""
+    yaws_por_vuelo: dict[tuple[str, str, str | None], list[float]] = {}
     for dato, ventana in asignaciones:
-        if ventana is None or dato.yaw is None:
+        if ventana is None or dato.yaw is None or _es_pb_generales(ventana["pb"]):
             continue
-        clave = (ventana["pb"], ventana["vuelo"])
+        clave = (ventana["pb"], ventana["vuelo"], ventana.get("sufijo"))
         yaws_por_vuelo.setdefault(clave, []).append(dato.yaw)
 
-    angulos: dict[tuple[str, str], int] = {}
+    orientacion = _orientacion_normalizada(getattr(cfg, "orientacion", ""))
+    if orientacion == "horizontal":
+        # Punto único de la regla: se decide ANTES de mirar ningún yaw ni CSV
+        # de un re-proceso anterior -es una propiedad de la planta, no del
+        # vuelo ni de una corrida concreta-.
+        return {clave: 0 for clave in yaws_por_vuelo}
+
+    angulos: dict[tuple[str, str, str | None], int] = {}
 
     if not cfg.choose_mode_auto:
         # Modo manual: el mismo ángulo fijo para todos los vuelos, sin mirar
@@ -541,14 +670,14 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
     lim_max_270 = add_to_angle - 90
     lim_min_270 = (-90) - subs_to_angle
 
-    for (pb, vuelo), yaws in yaws_por_vuelo.items():
-        carpeta_vuelo = almacen.unir(
-            output_folder, "TERMICA", f"PB{pb}", _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v))
+    for (pb, vuelo, sufijo), yaws in yaws_por_vuelo.items():
+        nombre_carpeta = _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v, sufijo)
+        carpeta_vuelo = almacen.unir(output_folder, "TERMICA", f"PB{pb}", nombre_carpeta)
         candidato_csv = almacen.unir(
-            output_folder, "CSVs", utils.CRITERIO_DIRNAME,
-            f"{_nombre_carpeta_vuelo(pb, vuelo, cfg.include_v)}_Videofiles.csv")
+            output_folder, "CSVs", utils.CRITERIO_DIRNAME, f"{nombre_carpeta}_Videofiles.csv")
+        clave = (pb, vuelo, sufijo)
         if almacen.existe_ruta(candidato_csv):
-            angulos[(pb, vuelo)] = pipeline.read_auto_rotate_degree(
+            angulos[clave] = pipeline.read_auto_rotate_degree(
                 carpeta_vuelo, progress_callback)
             continue
 
@@ -556,13 +685,88 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
         rotate_270 = sum(1 for yaw in yaws if lim_min_270 < yaw < lim_max_270)
         total = len(yaws)
         if total and rotate_270 and (rotate_270 / total) > (max_error / 100):
-            angulos[(pb, vuelo)] = 270
+            angulos[clave] = 270
         elif total and rotate_90 and (rotate_90 / total) > (max_error / 100):
-            angulos[(pb, vuelo)] = 90
+            angulos[clave] = 90
         else:
-            angulos[(pb, vuelo)] = 0
+            angulos[clave] = 0
+
+    if not orientacion and any(a in (90, 270) for a in angulos.values()):
+        # Orientación desconocida (sin inspección elegida, o la API de la
+        # Suite todavía sin el campo) y al menos un vuelo se va a girar: se
+        # sigue girando por yaw -comportamiento de siempre-, pero a ciegas,
+        # sin saber si esta planta es Horizontal (que no debería girar
+        # nunca). Aviso visible, no silencioso.
+        progress_callback.emit(
+            "\nAVISO: orientación de la planta desconocida; se gira por "
+            "consenso de yaw sin poder aplicar la regla 'Horizontal nunca "
+            "gira'. Verifica la orientación en la Suite si esta planta es "
+            "horizontal.\n")
 
     return angulos
+
+
+def _pct_por_modelo(modelo: str, pipeline) -> float:
+    """Getter de dominio sobre `Pipeline.get_percentage_by_model`: mismo
+    lookup, pero un modelo sin configurar lanza `ErrorModeloSinRecorte` con
+    mensaje claro en vez del `KeyError` crudo de `normalized_dict[...]`
+    (pipeline.py:4328). Red de seguridad: `construir_indice` ya valida todos
+    los modelos ANTES de llegar aquí (`_validar_modelos_recorte`); este
+    getter cubre además cualquier otro llamador directo."""
+    try:
+        return pipeline.get_percentage_by_model(modelo, pipeline.percentage_by_models)
+    except KeyError:
+        raise ErrorModeloSinRecorte(
+            f"El modelo de dron '{modelo}' no tiene % de recorte configurado "
+            "en Config.ini (sección [percentage_by_models]). Añádelo en "
+            "Configuración > Recorte automático antes de reintentar."
+        ) from None
+
+
+def _modelos_sin_recorte_configurado(
+    metadatos: list[_MetadatosImagen], cfg, pipeline
+) -> dict[str, list[str]]:
+    """Modelos EXIF de imágenes RGB/RGB_Extra (las únicas que se recortan,
+    ver `TIPOS_RGB`) que no tienen entrada en `pipeline.percentage_by_models`.
+    Solo aplica si el recorte automático está activo: en manual no se mira
+    el modelo (`cfg.crop_percentage` manda). Devuelve
+    `{modelo: [nombres de ejemplo]}`, vacío si no falta nada."""
+    if not cfg.cropping_rgb or not cfg.cropping_mode_auto:
+        return {}
+    conocidos = {str(k).strip().upper() for k in (pipeline.percentage_by_models or {}).keys()}
+    faltantes: dict[str, list[str]] = {}
+    for dato in metadatos:
+        if _clasificar_tipo(dato.nombre, cfg) not in TIPOS_RGB:
+            continue
+        if not dato.modelo:
+            continue
+        modelo = str(dato.modelo).strip("\x00").strip().upper()
+        if modelo and modelo not in conocidos:
+            faltantes.setdefault(modelo, []).append(dato.nombre)
+    return faltantes
+
+
+def _validar_modelos_recorte(metadatos: list[_MetadatosImagen], cfg, pipeline) -> None:
+    """Aborta pronto, ANTES de montar ninguna fila del índice, si el recorte
+    automático de RGB está activo y alguna imagen trae un modelo EXIF sin %
+    configurado. Se llama justo tras leer los metadatos (ya son datos
+    gratis: `dato.modelo` viene del mismo EXIF que se lee para todo lo
+    demás), no repite lectura de disco. Ver `ErrorModeloSinRecorte`."""
+    faltantes = _modelos_sin_recorte_configurado(metadatos, cfg, pipeline)
+    if not faltantes:
+        return
+    detalle = "; ".join(
+        f"'{modelo}' (p.ej. {ejemplos[0]}"
+        + (f" y {len(ejemplos) - 1} más" if len(ejemplos) > 1 else "")
+        + ")"
+        for modelo, ejemplos in sorted(faltantes.items())
+    )
+    raise ErrorModeloSinRecorte(
+        "El recorte automático de RGB está activado pero hay modelo(s) de "
+        f"dron sin % de recorte configurado en Config.ini: {detalle}. "
+        "Añádelos en Configuración > Recorte automático (sección "
+        "[percentage_by_models]) antes de reintentar."
+    )
 
 
 def _pct_recorte(dato: _MetadatosImagen, tipo: str, cfg, pipeline) -> float | None:
@@ -589,7 +793,7 @@ def _pct_recorte(dato: _MetadatosImagen, tipo: str, cfg, pipeline) -> float | No
         # y no de `cfg` (`SplitImagesConfig` no lo lleva). Aquí se pide al mismo
         # `pipeline` que ya agrupa el resto de funciones reutilizadas: es quien
         # tiene que exponerlo como `pipeline.percentage_by_models`.
-        pct = pipeline.get_percentage_by_model(dato.modelo, pipeline.percentage_by_models)
+        pct = _pct_por_modelo(dato.modelo, pipeline)
         if pct is None:
             return None
         return float(pct) / 100
@@ -628,7 +832,7 @@ def _avisar_equipo(asignaciones, progress_callback) -> int:
 
 
 def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
-                    angulos: dict[tuple[str, str], int], cfg, pipeline) -> FilaManifiesto:
+                    angulos: dict[tuple[str, str, str | None], int], cfg, pipeline) -> FilaManifiesto:
     tipo = _clasificar_tipo(dato.nombre, cfg)
     unassigned = ventana is None
 
@@ -649,10 +853,20 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
         carpeta_destino = almacen.unir(cfg.output_folder, NOMBRE_CARPETA_SIN_ORDENAR, tipo)
     else:
         pb, vuelo = ventana["pb"], ventana["vuelo"]
-        angulo_giro = angulos.get((pb, vuelo), 0)
-        carpeta_destino = almacen.unir(
-            cfg.output_folder, tipo, f"PB{pb}",
-            _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v))
+        if _es_pb_generales(pb):
+            # Fotos de contexto, no de un vuelo: carpeta HERMANA de
+            # TERMICA/RGB/RGB_Extra, plana (sin PB/vuelo) y sin girar -no hay
+            # consenso de ángulo posible sin línea de vuelo real. El recorte
+            # (`_pct_recorte`, abajo) NO se toca: el bucket confirma que las
+            # RGB generales sí llevan su `_CROP` hermano.
+            angulo_giro = 0
+            carpeta_destino = almacen.unir(cfg.output_folder, NOMBRE_CARPETA_GENERALES)
+        else:
+            sufijo = ventana.get("sufijo")
+            angulo_giro = angulos.get((pb, vuelo, sufijo), 0)
+            carpeta_destino = almacen.unir(
+                cfg.output_folder, tipo, f"PB{pb}",
+                _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v, sufijo))
 
     ruta_salida_original = almacen.unir(carpeta_destino, nombre_final)
 
@@ -703,6 +917,46 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
     )
 
 
+def _con_sufijo(ruta: str, contador: int) -> str:
+    """`ruta` con `_<contador>` metido justo antes de la extensión."""
+    raiz, ext = os.path.splitext(ruta)
+    return f"{raiz}_{contador}{ext}"
+
+
+def _desambiguar_colisiones_generales(filas: list[FilaManifiesto]) -> list[FilaManifiesto]:
+    """FOTOS_GENERALES es plana (ver `_construir_fila`): imágenes de vuelos o
+    días distintos que antes vivían en carpetas `PB.../V...` separadas ahora
+    comparten directorio, y pueden traer el MISMO nombre de fichero (p.ej. dos
+    tarjetas SD reiniciando la numeración DJI). Sin este paso, la segunda
+    pisaría a la primera al escribir -nunca sobrescribir-.
+
+    Sufijo determinista `_2`, `_3`... por orden de aparición (el mismo orden
+    ya `sorted` de `_listar_imagenes`), aplicado a la vez al original, al
+    `_CROP` y al `.tiff` para que los tres seguían siendo el mismo fichero
+    con apellido. Filas que no son GENERALES pasan intactas."""
+    vistos: dict[str, int] = {}
+    resultado: list[FilaManifiesto] = []
+    for fila in filas:
+        if not _es_pb_generales(fila.pb):
+            resultado.append(fila)
+            continue
+        nombre = os.path.basename(fila.ruta_salida_original)
+        vistos[nombre] = vistos.get(nombre, 0) + 1
+        contador = vistos[nombre]
+        if contador == 1:
+            resultado.append(fila)
+            continue
+        resultado.append(replace(
+            fila,
+            ruta_salida_original=_con_sufijo(fila.ruta_salida_original, contador),
+            ruta_salida_crop=(_con_sufijo(fila.ruta_salida_crop, contador)
+                              if fila.ruta_salida_crop else None),
+            ruta_salida_tiff=(_con_sufijo(fila.ruta_salida_tiff, contador)
+                              if fila.ruta_salida_tiff else None),
+        ))
+    return resultado
+
+
 def construir_indice(
     cfg,
     pipeline,
@@ -726,21 +980,59 @@ def construir_indice(
     progress_summarize.emit("---> SUBPROCESO: Índice")
 
     rutas_estadillo = estadillo_mod.desempaquetar_rutas(cfg.estad)
+    # El DataFrame GLOBAL (todos los estadillos fusionados, en el orden de
+    # siempre) es el que decide colisiones y sufijo de fecha: eso replica
+    # exactamente `pipeline.GenStructFolder.gen_folder_struct` (naming
+    # coherente índice <-> motor viejo), y NO depende del scoping por
+    # carpeta de abajo -da igual en qué carpeta viva cada estadillo, el
+    # sufijo de fecha se decide mirándolos TODOS juntos-.
     estadillo_df = estadillo_mod.combinar_estadillos(rutas_estadillo)
 
     utils_helper = _sin_utils_helper()
     nombres_columnas = utils_helper.get_nombres_columnas(list(estadillo_df.columns.values))
 
-    colisiones = estadillo_mod.detectar_colisiones_pb_vuelo(estadillo_df, nombres_columnas)
-    if colisiones:
+    # (PB, Vuelo) con fecha distinta entre estadillos: YA NO aborta, se
+    # resuelve con sufijo de fecha en el nombre de carpeta (ver
+    # `_nombre_carpeta_vuelo` / `_ventanas_por_vuelo`), igual que
+    # `gen_folder_struct`.
+    colisiones_pb_vuelo = estadillo_mod.detectar_colisiones_pb_vuelo(estadillo_df, nombres_columnas)
+
+    # (PB, Vuelo, Fecha) con 2+ estadillos de ORIGEN distinto: esto SÍ aborta
+    # -dos pilotos con el mismo PB+Vuelo el mismo día no tienen forma de
+    # desambiguarse con un sufijo de fecha, que sería idéntico para ambos-.
+    colisiones_mismo_dia = estadillo_mod.detectar_colisiones_mismo_dia(estadillo_df, nombres_columnas)
+    if colisiones_mismo_dia:
+        detalle = "; ".join(
+            f"PB{pb} vuelo {vuelo} el {fecha}: {', '.join(origenes)}"
+            for (pb, vuelo, fecha), origenes in colisiones_mismo_dia.items())
         raise ErrorColisionEstadillo(
-            "El estadillo fusionado tiene (PB, Vuelo) repetidos con fecha "
-            f"distinta, y eso desambigua la carpeta de destino: {colisiones}. "
+            "El mismo (PB, Vuelo) aparece el MISMO día en estadillos de origen "
+            f"distinto, y eso no se puede desambiguar con un sufijo de fecha: {detalle}. "
             "Revisa los estadillos de origen antes de reintentar.")
 
-    ventanas = _ventanas_por_vuelo(estadillo_df, nombres_columnas, pipeline, cfg,
-                                   progress_callback)
     imagenes = _listar_imagenes(cfg.input_folder)
+
+    # Scoping por carpeta: cada imagen solo compite contra las ventanas del
+    # estadillo cuyo directorio es su ancestro más cercano (ver
+    # `_ventanas_para_imagen`/`_bajo_carpeta`). Varios estadillos en la MISMA
+    # carpeta se funden entre ellos (mismo criterio que `combinar_estadillos`
+    # de siempre); un estadillo cuyo directorio no es ancestro de NINGUNA
+    # imagen del lote (p.ej. uno elegido a mano desde otra ubicación) cae en
+    # el pool `ventanas_sin_carpeta`, comparado por timestamp contra TODAS
+    # sus filas -el comportamiento de siempre, sin scoping-.
+    grupos_carpeta = estadillo_mod.agrupar_rutas_por_carpeta(rutas_estadillo)
+    ventanas_por_carpeta: dict[str, list[dict]] = {}
+    ventanas_sin_carpeta: list[dict] = []
+    for directorio, rutas_grupo in grupos_carpeta.items():
+        sub_df = estadillo_mod.combinar_estadillos(rutas_grupo)
+        nombres_columnas_grupo = utils_helper.get_nombres_columnas(list(sub_df.columns.values))
+        ventanas_grupo = _ventanas_por_vuelo(sub_df, nombres_columnas_grupo, pipeline, cfg,
+                                             progress_callback, colisiones_pb_vuelo)
+        ventanas_por_carpeta[directorio] = ventanas_grupo
+        if not any(_bajo_carpeta(directorio, imagen) for imagen in imagenes):
+            ventanas_sin_carpeta.extend(ventanas_grupo)
+
+    ventanas = [v for lista in ventanas_por_carpeta.values() for v in lista]
 
     # Son HILOS leyendo EXIF/XMP: trabajo I/O-bound, así que el dimensionado es
     # `max_io_workers` (hasta 32 hilos), no `workers_para_lote`, que calcula
@@ -755,20 +1047,46 @@ def construir_indice(
     else:
         metadatos = []
 
-    asignaciones = [(dato, _asignar_vuelo(dato, ventanas)) for dato in metadatos]
+    # Falla pronto y en un único golpe si el recorte automático está activo
+    # y algún modelo EXIF no tiene % configurado: ANTES de asignar vuelos o
+    # montar ninguna fila, no a mitad del `list comprehension` de abajo
+    # (donde antes reventaba con `KeyError` crudo, imagen a imagen). Ver
+    # `ErrorModeloSinRecorte`.
+    _validar_modelos_recorte(metadatos, cfg, pipeline)
+
+    asignaciones = [
+        (dato, _asignar_vuelo(dato, _ventanas_para_imagen(
+            dato.ruta, ventanas_por_carpeta, ventanas_sin_carpeta)))
+        for dato in metadatos
+    ]
     vuelos_equipo_discrepa = _avisar_equipo(asignaciones, progress_callback)
     angulos = _consenso_de_angulo_por_vuelo(asignaciones, pipeline, cfg,
                                             cfg.output_folder, progress_callback)
     # Cachito posterior del mismo destino: el ángulo ya decidido para un vuelo
     # manda sobre el recalculado, para que JPG y TIFF del vuelo no discrepen.
-    angulos.update(manifiesto.angulos_por_vuelo())
+    # El manifiesto solo guarda (pb, vuelo) -no sufijo, columnas que no tiene
+    # ni falta le hace-, así que el cache solo pisa la clave sin colisión
+    # (`sufijo=None`); un (pb, vuelo) colisionado con sufijo siempre se
+    # recalcula, que es justo la situación nueva que antes abortaba.
+    for (pb_cache, vuelo_cache), angulo_cache in manifiesto.angulos_por_vuelo().items():
+        angulos[(pb_cache, vuelo_cache, None)] = angulo_cache
 
     filas = [_construir_fila(dato, ventana, angulos, cfg, pipeline)
              for dato, ventana in asignaciones]
+    filas = _desambiguar_colisiones_generales(filas)
     resultado = manifiesto.insertar_o_reabrir(filas, ejecucion_id=ejecucion_id)
     if resultado.saltadas:
-        vuelos = ", ".join(_nombre_carpeta_vuelo(pb, vuelo, cfg.include_v)
-                           for pb, vuelo in resultado.vuelos_saltados) or "sin vuelo asignado"
+        # `resultado.vuelos_saltados` solo trae (pb, vuelo) -el manifiesto no
+        # guarda sufijo-, así que el sufijo de fecha (si ese par colisionó,
+        # ver `colisiones_pb_vuelo`) se recupera de `ventanas` de ESTE run
+        # para que el nombre de carpeta del log coincida con el real
+        # (`_construir_fila`:869).
+        sufijo_por_vuelo: dict[tuple[str, str], str | None] = {}
+        for ventana in ventanas:
+            sufijo_por_vuelo.setdefault((ventana["pb"], ventana["vuelo"]), ventana.get("sufijo"))
+        vuelos = ", ".join(
+            _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v, sufijo_por_vuelo.get((pb, vuelo)))
+            for pb, vuelo in resultado.vuelos_saltados) or "sin vuelo asignado"
         progress_callback.emit(
             f"\n{resultado.saltadas} imagen(es) ya estaban organizadas en este destino "
             f"y se saltan (vuelos: {vuelos}).\n")

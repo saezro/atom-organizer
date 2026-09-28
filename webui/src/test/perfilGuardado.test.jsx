@@ -36,6 +36,8 @@ vi.mock('../bridge', () => ({
   onUpdate: () => () => {},
   registerPicker: vi.fn(),
   isServerMode: () => false,
+  onControlCarpeta: () => () => {},
+  onControlUi: () => () => {},
 }))
 
 const App = (await import('../App')).default

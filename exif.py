@@ -1482,3 +1482,93 @@ class MetaLocation:
             df_sorted = df_sorted.sort_values('_sort_key').drop(columns=['_sort_key']).reset_index(drop=True)
 
         return df_sorted
+
+
+# --------------------------------------------------------------------------
+# Modo "esperando estadillo" (webserver.py / app_webview.Api): recuento y
+# rango horario EXIF de una carpeta de fotos, para mostrar en el kiosco
+# mientras se espera el estadillo de la app de Christian. Funcion a nivel de
+# modulo (sin `organizer_logger` ni Qt) porque corre en un hilo de fondo del
+# servidor headless de la Pi, no del pipeline.
+# --------------------------------------------------------------------------
+
+_EXTENSIONES_FOTO_ESPERA = (".jpg", ".jpeg", ".tif", ".tiff")
+
+
+def _exif_datetime_original(ruta: str) -> "datetime.datetime | None":
+    """Fecha/hora EXIF (`DateTimeOriginal`) de `ruta`, leyendo SOLO la
+    cabecera con `exifread` (mismo criterio que `get_model`: `stop_tag` corta
+    la lectura en cuanto aparece el tag, sin arrastrar miniaturas ni
+    MakerNote). `None` si la imagen no trae el tag o no se puede leer -nunca
+    lanza: se usa dentro de un `ThreadPoolExecutor.map` sobre potencialmente
+    miles de fotos."""
+    try:
+        with open(ruta, "rb") as f:
+            tags = exifread.process_file(f, details=False, stop_tag="EXIF DateTimeOriginal")
+        valor = tags.get("EXIF DateTimeOriginal")
+        if valor is None:
+            return None
+        return datetime.datetime.strptime(str(valor), "%Y:%m:%d %H:%M:%S")
+    except Exception:
+        return None
+
+
+def listar_horas_exif(carpeta: str, max_workers: int = 8) -> list["datetime.datetime"]:
+    """Recorre `carpeta` (recursivo, mismas extensiones que `rango_horas_exif`)
+    y devuelve la hora EXIF `DateTimeOriginal` (naive, SIN zona: tal cual la
+    escribió la cámara) de cada foto que sí trae el tag -en cualquier orden,
+    sin las que no lo traen-. Base de `rango_horas_exif` (min/max) y de
+    `atom_core.validacion_vuelos.validar` (comparar foto a foto contra los
+    vuelos del estadillo).
+
+    Igual que `rango_horas_exif`: solo lee cabeceras, en paralelo con
+    `ThreadPoolExecutor`."""
+    rutas: list[str] = []
+    if carpeta and os.path.isdir(carpeta):
+        for dirpath, _dirnames, filenames in os.walk(carpeta):
+            for nombre in filenames:
+                if nombre.startswith(".") or nombre.startswith("~$"):
+                    continue
+                if os.path.splitext(nombre)[1].lower() in _EXTENSIONES_FOTO_ESPERA:
+                    rutas.append(os.path.join(dirpath, nombre))
+
+    if not rutas:
+        return []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        return [dt for dt in pool.map(_exif_datetime_original, rutas) if dt is not None]
+
+
+def rango_horas_exif(carpeta: str, max_workers: int = 8) -> tuple[int, str | None, str | None]:
+    """Recorre `carpeta` (recursivo) contando fotos (.jpg/.jpeg/.tif/.tiff) y
+    devuelve `(total, primera, ultima)`: `total` es el numero de fotos
+    encontradas, `primera`/`ultima` son la hora EXIF `DateTimeOriginal` minima
+    y maxima entre las que sí traen el tag, en formato
+    `'YYYY-MM-DDTHH:MM:SS'` (la hora tal cual la escribio la camara, SIN
+    zona: no se convierte a UTC ni a ninguna otra). `None` si no hay ninguna
+    foto con el tag (o `carpeta` no existe / esta vacia).
+
+    Cuenta TODAS las fotos de la carpeta (con o sin el tag) via `os.walk`;
+    `primera`/`ultima` salen de `listar_horas_exif`, que solo trae las que sí
+    lo traen.
+    """
+    total = 0
+    if carpeta and os.path.isdir(carpeta):
+        for _dirpath, _dirnames, filenames in os.walk(carpeta):
+            for nombre in filenames:
+                if nombre.startswith(".") or nombre.startswith("~$"):
+                    continue
+                if os.path.splitext(nombre)[1].lower() in _EXTENSIONES_FOTO_ESPERA:
+                    total += 1
+
+    if total == 0:
+        return 0, None, None
+
+    horas = listar_horas_exif(carpeta, max_workers=max_workers)
+    if not horas:
+        return total, None, None
+
+    fmt = "%Y-%m-%dT%H:%M:%S"
+    primera = min(horas).strftime(fmt)
+    ultima = max(horas).strftime(fmt)
+    return total, primera, ultima

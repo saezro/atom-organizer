@@ -106,6 +106,7 @@ def test_mapeo_de_columnas_piloto_equipo_pb_vuelo_horas():
         "hora_inicio": "08:00:00",
         "hora_fin": "09:00:00",
         "origen": None,
+        "sync_uid": None,
     }
 
 
@@ -130,6 +131,24 @@ def test_origen_desde_columna_interna_de_combinar_estadillos():
     )
     filas = filas_para_suite(df)
     assert filas[0]["origen"] == "a.csv"
+
+
+def test_sync_uid_se_lee_de_la_columna_sync_uid():
+    df = _df(
+        [["PB1", "V1", "2026:03:17", "08:00:00", "09:00:00", "2026-03-17_ANA_V1_H080000_PB1"]],
+        ["PB", "Vuelo", "Fecha", "Hora_de_inicio", "Hora_final", "Sync_UID"],
+    )
+    filas = filas_para_suite(df)
+    assert filas[0]["sync_uid"] == "2026-03-17_ANA_V1_H080000_PB1"
+
+
+def test_sync_uid_ausente_queda_none():
+    df = _df(
+        [["PB1", "V1", "2026:03:17", "08:00:00", "09:00:00"]],
+        ["PB", "Vuelo", "Fecha", "Hora_de_inicio", "Hora_final"],
+    )
+    filas = filas_para_suite(df)
+    assert filas[0]["sync_uid"] is None
 
 
 def test_origen_por_fila_explicito_tiene_prioridad():

@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react'
 import { api } from './bridge.js'
+import { conPlazo } from './plazo.js'
+
+// Mismo margen que `KioskRed.jsx` (75 s, ver `bridge.js`/`TIMEOUTS_METODO`
+// para `red_conectar`): nmcli puede tardar hasta 60 s.
+const ESPERA_CONEXION_MS = 75000
 
 // Pantalla de configuracion desde el MOVIL (hotspot de la Pi). Es una vista
 // aparte del kiosco a proposito: `KioskRed.jsx` esta dimensionada para la
@@ -133,7 +138,11 @@ export default function MovilRed() {
     setConectando(true)
     setErrorConexion('')
     try {
-      const r = await api.redConectar(ssid, pwd)
+      const r = await conPlazo(
+        api.redConectar(ssid, pwd),
+        ESPERA_CONEXION_MS,
+        'El Organizer no responde.'
+      )
       if (r?.ok) {
         setConectada(ssid)
         setVista('listo')

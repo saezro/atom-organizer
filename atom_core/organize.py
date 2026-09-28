@@ -263,6 +263,11 @@ def _default_split_config(params: dict) -> SplitImagesConfig:
     tif_humidity = _pos_float(params.get("convert_to_tif_humidity", params.get("humidity")), 70.0)
     tif_temp_auto = 1 if bool(params.get("convert_to_tif_temp_auto", params.get("temp_auto", True))) else 0
 
+    # Orientación de la planta de la inspección elegida ("Horizontal" nunca
+    # gira, ver `atom_core.indice._consenso_de_angulo_por_vuelo`). Vacío si
+    # no llega -inspección sin elegir, o la Suite todavía sin el campo-.
+    orientacion = str(params.get("orientacion") or "").strip()
+
     modo_destino = str(params.get("modo_destino") or utils.MODO_SOBRESCRIBIR).strip()
     if modo_destino not in utils.MODOS_DESTINO:
         # Fallar aqui y no mas abajo: un modo mal escrito que se degradase en
@@ -292,6 +297,7 @@ def _default_split_config(params: dict) -> SplitImagesConfig:
         convert_to_tif_low_temperature=0.0, convert_to_tiff_rotate_90=False,
         convert_to_tiff_rotate_minus_90=False, convert_to_tiff_rotate_auto=True,
         convert_to_tif_solo_seleccion_atom=False,
+        orientacion=orientacion,
         # OFF por defecto (3.4.9). En 3.4.8 se activó para poder ver la orientación del
         # .tiff, dando por hecho que se abría BLANCO: el fichero es float32 en °C (rango
         # real medido 27,3–70,9) y la convención para float es 0,0–1,0, así que satura.

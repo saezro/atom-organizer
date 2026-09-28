@@ -3,6 +3,7 @@ import pytest
 
 import app_webview
 from atom_core import estadillo as estadillo_mod
+from atom_core import estadillo_canonico as estadillo_canonico_mod
 
 
 class _AuthFake:
@@ -107,3 +108,60 @@ def test_subir_convierte_excepcion_interna_en_started_false(api_con_sesion, tmp_
     res = api_con_sesion.estadillo_subir("MI_PLANTA", [_csv(tmp_path)])
 
     assert res == {"started": False, "reason": "boom inesperado"}
+
+
+def test_subir_no_arranca_una_segunda_vez_mientras_hay_una_en_curso(api_con_sesion, tmp_path):
+    """Lock no bloqueante, igual que `cloud_upload`/`self._uploading`: sin él,
+    dos clicks (o dos dispositivos) arrancaban dos hilos subiendo el mismo
+    estadillo en paralelo."""
+    api_con_sesion._estadillo_subiendo = True
+
+    res = api_con_sesion.estadillo_subir("MI_PLANTA", [_csv(tmp_path)])
+
+    assert res == {"started": False, "reason": "Ya hay una subida en curso."}
+
+
+def test_worker_libera_el_candado_al_terminar_bien(api_con_sesion, tmp_path, monkeypatch):
+    validacion = estadillo_mod.validar_para_subida([_csv(tmp_path)])
+    monkeypatch.setattr(estadillo_canonico_mod, "plan_subida", lambda **kw: {"plan": "falso"})
+    monkeypatch.setattr(
+        estadillo_canonico_mod, "ejecutar_plan",
+        lambda plan, subir_fichero, subir_json: {"ok": True, "ruta_manifest": "x/manifest.json"},
+    )
+    monkeypatch.setattr(api_con_sesion, "_reporter_actual", lambda: None)
+    api_con_sesion._estadillo_subiendo = True
+
+    api_con_sesion._subir_estadillo_worker("MI_PLANTA", [_csv(tmp_path)], validacion)
+
+    assert api_con_sesion._estadillo_subiendo is False
+
+
+def test_worker_libera_el_candado_si_ejecutar_plan_dice_ok_false(api_con_sesion, tmp_path, monkeypatch):
+    validacion = estadillo_mod.validar_para_subida([_csv(tmp_path)])
+    monkeypatch.setattr(estadillo_canonico_mod, "plan_subida", lambda **kw: {"plan": "falso"})
+    monkeypatch.setattr(
+        estadillo_canonico_mod, "ejecutar_plan",
+        lambda plan, subir_fichero, subir_json: {"ok": False, "error": "fallo subiendo"},
+    )
+    api_con_sesion._estadillo_subiendo = True
+
+    api_con_sesion._subir_estadillo_worker("MI_PLANTA", [_csv(tmp_path)], validacion)
+
+    assert api_con_sesion._estadillo_subiendo is False
+
+
+def test_worker_libera_el_candado_si_revienta_una_excepcion(api_con_sesion, tmp_path, monkeypatch):
+    """Regresion: sin `finally`, un fallo a mitad de la subida dejaba
+    `_estadillo_subiendo` en `True` para siempre y la UI sin poder
+    reintentar («Ya hay una subida en curso.» de por vida)."""
+    validacion = estadillo_mod.validar_para_subida([_csv(tmp_path)])
+
+    def _revienta(**kw):
+        raise RuntimeError("boom a mitad de la subida")
+
+    monkeypatch.setattr(estadillo_canonico_mod, "plan_subida", _revienta)
+    api_con_sesion._estadillo_subiendo = True
+
+    api_con_sesion._subir_estadillo_worker("MI_PLANTA", [_csv(tmp_path)], validacion)
+
+    assert api_con_sesion._estadillo_subiendo is False

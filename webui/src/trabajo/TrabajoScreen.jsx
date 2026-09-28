@@ -49,6 +49,7 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
       <PasoEstadillo
         prefijo={prefijo}
         carpeta={carpeta}
+        inspeccion={elegida}
         disabled={ocupado}
         onEstado={setEstadillo}
       />

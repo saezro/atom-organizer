@@ -20,6 +20,7 @@ vi.mock('../bridge', () => ({
     return () => window.removeEventListener('atom:cloud', w)
   },
   onAnalisis: () => () => {},
+  isServerMode: () => false,
 }))
 import { act } from '@testing-library/react'
 import TrabajoScreen from './TrabajoScreen'

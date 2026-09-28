@@ -38,7 +38,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 
@@ -57,6 +59,15 @@ ESTADILLO_PATH_SEP = "\x1f"
 # columnas conocidas, ES o EN, van en mayúsculas iniciales, ver
 # `Utils.get_nombres_columnas`).
 COLUMNA_ORIGEN = "_estadillo_origen"
+
+# Ruta ABSOLUTA (no solo el nombre) del fichero de origen de cada fila:
+# interna, no se expone fuera del módulo (`filas_para_suite`/UI siguen
+# usando `COLUMNA_ORIGEN`, el basename, para no cambiarles el contrato).
+# Hace falta para identificar el fichero sin ambigüedad en
+# `detectar_colisiones_mismo_dia`: dos pilotos con estadillos que se llaman
+# IGUAL ("estadillo.csv") en carpetas distintas son un caso real, y
+# `COLUMNA_ORIGEN` (solo el nombre) los confundiría en un único "origen".
+COLUMNA_ORIGEN_RUTA = "_estadillo_origen_ruta"
 
 
 class EstadilloHeaderError(ValueError):
@@ -108,7 +119,9 @@ def _read_dataframe(path: str) -> pd.DataFrame:
 _EXTENSIONES_CANDIDATAS = (".csv", ".xlsx", ".xls")
 
 
-def detectar_estadillos(carpeta: str, max_profundidad: int = 2) -> dict:
+def detectar_estadillos(
+    carpeta: str, max_profundidad: int = 2, incluir_recibidos: bool = False
+) -> dict:
     """Escanea `carpeta` (recursivo, hasta `max_profundidad` niveles por
     debajo de `carpeta`) buscando ficheros que PARECEN estadillos, para que
     la UI pueda ofrecer "detectados N estadillos" antes de que el operario
@@ -122,6 +135,13 @@ def detectar_estadillos(carpeta: str, max_profundidad: int = 2) -> dict:
     `Utils.get_nombres_columnas` que usa `combinar_estadillos`); si falla la
     lectura o falta alguna columna, el fichero se descarta EN SILENCIO (no es
     un estadillo, no es un error) y el escaneo sigue con el resto.
+
+    `incluir_recibidos=True` (solo escritorio, ver `app_webview.py`) suma a
+    los candidatos los CSV/XLSX que haya sueltos en
+    `estadillos_recibidos_dir()` (la carpeta de "Estadillo Digital" recibidos
+    por LAN, ver `atom_core.google_auth`), sin bajar a subcarpetas: son
+    estadillos que el operario recibió pero que todavía no se movieron a la
+    carpeta del vuelo. El kiosco de la Pi nunca pasa este flag.
 
     Devuelve `{"rutas": [...], "descartados": [...]}`, ambas listas de rutas
     absolutas ordenadas alfabéticamente. `max_profundidad=0` limita el
@@ -166,6 +186,20 @@ def detectar_estadillos(carpeta: str, max_profundidad: int = 2) -> dict:
             if os.path.splitext(nombre)[1].lower() in _EXTENSIONES_CANDIDATAS:
                 candidatos.append(ruta_padre)
 
+    if incluir_recibidos:
+        from atom_core.google_auth import estadillos_recibidos_dir
+
+        try:
+            recibidos = estadillos_recibidos_dir()
+            for nombre in os.listdir(recibidos):
+                ruta_recibida = os.path.join(recibidos, nombre)
+                if nombre.startswith(".") or nombre.startswith("~$") or not os.path.isfile(ruta_recibida):
+                    continue
+                if os.path.splitext(nombre)[1].lower() in _EXTENSIONES_CANDIDATAS:
+                    candidatos.append(ruta_recibida)
+        except OSError:
+            pass  # sin permiso o carpeta inaccesible: no bloquea el resto del escaneo
+
     rutas: list[str] = []
     descartados: list[str] = []
     for ruta in candidatos:
@@ -177,7 +211,41 @@ def detectar_estadillos(carpeta: str, max_profundidad: int = 2) -> dict:
             continue
         rutas.append(os.path.abspath(ruta))
 
-    return {"rutas": sorted(rutas), "descartados": sorted(descartados)}
+    return {"rutas": sorted(set(rutas)), "descartados": sorted(set(descartados))}
+
+
+def mover_estadillo_recibido_a_carpeta(ruta: str, carpeta_destino: str) -> str | None:
+    """Mueve un estadillo recibido por LAN (vive en `estadillos_recibidos_dir()`,
+    ver `atom_core.google_auth`) a `carpeta_destino` -la carpeta que se va a
+    organizar-, con su MISMO nombre: es justo donde `detectar_estadillos`
+    busca (raíz de la carpeta), así que tras el move se detecta igual que un
+    estadillo colocado a mano.
+
+    Se llama exactamente al empezar a organizar, nunca antes: hasta ese
+    momento el fichero se queda donde "Estadillo Digital" lo dejó.
+
+    No sobrescribe: si ya hay un fichero con ese nombre en destino, se le
+    añade sufijo `_1`, `_2`... (mismo criterio que
+    `google_auth.migrar_estadillos_recibidos_legacy`). Nunca lanza: devuelve
+    `None` si `ruta` no existe o el move falla (permisos, disco...), y el
+    llamador decide -nunca debe bloquear el run por esto.
+    """
+    try:
+        origen = Path(ruta)
+        if not origen.is_file():
+            return None
+        destino_dir = Path(carpeta_destino)
+        if not destino_dir.is_dir():
+            return None
+        objetivo = destino_dir / origen.name
+        sufijo = 1
+        while objetivo.exists():
+            objetivo = destino_dir / f"{origen.stem}_{sufijo}{origen.suffix}"
+            sufijo += 1
+        shutil.move(str(origen), str(objetivo))
+        return str(objetivo)
+    except OSError:
+        return None
 
 
 def empaquetar_rutas(paths: list[str]) -> str:
@@ -232,6 +300,7 @@ def combinar_estadillos(rutas: list[str]) -> pd.DataFrame:
         _validar_columnas_esenciales(df, ruta)
         df = df.copy()
         df[COLUMNA_ORIGEN] = os.path.basename(ruta)
+        df[COLUMNA_ORIGEN_RUTA] = os.path.abspath(ruta)
         frames.append(df)
 
     return pd.concat(frames, ignore_index=True)
@@ -258,6 +327,61 @@ def detectar_colisiones_pb_vuelo(df: pd.DataFrame, nombres_columnas: dict) -> di
         if fecha_s not in vistas:
             vistas.append(fecha_s)
     return {clave: fechas for clave, fechas in fechas_por_par.items() if len(fechas) > 1}
+
+
+def detectar_colisiones_mismo_dia(df: pd.DataFrame, nombres_columnas: dict) -> dict:
+    """Pares (PB, Vuelo, Fecha) que aparecen en MÁS DE UN estadillo de origen
+    distinto: dos pilotos con el MISMO PB+Vuelo el MISMO día no se pueden
+    desambiguar con el sufijo de fecha (`sufijo_fecha`, que solo distingue
+    fechas distintas): a diferencia de `detectar_colisiones_pb_vuelo`, esto
+    es un choque real que no tiene resolución automática y debe cortar antes
+    de escribir nada.
+
+    La identidad del "fichero de origen" se toma de `COLUMNA_ORIGEN_RUTA`
+    (ruta absoluta, ver `combinar_estadillos`) cuando está presente -dos
+    pilotos pueden llamar a su estadillo IGUAL ("estadillo.csv") desde
+    carpetas distintas, y el `COLUMNA_ORIGEN` (solo el nombre) los
+    confundiría en un único origen-; si `df` no la trae (p. ej. un
+    DataFrame de test construido a mano) cae a `COLUMNA_ORIGEN`.
+
+    Devuelve `{(pb, vuelo, fecha): [origenes]}` (el fichero de origen tal
+    cual venía en la columna usada) solo para las claves con 2+ ficheros de
+    origen distintos; vacío si `df` no trae ninguna de las dos columnas de
+    origen, o si le faltan columnas esenciales."""
+    col_pb = nombres_columnas.get("PB")
+    col_vuelo = nombres_columnas.get("Vuelo")
+    col_fecha = nombres_columnas.get("Fecha")
+    col_origen = COLUMNA_ORIGEN_RUTA if COLUMNA_ORIGEN_RUTA in df.columns else COLUMNA_ORIGEN
+    if col_origen not in df.columns or not (
+            col_pb in df.columns and col_vuelo in df.columns and col_fecha in df.columns):
+        return {}
+
+    origenes_por_clave: dict[tuple, list] = {}
+    for pb, vuelo, fecha, origen in zip(df[col_pb], df[col_vuelo], df[col_fecha], df[col_origen]):
+        clave = (str(pb).strip(), str(vuelo).strip(), str(fecha).strip())
+        vistos = origenes_por_clave.setdefault(clave, [])
+        origen_s = str(origen).strip()
+        if origen_s not in vistos:
+            vistos.append(origen_s)
+    return {clave: origenes for clave, origenes in origenes_por_clave.items() if len(origenes) > 1}
+
+
+def agrupar_rutas_por_carpeta(rutas: list[str]) -> dict[str, list[str]]:
+    """Agrupa `rutas` de estadillo por su carpeta contenedora (ruta absoluta
+    normalizada), preservando el orden relativo de `rutas` tanto entre
+    grupos (por primera aparición) como dentro de cada grupo.
+
+    Es la base del scoping por carpeta (`indice._ventanas_para_imagen`): cada
+    grupo es "un estadillo" a efectos de a qué imágenes reclama -varios
+    ficheros en la MISMA carpeta se tratan como uno solo, fusionados entre
+    ellos, igual que hace `combinar_estadillos`."""
+    grupos: dict[str, list[str]] = {}
+    for ruta in rutas or []:
+        if not ruta:
+            continue
+        carpeta = os.path.normcase(os.path.normpath(os.path.dirname(os.path.abspath(ruta))))
+        grupos.setdefault(carpeta, []).append(ruta)
+    return grupos
 
 
 def sufijo_fecha(fecha: str) -> str:
@@ -386,6 +510,12 @@ def filas_para_suite(df: pd.DataFrame, origen_por_fila: list | None = None) -> l
     piloto_s = _col(df, cols, "Piloto")
     equipo_s = _col(df, cols, "Equipo_de_vuelo")
     origen_s = df[COLUMNA_ORIGEN] if COLUMNA_ORIGEN in df.columns else None
+    # `Sync_UID` no es una columna ES/EN del estadillo clásico (no está en
+    # `Utils.get_nombres_columnas`), así que se lee directo por nombre. Solo
+    # la trae un estadillo recibido por LAN de la app de Christian
+    # (`escribir_csv_desde_json`); un CSV subido a mano no la tiene, y
+    # entonces sale `None` en todas las filas -el contrato es opcional-.
+    sync_uid_s = df["Sync_UID"] if "Sync_UID" in df.columns else None
 
     def cell(s, i):
         if s is None:
@@ -426,6 +556,7 @@ def filas_para_suite(df: pd.DataFrame, origen_por_fila: list | None = None) -> l
             "hora_inicio": hora_inicio,
             "hora_fin": _normalizar_hora_suite(cell(final_s, i)),
             "origen": origen,
+            "sync_uid": cell(sync_uid_s, i) or None,
         })
 
     return filas
@@ -574,3 +705,91 @@ def validar_para_subida(rutas: list[str]) -> dict:
         "vuelos_detectados": vuelos_detectados,
         "filas_con_problemas": vuelos_detectados - len(vuelos),
     }
+
+
+# --------------------------------------------------------------------------
+# Modo "esperando estadillo": la app Electron "Estadillo Digital" (Christian)
+# manda el estadillo como JSON (`POST /api/estadillo`, `atom_core/webserver.py`)
+# en vez de como fichero. Se convierte a un CSV con las MISMAS cabeceras ES
+# que `read_estadillo_info`/`validar_para_subida` ya saben leer (ver
+# `Utils.get_nombres_columnas`) y se pasa por el mismo gate que un CSV subido
+# a mano: cero caminos nuevos de validación, solo un origen nuevo de fichero.
+# --------------------------------------------------------------------------
+
+# Cabeceras ES reales (columna CSV = clave y valor en `Utils.get_nombres_columnas`,
+# rama `ES`). `GB1/`/`GB2/` llevan la barra tal cual la trae el CSV real.
+_CSV_COLUMNAS_CONOCIDAS = frozenset({
+    "Empresa", "Trabajo", "Fecha", "Piloto", "Equipo_de_vuelo", "Pitch",
+    "Hora_de_inicio", "Hora_final", "PB", "Vuelo", "Desplazado", "Vel_vuelo",
+    "Alt_vuelo", "Vel_de_aire", "Temp_aire", "Nubes", "Radiacion",
+    "Tiempo_vuelo", "Dist_Recorrida", "Set_Bat_1", "Set_Bat_2", "Set_Bat_3",
+    "Volt_inicial", "Volt_final", "GB1/", "GB2/", "Anotaciones", "Termica",
+    "RGB", "Cali_Ini", "Cali_Final", "Tipologia", "Vuelo_abortado",
+    # No es un campo del CSV clásico (nadie lo rellena a mano): es el id
+    # estable que genera la app de Christian (`generateSyncUid`,
+    # `electron/postgresSync.ts`) y que hay que conservar por vuelo para que
+    # la Suite pueda casar el vuelo que le llega del Organizer con la fila de
+    # `indai.estadillos` que ya conoce (ver `_fila_json_a_csv`/`filas_para_suite`).
+    "Sync_UID",
+})
+
+# La app de Christian nombra algunos campos distinto a la cabecera CSV real
+# (p.ej. el equipo de vuelo lo manda como "dron", y GB1/GB2 sin la barra
+# final porque en JSON no tiene sentido). Se traduce aquí, antes de escribir
+# el CSV, para no tocar `_CSV_COLUMNAS_CONOCIDAS` ni el resto del módulo.
+_CSV_ALIAS_CAMPO_JSON = {
+    "dron": "Equipo_de_vuelo",
+    "Dron": "Equipo_de_vuelo",
+    "GB1": "GB1/",
+    "GB2": "GB2/",
+    # `sync_uid` (minúscula, es como lo manda el JSON) -> `Sync_UID` (cabecera
+    # CSV, mismo criterio de capitalización que el resto de columnas).
+    "sync_uid": "Sync_UID",
+}
+
+
+def _fila_json_a_csv(vuelo: dict) -> dict:
+    """Un FlightRecord del JSON -> fila con cabeceras CSV reales. Campos
+    desconocidos (no están en `_CSV_COLUMNAS_CONOCIDAS` tras el alias) se
+    ignoran en silencio; es el contrato: "ignorar lo que no se reconoce"."""
+    fila: dict = {}
+    for clave, valor in (vuelo or {}).items():
+        columna = _CSV_ALIAS_CAMPO_JSON.get(clave, clave)
+        if columna in _CSV_COLUMNAS_CONOCIDAS and valor not in (None, ""):
+            fila[columna] = valor
+    return fila
+
+
+def escribir_csv_desde_json(vuelos: list[dict], directorio: str | Path) -> str:
+    """N FlightRecord (JSON de la app "Estadillo Digital") -> ruta de un CSV
+    `;`-separado con cabeceras ES, escrito en `directorio` (el de datos de la
+    propia app, NUNCA la carpeta de fotos/SD: no es un fichero del vuelo).
+
+    Mismo formato que escribe un operario a mano, así que aguas abajo
+    (`read_estadillo_info`, `validar_para_subida`) no cambia nada.
+
+    Lanza `ValueError` si `vuelos` está vacío, o si tras traducir alias
+    ninguna fila trae ninguna columna reconocida (JSON con forma inesperada,
+    p.ej. todo el body vacío o con claves que no coinciden con nada).
+    """
+    if not vuelos:
+        raise ValueError("No se ha recibido ningún vuelo.")
+
+    filas = [_fila_json_a_csv(v) for v in vuelos]
+    if not any(filas):
+        raise ValueError(
+            "Ninguno de los vuelos recibidos trae columnas reconocidas del estadillo.")
+
+    df = pd.DataFrame(filas)
+
+    destino = Path(directorio)
+    destino.mkdir(parents=True, exist_ok=True)
+
+    fecha = str(filas[0].get("Fecha") or "SINFECHA").strip()
+    fecha_nombre = re.sub(r"[^0-9A-Za-z]+", "", fecha) or "SINFECHA"
+    piloto = str(filas[0].get("Piloto") or "SINPILOTO").strip()
+    piloto_nombre = re.sub(r"[^0-9A-Za-z]+", "_", piloto).strip("_") or "SINPILOTO"
+
+    ruta = destino / f"{fecha_nombre}_estadillo_{piloto_nombre}.csv"
+    df.to_csv(ruta, sep=";", index=False)
+    return str(ruta)

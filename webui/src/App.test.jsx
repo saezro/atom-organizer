@@ -48,6 +48,8 @@ vi.mock('./bridge', () => ({
   onProgress: () => () => {},
   onCloud: () => () => {},
   onAnalisis: () => () => {},
+  onControlCarpeta: () => () => {},
+  onControlUi: () => () => {},
   onUpdate: () => () => {},
   registerPicker: vi.fn(),
   isServerMode: () => false,

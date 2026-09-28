@@ -51,17 +51,29 @@ describe('KioskScreen — activacion por toque en modo servidor', () => {
     expect(screen.getByText(/elegir carpeta/i)).toBeInTheDocument()
   })
 
-  it('en modo servidor, mover el dedo NO cancela en los botones del kiosco', () => {
+  it('en modo servidor, el temblor del resistivo NO cancela en los botones del kiosco', () => {
     render(<KioskScreen {...baseProps({ accionInicial: 'organizer' })} />)
     const boton = screen.getByRole('button', { name: /^organizar$/i })
 
     fireEvent.pointerDown(boton, { clientY: 100 })
-    fireEvent.pointerMove(boton, { clientY: 10 }) // en el selector esto seria un scroll
+    // Este boton no lleva `cancelarAlMover` (no hay scroll que desambiguar):
+    // el temblor tipico del resistivo se tolera y solo se descarta un
+    // arrastre real, mucho mayor.
+    fireEvent.pointerMove(boton, { clientY: 92 })
+    fireEvent.pointerUp(boton, { clientY: 92 })
+
+    expect(screen.getByText(/elegir carpeta/i)).toBeInTheDocument()
+  })
+
+  it('en modo servidor, un arrastre real SI cancela en los botones del kiosco', () => {
+    render(<KioskScreen {...baseProps({ accionInicial: 'organizer' })} />)
+    const boton = screen.getByRole('button', { name: /^organizar$/i })
+
+    fireEvent.pointerDown(boton, { clientY: 100 })
+    fireEvent.pointerMove(boton, { clientY: 10 })
     fireEvent.pointerUp(boton, { clientY: 10 })
 
-    // Aqui no hay scroll que desambiguar, asi que el temblor del dedo sobre el
-    // panel resistivo no puede dejar el boton sin responder.
-    expect(screen.getByText(/elegir carpeta/i)).toBeInTheDocument()
+    expect(screen.queryByText(/elegir carpeta/i)).not.toBeInTheDocument()
   })
 
   it('en escritorio, un click normal sobre "Organizar" dispara la accion de inmediato', async () => {

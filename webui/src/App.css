@@ -751,6 +751,279 @@ select.glass-input option {
 .field-hint.hint-warn {
   color: #f0b866;
 }
+/* Pantalla «Esperando estadillo» (EsperaEstadillo): modo «Recibir del
+   portátil» de PasoEstadillo. Tres estados por color (amarillo/verde/rojo,
+   `data-fase`), pantalla oscura, tipografía monoespaciada para los datos que
+   se leen de un vistazo (contador, IPs, horas). */
+.espera-estadillo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding: 1.5rem 1rem;
+  border-radius: var(--radio);
+  background: rgba(255, 255, 255, 0.03);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.12);
+  text-align: center;
+}
+/* `.espera-cuerpo` agrupa lo que puede crecer sin límite (radar/título/
+   contador/direcciones/registro de actividad); `.espera-pie` son las
+   acciones (Cancelar/Empezar/Volver a esperar), que quedan fuera de ese
+   bloque para no desaparecer nunca detrás de un scroll. En escritorio
+   (`PasoEstadillo`, sin alto acotado) esto no cambia nada visualmente: solo
+   importa donde SÍ hay una altura fija que repartir, el kiosco de 480x320
+   (`.kiosk-estadillo .espera-cuerpo`, más abajo). */
+.espera-cuerpo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 0;
+}
+.espera-pie {
+  flex: none;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.espera-pie.espera-acciones {
+  flex-direction: row;
+  justify-content: center;
+  margin-top: 0.6rem;
+}
+.espera-estadillo-esperando {
+  border-color: rgba(250, 204, 21, 0.4);
+  box-shadow: 0 0 1.5rem rgba(250, 204, 21, 0.08);
+}
+.espera-estadillo-conectado {
+  border-color: rgba(238, 118, 60, 0.5);
+  box-shadow: 0 0 1.5rem rgba(238, 118, 60, 0.12);
+  color: #ee763c;
+}
+.espera-estadillo-recibiendo {
+  border-color: rgba(238, 118, 60, 0.5);
+  box-shadow: 0 0 1.5rem rgba(238, 118, 60, 0.12);
+  color: #ee763c;
+}
+.espera-estadillo-recibido_ok {
+  border-color: rgba(34, 197, 94, 0.5);
+  box-shadow: 0 0 1.5rem rgba(34, 197, 94, 0.12);
+  color: #22c55e;
+}
+.espera-estadillo-rechazado {
+  border-color: rgba(239, 68, 68, 0.5);
+  box-shadow: 0 0 1.5rem rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+}
+.espera-estadillo-caducado {
+  border-color: rgba(148, 163, 184, 0.5);
+  box-shadow: 0 0 1.5rem rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+}
+.espera-estadillo-inactivo {
+  border-color: rgba(148, 163, 184, 0.3);
+  color: #94a3b8;
+}
+.espera-titulo {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text);
+}
+.espera-estadillo-esperando .espera-titulo {
+  color: #facc15;
+}
+.espera-spinner {
+  animation: espera-spinner-giro 0.9s linear infinite;
+}
+@keyframes espera-spinner-giro {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .espera-spinner {
+    animation: none;
+  }
+}
+/* Registro de actividad: últimos eventos del backend, el más reciente
+   arriba, legible a distancia pero sin competir con la cabecera de fase. */
+.espera-registro {
+  width: 100%;
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 0.0625rem solid rgba(255, 255, 255, 0.1);
+  text-align: left;
+}
+.espera-registro-titulo {
+  display: block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted, #8b93a1);
+  margin-bottom: 0.3rem;
+}
+.espera-registro ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.espera-registro-linea {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text);
+}
+.espera-registro-linea .espera-mono {
+  color: var(--muted, #8b93a1);
+}
+.espera-mono {
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Consolas', monospace;
+}
+.espera-contador {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #facc15;
+  letter-spacing: 0.05em;
+}
+/* Direcciones (`http://organizer.local`, `http://<ip>`): una por línea,
+   grandes y legibles — es lo que el operador tiene que teclear a mano en el
+   portátil si `organizer.local` no resuelve en esa red. */
+.espera-direcciones {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.4rem;
+}
+.espera-direccion {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.espera-errores {
+  margin-top: 0.4rem;
+}
+/* «Elige carpeta arriba»: la espera puede arrancar sin carpeta y seguir
+   esperando (ver `EsperaEstadillo.jsx`, `faltaCarpeta`). Es solo un aviso en
+   texto — el selector ya está encima del panel (`.kiosk-carpeta` en el
+   kiosco, `EstadilloField`/carpeta del vuelo en escritorio), sin botón
+   duplicado aquí. */
+.espera-carpeta {
+  display: block;
+  margin-bottom: 0.3rem;
+}
+.espera-recibido-detalle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.2rem 0.75rem;
+  margin: 0.4rem 0 0;
+  font-size: 0.9rem;
+  color: var(--text);
+  text-align: left;
+}
+.espera-recibido-detalle dt {
+  color: var(--muted);
+}
+.espera-recibido-carpeta {
+  font-size: 0.78rem;
+  word-break: break-all;
+  color: var(--muted);
+}
+/* Semáforo de validación (fotos vs vuelos del estadillo): informa, nunca
+   bloquea — «OK, seguir» sigue disponible con avisos. */
+.espera-semaforo {
+  display: inline-block;
+  margin-top: 0.2rem;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.espera-semaforo-ok {
+  color: #7ee2a8;
+  background: rgba(34, 197, 94, 0.14);
+}
+.espera-semaforo-avisos {
+  color: #f0b866;
+  background: rgba(240, 184, 102, 0.14);
+}
+.espera-semaforo-pendiente {
+  color: var(--muted, #8b93a1);
+  background: rgba(255, 255, 255, 0.06);
+}
+.espera-validacion-vuelos {
+  list-style: none;
+  margin: 0.3rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  width: 100%;
+  text-align: left;
+}
+.espera-validacion-vuelo {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  padding: 0.1rem 0;
+}
+.espera-validacion-vuelo-ok { color: var(--text); }
+.espera-validacion-vuelo-warn { color: #f0b866; }
+.espera-motivo {
+  font-weight: 600;
+}
+.espera-acciones {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.6rem;
+}
+/* Radar: anillo pulsante + punto central, señal de "esperando" sin depender
+   solo del color (accesible a daltonismo). */
+.espera-radar {
+  position: relative;
+  width: 3.5rem;
+  height: 3.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.espera-radar-anillo {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 0.125rem solid #facc15;
+  animation: espera-radar-pulso 1.8s ease-out infinite;
+}
+.espera-radar-punto {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  background: #facc15;
+}
+@keyframes espera-radar-pulso {
+  0% {
+    transform: scale(0.4);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .espera-radar-anillo {
+    animation: none;
+    opacity: 0.6;
+  }
+}
 /* Acción secundaria dentro de una línea de ayuda («Comprobar de nuevo»). Es un
    <button> de verdad, no un <a href="#">: hereda el color del hint para no
    competir con la acción principal, pero sigue siendo enfocable con teclado. */
@@ -772,6 +1045,112 @@ select.glass-input option {
   outline: 0.0625rem solid currentColor;
   outline-offset: 0.125rem;
   border-radius: 0.125rem;
+}
+
+/* --- Modal «Estadillo recibido» (EsperaEstadillo.jsx, fase recibido_ok) --- *
+ * Portal a `document.body`: encima de CUALQUIER pantalla (kiosco o
+ * escritorio), nunca compitiendo por el hueco con lo que hubiera debajo.
+ * Cabecera (icono/título/semáforo) y pie (botón «OK, seguir») FIJOS; solo el
+ * cuerpo intermedio scrollea si el resumen no cabe. En el kiosco (480x320,
+ * `100vw`/`100vh` reales) el panel ocupa toda la pantalla — no hay margen que
+ * perder — y en escritorio se centra como el resto de modales (`.pm-overlay`).
+ */
+.espera-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem;
+  background: rgba(0, 0, 0, 0.78);
+}
+.espera-modal-panel {
+  width: min(28rem, 100%);
+  max-height: 100%;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border-radius: var(--radio);
+  background: rgba(20, 20, 22, 0.94);
+  box-shadow: 0 0.75rem 1.5rem rgba(0, 0, 0, 0.55);
+}
+.espera-modal-cabecera {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 1rem 1rem 0.6rem;
+  text-align: center;
+  border-bottom: 0.0625rem solid rgba(255, 255, 255, 0.1);
+}
+.espera-modal-cuerpo {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.6rem 1rem;
+}
+.espera-modal-pie {
+  flex: none;
+  margin-top: 0;
+  padding: 0.75rem 1rem;
+  border-top: 0.0625rem solid rgba(255, 255, 255, 0.1);
+}
+.espera-modal-pie .btn-espera-empezar {
+  width: 100%;
+  min-height: 2.75rem;
+  font-size: var(--fs-md, 1rem);
+  font-weight: 700;
+}
+/* Kiosco 480x320: el modal ocupa la pantalla entera (sin margen que
+   desperdiciar) y el texto se compacta igual que el resto del panel de
+   espera para que el resumen quepa sin recortes. */
+html.kiosk-modo .espera-modal-overlay {
+  padding: 0;
+  /* `align-items/justify-content: center` (escritorio) deja al panel con
+     `height:100%` una fracción de px por debajo/derecha del contenedor por
+     redondeo de subpíxel — con la pantalla justa a 320px eso ya desborda.
+     `stretch` fuerza el tamaño exacto sin dejarle nada que centrar. */
+  align-items: stretch;
+  justify-content: stretch;
+}
+html.kiosk-modo .espera-modal-panel {
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  /* `margin`/`padding` explícitos: sin esto los pisa (misma especificidad,
+     pero DESPUÉS en el CSS) la regla `@media (max-height: 26rem)
+     .espera-estadillo` genérica del resto del kiosco, y el panel se sale
+     unos px por el borde de la pantalla. */
+  margin: 0;
+  padding: 0;
+  gap: 0;
+  border-radius: 0;
+}
+html.kiosk-modo .espera-modal-cabecera {
+  padding: 0.6rem 0.75rem 0.5rem;
+}
+/* El resumen es lo único que se lee de un vistazo antes de tocar «OK,
+   seguir»: se queda en 0.8rem mínimo aunque `--fs-sm`/`--fs-base` bajen más
+   en el breakpoint del kiosco (pedido de Rodrigo: letra legible). */
+html.kiosk-modo .espera-modal-cabecera .espera-titulo {
+  font-size: var(--fs-md);
+  line-height: 1.15;
+}
+html.kiosk-modo .espera-modal-cuerpo {
+  padding: 0.5rem 0.75rem;
+}
+html.kiosk-modo .espera-modal-cuerpo .espera-recibido-detalle,
+html.kiosk-modo .espera-modal-cuerpo .espera-validacion-vuelo,
+html.kiosk-modo .espera-modal-cuerpo .espera-recibido-carpeta,
+html.kiosk-modo .espera-modal-cuerpo .field-hint {
+  font-size: 0.8rem;
+}
+html.kiosk-modo .espera-modal-cabecera .espera-semaforo {
+  font-size: 0.8rem;
 }
 
 /* --- Config: lista de % de recorte por modelo ----------------------------- */
@@ -831,6 +1210,119 @@ select.glass-input option {
   background: rgba(240, 184, 102, 0.12);
 }
 
+/* --- Campo Estadillo: solo lectura (sin tecleo, pedido de Rodrigo 2026-09-22) --- */
+.estad-actual,
+.estad-nombre {
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Campo Estadillo: tarjeta de solo lectura del recibido por red
+   (`EstadilloField`, `infoRecibido`) — pedido de Rodrigo: tras «OK, seguir»
+   el resumen no debe desaparecer detrás de un input con solo el nombre del
+   CSV. Reusa `.espera-recibido-detalle`/`.espera-mono`/`.espera-errores`
+   (mismas clases del modal de `EsperaEstadillo.jsx`) para el detalle y las
+   horas; solo lo propio de la tarjeta (cabecera, lista de vuelos, total) va
+   aquí. Con 3 vuelos no cabe en la pantalla de la Pi (480x320): un intento
+   anterior le puso `overflow-y:auto`+`touch-action:pan-y` al cuerpo para que
+   scrolleara con el dedo, pero el panel resistivo de la Pi expone el
+   ADS7846 como puntero (mousedown/mousemove), NO como touch — no hay gesto
+   que dispare ese scroll, por eso la tarjeta seguía cortada e inservible.
+   `EstadilloField.jsx` pagina el cuerpo en su lugar (mismo patrón
+   `.estad-nav` que la lista de varios ficheros), así que aquí solo queda
+   `max-height` como red de seguridad (con scroll de ratón/rueda en
+   escritorio) y la cabecera FIJA arriba + botón «Quitar» — hermano de este
+   `div`, ver `EstadilloField.jsx` — FIJO al pie. */
+.estad-recibido {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  /* Tope solo pensado para escritorio (donde `.field`/`.kiosk-estadillo` no
+     existen y esta tarjeta podría crecer sin límite en una pantalla alta).
+     En el kiosco el límite real ya lo pone `.kiosk-estadillo` (flex:1 dentro
+     de una `.kiosk` de alto fijo, ver más abajo) — un 45vh aquí ENCIMA de
+     eso recortaba la tarjeta a un tercio de la pantalla de la Pi aunque
+     sobrara hueco de verdad (la causa de que hicieran falta 5 páginas para
+     3 vuelos), así que se anula dentro de `.kiosk-estadillo` un poco más
+     abajo. */
+  max-height: 45vh;
+  /* `flex:1`+`min-height:0` (mismo motivo que `.kiosk-estadillo > .field`
+     más abajo): sin esto la tarjeta solo ocupa el alto que le pide su
+     contenido (no el que le sobra a `.field`/`.kiosk-estadillo`), así que
+     `EstadilloField.jsx` no tiene forma de saber cuántas filas caben de
+     verdad y se pintaba por encima de `.kiosk-acciones`. Con esto ocupa
+     TODO el hueco disponible (hasta `max-height` como tope) y su cuerpo
+     recorta/scrollea dentro, nunca fuera. */
+  flex: 1;
+  min-height: 0;
+  padding: 0.6rem 0.7rem;
+  border-radius: var(--radio);
+  background: rgba(34, 197, 94, 0.06);
+  border: 0.0625rem solid rgba(34, 197, 94, 0.25);
+  text-align: left;
+}
+.estad-recibido-cabecera {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #7ee2a8;
+}
+/* Red de seguridad para escritorio (rueda del ratón) por si el contenido
+   crece más de `max-height`; en kiosco no debería hacer falta porque
+   `EstadilloField.jsx` ya pagina para que quepa. */
+.estad-recibido-cuerpo {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  overflow-y: auto;
+}
+.estad-recibido-titulo {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+.estad-recibido-vuelos {
+  list-style: none;
+  margin: 0.2rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.estad-recibido-vuelo {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text);
+}
+.estad-recibido-total {
+  margin-top: 0.2rem;
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--orange);
+}
+/* Fila del pie (paginador + «Quitar»), ver `EstadilloField.jsx`: comparten
+   fila para no gastar dos alturas de `var(--toque-min)` en un hueco tan
+   ajustado como `.kiosk-estadillo`. Sin paginador (una sola página) queda
+   solo «Quitar», empujado a la derecha por el mismo `margin-left:auto`. */
+.estad-recibido-pie {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+.estad-recibido-quitar {
+  margin-left: auto;
+}
+
 /* --- Campo Estadillo: lista de varios ficheros (reordenable) -------------- */
 .estad-list {
   list-style: none;
@@ -876,13 +1368,10 @@ select.glass-input option {
   opacity: 0.3;
   cursor: default;
 }
-.estad-add {
-  align-self: flex-start;
-}
 /* Paginación de `.estad-list` en kiosco (`tactil`): solo se pinta cuando hay
    más estadillos que `ESTADILLOS_POR_PAGINA`, mismo estilo que
    `Paginador.jsx` (`.kiosk-pag`). */
-.estad-nav { display: flex; gap: 0.5rem; align-items: center; justify-content: center; }
+.estad-nav { display: flex; flex: none; gap: 0.5rem; align-items: center; justify-content: center; }
 .estad-nav-btn {
   width: 2.75rem;
   height: 1.9rem;
@@ -1211,6 +1700,58 @@ select.glass-input option {
   padding-bottom: 0.4rem;
   border-bottom: 0.0625rem solid rgba(255, 255, 255, 0.1);
 }
+/* Breadcrumb del kiosco confinado a discos: "Discos › DISCO › carpeta". Cada
+   segmento es un boton salvo el ultimo (la carpeta actual, no clicable). */
+.picker-migas {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15rem;
+  font-size: 0.8rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 0.0625rem solid rgba(255, 255, 255, 0.1);
+}
+.picker-miga-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+.picker-miga-sep {
+  color: var(--muted);
+}
+.picker-miga {
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 0.15rem 0.2rem;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 0.3rem;
+}
+.picker-miga:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+.picker-miga-actual {
+  color: var(--text);
+  font-weight: 600;
+  cursor: default;
+}
+/* Fila de disco en la raiz del selector confinado: nombre + espacio libre en
+   dos lineas, mismo hueco que las filas normales. */
+.picker-txt-col {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+.picker-txt-sub {
+  font-size: 0.7rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .picker-lista {
   list-style: none;
   margin: 0;
@@ -1482,18 +2023,40 @@ select.glass-input option {
 /* Los modales (selector de carpetas incluido) se montan en .pm-overlay, FUERA
    de .kiosk: sin esto el cursor reaparecia justo al abrir el selector. */
 @media (max-height: 26rem) {
-  .pm-overlay, .pm-overlay * { cursor: none; }
+  .pm-overlay, .pm-overlay *, .espera-modal-overlay, .espera-modal-overlay * { cursor: none; }
   /* Los modales van por portal a body, fuera de `.app-kiosco`: sin esto el
      dedo seguia seleccionando su texto. */
-  .pm-overlay, .pm-overlay * { user-select: none; -webkit-user-select: none; }
+  .pm-overlay, .pm-overlay *, .espera-modal-overlay, .espera-modal-overlay * { user-select: none; -webkit-user-select: none; }
   .pm-overlay input, .pm-overlay select, .pm-overlay textarea {
     user-select: text;
     -webkit-user-select: text;
   }
+  /* Espera del estadillo: mismo apuro de espacio (radar+titulo+contador+
+     varias direcciones IP). Se compacta y, ademas, su contenedor real
+     `.kiosk-estadillo` ya lleva scroll propio como red de seguridad. */
+  .espera-estadillo {
+    gap: calc(var(--u) / 2);
+    margin-top: calc(var(--u) / 2);
+    padding: var(--u);
+  }
+  .espera-titulo { font-size: var(--fs-md); }
+  .espera-radar { width: 2.25rem; height: 2.25rem; }
+  .espera-contador { font-size: var(--fs-lg); }
+  .espera-direccion { font-size: var(--fs-sm); }
+  .espera-registro { margin-top: calc(var(--u) / 2); padding-top: calc(var(--u) / 2); }
+  /* Tactil resistivo impreciso: los botones de esta pantalla (Cancelar,
+     Empezar/espera-acciones) necesitan diana grande y aire de sobra, no
+     solo texto mas pequeno. */
+  .espera-estadillo .btn-ghost {
+    min-height: var(--toque-min);
+    padding: 0.5rem 1rem;
+  }
+  .btn-espera-cancelar { margin-top: 0.6rem; }
+  .espera-acciones { gap: 0.75rem; margin-top: 0.75rem; }
 }
 /* Sin esto Chromium reserva cada toque ~300 ms por si es un doble-tap de zoom:
    en el panel resistivo eso se percibe como toques que no responden. */
-.kiosk, .kiosk * { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.kiosk, .kiosk *, .espera-modal-overlay, .espera-modal-overlay * { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 /* El panel resistivo se presenta como un RATON absoluto, no como touchscreen:
    arrastrar el dedo equivale a arrastrar con el boton pulsado, que en una UI
    normal significa "seleccionar texto". Sin esto, deslizar por la pantalla
@@ -1650,7 +2213,11 @@ select.glass-input option {
 .kiosk-avatar-fallback { font-weight: 700; color: var(--text); }
 .kiosk-sin-sesion { font-size: var(--fs-sm); color: var(--muted); }
 
-.kiosk-pin { display: flex; flex-direction: column; align-items: center; gap: 1.5rem; padding: 2rem 1rem; }
+.kiosk-pin { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.5rem; padding: 2rem 1rem; min-height: 0; }
+/* Transparente en desktop: mismo gap que antes tenian titulo/puntos/mensaje
+   sueltos como hijos directos de `.kiosk-pin`, ahora agrupados en un solo
+   bloque (ver comentario en KioskLock.jsx). */
+.kiosk-pin-info { display: flex; flex-direction: column; align-items: center; gap: 1.5rem; }
 .kiosk-pin-titulo { font-size: 1.5rem; margin: 0; color: var(--text); }
 .kiosk-pin-puntos { display: flex; gap: 1rem; }
 .kiosk-pin-punto { width: 1rem; height: 1rem; border-radius: 50%; border: 0.125rem solid var(--text); opacity: 0.5; }
@@ -1699,24 +2266,175 @@ select.glass-input option {
   30%, 50%, 70% { transform: translateX(-0.45rem); }
   40%, 60% { transform: translateX(0.45rem); }
 }
+/* Marco azul de "control remoto activo" (Task «control remoto del kiosco»):
+   se enciende PLENO con cualquier `atom:control_ui`/`atom:control_carpeta` y,
+   a los 15s sin eventos nuevos, se atenúa suavemente (opacity, ~5s) a un
+   estado TENUE que se QUEDA así — ya no se desmonta solo (ver App.jsx). Un
+   toque o tecla LOCAL lo apaga al instante, sin esperar la atenuación: es la
+   única forma de que desaparezca, y es la señal de que ha vuelto a mandar
+   una persona delante del kiosco. Un evento remoto nuevo lo vuelve a poner
+   pleno. Por encima de todo, incluido el bloqueo de PIN, para que sea
+   visible aunque esté bloqueado. */
+.kiosk-control-marco {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 95;
+  border: 0.4rem solid #3B82F6;
+  box-shadow: inset 0 0 1.5rem rgba(59, 130, 246, 0.55);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 0.75rem;
+  opacity: 1;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .kiosk-control-marco { transition: opacity 5s ease; }
+}
+/* Estado tenue persistente (sin eventos desde hace 15s): sigue marcando que
+   el control remoto podría reanudar en cualquier momento, pero sin competir
+   visualmente con la pantalla — pedido de Rodrigo: "que se quede así, no que
+   desaparezca solo". */
+.kiosk-control-marco-desvanecido {
+  opacity: 0.35;
+}
+.kiosk-control-marco-desvanecido .kiosk-control-marco-texto {
+  color: rgba(59, 130, 246, 0.7);
+  background: rgba(0, 0, 0, 0.25);
+}
+.kiosk-control-marco-texto {
+  font-size: 0.8rem;
+  color: #3B82F6;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 0.5rem;
+  padding: 0.2rem 0.75rem;
+  transition: color 0.3s ease, background 0.3s ease;
+}
+/* Resalta durante la reproduccion visual de una accion remota (`atom:
+   control_ui` 'carpeta'/'organizar'/'cancelar', ver KioskScreen.jsx y
+   FolderPicker.jsx): mismo azul que `.kiosk-control-marco`, para que se lea
+   como parte del mismo control remoto en marcha, "como si lo tocara una
+   persona" sin revelar mas que la fila/boton que esta pulsando. */
+.kiosk-control-pulso {
+  outline: 0.125rem solid #3B82F6;
+  outline-offset: 0.125rem;
+  background: rgba(59, 130, 246, 0.18);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .kiosk-control-pulso { animation: kiosk-control-pulso 0.6s ease-in-out infinite; }
+}
+@keyframes kiosk-control-pulso {
+  50% { transform: scale(0.96); }
+}
+/* Mientras el `FolderPicker` reproduce en solitario el recorrido de una
+   carpeta fijada en remoto, se ignoran los toques reales (Task «se ve como
+   una persona»): el backend ya fijo la carpeta, este picker solo la enseña. */
+.picker-reproduccion { pointer-events: none; }
 .kiosk-pin-pad { display: grid; grid-template-columns: repeat(3, 5.5rem); gap: 1rem; }
 .kiosk-pin-tecla { min-height: 4.5rem; display: flex; align-items: center; justify-content: center; font-size: 1.75rem; font-weight: 700; border-radius: var(--radio); border: 0.0625rem solid rgba(255, 255, 255, 0.15); background: rgba(255, 255, 255, 0.06); color: var(--text); }
 .kiosk-pin-tecla:disabled { opacity: 0.4; }
 .kiosk-pin-aux { font-size: 1rem; }
 .kiosk-pin-aux svg { width: 1.75rem; height: 1.75rem; }
 .kiosk-pin-hueco { visibility: hidden; }
+/* Pantalla 480x320 de la Pi, tactil resistivo (calibra mal, pide dianas
+   grandes y separadas): DOS COLUMNAS. Izquierda ~35% con titulo+puntos+
+   mensaje apilados y centrados; derecha ~65% con el teclado 3x4 estirado a
+   toda la altura disponible (align-items:stretch del row de `.kiosk-pin`)
+   y filas `1fr` para que cada tecla reparta el alto sobrante por igual, sin
+   calc() fragil. Va DESPUES de las reglas base de arriba (misma
+   especificidad, gana la que este mas abajo en el archivo). */
+@media (max-height: 26rem) {
+  .kiosk-pin {
+    flex-direction: row;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 0.6rem;
+    padding: 0.6rem;
+  }
+  .kiosk-pin-info {
+    flex: 0 0 35%;
+    justify-content: center;
+    align-items: center;
+    gap: 0.6rem;
+    min-width: 0;
+  }
+  .kiosk-pin-titulo { font-size: var(--fs-md); text-align: center; margin: 0; }
+  .kiosk-pin-puntos { gap: calc(var(--u) / 2); }
+  .kiosk-pin-punto { width: 0.625rem; height: 0.625rem; }
+  .kiosk-pin-mensaje { min-height: var(--fs-sm); text-align: center; }
+  .kiosk-pin-error, .kiosk-pin-espera { font-size: var(--fs-sm); }
+  .kiosk-pin-pad {
+    flex: 1;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(4, 1fr);
+    gap: 0.6rem;
+    min-width: 0;
+    min-height: 0;
+  }
+  .kiosk-pin-tecla {
+    min-height: 0;
+    height: 100%;
+    font-size: 1.6rem;
+  }
+  .kiosk-pin-aux svg { width: 1.6rem; height: 1.6rem; }
+}
 
 .kiosk-carpeta { display: flex; flex-direction: column; gap: calc(var(--u) / 2); }
 .kiosk-btn-carpeta { min-height: var(--toque-min); }
-.kiosk-carpeta-actual,
-.kiosk-destino {
+/* Variante SOLO para el caso raro de esperar/recibir un estadillo sin
+   carpeta elegida todavía (ver KioskScreen.jsx): una única línea, sin la
+   ruta debajo (no hay nada que enseñar sin carpeta) ni margen extra, para
+   robarle el mínimo hueco posible a `.kiosk-estadillo` — con carpeta ya
+   elegida este bloque entero deja de pintarse. */
+.kiosk-carpeta-compacta { flex: none; gap: 0; }
+
+/* Tarjetas «Elegir carpeta» / «Recibir estadillo» (pedido de Rodrigo,
+   2026-09-22): sustituyen al botón fantasma + líneas de texto sueltas por
+   dos dianas táctiles grandes, lado a lado si caben — que es justo lo que
+   sobra en la pantalla "normal" del paso 2 (sin panel de espera debajo). */
+.kiosk-cards { display: flex; gap: var(--u); flex-shrink: 0; }
+.kiosk-cards-una { flex-direction: column; }
+.kiosk-card {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: calc(var(--u) * 0.75);
+  min-height: calc(var(--toque-min) * 2.1);
+  padding: calc(var(--u) * 1.75) calc(var(--u) * 1.5);
+  border-radius: var(--radio);
+  background: rgba(255, 255, 255, 0.06);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.14);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+.kiosk-card svg {
+  width: 1.85rem;
+  height: 1.85rem;
+  flex-shrink: 0;
+  color: var(--orange);
+}
+.kiosk-card-texto {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+  width: 100%;
+}
+.kiosk-card-label { font-weight: 700; font-size: var(--fs-md); }
+.kiosk-card-estado {
+  display: block;
+  margin: 0;
   font-size: var(--fs-sm);
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
 }
-.kiosk-carpeta-actual { color: var(--muted); }
-.kiosk-destino { color: var(--text); }
 
 /* `EstadilloField` y `InspeccionSelector` son componentes compartidos con
    escritorio: aquí solo se adaptan al tacto DENTRO de `.kiosk`, sin tocar su
@@ -1737,6 +2455,102 @@ select.glass-input option {
   display: flex;
   flex-direction: column;
 }
+/* Red de seguridad: `.kiosk` tiene overflow:hidden y `.kiosk-estadillo` es
+   el unico hijo que puede crecer sin control (EsperaEstadillo pinta radar +
+   contador + varias direcciones IP). Igual que `.kiosk-inspeccion`, se
+   queda con el alto sobrante y lleva su propio scroll para no cortar la
+   ultima linea en la pantalla de 320px de alto de la Pi. */
+.kiosk-estadillo {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+/* `EstadilloField` (tarjeta «Estadillo recibido» o lista de varios ficheros)
+   pinta un `.field` como hijo directo. Sin `min-height:0` aquí, un `.field`
+   flex column se queda con su tamaño de contenido (su "automatic minimum
+   size") y el `overflow-y:auto` de arriba nunca llega a recortarlo/scrollear
+   — el contenido se pintaba por encima de `.kiosk-acciones` en vez de
+   quedarse dentro de `.kiosk-estadillo` (causa real de la tarjeta cortada
+   e ilegible con varios vuelos, más allá de la paginación de
+   `EstadilloField.jsx`). */
+.kiosk-estadillo > .field {
+  flex: 1;
+  min-height: 0;
+}
+/* Anula el `max-height:45vh` de `.estad-recibido` (pensado para escritorio)
+   dentro del kiosco: aquí el límite real ya lo pone este mismo contenedor
+   (`flex:1` de alto fijo, `overflow-y:auto` como red de seguridad), y la
+   tarjeta debe poder usar TODO ese hueco para que quepan más filas por
+   página (ver `RECIBIDO_FILAS_POR_PAGINA` en `EstadilloField.jsx`). */
+.kiosk-estadillo .estad-recibido {
+  max-height: none;
+}
+/* Paginador ▲/▼ de la tarjeta «Estadillo recibido»: diana táctil de verdad
+   para el puntero resistivo de la Pi (antes 1.9rem de alto, por debajo de
+   `--toque-min`) y algo más ancho para que se vea a simple vista, no solo
+   un rectángulo perdido junto a «Quitar». */
+.kiosk-estadillo .estad-nav-btn {
+  width: var(--toque-min);
+  height: var(--toque-min);
+  font-size: 1.1rem;
+}
+.kiosk-estadillo .estad-pagina {
+  font-size: var(--fs-sm);
+}
+/* Dentro del kiosco (alto fijo, 320px reales) `.espera-estadillo` ocupa todo
+   el hueco que le da `.kiosk-estadillo` y reparte: `.espera-cuerpo` se lleva
+   lo que sobra y scrollea, `.espera-pie` (Cancelar/Empezar/Volver a esperar)
+   se queda siempre a la vista al fondo, sin competir por espacio con el
+   botón "Organizar" del kiosco (oculto mientras se espera, ver
+   KioskScreen.jsx). */
+.kiosk-estadillo .espera-estadillo {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  margin-top: 0;
+  padding: calc(var(--u) / 2) var(--u);
+  gap: calc(var(--u) / 4);
+}
+.kiosk-estadillo .espera-cuerpo {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  gap: calc(var(--u) / 4);
+}
+/* En 480x320 no cabe todo a la vez sin recortar algo: se sacrifica lo que
+   sirve de refuerzo (etiqueta "Para conectar:", registro de actividad) para
+   que lo imprescindible — fase, contador, la propia dirección y las
+   acciones del pie — quede SIEMPRE visible sin depender del scroll (pedido
+   de Rodrigo: "se corta al esperar el estadillo"). El registro sigue
+   existiendo en escritorio (`PasoEstadillo`), donde sí hay hueco. */
+.kiosk-estadillo .espera-direcciones-label,
+.kiosk-estadillo .espera-registro {
+  display: none;
+}
+.kiosk-estadillo .espera-radar {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+.kiosk-estadillo .espera-titulo {
+  font-size: var(--fs-sm);
+  line-height: 1.15;
+}
+.kiosk-estadillo .espera-contador {
+  font-size: var(--fs-md);
+}
+.kiosk-estadillo .espera-direcciones {
+  margin-top: 0.15rem;
+  gap: 0.1rem;
+}
+.kiosk-estadillo .espera-fotos {
+  display: none;
+}
+/* Resumen `recibido_ok`: ya NO vive dentro de `.kiosk-estadillo` — es un
+   modal a pantalla completa (portal a `document.body`, ver
+   `EsperaEstadillo.jsx`), con sus propias reglas más abajo
+   (`.espera-modal-*`). */
 /* Sub-paso A de "Subir en crudo": sin bloque de carpeta ni botón de confirmar
    debajo, así que la lista es el único hijo con `flex:1` de `.kiosk` y ya
    ocupa todo el alto sobrante; este modificador solo deja constancia de la

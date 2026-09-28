@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
 import MovilRed from './MovilRed.jsx'
+import ErrorBoundary from './ErrorBoundary.jsx'
 import { esRemoto } from './bridge.js'
 
 // Modo de prueba: `?cursor` en la URL repone el puntero del raton dentro del
@@ -18,6 +19,8 @@ if (new URLSearchParams(window.location.search).has('cursor')) {
 // El movil solo tiene una tarea: meter la Pi en una wifi.
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    {esRemoto() ? <MovilRed /> : <App />}
+    <ErrorBoundary>
+      {esRemoto() ? <MovilRed /> : <App />}
+    </ErrorBoundary>
   </StrictMode>,
 )

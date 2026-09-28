@@ -14,6 +14,13 @@ import Paginador from './Paginador.jsx'
 //             files:[{name,path,size}]}
 //   error -> {ok:false, error}
 // `parent` es null en la raiz. Sin argumento lista el home del usuario.
+//
+// En el kiosco Linux (`_listado_raiz_discos_pi`/`_list_dir_confinado_pi`,
+// app_webview.py:679-762) el selector va CONFINADO a los discos externos
+// montados y el shape trae ademas `is_root`, `disk_name`, `rel_parts`. En la
+// raiz (`is_root:true`) `dirs` son los discos, con `libre_gb`/`total_gb` en
+// vez de subcarpetas. En Windows/escritorio esos campos no existen: el
+// comportamiento de siempre (ruta plana, ".. subir") queda intacto.
 
 // Los iconos van en SVG y no en emoji a proposito: la Pi no tiene fuente de
 // emoji instalada (y meterla exige sudo, que no tenemos), asi que los emoji
@@ -30,7 +37,47 @@ function Ico({ tipo }) {
   if (tipo === 'fichero') {
     return <svg {...comun}><path d="M9.5 2H4.5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V5zM9.5 2v3h3" /></svg>
   }
+  if (tipo === 'disco') {
+    return (
+      <svg {...comun}>
+        <rect x="1.7" y="4.5" width="12.6" height="7" rx="1.2" />
+        <path d="M1.7 8h12.6" />
+        <circle cx="11.4" cy="10.2" r="0.6" fill="currentColor" stroke="none" />
+      </svg>
+    )
+  }
   return <svg {...comun}><path d="M2 12.5v-9a1 1 0 0 1 1-1h3l1.5 2H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" /></svg>
+}
+
+// Texto de espacio libre de un disco ("123.4 GB libres de 500.0 GB"). Null si
+// el backend no pudo leer el `statvfs` del punto de montaje.
+function textoEspacio(libreGb, totalGb) {
+  if (libreGb == null || totalGb == null) return null
+  return `${libreGb.toFixed(1)} GB libres de ${totalGb.toFixed(1)} GB`
+}
+
+// Breadcrumb relativo al disco: "Discos › DISCO › carpeta › sub". `datos`
+// trae `path` absoluto, `disk_name` y `rel_parts` (nombres de carpeta desde
+// la raiz del disco, sin la ruta del punto de montaje). Reconstruye la ruta
+// absoluta de cada segmento pelando `rel_parts` por el final de `path`, sin
+// pedirle esa ruta al backend.
+function migasDeDisco(datos) {
+  const partes = datos.path.split('/')
+  const raizPartes = datos.rel_parts.length
+    ? partes.slice(0, partes.length - datos.rel_parts.length)
+    : partes
+  const raizDisco = raizPartes.join('/') || '/'
+  const migas = [
+    { label: 'Discos', path: null },
+    { label: datos.disk_name, path: raizDisco },
+  ]
+  datos.rel_parts.forEach((seg, i) => {
+    migas.push({
+      label: seg,
+      path: raizPartes.concat(datos.rel_parts.slice(0, i + 1)).join('/'),
+    })
+  })
+  return migas
 }
 
 // Giro en CSS (.picker-spin), no en JS: mas barato en la Pi. Solo aparece en
@@ -44,8 +91,46 @@ function IconoCargando() {
   )
 }
 
-export default function FolderPicker({ mode = 'folder', startPath = null, onPick, onCancel }) {
+// Espera apoyada en `setTimeout`, para el modo `reproduccion`: espacia cada
+// paso ~450ms de forma que se lea como un recorrido, no un salto.
+function esperar(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// Tiempos del recorrido en modo reproduccion (control remoto del kiosco):
+// suficientes para leerse el movimiento en un panel de 480x320 sin hacerse
+// eterno con rutas de varios niveles.
+// Pausa tras abrir el selector (listado de la raiz ya cargado) antes de
+// resaltar el primer segmento: da tiempo a leer que el selector se acaba de
+// abrir antes de que arranque el recorrido.
+const PAUSA_INICIAL_MS = 1200
+// Por cada segmento: cuanto se resalta la fila ANTES de entrar en ella...
+const RESALTAR_SEGMENTO_MS = 700
+// ...y cuanto se espera YA DENTRO de la carpeta (con el nuevo listado en
+// pantalla) antes de pasar al siguiente segmento. Total por segmento
+// ~RESALTAR_SEGMENTO_MS + ESPERA_TRAS_ENTRAR_MS.
+const ESPERA_TRAS_ENTRAR_MS = 1100
+// Cuanto se resalta el boton "Usar esta carpeta" antes de cerrar el selector.
+const RESALTAR_CONFIRMAR_MS = 1500
+
+export default function FolderPicker({
+  mode = 'folder', startPath = null, onPick, onCancel,
+  // Modo "reproduccion" (control remoto del kiosco, Task «se ve como se
+  // mueve a los sitios»): en vez de esperar toques, recorre SOLA los
+  // segmentos de `rutaObjetivo` desde la raiz, resaltando con
+  // `.kiosk-control-pulso` la fila que "pulsa" en cada paso. El backend ya
+  // fijo la carpeta (`carpeta_trabajo_fijar`, ver KioskScreen.jsx): este
+  // picker NUNCA llama a `onPick`, solo la enseña; los toques reales se
+  // ignoran (`.picker-reproduccion`, App.css). Si `listDir` falla en algun
+  // paso se sigue igual (las migas/segmentos ya dicen a donde va).
+  reproduccion = false, rutaObjetivo = null, onFinReproduccion,
+}) {
   const [estado, setEstado] = useState({ cargando: true, datos: null, error: null })
+  // Reproduccion: fila que "esta pulsando" el recorrido ahora mismo (path
+  // absoluto del segmento) y si toca resaltar el boton de confirmar (ultimo
+  // paso, antes de cerrarse). `null`/`false` fuera de modo reproduccion.
+  const [reproResaltada, setReproResaltada] = useState(null)
+  const [reproConfirmar, setReproConfirmar] = useState(false)
   const listaRef = useRef(null)
   const arrastre = useRef({ activo: false, y0: 0, top0: 0, umbral: pxDeRem(UMBRAL_REM), movido: false })
   const tactil = isServerMode()
@@ -99,6 +184,45 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
       .catch(() => { if (!cancelado) cargar(null) })
     return () => { cancelado = true }
   }, [cargar, startPath])
+
+  // Recorre SOLA los segmentos de `rutaObjetivo` (solo rutas Unix: el kiosco
+  // Linux es el unico que usa este modo, ver contrato del backend arriba):
+  // arranca desde la raiz para que se vea el trayecto completo, carga cada
+  // nivel, resalta ~450ms el segmento siguiente antes de entrar y, al
+  // llegar, resalta el boton "Usar esta carpeta" y avisa con
+  // `onFinReproduccion`. Nunca llama a `onPick`: el backend ya fijo la
+  // carpeta (`carpeta_trabajo_fijar`), esto solo la enseña.
+  useEffect(() => {
+    if (!reproduccion) return undefined
+    let cancelado = false
+    const segmentos = (rutaObjetivo || '').split('/').filter(Boolean)
+    const acumuladas = segmentos.map((_, i) => '/' + segmentos.slice(0, i + 1).join('/'))
+
+    async function recorrer() {
+      if (cancelado) return
+      await cargar(null)
+      if (cancelado) return
+      await esperar(PAUSA_INICIAL_MS)
+      for (const ruta of acumuladas) {
+        if (cancelado) return
+        setReproResaltada(ruta)
+        await esperar(RESALTAR_SEGMENTO_MS)
+        if (cancelado) return
+        await cargar(ruta)
+        if (cancelado) return
+        await esperar(ESPERA_TRAS_ENTRAR_MS)
+      }
+      if (cancelado) return
+      setReproResaltada(null)
+      setReproConfirmar(true)
+      await esperar(RESALTAR_CONFIRMAR_MS)
+      if (cancelado) return
+      onFinReproduccion?.()
+    }
+    recorrer()
+    return () => { cancelado = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reproduccion, rutaObjetivo])
 
   // Deslizar sobre la lista tiene que scrollear: el panel resistivo llega como
   // puntero de raton, asi que no hay scroll tactil que aprovechar y se mueve
@@ -206,13 +330,40 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
   // no cambia nada: solo se listan en mode="file", como siempre.
   const ficherosVisibles = mode === 'file' || (tactil && mode === 'folder')
 
+  // Shape del kiosco Linux (confinado a discos externos): solo lo trae esta
+  // rama del backend, nunca Windows/escritorio (ver comentario de contrato
+  // arriba). `hasOwnProperty` en vez de `datos?.is_root` porque en la raiz de
+  // disco `is_root` es `true` pero en el resto de niveles es `false`: lo que
+  // distingue el shape nuevo del viejo es que el campo EXISTA, no su valor.
+  const modoDiscos = !!datos && Object.prototype.hasOwnProperty.call(datos, 'is_root')
+  const enRaizDiscos = modoDiscos && datos.is_root
+
   return (
-    <div className="pm-overlay" role="dialog" aria-modal="true">
+    <div className={reproduccion ? 'pm-overlay picker-reproduccion' : 'pm-overlay'} role="dialog" aria-modal="true">
       <div className="pm-card picker-card">
         <h2 className="pm-title">
           {mode === 'file' ? 'Elegir fichero' : 'Elegir carpeta'}
         </h2>
-        <div className="picker-ruta" title={datos?.path || ''}>{datos?.path || '…'}</div>
+        {modoDiscos && !enRaizDiscos ? (
+          <div className="picker-migas" title={datos.path}>
+            {migasDeDisco(datos).map((miga, i, arr) => (
+              <span key={miga.path ?? 'raiz'} className="picker-miga-item">
+                {i > 0 && <span className="picker-miga-sep" aria-hidden="true">›</span>}
+                {i === arr.length - 1 ? (
+                  <span className="picker-miga picker-miga-actual">{miga.label}</span>
+                ) : (
+                  <BotonToque className="picker-miga" tactil={tactil} onActivar={() => irA(miga.path)}>
+                    {miga.label}
+                  </BotonToque>
+                )}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <div className="picker-ruta" title={datos?.path || ''}>
+            {enRaizDiscos ? 'Discos externos' : (datos?.path || '…')}
+          </div>
+        )}
 
         {error && <p className="pm-status err">{error}</p>}
 
@@ -244,17 +395,27 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
                 </BotonToque>
               </li>
             )}
-            {datos?.dirs.map((d) => (
-              <li key={d.path}>
-                <BotonToque
-                  className={rutaPendiente === d.path ? 'picker-fila picker-dir picker-fila-cargando' : 'picker-fila picker-dir'}
-                  tactil={tactil} cancelarAlMover onActivar={() => irA(d.path)}
-                >
-                  <Ico tipo="carpeta" /> <span className="picker-txt">{d.name}</span>
-                  {tactil && rutaPendiente === d.path && <IconoCargando />}
-                </BotonToque>
-              </li>
-            ))}
+            {datos?.dirs.map((d) => {
+              const espacio = enRaizDiscos ? textoEspacio(d.libre_gb, d.total_gb) : null
+              const claseFila = ['picker-fila', 'picker-dir']
+              if (rutaPendiente === d.path) claseFila.push('picker-fila-cargando')
+              if (reproResaltada === d.path) claseFila.push('kiosk-control-pulso')
+              return (
+                <li key={d.path}>
+                  <BotonToque
+                    className={claseFila.join(' ')}
+                    tactil={tactil} cancelarAlMover onActivar={() => irA(d.path)}
+                  >
+                    <Ico tipo={enRaizDiscos ? 'disco' : 'carpeta'} />
+                    <span className="picker-txt-col">
+                      <span className="picker-txt">{d.name}</span>
+                      {espacio && <span className="picker-txt-sub">{espacio}</span>}
+                    </span>
+                    {tactil && rutaPendiente === d.path && <IconoCargando />}
+                  </BotonToque>
+                </li>
+              )
+            })}
             {mode === 'file' && datos?.files.map((f) => (
               <li key={f.path}>
                 <BotonToque className="picker-fila picker-file" tactil={tactil} cancelarAlMover onActivar={() => onPick(f.path)}>
@@ -293,7 +454,7 @@ export default function FolderPicker({ mode = 'folder', startPath = null, onPick
           {mode === 'folder' && (
             <button
               type="button"
-              className="btn-run"
+              className={reproConfirmar ? 'btn-run kiosk-control-pulso' : 'btn-run'}
               disabled={!datos}
               onClick={() => onPick(datos.path)}
             >
