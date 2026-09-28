@@ -261,7 +261,7 @@ jobs:
       - name: Comprobar que el tag coincide con version.py
         shell: pwsh
         run: |
-          $py = (python -c "from version import __version__; print(__version__)").Trim()
+          $py = (.venv\Scripts\python.exe -c "from version import __version__; print(__version__)").Trim()
           # v3.2.0 y v3.2.0-rc1 valen los dos para version.py = 3.2.0
           $tag = ("${{ needs.meta.outputs.version }}".TrimStart('v') -split '-')[0]
           if ($py -ne $tag) {
@@ -272,7 +272,7 @@ jobs:
         env:
           ATOM_GOOGLE_CLIENT_ID: ${{ secrets.ATOM_GOOGLE_CLIENT_ID }}
           ATOM_GOOGLE_CLIENT_SECRET: ${{ secrets.ATOM_GOOGLE_CLIENT_SECRET }}
-        run: python scripts/inject_oauth_client.py
+        run: .venv\Scripts\python.exe scripts/inject_oauth_client.py
       - name: PyInstaller (onedir Qt/QtWebEngine)
         # El .spec (atom_organizer_webview.spec) solo empaqueta cupy/nvidia si
         # ATOM_BUILD_GPU == '1' (mira os.environ, no si requirements-gpu.txt se
@@ -280,7 +280,7 @@ jobs:
         # el .spec los ignora igual: bundle GPU nunca se empaqueta.
         env:
           ATOM_BUILD_GPU: ${{ inputs.build_gpu && '1' || '0' }}
-        run: pyinstaller --clean --noconfirm atom_organizer_webview.spec
+        run: .venv\Scripts\pyinstaller.exe --clean --noconfirm atom_organizer_webview.spec
       # Solo para builds de validación (publicar=false): Inno Setup 6.7.0 no lo
       # abre ningún extractor, así que sin esto no hay forma de probar el .exe
       # sin instalar. Se sube el onedir crudo (dist/ATOM-Organizer) comprimido.
