@@ -321,6 +321,8 @@ jobs:
   # Bloquear el .exe por un problema de GCP sería cambiar un fallo por otro.
   imagen-job:
     needs: [meta]
+    # Build de validación (publicar=false): no tocar Artifact Registry.
+    if: needs.meta.outputs.publicar == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
