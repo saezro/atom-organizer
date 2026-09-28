@@ -97,27 +97,28 @@ mpl_datas = collect_data_files('matplotlib')
 
 # --- GPU opt-in (ORGANIZER_RGB_GPU=1, ver atom_core/rgb_gpu.py): cupy +
 # nvImageCodec + las libs nvidia-*-cu12 que necesitan (requirements-gpu.txt).
-# TOLERANTE a propósito: si requirements-gpu.txt no está instalado en el
-# entorno de build (build normal, sin GPU), find_spec da None, no se empaqueta
-# nada de esto y el .exe sigue igual que hoy — rgb_gpu.activo() ve el
-# ImportError en runtime y cae a CPU. Solo se fuerza collect_all sobre lo que
-# SÍ está instalado al construir.
+# Build por DEFECTO va SIN nada de esto (como 3.4.101): el bundle GPU
+# precargaba DLLs nvidia con pyi_rth_cuda.py y colgaba pywebview en máquinas
+# sin runtime CUDA (incidente 3.4.102, ~20s hasta "Main window failed to
+# start"). Solo se activa con la env var opt-in ATOM_BUILD_GPU=1 en el
+# entorno de build, y solo empaqueta lo que de verdad esté instalado.
 import importlib.util as _ilu_gpu
 
 gpu_binaries, gpu_datas, gpu_hidden = [], [], []
-for _gpu_pkg in (
-    'cupy', 'cupy_backends', 'cupyx', 'fastrlock', 'cuda.pathfinder',
-    'nvidia.cuda_runtime', 'nvidia.cuda_nvrtc', 'nvidia.nvjpeg', 'nvidia.nvimgcodec',
-):
-    if _ilu_gpu.find_spec(_gpu_pkg) is None:
-        continue
-    try:
-        _gd, _gb, _gh = collect_all(_gpu_pkg)
-    except Exception:
-        continue
-    gpu_datas += _gd
-    gpu_binaries += _gb
-    gpu_hidden += _gh
+if _os_px.environ.get('ATOM_BUILD_GPU') == '1':
+    for _gpu_pkg in (
+        'cupy', 'cupy_backends', 'cupyx', 'fastrlock', 'cuda.pathfinder',
+        'nvidia.cuda_runtime', 'nvidia.cuda_nvrtc', 'nvidia.nvjpeg', 'nvidia.nvimgcodec',
+    ):
+        if _ilu_gpu.find_spec(_gpu_pkg) is None:
+            continue
+        try:
+            _gd, _gb, _gh = collect_all(_gpu_pkg)
+        except Exception:
+            continue
+        gpu_datas += _gd
+        gpu_binaries += _gb
+        gpu_hidden += _gh
 
 # CAUSA RAÍZ del bridge muerto en Windows (pw=N con WebView2 Y con Qt): PyInstaller
 # empaquetaba webview/ SIN sus assets JS internos (webview/js/*.js). Esos scripts son
@@ -185,8 +186,10 @@ a = Analysis(
     hooksconfig={},
     # pyi_rth_cuda.py (raíz del repo): registra las carpetas de DLL nvidia-*-cu12
     # con os.add_dll_directory y fija CUPY_CACHE_DIR si no está ya definida.
-    # Tolerante: no falla si no hay GPU ni paquetes GPU empaquetados.
-    runtime_hooks=['pyi_rth_cuda.py'],
+    # Solo se incluye si de verdad se empaquetó algo de GPU (ATOM_BUILD_GPU=1
+    # + paquetes instalados) — en el build por defecto NO se registra, para no
+    # tocar el arranque en máquinas sin GPU (incidente 3.4.102).
+    runtime_hooks=(['pyi_rth_cuda.py'] if gpu_hidden else []),
     excludes=[
         'IPython', 'ipykernel', 'jupyter_client', 'jupyter_core',
         'debugpy', 'jedi', 'parso',

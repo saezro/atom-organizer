@@ -29,6 +29,10 @@ on:
         description: 'Publicar la release (si no, solo se construyen y suben los artifacts)'
         type: boolean
         default: true
+      build_gpu:
+        description: 'Incluir bundle GPU opt-in (cupy/nvidia, ORGANIZER_RGB_GPU=1). Por defecto NO: causó el cuelgue de 3.4.102'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -136,10 +140,12 @@ jobs:
           pip install -r requirements-linux.txt
           pip install -r requirements-webview.txt
           # cupy + nvImageCodec para el camino GPU opt-in (ORGANIZER_RGB_GPU=1,
-          # atom_core/rgb_gpu.py). Va aparte y DESPUÉS: si algún día deja de
-          # instalar, el spec (collect_all tolerante) sigue construyendo el
-          # AppImage sin GPU en vez de tumbar el job entero.
-          pip install -r requirements-gpu.txt
+          # atom_core/rgb_gpu.py). Build oficial va SIN esto (como 3.4.101):
+          # el bundle GPU (~150MB de DLLs nvidia) precargaba con
+          # pyi_rth_cuda.py y colgaba pywebview en máquinas sin runtime CUDA
+          # (incidente 3.4.102). Solo se instala con ATOM_BUILD_GPU=1
+          # (workflow_dispatch manual, opt-in).
+          if [ "${{ github.event.inputs.build_gpu }}" = "true" ]; then pip install -r requirements-gpu.txt; fi
       # El client_secret no está en el repo (es público: Google revocaría el
       # cliente por secret-scanning). Se inyecta aquí, solo en el runner.
       - name: Inyectar credenciales OAuth
@@ -190,10 +196,12 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-webview.txt
           # cupy + nvImageCodec para el camino GPU opt-in (ORGANIZER_RGB_GPU=1,
-          # atom_core/rgb_gpu.py). Va aparte y DESPUÉS: si algún día deja de
-          # instalar, el spec (collect_all tolerante) sigue construyendo el
-          # .exe sin GPU en vez de tumbar el job entero.
-          pip install -r requirements-gpu.txt
+          # atom_core/rgb_gpu.py). Build oficial va SIN esto (como 3.4.101):
+          # el bundle GPU (~150MB de DLLs nvidia) precargaba con
+          # pyi_rth_cuda.py y colgaba pywebview en máquinas sin runtime CUDA
+          # (incidente 3.4.102). Solo se instala con ATOM_BUILD_GPU=1
+          # (workflow_dispatch manual, opt-in).
+          if ("${{ github.event.inputs.build_gpu }}" -eq "true") { pip install -r requirements-gpu.txt }
           # NO reinstalar PyInstaller aqui: manda el pin de requirements.txt
           # (6.22.2 + pyinstaller-hooks-contrib 2026.6). El 6.6.0 que habia
           # fijado desde la v3.4.32 degradaba esa version y sus hooks son
