@@ -73,6 +73,11 @@ export default function KioskScreen({
   // (App.jsx, autodetección al cambiar `kioskCarpeta`): indicador junto al
   // selector de carpeta, ver `.kiosk-carpeta` más abajo.
   estadilloEnCarpeta = null,
+  // Confirma un candidato de `estadilloEnCarpeta.candidatosPadre` (estadillo
+  // válido suelto en la carpeta PADRE de `carpeta`) como estadillo del
+  // trabajo, mismo camino que `onEstadillo` con una elección manual
+  // (`App.jsx`, `kioskUsarCandidatoPadre`). Nunca se usa sin pulsar.
+  onUsarCandidatoPadre,
   onOrganizar,
   onSubirCrudo,
   onComprobarSubida,
@@ -1070,6 +1075,26 @@ export default function KioskScreen({
               No se ha detectado ningún estadillo. Se puede subir igual.
             </p>
           )}
+          {/* Candidatos de la carpeta PADRE: solo informativo aquí (nunca se
+              usan en automático, decisión de Rodrigo, caso Marcos). Confirmar
+              uno desde el kiosco requeriría enchufarlo al flujo de selección
+              de `kioskEstadillo`, fuera de este paso de resumen; se avisa con
+              la ruta completa para que el operario lo resuelva desde el paso
+              anterior o desde el escritorio. */}
+          {Array.isArray(est.candidatos_padre) && est.candidatos_padre.length > 0 && (
+            <p className="kiosk-resumen-aviso" data-testid="kiosk-resumen-candidatos-padre">
+              Hay estadillo(s) FUERA de la carpeta seleccionada, sin usar: {est.candidatos_padre.join(', ')}
+            </p>
+          )}
+          {/* Aviso temprano de `estadillo.aviso_estadillos_misma_carpeta`: 2+
+              estadillos en la MISMA carpeta van a abortar el run más tarde
+              (`ErrorEstadillosMismaCarpeta`). Se avisa ya aquí, antes de
+              subir nada. */}
+          {est.aviso_misma_carpeta && (
+            <p className="kiosk-resumen-aviso kiosk-resumen-aviso-bloqueo" data-testid="kiosk-resumen-misma-carpeta">
+              {est.aviso_misma_carpeta}
+            </p>
+          )}
           {sinArchivos && (
             <p className="kiosk-resumen-aviso kiosk-resumen-aviso-bloqueo" data-testid="kiosk-resumen-sin-archivos">
               {prep.error || 'No hay ningún archivo pendiente de subir.'}
@@ -1194,15 +1219,22 @@ export default function KioskScreen({
                       'field-hint kiosk-card-estado kiosk-estadillo-en-carpeta ' +
                       (estadilloEnCarpeta.buscando
                         ? ''
-                        : estadilloEnCarpeta.encontrado ? 'hint-ok' : 'hint-warn')
+                        : estadilloEnCarpeta.aviso
+                          ? 'hint-warn'
+                          : estadilloEnCarpeta.encontrado ? 'hint-ok' : 'hint-warn')
                     }
                     data-testid="kiosk-estadillo-en-carpeta"
                   >
                     {estadilloEnCarpeta.buscando
                       ? 'Buscando estadillo…'
-                      : estadilloEnCarpeta.encontrado
-                        ? `Estadillo encontrado: ${estadilloEnCarpeta.nombre}`
-                        : 'Sin estadillo en la carpeta'}
+                      // Aviso de `aviso_estadillos_misma_carpeta` (2+ ficheros en la
+                      // MISMA carpeta): manda sobre el "encontrado" normal, va a
+                      // abortar el run más tarde si no se separan.
+                      : estadilloEnCarpeta.aviso
+                        ? estadilloEnCarpeta.aviso
+                        : estadilloEnCarpeta.encontrado
+                          ? `Estadillo encontrado: ${estadilloEnCarpeta.nombre}`
+                          : 'Sin estadillo en la carpeta'}
                     {estadilloEnCarpeta.recibidoLan && (
                       <span className="kiosk-estadillo-lan-pendiente">
                         {' '}· Estadillo recibido por red: se añadirá al organizar
@@ -1213,6 +1245,37 @@ export default function KioskScreen({
               </span>
             </BotonToque>
           )}
+        </div>
+      )}
+
+      {/* Candidatos de la carpeta PADRE (`estadilloEnCarpeta.candidatosPadre`,
+          App.jsx): NUNCA se añaden solos (decisión de Rodrigo, caso Marcos),
+          un aviso por candidato con su ruta completa y el botón para
+          confirmarlo explícitamente, mismo flujo que `PasoEstadillo.jsx` en
+          escritorio. `onUsarCandidatoPadre` quita el candidato usado de la
+          lista tras confirmarlo, así el aviso desaparece solo. */}
+      {esOrganizar && carpeta && Array.isArray(estadilloEnCarpeta?.candidatosPadre) &&
+        estadilloEnCarpeta.candidatosPadre.length > 0 && (
+        <div className="kiosk-candidatos-padre">
+          {estadilloEnCarpeta.candidatosPadre.map((ruta) => (
+            <div
+              key={ruta}
+              className="field-hint hint-warn kiosk-candidato-padre"
+              role="alert"
+              data-testid="kiosk-candidato-padre"
+            >
+              <span>Estadillo encontrado FUERA de la carpeta seleccionada: {ruta}</span>
+              <BotonToque
+                className="btn-ghost kiosk-btn-usar-candidato"
+                tactil={tactil}
+                disabled={busy}
+                onActivar={() => onUsarCandidatoPadre?.(ruta)}
+                data-testid="kiosk-usar-candidato-padre"
+              >
+                Usar este estadillo
+              </BotonToque>
+            </div>
+          ))}
         </div>
       )}
 

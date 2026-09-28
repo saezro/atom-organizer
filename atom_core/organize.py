@@ -831,16 +831,31 @@ def run_task(
         # del estadillo) en vez de salir como un banner de error suelto sin
         # checklist detrás.
         if task == "split_images":
-            from atom_core.estadillo import desempaquetar_rutas, detectar_estadillos
+            from atom_core.estadillo import (
+                desempaquetar_rutas,
+                detectar_estadillos,
+                detectar_estadillos_en_padre,
+            )
             _rutas_manuales = desempaquetar_rutas(getattr(cfg, "estad", "") or "")
             _rutas_auto = detectar_estadillos(getattr(cfg, "input_folder", "") or "")["rutas"]
             if not _rutas_manuales and not _rutas_auto:
                 emit("phase", {"index": 1, "total": len(plan_names),
                                "name": plan_names[0] if plan_names else "Índice",
                                "prev": None})
-                emit("error", "No hay estadillo: sin estadillo el lote no se puede "
-                              "organizar. Indica la ruta del estadillo o colócalo "
-                              "junto a la carpeta de fotos.")
+                # NUNCA se coge el estadillo del padre en automático (decisión
+                # de Rodrigo, caso Marcos): si hay candidatos sueltos ahí se
+                # avisa con su ruta completa, pero no se usan solos.
+                _candidatos_padre = detectar_estadillos_en_padre(
+                    getattr(cfg, "input_folder", "") or "")["rutas"]
+                if _candidatos_padre:
+                    emit("error", "No hay estadillo DENTRO de la carpeta de origen. Hay "
+                                  "candidato(s) en la carpeta PADRE, pero no se usan en "
+                                  "automático: " + ", ".join(_candidatos_padre) + ". "
+                                  "Confírmalo explícitamente para usarlo.")
+                else:
+                    emit("error", "No hay estadillo: sin estadillo el lote no se puede "
+                                  "organizar. Indica la ruta del estadillo o colócalo "
+                                  "junto a la carpeta de fotos.")
                 return
 
         # Interceptar el inicio de cada fase (prefijo en el canal summary) y

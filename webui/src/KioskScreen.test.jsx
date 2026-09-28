@@ -415,6 +415,96 @@ describe('KioskScreen — paso 2 (organizar)', () => {
     })
   })
 
+  // Candidatos de la carpeta PADRE (`estadilloEnCarpeta.candidatosPadre`,
+  // App.jsx `kioskUsarCandidatoPadre`): mismo flujo de confirmación que
+  // `PasoEstadillo.jsx` en escritorio, nunca se usan sin pulsar.
+  describe('candidatos de estadillo en la carpeta padre', () => {
+    it('muestra la ruta completa y el botón "Usar este estadillo"', () => {
+      render(
+        <KioskScreen
+          {...baseProps({
+            accionInicial: 'organizar',
+            carpeta: '/home/pi/vuelo/PLANTA',
+            estadilloEnCarpeta: {
+              buscando: false, encontrado: false, nombre: null, recibidoLan: false,
+              candidatosPadre: ['/home/pi/vuelo/estadillo_padre.xlsx'],
+            },
+          })}
+        />
+      )
+      expect(screen.getByTestId('kiosk-candidato-padre')).toHaveTextContent(
+        'Estadillo encontrado FUERA de la carpeta seleccionada: /home/pi/vuelo/estadillo_padre.xlsx'
+      )
+      expect(screen.getByRole('button', { name: /usar este estadillo/i })).toBeInTheDocument()
+    })
+
+    it('al pulsar, llama a onUsarCandidatoPadre con la ruta', async () => {
+      const onUsarCandidatoPadre = vi.fn()
+      render(
+        <KioskScreen
+          {...baseProps({
+            accionInicial: 'organizar',
+            carpeta: '/home/pi/vuelo/PLANTA',
+            estadilloEnCarpeta: {
+              buscando: false, encontrado: false, nombre: null, recibidoLan: false,
+              candidatosPadre: ['/home/pi/vuelo/estadillo_padre.xlsx'],
+            },
+            onUsarCandidatoPadre,
+          })}
+        />
+      )
+      await userEvent.click(screen.getByRole('button', { name: /usar este estadillo/i }))
+      expect(onUsarCandidatoPadre).toHaveBeenCalledTimes(1)
+      expect(onUsarCandidatoPadre).toHaveBeenCalledWith('/home/pi/vuelo/estadillo_padre.xlsx')
+    })
+
+    // Al usarlo, `App.jsx` (`kioskUsarCandidatoPadre`) quita la ruta de
+    // `candidatosPadre` (mismo patrón que `PasoEstadillo` filtrando
+    // `candidatosPadre` local): el aviso desaparece del todo y ya no queda
+    // botón sobre el que hacer un segundo click, así que no puede duplicarse.
+    it('tras usarlo, el aviso desaparece (candidatosPadre ya sin esa ruta)', () => {
+      const { rerender } = render(
+        <KioskScreen
+          {...baseProps({
+            accionInicial: 'organizar',
+            carpeta: '/home/pi/vuelo/PLANTA',
+            estadilloEnCarpeta: {
+              buscando: false, encontrado: false, nombre: null, recibidoLan: false,
+              candidatosPadre: ['/home/pi/vuelo/estadillo_padre.xlsx'],
+            },
+          })}
+        />
+      )
+      expect(screen.getByTestId('kiosk-candidato-padre')).toBeInTheDocument()
+      rerender(
+        <KioskScreen
+          {...baseProps({
+            accionInicial: 'organizar',
+            carpeta: '/home/pi/vuelo/PLANTA',
+            estadilloEnCarpeta: {
+              buscando: false, encontrado: false, nombre: null, recibidoLan: false,
+              candidatosPadre: [],
+            },
+          })}
+        />
+      )
+      expect(screen.queryByTestId('kiosk-candidato-padre')).not.toBeInTheDocument()
+    })
+
+    it('sin candidatosPadre no se pinta ningún aviso', () => {
+      render(
+        <KioskScreen
+          {...baseProps({
+            accionInicial: 'organizar',
+            carpeta: '/home/pi/vuelo/PLANTA',
+            estadilloEnCarpeta: { buscando: false, encontrado: true, nombre: 'x.csv', recibidoLan: false, candidatosPadre: [] },
+          })}
+        />
+      )
+      expect(screen.queryByTestId('kiosk-candidato-padre')).not.toBeInTheDocument()
+    })
+  })
+
   // El botón «Elegir…» (`EstadilloField`, `permitirElegir`) es SOLO de
   // escritorio (`PasoEstadillo.jsx`): el kiosco nunca pasa esa prop, así que
   // no puede aparecer aquí, ni sin estadillo (donde antes se pintaba) ni con
