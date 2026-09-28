@@ -79,7 +79,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -98,12 +97,30 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends libimage-exiftool-perl ffmpeg
+      # Cachea el ENTORNO instalado (venv), no solo las descargas de pip
+      # (eso ya lo hacía `cache: 'pip'` de setup-python, quitado arriba: es
+      # redundante si el venv entero está en caché). Key por requirements
+      # exactos de este job: cualquier cambio en ellos invalida el hit.
+      - name: Cache venv Python
+        id: cache-venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: checks-venv-${{ runner.os }}-py3.11-${{ hashFiles('requirements-linux.txt', 'requirements-webview.txt') }}
+      - name: Crear venv
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: python -m venv .venv
       - name: Python deps
+        if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-linux.txt
-          pip install -r requirements-webview.txt
-          pip install pytest
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install -r requirements-linux.txt
+          .venv/bin/pip install -r requirements-webview.txt
+          .venv/bin/pip install pytest
+      # Con o sin cache-hit, el venv (con o sin instalar de nuevo) pasa a ser
+      # el `python`/`pytest` que ven los pasos siguientes.
+      - name: Activar venv
+        run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       # test_dark_theme.py falla EN RECOLECCIÓN desde antes de este workflow;
       # se excluye para no bloquear la puerta con deuda preexistente, no porque
       # sea prescindible. Arreglarlo y quitar el --ignore es tarea aparte.
@@ -124,7 +141,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -133,19 +149,33 @@ jobs:
         run: |
           npm ci
           npm run build
+      # Igual que en `checks`: venv cacheado entero, key con requirements +
+      # build_gpu (el bundle GPU cambia qué se instala).
+      - name: Cache venv Python
+        id: cache-venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: build-linux-venv-${{ runner.os }}-py3.11-gpu${{ inputs.build_gpu }}-${{ hashFiles('requirements-linux.txt', 'requirements-webview.txt', 'requirements-gpu.txt') }}
+      - name: Crear venv
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: python -m venv .venv
       - name: Python deps
+        if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
-          python -m pip install --upgrade pip
+          .venv/bin/python -m pip install --upgrade pip
           # requirements-linux.txt (NO requirements.txt: esa lleva pywin32, solo-Windows)
-          pip install -r requirements-linux.txt
-          pip install -r requirements-webview.txt
+          .venv/bin/pip install -r requirements-linux.txt
+          .venv/bin/pip install -r requirements-webview.txt
           # cupy + nvImageCodec para el camino GPU opt-in (ORGANIZER_RGB_GPU=1,
           # atom_core/rgb_gpu.py). Build oficial va SIN esto (como 3.4.101):
           # el bundle GPU (~150MB de DLLs nvidia) precargaba con
           # pyi_rth_cuda.py y colgaba pywebview en máquinas sin runtime CUDA
           # (incidente 3.4.102). Solo se instala con ATOM_BUILD_GPU=1
           # (workflow_dispatch manual, opt-in).
-          if [ "${{ github.event.inputs.build_gpu }}" = "true" ]; then pip install -r requirements-gpu.txt; fi
+          if [ "${{ github.event.inputs.build_gpu }}" = "true" ]; then .venv/bin/pip install -r requirements-gpu.txt; fi
+      - name: Activar venv
+        run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       # El client_secret no está en el repo (es público: Google revocaría el
       # cliente por secret-scanning). Se inyecta aquí, solo en el runner.
       - name: Inyectar credenciales OAuth
@@ -181,7 +211,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -190,24 +219,42 @@ jobs:
         run: |
           npm ci
           npm run build
+      # Venv cacheado (site-packages COMPLETO, no solo la descarga de pip):
+      # en hit se salta por entero el `pip install` de Qt/PySide6/numpy/pandas
+      # (los ~174s de "Python deps"). Key con requirements + build_gpu.
+      - name: Cache venv Python
+        id: cache-venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: build-windows-venv-${{ runner.os }}-py3.11-gpu${{ inputs.build_gpu }}-${{ hashFiles('requirements.txt', 'requirements-webview.txt', 'requirements-gpu.txt') }}
+      - name: Crear venv
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: python -m venv .venv
       - name: Python deps
+        if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-webview.txt
+          .venv\Scripts\python.exe -m pip install --upgrade pip
+          .venv\Scripts\pip.exe install -r requirements.txt
+          .venv\Scripts\pip.exe install -r requirements-webview.txt
           # cupy + nvImageCodec para el camino GPU opt-in (ORGANIZER_RGB_GPU=1,
           # atom_core/rgb_gpu.py). Build oficial va SIN esto (como 3.4.101):
           # el bundle GPU (~150MB de DLLs nvidia) precargaba con
           # pyi_rth_cuda.py y colgaba pywebview en máquinas sin runtime CUDA
           # (incidente 3.4.102). Solo se instala con ATOM_BUILD_GPU=1
           # (workflow_dispatch manual, opt-in).
-          if ("${{ github.event.inputs.build_gpu }}" -eq "true") { pip install -r requirements-gpu.txt }
+          if ("${{ github.event.inputs.build_gpu }}" -eq "true") { .venv\Scripts\pip.exe install -r requirements-gpu.txt }
           # NO reinstalar PyInstaller aqui: manda el pin de requirements.txt
           # (6.22.2 + pyinstaller-hooks-contrib 2026.6). El 6.6.0 que habia
           # fijado desde la v3.4.32 degradaba esa version y sus hooks son
           # anteriores a numpy 2.x: no recogian las DLL de numpy.libs, asi que
           # el .exe petaba con "DLL load failed while importing
           # _multiarray_umath" en cuanto el pipeline importaba numpy (v3.4.73).
+      # De aquí en adelante `python`/`pip`/`pyinstaller` resuelven al venv
+      # (cacheado o recién creado), sin tocar el resto de los pasos.
+      - name: Activar venv
+        shell: pwsh
+        run: "'{0}\\.venv\\Scripts' -f $PWD | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append"
       # El tag manda, pero la versión que la app enseña (y con la que compara al
       # buscar actualizaciones) sale de version.py: si no coinciden, el updater
       # ofrecería una actualización ya instalada en bucle. Se falla aquí.
@@ -227,6 +274,12 @@ jobs:
           ATOM_GOOGLE_CLIENT_SECRET: ${{ secrets.ATOM_GOOGLE_CLIENT_SECRET }}
         run: python scripts/inject_oauth_client.py
       - name: PyInstaller (onedir Qt/QtWebEngine)
+        # El .spec (atom_organizer_webview.spec) solo empaqueta cupy/nvidia si
+        # ATOM_BUILD_GPU == '1' (mira os.environ, no si requirements-gpu.txt se
+        # instaló). Sin esto, un build_gpu=true instala los paquetes GPU pero
+        # el .spec los ignora igual: bundle GPU nunca se empaqueta.
+        env:
+          ATOM_BUILD_GPU: ${{ inputs.build_gpu && '1' || '0' }}
         run: pyinstaller --clean --noconfirm atom_organizer_webview.spec
       # Solo para builds de validación (publicar=false): Inno Setup 6.7.0 no lo
       # abre ningún extractor, así que sin esto no hay forma de probar el .exe

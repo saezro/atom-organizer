@@ -197,9 +197,25 @@ a = Analysis(
         'IPython', 'ipykernel', 'jupyter_client', 'jupyter_core',
         'debugpy', 'jedi', 'parso',
         'clr', 'pythonnet',                    # pythonnet/WebView2: ya no se usa (Qt en su lugar)
-        # pesados que el pipeline no usa (QtWebEngine SÍ se mantiene ahora)
-        'PySide6.Qt3DCore', 'PySide6.QtCharts', 'PySide6.QtMultimedia',
-        'PySide6.QtQuick3D', 'PySide6.QtDataVisualization',
+        # pesados que el pipeline no usa (QtWebEngine SÍ se mantiene ahora).
+        # Verificado por grep (from PySide6 / import PySide6 / QtXxx en *.py):
+        # el repo solo usa QtWidgets/QtCore/QtGui/QtSvgWidgets (gui.py) y
+        # QtWebEngineWidgets/QtWebEngineCore/QtWebChannel (bridge). El resto de
+        # módulos de QtWebEngine (QtNetwork/QtGui/QtWidgets/QtCore/
+        # QtPrintSupport/QtPositioning/QtQml/QtQuick) NO se excluyen: son
+        # dependencias internas de QtWebEngine, no candidatos.
+        'PySide6.Qt3DCore', 'PySide6.Qt3DAnimation', 'PySide6.Qt3DExtras',
+        'PySide6.Qt3DInput', 'PySide6.Qt3DLogic', 'PySide6.Qt3DRender',
+        'PySide6.QtCharts', 'PySide6.QtDataVisualization',
+        'PySide6.QtMultimedia', 'PySide6.QtMultimediaWidgets',
+        'PySide6.QtQuick3D',
+        'PySide6.QtBluetooth', 'PySide6.QtNfc', 'PySide6.QtSensors',
+        'PySide6.QtSerialPort', 'PySide6.QtSql', 'PySide6.QtTest',
+        'PySide6.QtDesigner', 'PySide6.QtUiTools', 'PySide6.QtHelp',
+        'PySide6.QtPdf', 'PySide6.QtPdfWidgets',
+        'PySide6.QtSpatialAudio', 'PySide6.QtTextToSpeech',
+        'PySide6.QtRemoteObjects', 'PySide6.QtScxml', 'PySide6.QtStateMachine',
+        'PySide6.QtHttpServer', 'PySide6.QtGraphs', 'PySide6.QtGraphsWidgets',
         # atom_core.almacen_gcs importa 'google.cloud.storage' de forma perezosa
         # (dentro de AlmacenGCS.__init__, no a nivel de módulo): SOLO lo trae la
         # imagen del Cloud Run Job. El escritorio no lo necesita (sube vía
