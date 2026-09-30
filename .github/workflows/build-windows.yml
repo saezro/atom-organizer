@@ -1,6 +1,6 @@
 name: build-windows
 
-# Build de la GUI PySide clásica (gui.py) — LEGACY. El app actual (webview,
+# Build de la GUI PySide clásica (src/gui.py) — LEGACY. El app actual (webview,
 # ambos SO) se publica vía release.yml. Este workflow queda solo bajo demanda.
 on:
   workflow_dispatch:
@@ -18,14 +18,14 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          # Sin reinstalar PyInstaller: manda el pin de requirements.txt (ver release.yml).
+          pip install -r packaging/requirements/requirements.txt
+          # Sin reinstalar PyInstaller: manda el pin de packaging/requirements/requirements.txt (ver release.yml).
 
       - name: Build (PyInstaller onedir)
-        run: pyinstaller --clean --noconfirm atom_organizer.spec
+        run: pyinstaller --clean --noconfirm packaging/atom_organizer.spec
 
       - name: Inject ipaddress into base_library.zip
-        run: python inject_ipaddress.py
+        run: python packaging/inject_ipaddress.py
 
       - name: Smoke import check
         run: |

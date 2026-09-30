@@ -43,7 +43,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # `resource` no existe en Windows: la medición de CPU-segundos degrada a
 # `None` sin romper el resto del informe (requisito 5).

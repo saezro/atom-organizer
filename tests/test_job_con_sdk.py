@@ -37,7 +37,7 @@ def _lineas_utiles(texto: str) -> list[str]:
 def test_dockerfile_job_instala_el_sdk_de_gcs():
     """La imagen del Job es el ÚNICO entorno que habla `gs://` (AlmacenGCS):
     tiene que traer el SDK instalado y con versión fijada."""
-    dockerfile = REPO_ROOT / "Dockerfile.job"
+    dockerfile = REPO_ROOT / "packaging" / "Dockerfile.job"
     assert dockerfile.is_file(), "falta Dockerfile.job"
 
     instala = [l for l in _lineas_utiles(dockerfile.read_text(encoding="utf-8"))
@@ -57,7 +57,7 @@ def test_requirements_compartidos_no_traen_el_sdk():
     entrar ahí: engordaría el bundle y rompería el contrato que vigila
     `tests/test_escritorio_sin_sdk.py`."""
     for nombre in ("requirements-server.txt", "requirements.txt", "requirements-linux.txt"):
-        fichero = REPO_ROOT / nombre
+        fichero = REPO_ROOT / "packaging" / "requirements" / nombre
         if not fichero.is_file():
             continue
         culpables = [l for l in _lineas_utiles(fichero.read_text(encoding="utf-8"))

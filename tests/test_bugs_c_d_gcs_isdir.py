@@ -193,7 +193,7 @@ def test_primera_imagen_almacen_encuentra_muestra_en_gcs_y_corta_pronto():
     assert encontrada == f"gs://{bucket_nombre}/dest/TERMICA/PB1/PB1_V1/DJI_0001_T.JPG"
 
 
-def test_resolve_dron_selector_gcs_encuentra_muestra_y_pasa_ruta_local(tmp_path):
+def test_resolve_dron_selector_gcs_encuentra_muestra_y_pasa_ruta_local(tmp_path, monkeypatch):
     """Con `termica_folder` en `gs://…` y una imagen real en el bucket falso,
     `_resolve_dron_selector` debe encontrar la muestra (antes del fix,
     `os.walk` no iteraba nada sobre `gs://…` y `sample` quedaba `None`) y la
@@ -215,6 +215,11 @@ def test_resolve_dron_selector_gcs_encuentra_muestra_y_pasa_ruta_local(tmp_path)
         # llamada ya no existiría aunque el fix fuese correcto.
         existia_en_el_momento_de_la_llamada.append(_os.path.exists(ruta))
         return "Matrice 4T"
+
+    # Base de recursos vacía: en el repo `programas_externos/DJI` SÍ existe (dev), y
+    # el test necesita el entorno «sin SDK instalado».
+    import external_tools
+    monkeypatch.setattr(external_tools, "app_base_dir", lambda: str(tmp_path))
 
     host = _HostResolveDron(_get_model_falso)
     # El GUARD de binarios DJI corre tras resolver el modelo; no es parte de

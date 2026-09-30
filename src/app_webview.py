@@ -98,10 +98,10 @@ def _import_webview():
 
 def _base_dir() -> Path:
     """Dir base de recursos: bajo PyInstaller onefile los datas se extraen a
-    ``sys._MEIPASS``; en ejecución normal, el dir de este script. (Espeja
+    ``sys._MEIPASS``; en ejecución normal, la raíz del repo (padre de src/). (Espeja
     ``external_tools.app_base_dir`` para que la UI buildeada se encuentre en el exe.)"""
     meipass = getattr(sys, "_MEIPASS", None)
-    return Path(meipass) if meipass else Path(__file__).resolve().parent
+    return Path(meipass) if meipass else Path(__file__).resolve().parent.parent
 
 
 ROOT = _base_dir()

@@ -93,10 +93,10 @@ update_cmd=(
     --task-timeout 21600s
     --service-account 217557350193-compute@developer.gserviceaccount.com
     # command/args VACIOS a proposito: el ENTRYPOINT del Dockerfile ya es
-    # ["python","organize_cli.py"], y la Suite lanza el job con
+    # ["python","src/organize_cli.py"], y la Suite lanza el job con
     # containerOverrides.args (organizerJob.js), que REEMPLAZA los args del
-    # job. Si aqui se fijara --command python --args organize_cli.py, ese
-    # override borraria "organize_cli.py" y el contenedor arrancaria como
+    # job. Si aqui se fijara --command python --args src/organize_cli.py, ese
+    # override borraria "src/organize_cli.py" y el contenedor arrancaria como
     # `python --origen ...` -> "unknown option --origen", exit(2).
     --command ""
     --args ""

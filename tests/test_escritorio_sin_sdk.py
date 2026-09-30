@@ -29,13 +29,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _correr_script(codigo: str) -> subprocess.CompletedProcess:
-    """Ejecuta `codigo` en un intérprete `python -c` nuevo, con el repo como
+    """Ejecuta `codigo` en un intérprete `python -c` nuevo, con src/ como
     cwd (para que `import pipeline`/`atom_core...` resuelva igual que en la
     suite), y devuelve el proceso terminado (sin lanzar por código de salida:
     el test decide cómo afirmar sobre stdout/stderr/returncode)."""
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(codigo)],
-        cwd=str(REPO_ROOT),
+        cwd=str(REPO_ROOT / "src"),
         capture_output=True,
         text=True,
         timeout=60,

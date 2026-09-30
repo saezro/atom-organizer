@@ -89,7 +89,7 @@ def test_la_escala_de_grises_viene_desactivada_por_defecto():
     """
     raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    organize = open(os.path.join(raiz, "atom_core", "organize.py"), encoding="utf-8").read()
+    organize = open(os.path.join(raiz, "src", "atom_core", "organize.py"), encoding="utf-8").read()
     assert "convert_to_tif_create_gray_scale_images=False" in organize
     assert "convert_to_tif_create_gray_scale_images=True" not in organize
 

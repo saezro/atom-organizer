@@ -99,7 +99,7 @@ def test_default_split_config_trae_el_criterio_puesto():
     suite. Lo que hay que impedir es que estos tres campos vuelvan a quedarse con
     un literal 0, que es como estaban.
     """
-    fuente = open(os.path.join(REPO, "atom_core", "organize.py"), encoding="utf-8").read()
+    fuente = open(os.path.join(REPO, "src", "atom_core", "organize.py"), encoding="utf-8").read()
     bloque = fuente[fuente.index("def _default_split_config"):]
     bloque = bloque[:bloque.index("\n\n\n")]
     for campo, constante in (("gen_thumbnails_add_to_angle", "ROTATION_YAW_MARGIN"),

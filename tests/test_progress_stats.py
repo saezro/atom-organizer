@@ -98,7 +98,7 @@ def test_linea_irrelevante_no_cambia_nada():
 def test_los_literales_del_pipeline_siguen_siendo_los_parseados():
     """Guarda contra deriva: si `pipeline.py` cambia el texto que emite, el
     parser deja de ver nada y el modal se queda mudo SIN que falle nada más."""
-    fuente = open(os.path.join(REPO, "pipeline.py"), encoding="utf-8").read()
+    fuente = open(os.path.join(REPO, "src", "pipeline.py"), encoding="utf-8").read()
     for literal in ("Procesando {0} imágenes en el directorio {1}",
                     "Número de imágenes rotadas 270: {0}"):
         assert literal in fuente, (
@@ -140,7 +140,7 @@ def test_on_image_emite_al_completar_el_total_aunque_no_toque_el_multiplo():
 # --- contrato con organize.py (verificado por AST, sin importar Qt) -----------
 
 def test_organize_cablea_el_tracker_y_emite_stats():
-    fuente = open(os.path.join(REPO, "atom_core", "organize.py"), encoding="utf-8").read()
+    fuente = open(os.path.join(REPO, "src", "atom_core", "organize.py"), encoding="utf-8").read()
     arbol = ast.parse(fuente)
 
     importa = any(
@@ -162,7 +162,7 @@ def test_organize_cablea_el_tracker_y_emite_stats():
 def test_el_puente_reenvia_stats_como_dato_estructurado():
     """En app_webview el payload de 'stats' es un dict: si no está en la rama
     de `data` se serializaría con str() y React recibiría texto."""
-    fuente = open(os.path.join(REPO, "app_webview.py"), encoding="utf-8").read()
+    fuente = open(os.path.join(REPO, "src", "app_webview.py"), encoding="utf-8").read()
     assert '("plan", "phase", "stats", "done")' in fuente
 
 
