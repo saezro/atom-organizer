@@ -35,13 +35,13 @@ def _remotos(prefix, nombres):
 def test_baja_csv_y_xlsx_ignorando_manifest_y_normalizado(api_con_sesion, monkeypatch, tmp_path):
     monkeypatch.setattr(
         cloud_upload, "listar_objetos_remotos",
-        lambda bucket, prefix, auth: _remotos(
+        lambda bucket, prefix, auth, **kw: _remotos(
             prefix, ["01__abcd1234.csv", "manifest.json", "estadillo.json"]),
     )
     descargas = []
     monkeypatch.setattr(
         cloud_upload, "descargar_objeto",
-        lambda bucket, name, auth, dest_path: descargas.append((name, dest_path)) or dest_path.write_text("x"),
+        lambda bucket, name, auth, dest_path, **kw: descargas.append((name, dest_path)) or dest_path.write_text("x"),
     )
     monkeypatch.setattr(
         "atom_core.google_auth.estadillos_recibidos_dir", lambda: tmp_path)
@@ -58,7 +58,7 @@ def test_baja_csv_y_xlsx_ignorando_manifest_y_normalizado(api_con_sesion, monkey
 def test_error_sin_ningun_estadillo(api_con_sesion, monkeypatch, tmp_path):
     monkeypatch.setattr(
         cloud_upload, "listar_objetos_remotos",
-        lambda bucket, prefix, auth: _remotos(prefix, ["manifest.json", "estadillo.json"]),
+        lambda bucket, prefix, auth, **kw: _remotos(prefix, ["manifest.json", "estadillo.json"]),
     )
     monkeypatch.setattr(
         "atom_core.google_auth.estadillos_recibidos_dir", lambda: tmp_path)
@@ -82,7 +82,7 @@ def test_falla_open_sin_login(api, monkeypatch):
 def test_no_sobrescribe_anade_sufijo(api_con_sesion, monkeypatch, tmp_path):
     monkeypatch.setattr(
         cloud_upload, "listar_objetos_remotos",
-        lambda bucket, prefix, auth: _remotos(prefix, ["01__abcd1234.csv"]),
+        lambda bucket, prefix, auth, **kw: _remotos(prefix, ["01__abcd1234.csv"]),
     )
     destino_dir = tmp_path / "nube"
     destino_dir.mkdir(parents=True)
@@ -90,7 +90,7 @@ def test_no_sobrescribe_anade_sufijo(api_con_sesion, monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         cloud_upload, "descargar_objeto",
-        lambda bucket, name, auth, dest_path: dest_path.write_text("nuevo"),
+        lambda bucket, name, auth, dest_path, **kw: dest_path.write_text("nuevo"),
     )
     monkeypatch.setattr(
         "atom_core.google_auth.estadillos_recibidos_dir", lambda: tmp_path)
@@ -105,7 +105,7 @@ def test_no_sobrescribe_anade_sufijo(api_con_sesion, monkeypatch, tmp_path):
 def test_construye_el_prefijo_bajo_actual(api_con_sesion, monkeypatch, tmp_path):
     llamadas = []
 
-    def _fake(bucket, prefix, auth):
+    def _fake(bucket, prefix, auth, **kw):
         llamadas.append(prefix)
         return {}
 

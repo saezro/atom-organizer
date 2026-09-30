@@ -49,7 +49,7 @@ NOMBRE_CARPETA_SIN_ORDENAR = "SIN_ORDENAR"
 # `output_folder`, de las imágenes cuyo PB en el estadillo es "GENERALES"
 # (fotos de contexto de la planta, no de un vuelo concreto): planas, sin
 # subcarpeta PB/vuelo, sin girar (ver `_es_pb_generales`/`_construir_fila`).
-# Formato confirmado en bucket (`gs://plantas_pv_nl/KL88|CELSO/.../2026/
+# Formato confirmado en bucket (`gs://<bucket>/<PLANTA>/.../2026/
 # FOTOS_GENERALES/`): exacto, mayúsculas y guion bajo.
 NOMBRE_CARPETA_GENERALES = "FOTOS_GENERALES"
 
@@ -99,7 +99,7 @@ class ErrorEstadillosMismaCarpeta(Exception):
     propias), nunca una decisión deliberada. `construir_indice` aborta ANTES
     de leer ninguna imagen ni escribir ninguna fila, con la carpeta y los
     nombres de los ficheros en conflicto en el mensaje (decisión de
-    Rodrigo)."""
+    el responsable)."""
 
 
 class ErrorModeloSinRecorte(Exception):
@@ -621,7 +621,7 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
     por carpeta, es lo que corrige el bug que motiva el proyecto entero (hoy
     el TIFF y su JPG pueden acabar con criterios de giro distintos).
 
-    Regla de Rodrigo (2026-09-28, caso KL88 -`plantas_pv.orientacion` =
+    Regla del responsable (2026-09-28, caso de una planta -orientación =
     'Horizontal', 1986/1986 imágenes giradas por yaw cuando no debían-):
     una planta `Horizontal` **nunca se gira**, ángulo 0 para todas sus
     imágenes (térmica, RGB, JPG térmico), decisión que manda sobre
@@ -1063,7 +1063,7 @@ def construir_indice(
     # por carpeta -la carpeta es la unidad de "un estadillo"-, así que ahora
     # bloquea ANTES de leer ninguna imagen: casi siempre es un despiste (dos
     # pilotos sin separar sus CSV en subcarpetas propias), nunca una decisión
-    # deliberada (decisión de Rodrigo). Solo aplica a estadillos AUTODETECTADOS
+    # deliberada (decisión del responsable). Solo aplica a estadillos AUTODETECTADOS
     # dentro de `cfg.input_folder`: uno elegido a mano desde fuera (p.ej.
     # `--estadillo` apuntando a una carpeta compartida por varios pilotos) no
     # es un despiste de organización del lote, así que conserva el

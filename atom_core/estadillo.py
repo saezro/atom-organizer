@@ -150,7 +150,7 @@ def detectar_estadillos(
 
     NO mira la carpeta padre de `carpeta`: un estadillo que el usuario sacó
     a propósito fuera de la carpeta seleccionada nunca se usa en automático
-    (decisión de Rodrigo, caso Marcos). Esos candidatos sueltos del padre los
+    (decisión del responsable). Esos candidatos sueltos del padre los
     da `detectar_estadillos_en_padre`, para que la UI los muestre con su ruta
     completa y el usuario confirme uno explícitamente si quiere usarlo.
     """
@@ -210,15 +210,15 @@ def detectar_estadillos(
 
 def detectar_estadillos_en_padre(carpeta: str) -> dict:
     """Candidatos a estadillo sueltos en la carpeta PADRE de `carpeta` (solo
-    su nivel, sin recursión, sin barrer hermanas): el caso KL19/estadillo.csv
-    con KL19/FOTOS como `carpeta` seleccionada.
+    su nivel, sin recursión, sin barrer hermanas): el caso PLANTA_C/estadillo.csv
+    con PLANTA_C/FOTOS como `carpeta` seleccionada.
 
     Misma validación que `detectar_estadillos` (columnas esenciales vía
     `_validar_columnas_esenciales`), pero estos candidatos NUNCA se usan en
     automático: son del padre, no de dentro de `carpeta`. Solo sirven para
     que la UI los muestre con su ruta completa y el usuario confirme
     explícitamente si quiere usar alguno (nunca fallback silencioso, caso
-    Marcos: estadillos antiguos que él había sacado a propósito al padre).
+    caso de campo: estadillos antiguos que él había sacado a propósito al padre).
 
     Devuelve `{"rutas": [...], "descartados": [...]}`, mismo formato que
     `detectar_estadillos`.
@@ -427,7 +427,7 @@ def agrupar_rutas_por_carpeta(rutas: list[str]) -> dict[str, list[str]]:
 
     Es la base del scoping por carpeta (`indice._ventanas_para_imagen`): cada
     grupo es "un estadillo" a efectos de a qué imágenes reclama. Un grupo con
-    MÁS de un fichero ya NO se fusiona en silencio (decisión de Rodrigo):
+    MÁS de un fichero ya NO se fusiona en silencio (decisión del responsable):
     `indice.construir_indice` aborta con `ErrorEstadillosMismaCarpeta` antes
     de organizar nada -ver también `aviso_estadillos_misma_carpeta`, para
     avisar de esto pronto, antes de arrancar el run."""

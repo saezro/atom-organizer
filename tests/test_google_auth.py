@@ -47,7 +47,7 @@ def _id_token(email: str, hd: str | None = None, picture: str | None = None) -> 
 class FakeGoogle:
     """Endpoint de tokens de Google, en memoria."""
 
-    def __init__(self, *, email="ofi@aerotools.es", hd="aerotools.es",
+    def __init__(self, *, email="ofi@ejemplo.com", hd="ejemplo.com",
                  refresh_token="refresh-1", expires_in=3600):
         self.email = email
         self.hd = hd
@@ -149,7 +149,7 @@ def google(monkeypatch):
 @pytest.fixture
 def auth(tmp_path, google):
     return ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET,
-                         hosted_domain="aerotools.es",
+                         hosted_domain="ejemplo.com",
                          store_path=tmp_path / "google_auth.json")
 
 
@@ -162,13 +162,13 @@ def test_login_completo_guarda_la_sesion(auth, google, tmp_path):
 
     identidad = auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
 
-    assert identidad.email == "ofi@aerotools.es"
+    assert identidad.email == "ofi@ejemplo.com"
     assert auth.is_logged_in()
     # Y sobrevive a cerrar la app: no hay que volver a loguearse cada arranque.
     otro = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET,
                          store_path=tmp_path / "google_auth.json")
     assert otro.is_logged_in()
-    assert otro.identity.email == "ofi@aerotools.es"
+    assert otro.identity.email == "ofi@ejemplo.com"
 
 
 def test_el_login_usa_pkce_y_no_manda_el_verifier_al_navegador(auth):
@@ -240,11 +240,11 @@ def test_una_cuenta_de_otro_dominio_no_entra(tmp_path, monkeypatch):
     """`hd` en la URL es solo una sugerencia de UI: la puerta la cierra esto."""
     fake = FakeGoogle(email="cualquiera@gmail.com", hd=None)
     monkeypatch.setattr(ga.urllib.request, "urlopen", fake.urlopen)
-    auth = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, hosted_domain="aerotools.es",
+    auth = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, hosted_domain="ejemplo.com",
                          store_path=tmp_path / "s.json")
 
     holder: dict = {}
-    with pytest.raises(ga.AuthError, match="no es de aerotools.es"):
+    with pytest.raises(ga.AuthError, match="no es de ejemplo.com"):
         auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
 
     assert not auth.is_logged_in()
@@ -264,7 +264,7 @@ def test_sin_hosted_domain_entra_cualquier_cuenta(tmp_path, monkeypatch):
 def test_el_hint_hd_se_manda_para_ahorrarle_el_selector_al_usuario(auth):
     holder: dict = {}
     auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
-    assert holder["params"]["hd"] == "aerotools.es"
+    assert holder["params"]["hd"] == "ejemplo.com"
 
 
 # --------------------------------------------------------------------------
@@ -276,7 +276,7 @@ def test_el_scope_profile_se_pide_para_tener_foto():
 
 
 def test_la_identidad_expone_la_foto_cuando_el_claim_viene():
-    token = _id_token("ofi@aerotools.es", "aerotools.es",
+    token = _id_token("ofi@ejemplo.com", "ejemplo.com",
                       picture="https://lh3.googleusercontent.com/a/foto.jpg")
     identidad = ga._identidad_de_id_token(token)
     assert identidad.picture == "https://lh3.googleusercontent.com/a/foto.jpg"
@@ -285,7 +285,7 @@ def test_la_identidad_expone_la_foto_cuando_el_claim_viene():
 def test_una_sesion_sin_claim_picture_no_rompe_y_queda_vacia():
     """Un id_token de antes de pedir el scope `profile` no trae `picture`:
     debe quedar vacío, no reventar la identidad entera."""
-    token = _id_token("ofi@aerotools.es", "aerotools.es")
+    token = _id_token("ofi@ejemplo.com", "ejemplo.com")
     identidad = ga._identidad_de_id_token(token)
     assert identidad is not None
     assert identidad.picture == ""
@@ -336,7 +336,7 @@ def test_el_id_token_del_login_queda_disponible(auth, google):
     falta entero: es la credencial contra `/api/organizer/inspecciones`."""
     holder: dict = {}
     auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
-    assert auth.id_token() == _id_token("ofi@aerotools.es", "aerotools.es")
+    assert auth.id_token() == _id_token("ofi@ejemplo.com", "ejemplo.com")
     assert google.refrescos == 0, "el del login vale, no hay que pedir otro"
 
 
@@ -517,21 +517,21 @@ def test_el_operador_no_tiene_que_volver_a_entrar_al_actualizar(tmp_path, google
     sesión tiene que seguir sirviendo: obligar a todo el mundo a entrar otra
     vez por un cambio de formato interno es un coste que no hace falta pagar."""
     (tmp_path / ga.LEGACY_STORE_NAME).write_text(
-        json.dumps({"refresh_token": "refresh-viejo", "email": "ofi@aerotools.es"}),
+        json.dumps({"refresh_token": "refresh-viejo", "email": "ofi@ejemplo.com"}),
         encoding="utf-8")
 
     auth = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET,
                          store_path=tmp_path / ga.STORE_NAME)
 
     assert auth.is_logged_in()
-    assert auth.identity.email == "ofi@aerotools.es"
+    assert auth.identity.email == "ofi@ejemplo.com"
     assert auth.access_token() == "acceso-1"  # el token viejo sigue refrescando
 
 
 def test_al_migrar_el_token_deja_de_estar_en_claro(tmp_path, google):
     legacy = tmp_path / ga.LEGACY_STORE_NAME
     legacy.write_text(json.dumps({"refresh_token": "refresh-viejo",
-                                  "email": "ofi@aerotools.es"}), encoding="utf-8")
+                                  "email": "ofi@ejemplo.com"}), encoding="utf-8")
 
     ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=tmp_path / ga.STORE_NAME)
 
@@ -543,7 +543,7 @@ def test_la_migracion_ocurre_una_sola_vez(tmp_path, google):
     """Si el JSON siguiera ahí, cada arranque pisaría la sesión buena con la
     vieja — incluida una que el usuario acabara de cerrar."""
     (tmp_path / ga.LEGACY_STORE_NAME).write_text(
-        json.dumps({"refresh_token": "refresh-viejo", "email": "ofi@aerotools.es"}),
+        json.dumps({"refresh_token": "refresh-viejo", "email": "ofi@ejemplo.com"}),
         encoding="utf-8")
     store = tmp_path / ga.STORE_NAME
 
@@ -556,11 +556,11 @@ def test_la_sesion_sobrevive_a_cerrar_la_app(auth, google, tmp_path):
     holder: dict = {}
     auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
 
-    otra = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, hosted_domain="aerotools.es",
+    otra = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, hosted_domain="ejemplo.com",
                          store_path=auth.store_path)
 
     assert otra.is_logged_in()
-    assert otra.identity.email == "ofi@aerotools.es"
+    assert otra.identity.email == "ofi@ejemplo.com"
     assert otra.access_token()
 
 
@@ -607,7 +607,7 @@ def test_la_fecha_de_validacion_sobrevive_al_reinicio(auth, google):
     auth.login(open_browser=_navegador_que_responde(holder), timeout=10)
     auth.verificar()
 
-    otra = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, hosted_domain="aerotools.es",
+    otra = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, hosted_domain="ejemplo.com",
                          store_path=auth.store_path)
 
     assert otra.validada_en == pytest.approx(auth.validada_en)
@@ -633,21 +633,21 @@ def test_una_bd_danada_no_impide_recuperar_la_sesion_heredada(tmp_path, google):
     antivirus) y el `google_auth.json` sigue ahí intacto. Si la BD rota
     bloqueara la migración, el operador perdería la sesión sin motivo."""
     (tmp_path / ga.LEGACY_STORE_NAME).write_text(
-        json.dumps({"refresh_token": "refresh-viejo", "email": "ofi@aerotools.es"}),
+        json.dumps({"refresh_token": "refresh-viejo", "email": "ofi@ejemplo.com"}),
         encoding="utf-8")
     (tmp_path / ga.STORE_NAME).write_bytes(b"a medio escribir")
 
     auth = ga.GoogleAuth(CLIENT_ID, CLIENT_SECRET, store_path=tmp_path / ga.STORE_NAME)
 
     assert auth.is_logged_in()
-    assert auth.identity.email == "ofi@aerotools.es"
+    assert auth.identity.email == "ofi@ejemplo.com"
 
 
 def test_si_la_migracion_revienta_la_app_sigue_abriendo(tmp_path, google, monkeypatch):
     """`_load` corre en el constructor: una excepción aquí dejaría la pestaña
     entera lanzando traceback en cada intento, no solo sin sesión."""
     (tmp_path / ga.LEGACY_STORE_NAME).write_text(
-        json.dumps({"refresh_token": "refresh-viejo", "email": "ofi@aerotools.es"}),
+        json.dumps({"refresh_token": "refresh-viejo", "email": "ofi@ejemplo.com"}),
         encoding="utf-8")
 
     from atom_core import session_store
@@ -703,12 +703,12 @@ def test_migrar_estadillos_recibidos_legacy_mueve_ficheros_y_borra_la_vieja(tmp_
 
     vieja = tmp_path / ".config" / "atom-organizer" / "estadillos_recibidos"
     vieja.mkdir(parents=True)
-    (vieja / "20260920_estadillo_Rebeca.csv").write_text("a;b\n1;2\n")
+    (vieja / "20260920_estadillo_PilotoA.csv").write_text("a;b\n1;2\n")
 
     ga.migrar_estadillos_recibidos_legacy()
 
     nueva = tmp_path / "estadillos_recibidos"
-    assert (nueva / "20260920_estadillo_Rebeca.csv").read_text() == "a;b\n1;2\n"
+    assert (nueva / "20260920_estadillo_PilotoA.csv").read_text() == "a;b\n1;2\n"
     assert not vieja.exists()
 
 
@@ -717,16 +717,16 @@ def test_migrar_estadillos_recibidos_legacy_no_sobrescribe_si_choca_el_nombre(tm
 
     vieja = tmp_path / ".config" / "atom-organizer" / "estadillos_recibidos"
     vieja.mkdir(parents=True)
-    (vieja / "20260920_estadillo_Rebeca.csv").write_text("legacy")
+    (vieja / "20260920_estadillo_PilotoA.csv").write_text("legacy")
 
     nueva = tmp_path / "estadillos_recibidos"
     nueva.mkdir(parents=True)
-    (nueva / "20260920_estadillo_Rebeca.csv").write_text("ya-migrado")
+    (nueva / "20260920_estadillo_PilotoA.csv").write_text("ya-migrado")
 
     ga.migrar_estadillos_recibidos_legacy()
 
-    assert (nueva / "20260920_estadillo_Rebeca.csv").read_text() == "ya-migrado"
-    assert (nueva / "20260920_estadillo_Rebeca_1.csv").read_text() == "legacy"
+    assert (nueva / "20260920_estadillo_PilotoA.csv").read_text() == "ya-migrado"
+    assert (nueva / "20260920_estadillo_PilotoA_1.csv").read_text() == "legacy"
 
 
 def test_migrar_estadillos_recibidos_legacy_es_idempotente_sin_carpeta_vieja(tmp_path, monkeypatch):

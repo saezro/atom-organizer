@@ -1,11 +1,11 @@
 """Fusión de estadillos con cabeceras REALES divergentes (medido sobre los
-116 estadillos reales de gs://plantas_pv_nl):
+116 estadillos reales de gs://<bucket>):
 
 - Variante A (103/116 ficheros): 33 columnas, termina en
   `...;Tipologia;Vuelo_abortado`.
 - Variante B (13/116): las mismas 33 columnas + `Si_corresponde;No_corresponde`
   al final (35 columnas en total).
-- Al menos 2 plantas (LAS_CANES_DOU_RENARD, GRIJOTA_IV) mezclan ambas
+- Al menos 2 plantas (LAS_CANES_DOU_RENARD, PLANTA_I) mezclan ambas
   variantes dentro de la misma planta: fusionarlas NO puede lanzar
   `EstadilloHeaderError`, tiene que alinear por nombre de columna y dejar
   NaN donde falte.

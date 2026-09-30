@@ -61,8 +61,8 @@ def test_sirve_el_index(servidor):
 
 def test_llama_a_un_metodo_de_la_api_con_argumentos(servidor):
     _, api, base = servidor
-    assert _post(base, "ping", ["rebeca"])["result"]["msg"] == "pong rebeca"
-    assert api.llamadas == [("ping", "rebeca")]
+    assert _post(base, "ping", ["pilotoa"])["result"]["msg"] == "pong pilotoa"
+    assert api.llamadas == [("ping", "pilotoa")]
 
 
 def test_llamada_local_no_emite_marco_azul(servidor):

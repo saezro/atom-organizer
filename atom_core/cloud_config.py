@@ -29,13 +29,13 @@ from pathlib import Path
 
 # Bucket de ENTRADA: aquí deja el operador lo que hay que organizar. El Cloud
 # Run que organiza sólo LEE de aquí; el estadillo se queda en este bucket
-# (ya no se publica en `plantas_pv_nl`). Regla fijada por Cas (2026-08-06).
+# (ya no se publica en el bucket de plantas). Regla fijada por Cas (2026-08-06).
 BUCKET_DATOS = "datos_para_organizar"
 
 # Sólo cuentas de Aerotools. Es un filtro de UI (evita que alguien se loguee con
 # su Gmail personal y no entienda el 403); el permiso de verdad es el IAM del
-# bucket, que sólo tiene `group:ofi@aerotools.es`.
-HOSTED_DOMAIN = "aerotools.es"
+# bucket, que sólo tiene `group:ofi@ejemplo.com`.
+HOSTED_DOMAIN = "ejemplo.com"
 
 CLIENT_FILENAME = "google_client.json"
 
@@ -121,7 +121,7 @@ def load_client(base_dir: Path | None = None) -> OAuthClient | None:
 def prefijo_desde_carpeta(nombre: str) -> str:
     """Nombre de carpeta → prefijo válido dentro del bucket.
 
-    Los nombres reales traen espacios y eñes (`MARISOLES_LOS MANGOS`, `OCAÑA`):
+    Los nombres reales traen espacios y eñes (`PLANTA_J`, `OCAÑA`):
     se pasan a ASCII y los huecos a `_` para que la ruta del objeto sea legible
     y no dependa del sistema de ficheros de quien sube.
     """

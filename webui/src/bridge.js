@@ -332,6 +332,9 @@ export const api = {
   cloudDrenar: () => call('cloud_drenar'),
   cloudLogin: () => call('cloud_login'),
   cloudLogout: () => call('cloud_logout'),
+  // Login usuario+contraseña (modo adicional a Google). Misma forma de
+  // respuesta que cloudLogin.
+  cloudLoginPassword: (usuario, password) => call('cloud_login_password', usuario, password),
   cloudPairStart: () => call('cloud_pair_start'),
   cloudPairPoll: (pairId) => call('cloud_pair_poll', pairId),
   // PIN local del kiosco (dispositivo, no usuario). El backend nunca

@@ -40,7 +40,7 @@ Dos modos para el subcomando `enviar` (ver `_cmd_enviar`):
 Ejemplos:
     python3 scripts/simular_estadillo_digital.py enviar --vuelos 3 --fuera-de-tarjeta 1
     python3 scripts/simular_estadillo_digital.py enviar --vuelos 3 --hora-inicio 13:27 --fecha 2026-08-19
-    python3 scripts/simular_estadillo_digital.py enviar --desde-bd --planta KL05 --fecha 2026-09-20
+    python3 scripts/simular_estadillo_digital.py enviar --desde-bd --planta PLANTA_A --fecha 2026-09-20
 
 Ejemplos de control del kiosco (requiere `--pin` o `ATOM_PIN`):
     python3 scripts/simular_estadillo_digital.py --url http://organizer.atom --pin 1234 discos
@@ -408,7 +408,7 @@ def main() -> int:
     ap_enviar = sub.add_parser("enviar", help="simula el envio del estadillo (comportamiento por defecto)")
     ap_enviar.add_argument("--planta", default="PRUEBA_SIM")
     ap_enviar.add_argument("--fecha", default=date.today().isoformat())
-    ap_enviar.add_argument("--piloto", default="Rebeca")
+    ap_enviar.add_argument("--piloto", default="PilotoA")
     ap_enviar.add_argument("--dron", default="M300")
     ap_enviar.add_argument("--vuelos", type=int, default=2, help="numero de vuelos de prueba a generar (default: %(default)s)")
     ap_enviar.add_argument("--hora-inicio", default="08:00", metavar="HH:MM",
@@ -453,7 +453,7 @@ def main() -> int:
 
     if args.comando is None:
         args.planta, args.fecha = "PRUEBA_SIM", date.today().isoformat()
-        args.piloto, args.dron = "Rebeca", "M300"
+        args.piloto, args.dron = "PilotoA", "M300"
         args.vuelos, args.con_alias, args.solo_ping = 2, False, False
         args.fuera_de_tarjeta, args.desde_bd = 0, False
         args.hora_inicio = "08:00"
@@ -466,7 +466,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-# Lanzarlo desde el portátil de Rodrigo (fuera de la LAN del kiosco, vía el
+# Lanzarlo desde el portátil del responsable (fuera de la LAN del kiosco, vía el
 # hotspot/red de la Pi):
 #   python3 scripts/simular_estadillo_digital.py --url http://organizer.atom --vuelos 3
 # Contra la Pi por SSH con forward de puerto (sin estar en su wifi):

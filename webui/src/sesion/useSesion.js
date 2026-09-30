@@ -155,6 +155,25 @@ export function useSesion() {
     }
   }, [refrescar])
 
+  // Login usuario+contraseña. NO toca `cargando` (el gate de App desmontaría
+  // la pantalla de entrada y se perdería lo escrito): el estado de envío vive
+  // en el formulario. Devuelve true si entró. `ok:false`/`error` = fallo.
+  const loginPassword = useCallback(async (usuario, password) => {
+    setError(null)
+    try {
+      // `cloud_login_password` es síncrono: la respuesta ya es el resultado.
+      const respuesta = await conPlazo(api.cloudLoginPassword(usuario, password), 120000)
+      if (!respuesta || respuesta.ok === false || respuesta.error) {
+        throw new Error(String(respuesta?.error || respuesta?.reason || 'No se pudo iniciar sesión.'))
+      }
+      await refrescar()
+      return true
+    } catch (e) {
+      setError(String(e?.message || e))
+      return false
+    }
+  }, [refrescar])
+
   const entrarSinCuenta = useCallback(() => {
     setError(null)
     setCuenta(null)
@@ -210,6 +229,7 @@ export function useSesion() {
     cuenta,
     error,
     entrarConGoogle,
+    loginPassword,
     entrarSinCuenta,
     salir,
     refrescar,

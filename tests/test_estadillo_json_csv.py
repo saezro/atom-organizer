@@ -5,9 +5,9 @@ from atom_core import estadillo as estadillo_mod
 
 
 def _vuelo(pb="1", vuelo="1", fecha="2026:09:20", inicio="09:00:00", final="09:20:00",
-           piloto="Rebeca", dron="M300"):
+           piloto="PilotoA", dron="M300"):
     return {
-        "Trabajo": "KL05",
+        "Trabajo": "PLANTA_A",
         "Fecha": fecha,
         "Piloto": piloto,
         "PB": pb,
@@ -41,7 +41,7 @@ def test_escribir_csv_nombre_fichero_con_fecha_y_piloto(tmp_path):
     ruta = estadillo_mod.escribir_csv_desde_json([_vuelo()], tmp_path)
 
     nombre = ruta.split("/")[-1]
-    assert nombre == "20260920_estadillo_Rebeca.csv"
+    assert nombre == "20260920_estadillo_PilotoA.csv"
 
 
 def test_escribir_csv_sin_vuelos_lanza_value_error(tmp_path):
@@ -71,15 +71,15 @@ def test_csv_generado_se_puede_leer_con_read_estadillo_info(tmp_path):
 
     info = estadillo_mod.read_estadillo_info(ruta)
 
-    assert info["trabajo"] == "KL05"
-    assert info["pilotos"] == ["Rebeca"]
+    assert info["trabajo"] == "PLANTA_A"
+    assert info["pilotos"] == ["PilotoA"]
     assert info["drones"] == ["M300"]
     assert info["num_vuelos"] == 2
 
 
 def test_sync_uid_se_conserva_hasta_filas_para_suite(tmp_path):
     vuelo = _vuelo()
-    vuelo["sync_uid"] = "2026-09-20_REBECA_V1_H090000_PB1"
+    vuelo["sync_uid"] = "2026-09-20_PILOTOA_V1_H090000_PB1"
     ruta = estadillo_mod.escribir_csv_desde_json([vuelo], tmp_path)
 
     df = pd.read_csv(ruta, sep=";")
@@ -87,7 +87,7 @@ def test_sync_uid_se_conserva_hasta_filas_para_suite(tmp_path):
 
     res = estadillo_mod.validar_para_subida([ruta])
     assert res["ok"] is True
-    assert res["vuelos"][0]["sync_uid"] == "2026-09-20_REBECA_V1_H090000_PB1"
+    assert res["vuelos"][0]["sync_uid"] == "2026-09-20_PILOTOA_V1_H090000_PB1"
 
 
 def test_horas_con_y_sin_segundos_normalizan_igual(tmp_path):

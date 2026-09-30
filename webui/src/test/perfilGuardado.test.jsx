@@ -12,7 +12,7 @@ let logueado = false
 const api = {
   appVersion: vi.fn(async () => ({ version: '3.4.76' })),
   cloudStatus: vi.fn(async () => (logueado
-    ? { configured: true, logged_in: true, email: 'dani@aerotools.es', nombre: 'Dani', picture: '' }
+    ? { configured: true, logged_in: true, email: 'dani@ejemplo.com', nombre: 'Dani', picture: '' }
     : { configured: true, logged_in: false })),
   cloudVerify: vi.fn(async () => ({ ok: true })),
   cloudInspecciones: vi.fn(async () => ({ ok: true, origen: 'api', inspecciones: [] })),
@@ -21,7 +21,7 @@ const api = {
   checkUpdate: vi.fn(async () => ({ ok: true, update_available: false })),
   renderConfirmar: vi.fn(async () => ({ ok: true })),
   listarPerfiles: vi.fn(async () => ([
-    { email: 'dani@aerotools.es', nombre: 'Dani', picture: '', modo: 'google' },
+    { email: 'dani@ejemplo.com', nombre: 'Dani', picture: '', modo: 'google' },
   ])),
   activarPerfil: vi.fn(async () => { logueado = true; return { ok: true } }),
   borrarPerfil: vi.fn(async () => ({ ok: true })),
@@ -62,7 +62,7 @@ describe('Entrada con perfil guardado', () => {
       const tile = await screen.findByRole('button', { name: /Dani/i })
       fireEvent.click(tile)
 
-      await waitFor(() => expect(api.activarPerfil).toHaveBeenCalledWith('dani@aerotools.es'))
+      await waitFor(() => expect(api.activarPerfil).toHaveBeenCalledWith('dani@ejemplo.com'))
       // La sesión se recoge en sitio: la pantalla de entrada desaparece...
       await waitFor(() => expect(screen.queryByTestId('pantalla-entrada')).toBeNull())
       // ...y sin haber remontado nada.

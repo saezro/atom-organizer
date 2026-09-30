@@ -1,6 +1,6 @@
 """La instalación silenciosa tiene que dejar log, y en la carpeta que el usuario manda.
 
-Contexto (2026-08-04): a Daniel le saltó el modal de actualización y ATOM no
+Contexto (2026-08-04): a un usuario le saltó el modal de actualización y ATOM no
 volvió a abrirse. No hubo forma de saber si la instalación había ido bien y sólo
 había fallado el relanzado, o si había fallado entera — `updater.install()` no
 pasaba `/LOG` a Inno Setup, así que la instalación era una caja negra. Es el

@@ -3,14 +3,14 @@ vuelo con línea real. Van a `FOTOS_GENERALES`, HERMANA de TERMICA/RGB/
 RGB_Extra en la raíz de `output_folder`, PLANAS (sin subcarpeta PB/vuelo),
 sin girar (no hay consenso de ángulo posible sin vuelo real).
 
-Formato confirmado en bucket (`gs://plantas_pv_nl/KL88|CELSO/INSPECCIONES/
+Formato confirmado en bucket (`gs://<bucket>/<PLANTA>/INSPECCIONES/
 TERMICA_MODULOS/2026/FOTOS_GENERALES/`): carpeta plana, ficheros con su
 nombre original (renombrados o no según config), mezcla RGB/TERMICA/CROP.
 
 Antes de esta corrección: `_construir_fila` montaba `PB{pb}` con
 `pb="GENERALES"` -> carpeta `PBGENERALES` colgando de TERMICA/RGB, y el
 consenso de ángulo por vuelo giraba esas imágenes como si fueran de un vuelo
-real (bug reportado: 6 imágenes GENERALES giradas 90° en KL88).
+real (bug reportado: 6 imágenes GENERALES giradas 90° en una planta).
 
 Dobles a mano, mismo estilo que `tests/test_indice_organizado.py` (nunca
 `unittest.mock`).

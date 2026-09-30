@@ -128,7 +128,7 @@ def measure(img_path, raw_out, humidity, emissivity, lib_dir):
             raise RuntimeError("dirp_get_measurement_params rc={0} [{1}]".format(ret, _ctx))
         # Igual que el CLI: solo humidity/emissivity sobre los params leídos del
         # R-JPEG. Forzar distance=5/reflection=23 rompía la paridad con
-        # dji_irp.exe (KL23: hasta 0,76 °C de diferencia; sin forzar, byte a byte).
+        # dji_irp.exe (PLANTA_D: hasta 0,76 °C de diferencia; sin forzar, byte a byte).
         params.humidity = float(humidity)
         params.emissivity = float(emissivity)
         ret = dll.dirp_set_measurement_params(handle, ctypes.byref(params))

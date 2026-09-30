@@ -2,7 +2,7 @@
 
 El organizado corre en portátiles distintos, con discos distintos (SSD o
 HDD, mismo disco o dos) y con el usuario haciendo otras cosas a la vez.
-Rodrigo reportó un run 10 minutos más lento solo porque el PC estaba
+El responsable reportó un run 10 minutos más lento solo porque el PC estaba
 ocupado. Un número de trabajadores fijado al arrancar no puede acertar en
 todos esos casos: este controlador se corrige durante el run.
 

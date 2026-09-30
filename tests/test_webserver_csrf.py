@@ -41,7 +41,7 @@ def _post(base, metodo, headers, cuerpo_bytes):
 
 def test_content_type_text_plain_da_415_y_no_ejecuta(servidor):
     _, api, base = servidor
-    body = json.dumps({"args": ["rebeca"]}).encode()
+    body = json.dumps({"args": ["pilotoa"]}).encode()
     with pytest.raises(urllib.error.HTTPError) as exc:
         _post(base, "ping", {"Content-Type": "text/plain"}, body)
     assert exc.value.code == 415
@@ -50,7 +50,7 @@ def test_content_type_text_plain_da_415_y_no_ejecuta(servidor):
 
 def test_sin_content_type_da_415_y_no_ejecuta(servidor):
     _, api, base = servidor
-    body = json.dumps({"args": ["rebeca"]}).encode()
+    body = json.dumps({"args": ["pilotoa"]}).encode()
     req = urllib.request.Request(f"{base}/api/ping", data=body, method="POST")
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(req, timeout=5)
@@ -60,7 +60,7 @@ def test_sin_content_type_da_415_y_no_ejecuta(servidor):
 
 def test_content_type_con_charset_es_200(servidor):
     _, _, base = servidor
-    body = json.dumps({"args": ["rebeca"]}).encode()
+    body = json.dumps({"args": ["pilotoa"]}).encode()
     headers = {"Content-Type": "application/json; charset=utf-8"}
     with _post(base, "ping", headers, body) as r:
         assert r.status == 200
@@ -68,7 +68,7 @@ def test_content_type_con_charset_es_200(servidor):
 
 def test_origin_ajeno_da_403_y_no_ejecuta(servidor):
     _, api, base = servidor
-    body = json.dumps({"args": ["rebeca"]}).encode()
+    body = json.dumps({"args": ["pilotoa"]}).encode()
     headers = {"Content-Type": "application/json", "Origin": "https://evil.example"}
     with pytest.raises(urllib.error.HTTPError) as exc:
         _post(base, "ping", headers, body)
@@ -78,7 +78,7 @@ def test_origin_ajeno_da_403_y_no_ejecuta(servidor):
 
 def test_origin_localhost_es_200(servidor):
     _, _, base = servidor
-    body = json.dumps({"args": ["rebeca"]}).encode()
+    body = json.dumps({"args": ["pilotoa"]}).encode()
     headers = {"Content-Type": "application/json", "Origin": "http://localhost:5173"}
     with _post(base, "ping", headers, body) as r:
         assert r.status == 200
@@ -86,7 +86,7 @@ def test_origin_localhost_es_200(servidor):
 
 def test_sin_origin_es_200(servidor):
     _, _, base = servidor
-    body = json.dumps({"args": ["rebeca"]}).encode()
+    body = json.dumps({"args": ["pilotoa"]}).encode()
     headers = {"Content-Type": "application/json"}
     with _post(base, "ping", headers, body) as r:
         assert r.status == 200

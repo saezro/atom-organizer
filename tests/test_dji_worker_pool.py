@@ -158,7 +158,7 @@ def test_persistent_enabled_true_en_no_x86_salvo_variable_de_entorno(monkeypatch
 def test_pool_devuelve_el_cupo_si_el_worker_no_llega_a_nacer(monkeypatch):
     """Si crear el worker falla (p. ej. falta el runtime x86), el cupo reservado
     vuelve: antes se perdía y, tras _MAX_WORKERS fallos, todos los hilos se
-    quedaban esperando en `_idle.get()` para siempre (cuelgue KL19 Pi)."""
+    quedaban esperando en `_idle.get()` para siempre (cuelgue PLANTA_C Pi)."""
     def lanzador_roto(lib_dir):
         raise external_tools.FeatureUnavailableError("falta el runtime x86")
 

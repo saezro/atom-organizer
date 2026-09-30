@@ -957,7 +957,7 @@ se ejecuta en el hilo GUI, antes de arrancar el `Worker`.
 #   - ZARATAN (4632 térmicas, rejilla de inspección): yaw entre -101.6 y -97.7.
 #     Un margen estrecho (±10 -> intervalo (-100, -80)) ya dejaría fuera parte
 #     del vuelo. Con 80 -> (-170, -10), entra todo.
-#   - ANTOLIN (vuelo suelto): hay tomas con yaw -1.4, que NO se deben rotar. Un
+#   - PLANTA_B (vuelo suelto): hay tomas con yaw -1.4, que NO se deben rotar. Un
 #     margen de 90 -> (-180, 0) las rotaría por error; con 80 caen en la zona
 #     muerta de ±10 alrededor de 0 y 180 y se clasifican bien.
 # O sea: 80 es el mayor margen que sigue distinguiendo "cámara perpendicular a
@@ -1082,7 +1082,7 @@ class SplitImagesConfig:
     # (sufijos `_1`) NO es una opcion aqui — era la causa de que reorganizar
     # PRUEBA dejara 5.049 objetos a partir de 2.516.
     modo_destino: str = MODO_SOBRESCRIBIR
-    # `plantas_pv.orientacion` de la inspección elegida ("Horizontal",
+    # orientación de la planta de la inspección elegida ("Horizontal",
     # "Vertical", "Varias"), tal cual, sin normalizar -eso lo hace quien la
     # consume (`atom_core.indice._orientacion_normalizada`). Vacío si no hay
     # inspección elegida o si la API de la Suite todavía no manda el campo
@@ -1492,7 +1492,7 @@ def run_batch(items, worker_fn, worker_args_fn, on_progress=None, max_workers=No
 # `advanced`, y `run_task` los aplica con `replace(cfg, **coerced)`, así que
 # PISAN el default de `_default_split_config` (rotate_auto=True).
 #
-# Problema (v3.4.4, log real de Daniel): los tres a false son IDÉNTICOS en dos
+# Problema (v3.4.4, log real de un usuario): los tres a false son IDÉNTICOS en dos
 # escenarios opuestos — el usuario eligió «Sin giro», o el front es anterior a
 # v3.4.3, donde `initialState` forzaba el índice 0 de todos los selects y
 # mandaba los tres a false sin que nadie tocara nada. Desde el log no se podía

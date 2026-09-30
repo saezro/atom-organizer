@@ -1,6 +1,6 @@
 """Reparto del trabajo de un vuelo entre N tareas paralelas (sharding).
 
-Motivo: una corrida completa de ANTOLIN (2.516 imágenes) tarda **33m 06s** en un
+Motivo: una corrida completa de PLANTA_B (2.516 imágenes) tarda **33m 06s** en un
 Cloud Run Job de 8 vCPU, y el 90 % de ese tiempo son fases que trabajan carpeta a
 carpeta sin ninguna dependencia entre ellas. Repartirlas entre N tareas del mismo
 Job no encarece apenas (son las mismas vCPU·segundo, gastadas en paralelo en vez
@@ -31,7 +31,7 @@ el reparto no es un simple «trocea la lista de imágenes»:
                destino YA estructurado, y todas deciden **por carpeta hoja**
                (`PBx_Vy`): el criterio de rotación, por ejemplo, se calcula con
                las imágenes de esa carpeta y de ninguna otra. Unidad = **vuelo
-               hoja** (`PBx/PBx_Vy`), no el PB entero: en ANTOLIN hay 7 PB para
+               hoja** (`PBx/PBx_Vy`), no el PB entero: en PLANTA_B hay 7 PB para
                8 tareas, y con esa granularidad ningún algoritmo puede
                equilibrar — el PB más grande marca el suelo del reloj de pared.
 
@@ -183,7 +183,7 @@ def repartir_imagenes(carpetas: list[str], get_images, shard_index: int,
                       shard_count: int) -> dict:
     """`{carpeta: [imágenes que le tocan a esta tarea]}` para la etapa `split`.
 
-    La unidad es la IMAGEN y no la carpeta, y esto no es un refinamiento: ANTOLIN
+    La unidad es la IMAGEN y no la carpeta, y esto no es un refinamiento: PLANTA_B
     —el vuelo de referencia— son 2.516 fotos repartidas en **dos** carpetas
     `DJI_*`. Repartiendo por carpeta, un Job de 8 tareas dejaría seis sin nada
     que hacer y la fase se quedaría en 6m17s / 2 en vez de / 8.
@@ -285,7 +285,7 @@ def vuelos_del_destino(destino: str, subcarpetas=("RGB", "TERMICA", "RGB_Extra")
     """Unidad de reparto de la etapa `post`: rutas RELATIVAS `PBx/PBx_Vy`.
 
     Se reparte por vuelo hoja y no por PB porque el PB es demasiado grueso: en
-    ANTOLIN hay 7 PB y el Job lanza 8 tareas, así que una se queda vacía y la que
+    PLANTA_B hay 7 PB y el Job lanza 8 tareas, así que una se queda vacía y la que
     coge el PB mayor marca el reloj de pared por mucho que se pesen bien. El vuelo
     hoja es además la unidad real de trabajo de todas las fases de `post`.
 

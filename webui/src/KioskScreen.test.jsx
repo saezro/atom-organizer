@@ -61,7 +61,7 @@ const inspecciones = [
 
 function baseProps(overrides = {}) {
   return {
-    status: { email: 'rebeca@aerotools.es', picture: null },
+    status: { email: 'rebeca@ejemplo.com', picture: null },
     carpeta: '/home/pi/vuelo/PLANTA',
     onPickCarpeta: vi.fn(),
     inspecciones,
@@ -144,15 +144,15 @@ describe('KioskScreen — paso 1 (menú)', () => {
   it('renderiza avatar con picture si existe', () => {
     render(
       <KioskScreen
-        {...baseProps({ status: { logged_in: true, email: 'rebeca@aerotools.es', picture: 'http://x/foto.png' } })}
+        {...baseProps({ status: { logged_in: true, email: 'rebeca@ejemplo.com', picture: 'http://x/foto.png' } })}
       />
     )
-    const img = screen.getByRole('img', { name: /rebeca@aerotools.es/i })
+    const img = screen.getByRole('img', { name: /rebeca@ejemplo.com/i })
     expect(img).toHaveAttribute('src', 'http://x/foto.png')
   })
 
   it('sin picture pero con email muestra avatar de respaldo con la inicial, sin <img>', () => {
-    render(<KioskScreen {...baseProps({ status: { logged_in: true, email: 'rebeca@aerotools.es', picture: null } })} />)
+    render(<KioskScreen {...baseProps({ status: { logged_in: true, email: 'rebeca@ejemplo.com', picture: null } })} />)
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
     expect(screen.getByText('R')).toBeInTheDocument()
   })
@@ -164,7 +164,7 @@ describe('KioskScreen — paso 1 (menú)', () => {
           status: {
             logged_in: true,
             estado: 'sin-credencial',
-            email: 'rebeca@aerotools.es',
+            email: 'rebeca@ejemplo.com',
             picture: 'http://x/foto.png',
           },
         })}
@@ -182,7 +182,7 @@ describe('KioskScreen — paso 1 (menú)', () => {
           status: {
             logged_in: false,
             estado: 'ok',
-            email: 'rebeca@aerotools.es',
+            email: 'rebeca@ejemplo.com',
             picture: 'http://x/foto.png',
           },
         })}
@@ -199,13 +199,13 @@ describe('KioskScreen — paso 1 (menú)', () => {
           status: {
             logged_in: true,
             estado: 'sin-conexion',
-            email: 'rebeca@aerotools.es',
+            email: 'rebeca@ejemplo.com',
             picture: 'http://x/foto.png',
           },
         })}
       />
     )
-    const img = screen.getByRole('img', { name: /rebeca@aerotools.es/i })
+    const img = screen.getByRole('img', { name: /rebeca@ejemplo.com/i })
     expect(img).toHaveAttribute('src', 'http://x/foto.png')
   })
 
@@ -220,7 +220,7 @@ describe('KioskScreen — paso 1 (menú)', () => {
           status: {
             logged_in: true,
             estado: 'sin-conexion',
-            email: 'rebeca@aerotools.es',
+            email: 'rebeca@ejemplo.com',
             picture: 'http://x/foto.png',
           },
         })}
@@ -236,7 +236,7 @@ describe('KioskScreen — paso 1 (menú)', () => {
     render(
       <KioskScreen
         {...baseProps({
-          status: { logged_in: true, estado: 'ok', email: 'rebeca@aerotools.es', picture: null },
+          status: { logged_in: true, estado: 'ok', email: 'rebeca@ejemplo.com', picture: null },
         })}
       />
     )
@@ -251,7 +251,7 @@ describe('KioskScreen — paso 1 (menú)', () => {
     render(
       <KioskScreen
         {...baseProps({
-          status: { logged_in: true, estado: 'sin-conexion', email: 'rebeca@aerotools.es', picture: null },
+          status: { logged_in: true, estado: 'sin-conexion', email: 'rebeca@ejemplo.com', picture: null },
         })}
       />
     )
@@ -264,7 +264,7 @@ describe('KioskScreen — paso 1 (menú)', () => {
     render(
       <KioskScreen
         {...baseProps({
-          status: { logged_in: true, estado: 'ok', email: 'rebeca@aerotools.es', picture: null },
+          status: { logged_in: true, estado: 'ok', email: 'rebeca@ejemplo.com', picture: null },
         })}
       />
     )
@@ -274,10 +274,10 @@ describe('KioskScreen — paso 1 (menú)', () => {
   })
 
   it('el avatar abre la pantalla de cuenta, no la UI completa de escritorio', async () => {
-    render(<KioskScreen {...baseProps({ status: { logged_in: true, email: 'rebeca@aerotools.es' } })} />)
+    render(<KioskScreen {...baseProps({ status: { logged_in: true, email: 'rebeca@ejemplo.com' } })} />)
     await userEvent.click(screen.getByTestId('kiosk-avatar'))
     expect(screen.getByText('Cuenta')).toBeInTheDocument()
-    expect(screen.getByText('rebeca@aerotools.es')).toBeInTheDocument()
+    expect(screen.getByText('rebeca@ejemplo.com')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /cerrar sesión/i })).toBeInTheDocument()
     // Sigue sin haber puerta a la UI de escritorio: solo se vuelve al kiosco.
     await userEvent.click(screen.getByRole('button', { name: /atrás/i }))
@@ -667,7 +667,7 @@ describe('KioskScreen — paso 2 (organizar)', () => {
       <KioskScreen
         {...baseProps({
           accionInicial: 'organizar',
-          status: { logged_in: true, estado: 'sin-conexion', email: 'rebeca@aerotools.es', picture: null },
+          status: { logged_in: true, estado: 'sin-conexion', email: 'rebeca@ejemplo.com', picture: null },
         })}
       />
     )
@@ -680,7 +680,7 @@ describe('KioskScreen — paso 2 (organizar)', () => {
       <KioskScreen
         {...baseProps({
           accionInicial: 'organizar',
-          status: { logged_in: true, estado: 'ok', email: 'rebeca@aerotools.es', picture: null },
+          status: { logged_in: true, estado: 'ok', email: 'rebeca@ejemplo.com', picture: null },
         })}
       />
     )

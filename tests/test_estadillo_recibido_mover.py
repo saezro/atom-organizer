@@ -13,7 +13,7 @@ from atom_core import estadillo as estadillo_mod
 
 _CABECERA_ESTADILLO = (
     "PB;Vuelo;Fecha;Trabajo;Piloto;Hora_de_inicio;Hora_final\n"
-    "1;1;2026:09:20;KL05;Rebeca;09:00:00;09:20:00\n"
+    "1;1;2026:09:20;PLANTA_A;PilotoA;09:00:00;09:20:00\n"
 )
 
 
@@ -26,33 +26,33 @@ def _api():
 def test_mover_mueve_el_fichero_con_su_mismo_nombre(tmp_path):
     origen_dir = tmp_path / "estadillos_recibidos"
     origen_dir.mkdir()
-    fichero = origen_dir / "20260920_estadillo_Rebeca.csv"
+    fichero = origen_dir / "20260920_estadillo_PilotoA.csv"
     fichero.write_text("PB;Vuelo\n1;1\n", encoding="utf-8")
     destino_dir = tmp_path / "fotos"
     destino_dir.mkdir()
 
     nueva = estadillo_mod.mover_estadillo_recibido_a_carpeta(str(fichero), str(destino_dir))
 
-    assert nueva == str(destino_dir / "20260920_estadillo_Rebeca.csv")
+    assert nueva == str(destino_dir / "20260920_estadillo_PilotoA.csv")
     assert not fichero.exists()
-    assert (destino_dir / "20260920_estadillo_Rebeca.csv").read_text(encoding="utf-8").startswith("PB;Vuelo")
+    assert (destino_dir / "20260920_estadillo_PilotoA.csv").read_text(encoding="utf-8").startswith("PB;Vuelo")
 
 
 def test_mover_no_sobrescribe_anade_sufijo(tmp_path):
     origen_dir = tmp_path / "estadillos_recibidos"
     origen_dir.mkdir()
-    fichero = origen_dir / "20260920_estadillo_Rebeca.csv"
+    fichero = origen_dir / "20260920_estadillo_PilotoA.csv"
     fichero.write_text("nuevo", encoding="utf-8")
     destino_dir = tmp_path / "fotos"
     destino_dir.mkdir()
-    ya_existe = destino_dir / "20260920_estadillo_Rebeca.csv"
+    ya_existe = destino_dir / "20260920_estadillo_PilotoA.csv"
     ya_existe.write_text("viejo", encoding="utf-8")
 
     nueva = estadillo_mod.mover_estadillo_recibido_a_carpeta(str(fichero), str(destino_dir))
 
-    assert nueva == str(destino_dir / "20260920_estadillo_Rebeca_1.csv")
+    assert nueva == str(destino_dir / "20260920_estadillo_PilotoA_1.csv")
     assert ya_existe.read_text(encoding="utf-8") == "viejo"
-    assert (destino_dir / "20260920_estadillo_Rebeca_1.csv").read_text(encoding="utf-8") == "nuevo"
+    assert (destino_dir / "20260920_estadillo_PilotoA_1.csv").read_text(encoding="utf-8") == "nuevo"
 
 
 def test_mover_ruta_inexistente_no_lanza_devuelve_none(tmp_path):
@@ -87,7 +87,7 @@ def test_mueve_el_estadillo_de_la_espera_al_origen_del_run(tmp_path):
     origen.mkdir()
     recibidos = tmp_path / "estadillos_recibidos"
     recibidos.mkdir()
-    csv = recibidos / "20260920_estadillo_Rebeca.csv"
+    csv = recibidos / "20260920_estadillo_PilotoA.csv"
     csv.write_text(_CABECERA_ESTADILLO, encoding="utf-8")
 
     _preparar_espera_recibida(api, str(origen), str(csv))
@@ -95,9 +95,9 @@ def test_mueve_el_estadillo_de_la_espera_al_origen_del_run(tmp_path):
 
     nuevos = api._mover_estadillo_espera_si_toca(params)
 
-    nueva_ruta = str(origen / "20260920_estadillo_Rebeca.csv")
+    nueva_ruta = str(origen / "20260920_estadillo_PilotoA.csv")
     assert not csv.exists()
-    assert (origen / "20260920_estadillo_Rebeca.csv").exists()
+    assert (origen / "20260920_estadillo_PilotoA.csv").exists()
     assert nuevos["estadillo"] == nueva_ruta
     assert api._estadillo_espera["rutas"] == [nueva_ruta]
     # El estadillo detectado ahora en `origen` coincide con el nuevo path.
@@ -113,7 +113,7 @@ def test_nunca_mueve_antes_de_pasar_por_el_hook(tmp_path):
     origen.mkdir()
     recibidos = tmp_path / "estadillos_recibidos"
     recibidos.mkdir()
-    csv = recibidos / "20260920_estadillo_Rebeca.csv"
+    csv = recibidos / "20260920_estadillo_PilotoA.csv"
     csv.write_text("PB;Vuelo\n", encoding="utf-8")
 
     _preparar_espera_recibida(api, str(origen), str(csv))
@@ -122,7 +122,7 @@ def test_nunca_mueve_antes_de_pasar_por_el_hook(tmp_path):
     api.estadillo_espera_estado()
     api._estadillo_en_carpeta(str(origen))
     assert csv.exists()
-    assert not (origen / "20260920_estadillo_Rebeca.csv").exists()
+    assert not (origen / "20260920_estadillo_PilotoA.csv").exists()
 
 
 def test_no_mueve_si_la_carpeta_de_la_espera_no_es_la_de_este_run(tmp_path):
@@ -133,7 +133,7 @@ def test_no_mueve_si_la_carpeta_de_la_espera_no_es_la_de_este_run(tmp_path):
     carpeta_espera.mkdir()
     recibidos = tmp_path / "estadillos_recibidos"
     recibidos.mkdir()
-    csv = recibidos / "20260920_estadillo_Rebeca.csv"
+    csv = recibidos / "20260920_estadillo_PilotoA.csv"
     csv.write_text("PB;Vuelo\n", encoding="utf-8")
 
     _preparar_espera_recibida(api, str(carpeta_espera), str(csv))

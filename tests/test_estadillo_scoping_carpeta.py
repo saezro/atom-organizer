@@ -403,7 +403,7 @@ def test_detectar_colisiones_mismo_dia_mismo_origen_no_colisiona():
     assert estadillo_mod.detectar_colisiones_mismo_dia(df, cols) == {}
 
 
-# --- Decisión Rodrigo 1: 2+ estadillos en la MISMA carpeta bloquea -----------
+# --- Decisión del responsable 1: 2+ estadillos en la MISMA carpeta bloquea -----------
 
 class _SignalGrabador:
     """Como `_Signal`, pero guarda cada `emit(...)` para poder comprobar que
@@ -454,7 +454,7 @@ def test_dos_estadillos_externos_en_la_misma_carpeta_no_bloquea(tmp_path):
     `input_folder` (elegidos a mano vía `--estadillo`, p.ej. una carpeta
     compartida por varios pilotos que ninguno de los dos vive dentro del
     árbol que se está organizando): el bloqueo de `ErrorEstadillosMismaCarpeta`
-    (decisión Rodrigo 1) solo aplica a estadillos AUTODETECTADOS dentro de
+    (Decisión del responsable 1) solo aplica a estadillos AUTODETECTADOS dentro de
     `input_folder` -estos dos no lo son-, así que el run NO aborta y conserva
     el comportamiento de siempre (fusión con sufijo de fecha si colisionan)."""
     compartida = tmp_path / "compartida"
@@ -494,7 +494,7 @@ def test_dos_estadillos_externos_en_la_misma_carpeta_no_bloquea(tmp_path):
     manifiesto.cerrar()
 
 
-# --- Decisión Rodrigo 2: estadillo autodetectado sin fotos no reclama ajenas -
+# --- Decisión del responsable 2: estadillo autodetectado sin fotos no reclama ajenas -
 
 def test_estadillo_autodetectado_sin_fotos_no_reclama_imagenes_ajenas(tmp_path):
     """Un estadillo AUTODETECTADO (vive dentro de `input_folder`, lo habría

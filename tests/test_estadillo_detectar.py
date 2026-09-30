@@ -92,13 +92,13 @@ def test_incluir_recibidos_suma_los_de_la_carpeta_de_estadillos_recibidos(tmp_pa
 
 
 def test_detectar_estadillos_no_mira_el_padre(tmp_path):
-    """Decisión de Rodrigo (caso Marcos): un estadillo suelto en la carpeta
-    PADRE (KL19/estadillo.csv con KL19/FOTOS como origen) NO sale de
+    """Decisión del responsable (caso de campo): un estadillo suelto en la carpeta
+    PADRE (PLANTA_C/estadillo.csv con PLANTA_C/FOTOS como origen) NO sale de
     `detectar_estadillos` -solo lo puede usar el operario a mano, vía
     `detectar_estadillos_en_padre` + confirmación explícita en la UI."""
     (tmp_path / "FOTOS").mkdir()
     (tmp_path / "OTRA").mkdir()
-    _csv(tmp_path / "estadillo_KL19.csv", [("1", "1", "2026:03:17", "10:00:00", "10:05:00")])
+    _csv(tmp_path / "estadillo_PLANTA_C.csv", [("1", "1", "2026:03:17", "10:00:00", "10:05:00")])
     _csv(tmp_path / "OTRA" / "ajeno.csv", [("2", "1", "2026:03:18", "11:00:00", "11:05:00")])
 
     res = estadillo.detectar_estadillos(str(tmp_path / "FOTOS"))
@@ -108,11 +108,11 @@ def test_detectar_estadillos_no_mira_el_padre(tmp_path):
 
 def test_detectar_estadillos_en_padre_encuentra_el_suelto_sin_barrer_hermanas(tmp_path):
     """`detectar_estadillos_en_padre` sí ve el estadillo suelto en el padre
-    (KL19/estadillo.csv con KL19/FOTOS como origen), sin bajar a carpetas
-    hermanas (KL19/OTRA)."""
+    (PLANTA_C/estadillo.csv con PLANTA_C/FOTOS como origen), sin bajar a carpetas
+    hermanas (PLANTA_C/OTRA)."""
     (tmp_path / "FOTOS").mkdir()
     (tmp_path / "OTRA").mkdir()
-    e = _csv(tmp_path / "estadillo_KL19.csv", [("1", "1", "2026:03:17", "10:00:00", "10:05:00")])
+    e = _csv(tmp_path / "estadillo_PLANTA_C.csv", [("1", "1", "2026:03:17", "10:00:00", "10:05:00")])
     _csv(tmp_path / "OTRA" / "ajeno.csv", [("2", "1", "2026:03:18", "11:00:00", "11:05:00")])
 
     res = estadillo.detectar_estadillos_en_padre(str(tmp_path / "FOTOS"))
@@ -120,8 +120,8 @@ def test_detectar_estadillos_en_padre_encuentra_el_suelto_sin_barrer_hermanas(tm
     assert res["rutas"] == [e]
 
 
-def test_caso_marcos_carpeta_propia_gana_sobre_estadillo_viejo_del_padre(tmp_path):
-    """Caso real de Marcos: seleccionó una carpeta de planta que trae su
+def test_caso_campo_carpeta_propia_gana_sobre_estadillo_viejo_del_padre(tmp_path):
+    """Caso real de campo: seleccionó una carpeta de planta que trae su
     propio estadillo, y en la carpeta padre hay otro (viejo, sacado a
     propósito) también válido. El automático debe usar SOLO el de dentro."""
     carpeta = tmp_path / "PLANTA"

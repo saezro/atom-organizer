@@ -21,7 +21,7 @@ def _api(tmp_path):
 def test_listar_perfiles_devuelve_las_claves_del_contrato_con_avatar_resuelto(tmp_path, monkeypatch):
     api = _api(tmp_path)
     api._perfiles_store.guardar_perfil(
-        "uno@aerotools.es", TOKEN, modo="google",
+        "uno@ejemplo.com", TOKEN, modo="google",
         picture="https://lh3.googleusercontent.com/foto-uno", nombre="Uno")
 
     # `listar_perfiles` importa `user_data_dir` y `avatar_cache` dentro del
@@ -38,9 +38,9 @@ def test_listar_perfiles_devuelve_las_claves_del_contrato_con_avatar_resuelto(tm
     perfiles = api.listar_perfiles()
 
     assert perfiles == [{
-        "email": "uno@aerotools.es",
+        "email": "uno@ejemplo.com",
         "nombre": "Uno",
-        "picture": "data:image/png;base64,FAKE-uno@aerotools.es",
+        "picture": "data:image/png;base64,FAKE-uno@ejemplo.com",
         "modo": "google",
         "tiene_credencial": True,
     }]
@@ -48,7 +48,7 @@ def test_listar_perfiles_devuelve_las_claves_del_contrato_con_avatar_resuelto(tm
 
 def test_listar_perfiles_sin_picture_no_llama_a_la_cache(tmp_path, monkeypatch):
     api = _api(tmp_path)
-    api._perfiles_store.guardar_perfil("uno@aerotools.es", TOKEN, nombre="Uno", picture="")
+    api._perfiles_store.guardar_perfil("uno@ejemplo.com", TOKEN, nombre="Uno", picture="")
 
     import atom_core.google_auth as google_auth_mod
     import atom_core.avatar_cache as avatar_cache_mod
@@ -78,10 +78,10 @@ def test_listar_perfiles_devuelve_lista_vacia_si_el_store_peta(tmp_path, monkeyp
 
 def test_activar_perfil_valido_devuelve_ok_y_limpia_el_auth_cacheado(tmp_path):
     api = _api(tmp_path)
-    api._perfiles_store.guardar_perfil("uno@aerotools.es", TOKEN, nombre="Uno")
+    api._perfiles_store.guardar_perfil("uno@ejemplo.com", TOKEN, nombre="Uno")
     api._auth = object()  # simula una credencial ya cacheada de otra cuenta
 
-    res = api.activar_perfil("uno@aerotools.es")
+    res = api.activar_perfil("uno@ejemplo.com")
 
     assert res == {"ok": True}
     assert api._auth is None
@@ -90,7 +90,7 @@ def test_activar_perfil_valido_devuelve_ok_y_limpia_el_auth_cacheado(tmp_path):
 def test_activar_perfil_inexistente_devuelve_ok_false(tmp_path):
     api = _api(tmp_path)
 
-    res = api.activar_perfil("fantasma@aerotools.es")
+    res = api.activar_perfil("fantasma@ejemplo.com")
 
     assert res == {"ok": False}
 
@@ -103,15 +103,15 @@ def test_activar_perfil_con_store_roto_devuelve_ok_false(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api._perfiles_store, "activar_perfil", _activar_perfil_roto)
 
-    assert api.activar_perfil("uno@aerotools.es") == {"ok": False}
+    assert api.activar_perfil("uno@ejemplo.com") == {"ok": False}
 
 
 def test_borrar_perfil_lo_quita_del_catalogo_y_limpia_el_auth_cacheado(tmp_path):
     api = _api(tmp_path)
-    api._perfiles_store.guardar_perfil("uno@aerotools.es", TOKEN, nombre="Uno")
+    api._perfiles_store.guardar_perfil("uno@ejemplo.com", TOKEN, nombre="Uno")
     api._auth = object()
 
-    api.borrar_perfil("uno@aerotools.es")
+    api.borrar_perfil("uno@ejemplo.com")
 
     assert api._perfiles_store.listar_perfiles() == []
     assert api._auth is None
@@ -126,4 +126,4 @@ def test_borrar_perfil_con_store_roto_no_lanza(tmp_path, monkeypatch):
     monkeypatch.setattr(api._perfiles_store, "borrar_perfil", _borrar_perfil_roto)
 
     # No debe lanzar; el método no devuelve nada útil en este caso.
-    api.borrar_perfil("uno@aerotools.es")
+    api.borrar_perfil("uno@ejemplo.com")

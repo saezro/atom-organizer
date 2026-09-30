@@ -35,7 +35,7 @@ no era fiarse de una lista presentada como si estuviera al día.
 nombre se debería poder sacar igual que montamos el nombre lo podemos
 desmontar». El prefijo son cuatro campos en orden fijo separados por `--`::
 
-    ANTOLIN--LOS_MANGOS--2026--T_Modulos
+    PLANTA_B--PLANTA_J--2026--T_Modulos
     <empresa>--<planta>---<año>--<tipo>
 
 `--` es separador seguro porque `_campo()` deja sólo `[A-Za-z0-9_]`: ningún
@@ -63,8 +63,8 @@ __all__ = [
     "cargar_catalogo",
 ]
 
-# Backend de ATOM Suite. La env existe para poder apuntar a dev
-# (`https://saez.dev.suite.atom-uas.com`) y validar el endpoint sin recompilar
+# Backend de ATOM Suite. La env existe para poder apuntar a otro
+# entorno y validar el endpoint sin recompilar
 # el `.exe`; en el PC del operador nunca está definida y vale el default.
 API_BASE = os.environ.get("ATOM_SUITE_API_BASE") or "https://suite.atom-uas.com"
 RUTA_CATALOGO = "/api/organizer/inspecciones"
@@ -91,8 +91,8 @@ class Inspeccion:
     tipo: str = ""
     id: int | None = None
     fase: str = ""
-    # `plantas_pv.orientacion` ("Horizontal", "Vertical", "Varias"). Regla de
-    # Rodrigo (2026-09-28): Horizontal NUNCA se gira (ver
+    # orientación de la planta ("Horizontal", "Vertical", "Varias"). Regla de
+    # el responsable (2026-09-28): Horizontal NUNCA se gira (ver
     # `atom_core.indice._consenso_de_angulo_por_vuelo`). Vacío mientras
     # `lib/organizer-catalogo.js` de Atom-suite no mande el campo -el backend
     # de hoy no lo selecciona ni proyecta (server.js:2423,
@@ -123,7 +123,7 @@ class Inspeccion:
 def _campo(valor) -> str:
     """Un campo del prefijo: ASCII, sin espacios y sin guiones.
 
-    Los nombres reales traen eñes y espacios (`MARISOLES_LOS MANGOS`, `OCAÑA`).
+    Los nombres reales traen eñes y espacios (`PLANTA_J`, `OCAÑA`).
     Se quitan los guiones además de lo que ya quitaba
     `cloud_config.prefijo_desde_carpeta`, porque `-` es el separador entre
     campos y dejarlo dentro haría el prefijo ambiguo al desmontarlo.
@@ -155,7 +155,7 @@ def parse_prefijo(prefijo: str) -> Inspeccion | None:
     """Prefijo → inspección. `None` si no lo montó `prefijo_de_inspeccion`.
 
     Devolver `None` no es un error: el operador puede haber tecleado una
-    inspección nueva a mano, y los prefijos anteriores a este cambio (`ANTOLIN`,
+    inspección nueva a mano, y los prefijos anteriores a este cambio (`PLANTA_B`,
     ya en el bucket con 2518 objetos) tampoco tienen esta forma. Quien llama
     decide qué hacer con eso.
     """
@@ -218,6 +218,13 @@ def descargar_catalogo_api(auth, *,
     device_token = getattr(auth, "device_token", None)
     if device_token:
         req.add_header("X-Organizer-Device", device_token)
+    elif getattr(auth, "es_password", False):
+        # Modo usuario/contraseña: la Suite acepta su `sesion` como Bearer.
+        sesion = auth.sesion_token
+        if not sesion:
+            from atom_core.google_auth import AuthError
+            raise AuthError("Sesión caducada, vuelve a entrar con tu usuario")
+        req.add_header("Authorization", f"Bearer {sesion}")
     else:
         req.add_header("Authorization", f"Bearer {auth.id_token()}")
     req.add_header("User-Agent", USER_AGENT)

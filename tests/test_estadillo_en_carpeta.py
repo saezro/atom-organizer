@@ -33,9 +33,9 @@ def test_primera_llamada_dice_buscando_y_luego_encontrado(tmp_path):
     api = _api()
     carpeta = tmp_path / "fotos"
     carpeta.mkdir()
-    (carpeta / "20260920_estadillo_Rebeca.csv").write_text(
+    (carpeta / "20260920_estadillo_PilotoA.csv").write_text(
         "PB;Vuelo;Fecha;Trabajo;Piloto;Hora_de_inicio;Hora_final\n"
-        "1;1;2026:09:20;KL05;Rebeca;09:00:00;09:20:00\n",
+        "1;1;2026:09:20;PLANTA_A;PilotoA;09:00:00;09:20:00\n",
         encoding="utf-8",
     )
 
@@ -44,7 +44,7 @@ def test_primera_llamada_dice_buscando_y_luego_encontrado(tmp_path):
 
     final = _esperar(lambda: api._estadillo_en_carpeta(str(carpeta)))
     assert final == {
-        "encontrado": True, "nombre": "20260920_estadillo_Rebeca.csv", "buscando": False,
+        "encontrado": True, "nombre": "20260920_estadillo_PilotoA.csv", "buscando": False,
     }
 
 

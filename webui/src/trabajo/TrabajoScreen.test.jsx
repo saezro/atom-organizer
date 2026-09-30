@@ -125,4 +125,16 @@ describe('TrabajoScreen', () => {
       )
     )
   })
+
+  it('sin módulo organizer no ofrece destinos', () => {
+    render(<TrabajoScreen ready running={false} onRun={() => {}} acceso={{ organizer: false, estadillos: true }} />)
+    expect(screen.queryByText(/Organizar aquí/i)).toBeNull()
+    expect(screen.queryByText(/Subir al bucket/i)).toBeNull()
+  })
+
+  it('sin módulo estadillos no pinta el paso de estadillo pero mantiene los destinos', () => {
+    render(<TrabajoScreen ready running={false} onRun={() => {}} acceso={{ organizer: true, estadillos: false }} />)
+    expect(screen.queryByText(/Subir sin estadillo/i)).toBeNull()
+    expect(screen.getByText(/Organizar aquí/i)).toBeTruthy()
+  })
 })
