@@ -6,7 +6,7 @@ una cree suyo tiene que ser exactamente el total, sin repetir nada. Si el repart
 solapa, dos tareas procesan la misma imagen (y `unique_dest` la duplica con
 `_1`); si deja huecos, el vuelo sale incompleto y en VERDE, que es peor.
 
-Contexto: la corrida completa de ANTOLIN medida el 2026-08-07 son 33m 06s en una
+Contexto: la corrida completa de PLANTA_B medida el 2026-08-07 son 33m 06s en una
 sola tarea de 8 vCPU. El reparto existe para bajar eso a ~9m con 8 tareas.
 """
 import os
@@ -172,7 +172,7 @@ def _origen_falso(tmp_path, por_carpeta):
 
 
 def test_reparte_por_imagen_y_no_por_carpeta(tmp_path):
-    """El caso real que obligó a esto: ANTOLIN son 2.516 fotos en DOS carpetas.
+    """El caso real que obligó a esto: PLANTA_B son 2.516 fotos en DOS carpetas.
     Repartiendo por carpeta, seis de las ocho tareas se quedarían paradas."""
     carpetas = _origen_falso(tmp_path, {"DJI_001": 1302, "DJI_002": 1214})
 
@@ -263,7 +263,7 @@ def test_un_pb_sin_vuelos_no_se_pierde_del_reparto(tmp_path):
 
 
 def test_el_vuelo_equilibra_donde_el_pb_no_puede(tmp_path):
-    """El caso real de ANTOLIN: 7 PB para 8 tareas. Repartiendo por PB una tarea
+    """El caso real de PLANTA_B: 7 PB para 8 tareas. Repartiendo por PB una tarea
     se queda vacía y el PB mayor marca el suelo; por vuelo, no."""
     vuelos = {f"PB{p}/PB{p}_V{v}": 60 for p in "ABCDEFG" for v in range(1, 5)}
     _destino_falso(tmp_path, {"TERMICA": vuelos})

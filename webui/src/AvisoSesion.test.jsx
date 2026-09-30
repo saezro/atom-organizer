@@ -79,7 +79,7 @@ describe('KioskScreen — gating con credencialOk={false}', () => {
       { id: 1, prefijo: 'ACME--PLANTA1--2026--PV', etiqueta: 'ACME PLANTA1 2026', anio: 2026, fase: 'Vuelo' },
     ]
     const baseProps = (overrides = {}) => ({
-      status: { email: 'rebeca@aerotools.es', picture: null },
+      status: { email: 'rebeca@ejemplo.com', picture: null },
       carpeta: '/home/pi/vuelo/PLANTA',
       onPickCarpeta: vi.fn(),
       inspecciones,

@@ -164,7 +164,7 @@ window.pywebview = {
 }
 
 const props = {
-  status: { logged_in: true, email: 'rebeca@aerotools.es', nombre: 'Rebeca', picture: null, estado: 'ok', pendientes: 0 },
+  status: { logged_in: true, email: 'rebeca@ejemplo.com', nombre: 'Rebeca', picture: null, estado: 'ok', pendientes: 0 },
   carpeta: escenario === 'espera-sin-carpeta' ? '' : '/home/pi/vuelo/PLANTA',
   onPickCarpeta: async () => '/home/pi/vuelo/PLANTA',
   inspecciones: [],

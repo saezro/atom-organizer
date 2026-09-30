@@ -24,10 +24,27 @@ const OPCIONES = [
   },
 ]
 
-export default function HomeScreen({ onElegir }) {
+// `acceso` = `{organizer, estadillos}` del login usuario+contraseña (`null` =
+// todo visible, como en Google). Sin `organizer` se ocultan organizar/subir en
+// crudo; con solo `estadillos` aparece una puerta propia a la subida de estadillos.
+const OPCION_ESTADILLOS = {
+  id: 'estadillos',
+  icono: 'bucket',
+  titulo: 'Estadillos',
+  detalle: 'Sube o baja los estadillos de una inspección.',
+}
+
+export default function HomeScreen({ onElegir, acceso = null }) {
+  const sinOrganizer = acceso?.organizer === false
+  const opciones = sinOrganizer
+    ? [
+        ...(acceso?.estadillos === false ? [] : [OPCION_ESTADILLOS]),
+        ...OPCIONES.filter((o) => o.id === 'herramientas'),
+      ]
+    : OPCIONES
   return (
     <div className="home-grid">
-      {OPCIONES.map((o) => (
+      {opciones.map((o) => (
         <button
           key={o.id}
           type="button"

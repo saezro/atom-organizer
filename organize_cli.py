@@ -41,7 +41,7 @@ from pathlib import Path
 from atom_core import sharding
 from atom_core.almacen import abrir_almacen, es_uri_gcs, es_carpeta, existe_ruta, nombre_de
 
-# Segundos por imagen y etapa, medidos en v3.4.32 sobre ANTOLIN (2.516 imágenes,
+# Segundos por imagen y etapa, medidos en v3.4.32 sobre PLANTA_B (2.516 imágenes,
 # 9,14 GB) con N=8 tareas. UN SOLO dataset: son un orden de magnitud, no una
 # promesa, y por eso la Suite los pinta siempre con un «aprox.».
 _SEG_POR_IMAGEN = {"split": 0.045, "struct": 0.026, "post": 0.102}
@@ -83,7 +83,7 @@ def progreso_desde_stats(snapshot, *, final: bool = False):
     # `RunReporter.progreso` saltarse su `intervalo_latido`: sin la marca, el
     # último latido de un run cae dentro del throttle y se descarta, dejando
     # persistido el penúltimo múltiplo de IMAGE_EMIT_EVERY en vez del total
-    # real (2194 de 2516 en el e2e de ANTOLIN v3.4.36), y un shard de menos de
+    # real (2194 de 2516 en el e2e de PLANTA_B v3.4.36), y un shard de menos de
     # IMAGE_EMIT_EVERY imágenes terminaría `ok` con 0.
     if final or snapshot.get("final"):
         cuerpo["final"] = True
@@ -243,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--quiet", action="store_true",
                         help="Solo fases y resumen; sin el detalle por imagen.")
     # --- reparto entre N tareas -------------------------------------------
-    # Una corrida completa de ANTOLIN son 33m 06s en una sola tarea de 8 vCPU, y
+    # Una corrida completa de PLANTA_B son 33m 06s en una sola tarea de 8 vCPU, y
     # el 90 % es trabajo carpeta a carpeta sin dependencias. Con estas tres
     # opciones el MISMO Job se lanza tres veces (split -> struct -> post) y las
     # etapas repartibles se abren en N tareas paralelas. Ver atom_core/sharding.
@@ -316,13 +316,13 @@ def main(argv: list[str] | None = None) -> int:
     # de crear el destino o importar el pipeline, con la UNIÓN de los
     # estadillos autodetectados en `origen` y los pasados a mano por
     # `--estadillo` —NUNCA solo autodetección: `detectar_estadillos` falla en
-    # algunos lotes (KL91) y si se aporta la ruta a mano el lote tiene que
+    # algunos lotes (PLANTA_F) y si se aporta la ruta a mano el lote tiene que
     # poder organizarse igual.
     from atom_core.estadillo import detectar_estadillos, detectar_estadillos_en_padre
     rutas_autodetectadas = [] if origen_es_gcs else detectar_estadillos(str(origen))["rutas"]
     if not rutas_autodetectadas and not args.estadillo:
         # NUNCA se coge el estadillo del padre en automático (decisión de
-        # Rodrigo, caso Marcos): si hay candidatos sueltos ahí, se avisa con
+        # el responsable): si hay candidatos sueltos ahí, se avisa con
         # su ruta completa pero solo se usan pasándolos por --estadillo.
         candidatos_padre = [] if origen_es_gcs else detectar_estadillos_en_padre(str(origen))["rutas"]
         if candidatos_padre:
@@ -489,7 +489,7 @@ def main(argv: list[str] | None = None) -> int:
             # El pipeline NO aborta ante fallos por-imagen: los cuenta y sigue, y
             # `run_task` los agrega aquí. Sin esta rama el CLI solo miraba el canal
             # `error` (excepciones que se propagan) y salía 0 aunque hubiese fallado
-            # el 100% de las imágenes: en v3.4.24 las 3.743 térmicas de ANTOLIN se
+            # el 100% de las imágenes: en v3.4.24 las 3.743 térmicas de PLANTA_B se
             # quedaron sin un solo TIFF y Cloud Run marcó la ejecución como ÉXITO.
             # Un vuelo con imágenes perdidas es un fallo del vuelo, no un aviso.
             n = int(payload.get("errors") or 0)
@@ -538,7 +538,7 @@ def main(argv: list[str] | None = None) -> int:
                 reporter.giros(lista)
 
         # Espejo a la Suite: los logs del Job solo vivian en Cloud Run, ilegibles
-        # desde atom-dev-nl. Va DESPUES del print y en su propio try: si el envio
+        # desde un servidor de desarrollo. Va DESPUES del print y en su propio try: si el envio
         # falla, la salida estandar (que es lo que Cloud Run captura) no se toca.
         try:
             if reporter is not None and reporter.activo:

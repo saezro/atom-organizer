@@ -218,7 +218,7 @@ class PipelinePhasesMixin:
         """`{carpeta del origen: [imágenes de esta tarea]}` para la separación.
 
         Se reparte por IMAGEN y no por carpeta porque los vuelos reales tienen
-        muy pocas carpetas: ANTOLIN son 2.516 fotos en DOS `DJI_*`, y por carpeta
+        muy pocas carpetas: PLANTA_B son 2.516 fotos en DOS `DJI_*`, y por carpeta
         un Job de 8 tareas dejaría seis paradas.
         """
         # `solo_fuente=True`: el origen puede traer `.tif/.tiff/.dng` (una carpeta

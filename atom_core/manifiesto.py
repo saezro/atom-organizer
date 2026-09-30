@@ -415,7 +415,7 @@ class Manifiesto:
     def marcar_en_curso(self, id_fila: int) -> None:
         # El apply ya NO lo llama: la marca no protege nada al reanudar
         # (`reabrir_huerfanas` la devuelve a 'pendiente') y costaba un commit
-        # por imagen (~99 ms en la Pi, bench KL19 2026-09-13). Se conserva por
+        # por imagen (~99 ms en la Pi, bench PLANTA_C 2026-09-13). Se conserva por
         # manifiestos de runs anteriores que aún tengan filas 'en_curso'.
         self._actualizar(id_fila, estado="en_curso")
 

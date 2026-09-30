@@ -122,7 +122,7 @@ def test_la_imagen_del_job_se_lleva_el_sdk_linux_entero():
     declaraba libs ausentes, aqui el .ini era el ausente. La v3.4.24 copiaba
     `programas_externos/DJI/*.so*`, que se deja fuera `libv_list.ini` — el indice con
     el que libdirp elige su plugin, y que busca en su propio directorio. La imagen
-    arrancaba, cargaba libdirp y devolvia -15 en las 3.743 termicas de ANTOLIN: cero
+    arrancaba, cargaba libdirp y devolvia -15 en las 3.743 termicas de PLANTA_B: cero
     TIFF, y el Job marcado como EXITO.
 
     Se comprueba contra el contenido REAL de la carpeta del SDK (no una lista a mano)

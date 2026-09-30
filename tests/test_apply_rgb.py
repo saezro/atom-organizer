@@ -9,7 +9,7 @@ escribe directo a su carpeta final. Lo que estos tests sujetan:
 2. Que el EXIF (fecha, GPS) sobreviva al viaje — sin eso se entregan
    imágenes sin metadatos, inservibles para georreferenciar.
 3. Que la calidad de guardado replique EXACTAMENTE al motor viejo (decisión
-   de Rodrigo 2026-09-08, Correcciones §4): no se mejora por sorpresa.
+   del responsable 2026-09-08, Correcciones §4): no se mejora por sorpresa.
 4. Que un fallo en una fila (origen borrado, disco lleno) no tumbe el run
    entero ni deje basura a medias en la carpeta de entrega.
 5. Que sea reanudable: un segundo `aplicar_rgb` sobre el mismo manifiesto
@@ -211,7 +211,7 @@ def test_conserva_el_exif_en_la_salida(tmp_path, make_dji_jpeg):
 @pytest.mark.parametrize("angulo_giro", [0, 90])
 def test_conserva_el_xmp_dji_en_original_y_crop(tmp_path, make_dji_jpeg, angulo_giro):
     """Sin el XMP DJI (gimbal, altitud relativa) el location.csv sale con esas
-    columnas a 0 (bench KL19 2026-09-11)."""
+    columnas a 0 (bench PLANTA_C 2026-09-11)."""
     origen = tmp_path / "origen" / "DJI_0003.JPG"
     origen.parent.mkdir()
     make_dji_jpeg(str(origen), relative_altitude=12.5, gimbal_yaw=-84.9, gimbal_pitch=-90.0)
@@ -230,7 +230,7 @@ def test_conserva_el_xmp_dji_en_original_y_crop(tmp_path, make_dji_jpeg, angulo_
 
 
 def test_la_rotacion_usa_la_calidad_del_motor_viejo(tmp_path, make_dji_jpeg, monkeypatch):
-    """Decisión de Rodrigo (2026-09-08, Correcciones §4): replicar el
+    """Decisión del responsable (2026-09-08, Correcciones §4): replicar el
     criterio del motor viejo, no mejorarlo por sorpresa. Una RGB girada se
     guarda con `_ROTATION_JPEG_QUALITY` (40) SIEMPRE, pisando la calidad de
     la interfaz; una RGB recta respeta `cfg.compress_level`."""

@@ -19,7 +19,7 @@ from atom_core.webserver import crear_servidor
 class _ApiEstado:
     def __init__(self):
         self._ap_token = ""
-        self.usuario = "rebeca@aerotools.es"
+        self.usuario = "pilotoa@ejemplo.com"
         self.conexion = {"ok": True, "tipo": "wifi", "ssid": "CASA", "senal": 80, "ip": "192.168.1.50"}
 
     def ping(self, who="?"):
@@ -68,7 +68,7 @@ def test_api_estado_incluye_los_campos_esperados(servidor, monkeypatch):
     status, body = _get_json(base, "/api/estado")
     assert status == 200
     assert body["serial"] == "1000000012345678"
-    assert body["usuario"] == "rebeca@aerotools.es"
+    assert body["usuario"] == "pilotoa@ejemplo.com"
     assert body["wifi"] == {"tipo": "wifi", "ssid": "CASA", "ip": "192.168.1.50"}
     assert body["bateria"] is None
     assert body["disco_sistema"] == {"libre_gb": 10.0, "total_gb": 32.0}
@@ -125,7 +125,7 @@ def test_api_estado_sin_token_ni_loopback(servidor, monkeypatch):
     monkeypatch.setattr(webserver, "_IPS_LOOPBACK", frozenset())
     status, body = _get_json(base, "/api/estado")
     assert status == 200
-    assert body["usuario"] == "rebeca@aerotools.es"
+    assert body["usuario"] == "pilotoa@ejemplo.com"
 
 
 # ---- pagina "/" para la LAN --------------------------------------------------

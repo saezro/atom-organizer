@@ -69,7 +69,7 @@ describe('App: sincroniza kioskCloudStatus tras logout en PanelSubida (R2)', () 
     })
     api.cloudStatus.mockImplementation(async () =>
       sesionActiva
-        ? { configured: true, logged_in: true, email: 'operador@aerotools.es' }
+        ? { configured: true, logged_in: true, email: 'operador@ejemplo.com' }
         : { configured: true, logged_in: false, estado: 'sin-credencial' }
     )
   })

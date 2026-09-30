@@ -189,13 +189,24 @@ function App() {
   // el kiosco de la Pi (ver comprobación `!kiosco` más abajo, ese modo no
   // pasa por aquí). `useSesion` no hace polling, solo se refresca al montar
   // y tras entrar/salir.
-  const { cargando: sesionCargando, entrado, cuenta, invitado, error: sesionError, entrarConGoogle, entrarSinCuenta, salir, refrescar: refrescarSesion } = useSesion()
+  const { cargando: sesionCargando, entrado, cuenta, invitado, error: sesionError, entrarConGoogle, loginPassword, entrarSinCuenta, salir, refrescar: refrescarSesion } = useSesion()
 
   // Destino preseleccionado al llegar a «Trabajo» desde una card de
   // `HomeScreen` (organizar → local, subir en crudo → bucket). `null` cuando
   // se entra por la pestaña «Trabajo» del nav directamente: mismo
   // comportamiento de hoy, sin card elegida.
   const [destinoInicial, setDestinoInicial] = useState(null)
+  // `{organizer, estadillos}` del login usuario+contraseña; `null` = todo
+  // visible (Google, broker o sesión sin dato). Sale de `cloudStatus`.
+  const [accesoModulos, setAccesoModulos] = useState(null)
+  useEffect(() => {
+    if (!ready) return
+    let vivo = true
+    api.cloudStatus?.()
+      .then((r) => { if (vivo) setAccesoModulos(r?.logged_in ? (r.acceso_modulos ?? null) : null) })
+      .catch(() => { if (vivo) setAccesoModulos(null) })
+    return () => { vivo = false }
+  }, [ready, entrado, cuenta])
 
   // Confirmación de primer frame pintado (render_confirmar). Si Python no
   // recibe esta señal, el siguiente arranque asume pantalla negra y degrada
@@ -884,6 +895,7 @@ function App() {
             sesión se recoge en sitio, igual que en el login normal. */}
         <PantallaEntrada
           onGoogle={entrarConGoogle}
+          onPassword={loginPassword}
           onInvitado={entrarSinCuenta}
           cargando={sesionCargando}
           error={sesionError}
@@ -1013,12 +1025,16 @@ function App() {
           </KioskGuard>
         ) : section === 'home' ? (
           <HomeScreen
+            acceso={accesoModulos}
             onElegir={(id) => {
               if (id === 'organizar') {
                 setDestinoInicial('local')
                 setSection('trabajo')
               } else if (id === 'subir') {
                 setDestinoInicial('bucket')
+                setSection('trabajo')
+              } else if (id === 'estadillos') {
+                setDestinoInicial(null)
                 setSection('trabajo')
               } else if (id === 'herramientas') {
                 setSection('herramientas')
@@ -1033,6 +1049,7 @@ function App() {
             onRun={run}
             onCloudStatusChange={setKioskCloudStatus}
             destinoInicial={destinoInicial}
+            acceso={accesoModulos}
           />
         ) : section === 'herramientas' ? (
           <HerramientasScreen running={running} onRun={run} />

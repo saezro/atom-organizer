@@ -50,7 +50,7 @@ describe('PairScreen', () => {
     cloudPairStart.mockResolvedValue({ ok: true, pair_id: 'p1', url: 'https://atom/pair/p1', expires_in: 300 })
     cloudPairPoll
       .mockResolvedValueOnce({ estado: 'pendiente' })
-      .mockResolvedValueOnce({ estado: 'listo', email: 'operador@aerotools.es' })
+      .mockResolvedValueOnce({ estado: 'listo', email: 'operador@ejemplo.com' })
 
     const onPaired = vi.fn()
     render(<PairScreen onPaired={onPaired} />)
@@ -69,7 +69,7 @@ describe('PairScreen', () => {
     })
     expect(cloudPairPoll).toHaveBeenCalledTimes(2)
     expect(onPaired).toHaveBeenCalledTimes(1)
-    expect(screen.getByText(/vinculado como operador@aerotools\.es/i)).toBeInTheDocument()
+    expect(screen.getByText(/vinculado como operador@ejemplo\.com/i)).toBeInTheDocument()
 
     // ya no se sigue sondeando tras 'listo'
     cloudPairPoll.mockClear()

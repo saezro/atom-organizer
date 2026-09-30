@@ -360,6 +360,11 @@ class SessionStore:
             return
         (_, refresh_cifrado, backend, creado_en, actualizado_en,
          modo, picture, nombre) = fila
+        if (modo or "google") == "password":
+            # Misma política que `GoogleAuth` al guardar el perfil (google_auth.py:
+            # "en modo password el perfil se recuerda SIN credencial"): la sesión
+            # opaca de la Suite no se copia al catálogo, que no caduca a diario.
+            refresh_cifrado = None
         con.execute("""
             INSERT INTO perfiles (email, refresh_cifrado, backend, modo,
                                   picture, nombre, creado_en, ultimo_uso)

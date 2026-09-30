@@ -2,7 +2,7 @@
 Conversor térmico DJI para Windows vía `libdirp.dll` EN PROCESO (ctypes), en
 vez del ejecutable `dji_irp.exe` por imagen.
 
-Medido en el banco de la oficina (KL23, 1988 térmicas): 129 s con la DLL cargada
+Medido en el banco de la oficina (PLANTA_D, 1988 térmicas): 129 s con la DLL cargada
 una vez y usada desde 16 hilos a la vez, frente a 267 s lanzando `dji_irp.exe`
 por imagen; el .raw (float32 plano, °C, row-major) sale byte a byte idéntico
 al del .exe (paridad 300/300 verificada). El ahorro es el arranque del proceso

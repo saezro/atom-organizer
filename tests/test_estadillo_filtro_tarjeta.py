@@ -26,9 +26,9 @@ def api(monkeypatch, tmp_path):
 
 
 def _vuelo(pb, num_vuelo, hora_inicio, hora_final, fecha="2026-09-20",
-           piloto="Rebeca", sync_uid=None):
+           piloto="PilotoA", sync_uid=None):
     v = {
-        "Trabajo": "KL05",
+        "Trabajo": "PLANTA_A",
         "Fecha": fecha,
         "Piloto": piloto,
         "Equipo_de_vuelo": "M300",
@@ -47,7 +47,7 @@ def test_sync_uid_se_conserva_y_reenvia(api, monkeypatch, tmp_path):
     aislar el comportamiento de `sync_uid` sin que el filtro interfiera."""
     monkeypatch.setattr(exif_mod, "listar_horas_exif", lambda carpeta: [])
 
-    vuelos = [_vuelo("1", "1", "09:00:00", "09:20:00", sync_uid="2026-09-20_REBECA_V1_H090000_PB1")]
+    vuelos = [_vuelo("1", "1", "09:00:00", "09:20:00", sync_uid="2026-09-20_PILOTOA_V1_H090000_PB1")]
     res = api._estadillo_recibir(vuelos)
 
     assert res["ok"] is True
@@ -58,7 +58,7 @@ def test_sync_uid_se_conserva_y_reenvia(api, monkeypatch, tmp_path):
     # Suite via `RunReporter.estadillo`; se valida directo sobre el CSV.
     from atom_core import estadillo as estadillo_mod
     val = estadillo_mod.validar_para_subida(api._estadillo_espera["rutas"])
-    assert val["vuelos"][0]["sync_uid"] == "2026-09-20_REBECA_V1_H090000_PB1"
+    assert val["vuelos"][0]["sync_uid"] == "2026-09-20_PILOTOA_V1_H090000_PB1"
 
 
 def test_horas_con_y_sin_segundos_no_rompen_la_recepcion(api, monkeypatch):

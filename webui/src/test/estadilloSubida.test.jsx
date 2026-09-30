@@ -18,12 +18,17 @@ import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+// Monta <App> completa: el primer test paga la carga en frío de los módulos
+// (~4-5 s con la máquina cargada). Solo este fichero, no el timeout global.
+vi.setConfig({ testTimeout: 15000 })
+
 const api = {
+  renderConfirmar: vi.fn(async () => ({ ok: true })),
   appVersion: vi.fn(async () => ({ version: '3.4.24' })),
   cloudStatus: vi.fn(async () => ({
     configured: true,
     logged_in: true,
-    email: 'operador@aerotools.es',
+    email: 'operador@ejemplo.com',
     bucket: 'datos-para-organizar',
   })),
   cloudVerify: vi.fn(async () => ({ ok: true })),

@@ -35,7 +35,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   meta:
@@ -46,9 +46,19 @@ jobs:
       publicar: ${{ steps.v.outputs.publicar }}
     steps:
       - id: v
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+          INPUT_PUBLICAR: ${{ inputs.publicar }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ]; then
             V="${GITHUB_REF_NAME}"
+            # Validación de formato (el tag puede llevar sufijo -rc1, -beta…).
+            if ! printf '%s' "$V" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+              echo "::error::Tag con formato inválido"; exit 1
+            fi
             # Un tag limpio (v3.2.0) publica ESTABLE — el updater in-app sólo ve
             # releases estables (`/releases/latest` de GitHub ignora las pre-release).
             # Para publicar una build de prueba que NO se ofrezca a nadie, etiqueta
@@ -63,9 +73,14 @@ jobs:
             # workflow_dispatch, no cambia el comportamiento del push.
             echo "publicar=true" >> "$GITHUB_OUTPUT"
           else
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=${{ inputs.prerelease }}" >> "$GITHUB_OUTPUT"
-            echo "publicar=${{ inputs.publicar }}" >> "$GITHUB_OUTPUT"
+            if ! printf '%s' "$INPUT_VERSION" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::Versión con formato inválido (se espera vX.Y.Z)"; exit 1
+            fi
+            case "$INPUT_PRERELEASE" in true|false) ;; *) echo "::error::prerelease inválido"; exit 1 ;; esac
+            case "$INPUT_PUBLICAR" in true|false) ;; *) echo "::error::publicar inválido"; exit 1 ;; esac
+            echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "prerelease=$INPUT_PRERELEASE" >> "$GITHUB_OUTPUT"
+            echo "publicar=$INPUT_PUBLICAR" >> "$GITHUB_OUTPUT"
           fi
 
   # Puerta de calidad ANTES de gastar los dos builds. Nació de v3.4.24: un
@@ -75,11 +90,11 @@ jobs:
   checks:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
       # `no-undef` es la regla que caza los identificadores que dejó atrás un
@@ -103,7 +118,7 @@ jobs:
       # exactos de este job: cualquier cambio en ellos invalida el hit.
       - name: Cache venv Python
         id: cache-venv
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .venv
           key: checks-venv-${{ runner.os }}-py3.11-${{ hashFiles('requirements-linux.txt', 'requirements-webview.txt') }}
@@ -137,11 +152,11 @@ jobs:
     # el coste es teórico y el de no publicar no lo era.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
       - name: Build React UI (Vite)
@@ -153,7 +168,7 @@ jobs:
       # build_gpu (el bundle GPU cambia qué se instala).
       - name: Cache venv Python
         id: cache-venv
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .venv
           key: build-linux-venv-${{ runner.os }}-py3.11-gpu${{ inputs.build_gpu }}-${{ hashFiles('requirements-linux.txt', 'requirements-webview.txt', 'requirements-gpu.txt') }}
@@ -162,6 +177,8 @@ jobs:
         run: python -m venv .venv
       - name: Python deps
         if: steps.cache-venv.outputs.cache-hit != 'true'
+        env:
+          BUILD_GPU: ${{ github.event.inputs.build_gpu }}
         run: |
           .venv/bin/python -m pip install --upgrade pip
           # requirements-linux.txt (NO requirements.txt: esa lleva pywin32, solo-Windows)
@@ -173,7 +190,7 @@ jobs:
           # pyi_rth_cuda.py y colgaba pywebview en máquinas sin runtime CUDA
           # (incidente 3.4.102). Solo se instala con ATOM_BUILD_GPU=1
           # (workflow_dispatch manual, opt-in).
-          if [ "${{ github.event.inputs.build_gpu }}" = "true" ]; then .venv/bin/pip install -r requirements-gpu.txt; fi
+          if [ "$BUILD_GPU" = "true" ]; then .venv/bin/pip install -r requirements-gpu.txt; fi
       - name: Activar venv
         run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       # El client_secret no está en el repo (es público: Google revocaría el
@@ -188,10 +205,14 @@ jobs:
       - name: Inject ipaddress en base_library.zip
         run: python inject_ipaddress.py
       - name: Montar AppImage
-        run: bash scripts/build_appimage.sh "${{ needs.meta.outputs.version }}"
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: bash scripts/build_appimage.sh "$VERSION"
       - name: Smoke runtime AppImage (pipeline + índice Excel)
-        run: bash scripts/smoke_appimage_runtime.sh "ATOM_Organizer-${{ needs.meta.outputs.version }}-x86_64.AppImage"
-      - uses: actions/upload-artifact@v4
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: bash scripts/smoke_appimage_runtime.sh "ATOM_Organizer-${VERSION}-x86_64.AppImage"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-appimage
           path: ATOM_Organizer-*-x86_64.AppImage
@@ -205,13 +226,13 @@ jobs:
         # PyInstaller copia miles de ficheros de Qt/QtWebEngine y Defender los escanea
         # uno a uno: sin esta exclusion el paso tarda ~40% mas.
         shell: pwsh
-        run: Add-MpPreference -ExclusionPath "${{ github.workspace }}", "$env:RUNNER_TEMP"
+        run: Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE", "$env:RUNNER_TEMP"
         continue-on-error: true
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
       - name: Build React UI (Vite)
@@ -224,7 +245,7 @@ jobs:
       # (los ~174s de "Python deps"). Key con requirements + build_gpu.
       - name: Cache venv Python
         id: cache-venv
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .venv
           key: build-windows-venv-${{ runner.os }}-py3.11-gpu${{ inputs.build_gpu }}-${{ hashFiles('requirements.txt', 'requirements-webview.txt', 'requirements-gpu.txt') }}
@@ -236,6 +257,7 @@ jobs:
         # pwsh NO corta con el exit code de pip: un pip fallido (timeout de PyPI)
         # dejaba el paso en verde, venv sin pyinstaller y el fallo salía después.
         env:
+          BUILD_GPU: ${{ github.event.inputs.build_gpu }}
           PIP_RETRIES: '10'
           PIP_DEFAULT_TIMEOUT: '60'
         run: |
@@ -250,7 +272,7 @@ jobs:
           # pyi_rth_cuda.py y colgaba pywebview en máquinas sin runtime CUDA
           # (incidente 3.4.102). Solo se instala con ATOM_BUILD_GPU=1
           # (workflow_dispatch manual, opt-in).
-          if ("${{ github.event.inputs.build_gpu }}" -eq "true") { .venv\Scripts\pip.exe install -r requirements-gpu.txt }
+          if ($env:BUILD_GPU -eq "true") { .venv\Scripts\pip.exe install -r requirements-gpu.txt }
           # NO reinstalar PyInstaller aqui: manda el pin de requirements.txt
           # (6.22.2 + pyinstaller-hooks-contrib 2026.6). El 6.6.0 que habia
           # fijado desde la v3.4.32 degradaba esa version y sus hooks son
@@ -267,10 +289,12 @@ jobs:
       # ofrecería una actualización ya instalada en bucle. Se falla aquí.
       - name: Comprobar que el tag coincide con version.py
         shell: pwsh
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
         run: |
           $py = (.venv\Scripts\python.exe -c "from version import __version__; print(__version__)").Trim()
           # v3.2.0 y v3.2.0-rc1 valen los dos para version.py = 3.2.0
-          $tag = ("${{ needs.meta.outputs.version }}".TrimStart('v') -split '-')[0]
+          $tag = ($env:VERSION.TrimStart('v') -split '-')[0]
           if ($py -ne $tag) {
             Write-Error "Tag ($tag) != version.py ($py). Actualiza version.py y vuelve a etiquetar."
             exit 1
@@ -295,7 +319,7 @@ jobs:
         if: inputs.publicar == false
         shell: pwsh
         run: Compress-Archive -Path dist\ATOM-Organizer -DestinationPath windows-onedir.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: inputs.publicar == false
         with:
           name: windows-onedir
@@ -304,14 +328,16 @@ jobs:
           retention-days: 7
       - name: Construir instalador (Inno Setup)
         shell: pwsh
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
         run: |
-          $tag = "${{ needs.meta.outputs.version }}".TrimStart('v')
+          $tag = $env:VERSION.TrimStart('v')
           # VersionInfoVersion sólo admite números → la versión va limpia (3.2.0) y
           # el sufijo (-rc1) sólo al nombre del fichero.
           $ver = ($tag -split '-')[0]
           # Inno Setup 6 viene preinstalado en los runners windows-latest
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyVersion=$ver" "/DMyTag=$tag" packaging\windows\ATOM-Organizer.iss
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-installer
           path: dist/installer/ATOM-Organizer-Setup-*.exe
@@ -337,15 +363,17 @@ jobs:
       # contra GCP. Sin esto, `auth` falla con "unable to get ACTIONS_ID_TOKEN".
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Mismo control que hace build-windows: el tag manda sobre el nombre, pero
       # el código que va DENTRO de la imagen es el de version.py. Si no coinciden,
       # se publicaría una imagen mintiendo sobre su versión — justo el tipo de
       # divergencia que este job existe para evitar.
       - name: Comprobar que el tag coincide con version.py
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
         run: |
           PY=$(python3 -c "from version import __version__; print(__version__)")
-          TAG=$(echo "${{ needs.meta.outputs.version }}" | sed 's/^v//' | cut -d- -f1)
+          TAG=$(printf '%s' "$VERSION" | sed 's/^v//' | cut -d- -f1)
           if [ "$PY" != "$TAG" ]; then
             echo "::error::Tag ($TAG) != version.py ($PY)"
             exit 1
@@ -360,11 +388,11 @@ jobs:
       # una variable del repo añade un paso de configuración manual que, si se
       # olvida, rompe la release con un error opaco. El resto del workflow ya
       # hardcodea proyecto, región e imagen.
-      - uses: google-github-actions/auth@v2
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
         with:
           workload_identity_provider: projects/217557350193/locations/global/workloadIdentityPools/github/providers/atom-organizer
           service_account: atom-compute-ops@aerotools-484814.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.2.1
       # --async + polling en vez de dejar que `gcloud builds submit` espere:
       # construyendo con la SA (que no es Viewer del proyecto) el submit NO puede
       # leer el bucket de logs por defecto, imprime un ERROR de streaming y sale
@@ -376,9 +404,10 @@ jobs:
       # objectAdmin solo sobre el bucket de staging (a nivel proyecto le daría
       # escritura sobre gs://plantas_pv_nl), no sobre el bucket por defecto.
       - name: Construir y publicar la imagen del Job
+        env:
+          VER: ${{ needs.meta.outputs.version }}
         run: |
           set -euo pipefail
-          VER="${{ needs.meta.outputs.version }}"
           ID=$(gcloud builds submit --config=cloudbuild-job.yaml \
                  --substitutions=_VERSION="$VER" \
                  --project=aerotools-484814 \
@@ -399,18 +428,21 @@ jobs:
       # Cinturón sobre tirantes: que el build diga SUCCESS y que el tag exista en
       # Artifact Registry son dos cosas distintas, y la que importa es la segunda.
       - name: Verificar el tag en Artifact Registry
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
         run: |
           gcloud artifacts docker tags list \
             europe-west4-docker.pkg.dev/aerotools-484814/atom-organizer/pipeline \
             --project=aerotools-484814 --format='value(tag)' \
-            | grep -qx "${{ needs.meta.outputs.version }}"
+            | grep -qx "$VERSION"
       # Solo las estables tocan producción. Una -rc deja la imagen publicada para
       # poder probarla a mano, pero no cambia el Job que usa el equipo.
       - name: Actualizar el Cloud Run Job (solo release estable)
         if: needs.meta.outputs.prerelease == 'false'
+        env:
+          VER: ${{ needs.meta.outputs.version }}
         run: |
           set -euo pipefail
-          VER="${{ needs.meta.outputs.version }}"
           IMG="europe-west4-docker.pkg.dev/aerotools-484814/atom-organizer/pipeline:$VER"
           gcloud run jobs update atom-organizer-pipeline \
             --region=europe-west4 --project=aerotools-484814 --image="$IMG"
@@ -431,12 +463,22 @@ jobs:
     needs: [meta, checks, build-linux, build-windows]
     if: needs.meta.outputs.publicar == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist-assets
+      # Formato `<hex>  <nombre>` que parsea atom_core/updater.py (_parse_sums):
+      # el nombre va sin ruta, igual que el asset publicado.
+      - name: Generar SHA256SUMS.txt
+        run: |
+          sha256sum dist-assets/linux-appimage/ATOM_Organizer-*-x86_64.AppImage \
+                    dist-assets/windows-installer/ATOM-Organizer-Setup-*.exe \
+            | sed 's#  .*/#  #' > SHA256SUMS.txt
+          cat SHA256SUMS.txt
       - name: Publicar release con ambos binarios
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ needs.meta.outputs.version }}
           name: ATOM Organizer ${{ needs.meta.outputs.version }}
@@ -445,3 +487,4 @@ jobs:
           files: |
             dist-assets/linux-appimage/ATOM_Organizer-*-x86_64.AppImage
             dist-assets/windows-installer/ATOM-Organizer-Setup-*.exe
+            SHA256SUMS.txt

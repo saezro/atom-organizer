@@ -63,7 +63,7 @@ def broker(monkeypatch):
 @pytest.fixture
 def auth(tmp_path):
     return ga.GoogleAuth("", "", broker_only=True,
-                         hosted_domain="aerotools.es",
+                         hosted_domain="ejemplo.com",
                          store_path=tmp_path / "session.db")
 
 
@@ -98,7 +98,7 @@ def test_login_en_broker_only_falla_rapido_sin_tocar_la_red(auth, broker):
 # --------------------------------------------------------------------------
 
 def test_access_token_pide_al_broker_con_bearer_y_nunca_a_google(auth, broker):
-    auth.pair("device-token-abc", "piloto@aerotools.es")
+    auth.pair("device-token-abc", "piloto@ejemplo.com")
 
     token = auth.access_token()
 
@@ -112,7 +112,7 @@ def test_access_token_pide_al_broker_con_bearer_y_nunca_a_google(auth, broker):
 
 
 def test_un_401_del_broker_borra_la_sesion_y_levanta_autherror(auth, broker):
-    auth.pair("device-token-abc", "piloto@aerotools.es")
+    auth.pair("device-token-abc", "piloto@ejemplo.com")
     broker.error = 401
 
     with pytest.raises(ga.AuthError, match="autorizado"):
@@ -129,7 +129,7 @@ def test_un_401_del_broker_borra_la_sesion_y_levanta_autherror(auth, broker):
 # --------------------------------------------------------------------------
 
 def test_logout_en_broker_no_llama_a_revoke_uri(auth, broker):
-    auth.pair("device-token-abc", "piloto@aerotools.es")
+    auth.pair("device-token-abc", "piloto@ejemplo.com")
 
     auth.logout()
 
@@ -143,9 +143,9 @@ def test_logout_en_broker_no_llama_a_revoke_uri(auth, broker):
 # --------------------------------------------------------------------------
 
 def test_pair_persiste_modo_broker_y_session_store_lo_devuelve(auth):
-    identidad = auth.pair("device-token-abc", "piloto@aerotools.es")
+    identidad = auth.pair("device-token-abc", "piloto@ejemplo.com")
 
-    assert identidad.email == "piloto@aerotools.es"
+    assert identidad.email == "piloto@ejemplo.com"
     assert auth.is_logged_in()
 
     sesion = auth._store.leer()
@@ -161,7 +161,7 @@ def test_pair_persiste_modo_broker_y_session_store_lo_devuelve(auth):
 
 
 def test_pair_propaga_picture_a_la_identidad_y_sobrevive_a_reabrir(auth):
-    identidad = auth.pair("device-token-abc", "piloto@aerotools.es",
+    identidad = auth.pair("device-token-abc", "piloto@ejemplo.com",
                           picture="https://lh3.googleusercontent.com/foo")
 
     assert identidad.picture == "https://lh3.googleusercontent.com/foo"
@@ -175,14 +175,14 @@ def test_pair_propaga_picture_a_la_identidad_y_sobrevive_a_reabrir(auth):
 
 def test_pair_sin_picture_degrada_a_vacio_sin_romper(auth):
     """Una Suite vieja que no manda `picture` en el poll no debe reventar."""
-    identidad = auth.pair("device-token-abc", "piloto@aerotools.es")
+    identidad = auth.pair("device-token-abc", "piloto@ejemplo.com")
 
     assert identidad.picture == ""
     assert auth.is_logged_in()
 
 
 def test_pair_propaga_nombre_a_la_identidad_y_sobrevive_a_reabrir(auth):
-    identidad = auth.pair("device-token-abc", "piloto@aerotools.es",
+    identidad = auth.pair("device-token-abc", "piloto@ejemplo.com",
                           picture="https://lh3.googleusercontent.com/foo",
                           nombre="Piloto Aerotools")
 
@@ -197,7 +197,7 @@ def test_pair_propaga_nombre_a_la_identidad_y_sobrevive_a_reabrir(auth):
 
 def test_pair_sin_nombre_degrada_a_vacio_sin_romper(auth):
     """Una Suite vieja que no manda `nombre` en el poll no debe reventar."""
-    identidad = auth.pair("device-token-abc", "piloto@aerotools.es")
+    identidad = auth.pair("device-token-abc", "piloto@ejemplo.com")
 
     assert identidad.nombre == ""
     assert auth.is_logged_in()

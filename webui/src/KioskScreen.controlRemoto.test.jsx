@@ -40,7 +40,7 @@ const inspecciones = [
 
 function baseProps(overrides = {}) {
   return {
-    status: { email: 'rebeca@aerotools.es', picture: null },
+    status: { email: 'rebeca@ejemplo.com', picture: null },
     carpeta: '/home/pi/vuelo/PLANTA',
     onPickCarpeta: vi.fn(),
     inspecciones,
