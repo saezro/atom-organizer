@@ -14,7 +14,9 @@
 
 ## Qué es
 
-ATOM Organizer es la aplicación de escritorio de Aerotools para organizar y procesar las imágenes de tus vuelos de dron, tanto RGB como térmicas, con una nomenclatura homogénea lista para su análisis.
+ATOM Organizer es una herramienta de escritorio de Aerotools que ordena las imágenes de vuelos de dron de inspección de plantas fotovoltaicas, tanto RGB como térmicas. Las agrupa por vuelo con ayuda de un estadillo (la hoja donde se registran los vuelos) y les da una nomenclatura homogénea, lista para su análisis.
+
+> **Uso sujeto a licencia.** Para usar ATOM Organizer necesitas una licencia o cuenta autorizada por Aerotools. El código visible en este repositorio no concede ningún derecho de uso. Contacto: ver [Soporte](#soporte).
 
 ## Descarga
 
@@ -37,10 +39,10 @@ La aplicación te avisa cuando hay una versión nueva.
 
 Al abrir la aplicación, inicia sesión de una de estas dos formas:
 
-- **Usuario y contraseña** de la Suite.
+- **Usuario y contraseña** de la plataforma de Aerotools.
 - **Entrar con Google**, con la cuenta asociada a tu acceso.
 
-Si no tienes acceso, pídelo a tu contacto en Aerotools.
+Las credenciales las proporciona Aerotools. Sin ellas no se puede usar la aplicación. Si no tienes acceso, solicítalo a tu contacto en Aerotools.
 
 ## Requisitos
 
@@ -48,6 +50,36 @@ Si no tienes acceso, pídelo a tu contacto en Aerotools.
 - **Linux:** distribución de 64 bits (x86_64) con soporte para AppImage.
 - Conexión a internet para iniciar sesión y comprobar actualizaciones.
 - Espacio libre en disco suficiente para las copias de tus vuelos.
+
+### Estadillo de vuelos
+
+Necesitas un estadillo con una fila por vuelo. Puede ser un CSV separado por `;` o un Excel (`.xlsx` o `.xls`).
+
+Columnas obligatorias:
+
+| Columna | Qué contiene |
+| --- | --- |
+| `PB` | Número del Power Block (PB), el bloque de potencia de la planta que se sobrevuela |
+| `Vuelo` | Número de vuelo |
+| `Fecha` | Fecha del vuelo |
+| `Hora_de_inicio` | Hora de inicio |
+| `Hora_final` | Hora de fin |
+
+Los ficheros a los que les falte alguna de estas columnas se descartan.
+
+Columnas opcionales: `Empresa`, `Trabajo`, `Piloto`, `Equipo_de_vuelo`, `Pitch`, `Alt_vuelo`, `Vel_vuelo`, `Termica` y `RGB`.
+
+Las cabeceras pueden estar en español o en inglés.
+
+El nombre del archivo es libre. La aplicación lo detecta sola en la carpeta de origen, incluidas sus subcarpetas hasta 2 niveles, e ignora los archivos ocultos y los temporales de Office (`~$`). Si hay varios estadillos, los fusiona. También puede llegar desde la app Estadillo Digital por red local.
+
+### Imágenes
+
+- **Térmicas:** nombre con sufijo `_T`.
+- **RGB:** sufijo `_W`, `_Z` o `_V`, o sin sufijo.
+- **Cámaras DJI compatibles:** M3T, M30T, M4T, H20T y H30T.
+
+Cada imagen se asigna a su vuelo comparando su hora con la del estadillo. El resultado se organiza en carpetas `PB<pb>_V<vuelo>`.
 
 ## Preguntas frecuentes
 
@@ -65,10 +97,14 @@ La aplicación te lo propone al detectar una versión nueva. También puedes des
 
 ## Soporte
 
-¿Algo no funciona o tienes una sugerencia? Abre una incidencia en [GitHub Issues](https://github.com/saezro/atom-organizer/issues) indicando tu sistema operativo, la versión de la aplicación y qué estabas haciendo. No adjuntes datos de clientes ni credenciales.
+Si ya tienes acceso y algo no funciona, o tienes una sugerencia, abre una incidencia en [GitHub Issues](https://github.com/saezro/atom-organizer/issues) indicando tu sistema operativo, la versión de la aplicación y qué estabas haciendo. No adjuntes datos de clientes ni credenciales.
 
-También puedes escribir a tu contacto habitual en Aerotools.
+Para solicitar una licencia o acceso, escribe a tu contacto habitual en Aerotools.
 
 ---
 
 <sub>Documentación para desarrolladores: [docs/DESARROLLO.md](docs/DESARROLLO.md)</sub>
+
+## Licencia
+
+Software propietario. © 2026 Aerotools. Todos los derechos reservados. Ver [LICENSE](LICENSE).
