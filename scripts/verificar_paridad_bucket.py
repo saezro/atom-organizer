@@ -24,7 +24,7 @@ import hashlib
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from atom_core.almacen import abrir_almacen, abrir_para_lectura, unir  # noqa: E402
 

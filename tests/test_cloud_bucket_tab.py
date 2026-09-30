@@ -21,7 +21,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _fuente(nombre: str) -> str:
-    with open(os.path.join(REPO, nombre), encoding="utf-8") as fh:
+    # Código de la app en src/; el resto (webui/...) cuelga de la raíz.
+    base = REPO if nombre.startswith("webui") else os.path.join(REPO, "src")
+    with open(os.path.join(base, nombre), encoding="utf-8") as fh:
         return fh.read()
 
 

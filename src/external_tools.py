@@ -29,11 +29,13 @@ def _current_os() -> str:
 
 
 def app_base_dir() -> str:
-    """Directorio base de la app: _MEIPASS (PyInstaller) o dir del ejecutable/script."""
+    """Directorio base de la app: _MEIPASS (PyInstaller) o raíz del repo (padre de src/)."""
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
         return meipass
-    return os.path.dirname(os.path.abspath(sys.argv[0]))
+    # No-frozen: raíz del repo (este fichero vive en <raíz>/src/), no el dir del
+    # script: config/, assets/ y programas_externos/ cuelgan de la raíz.
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def resource_path(*parts: str) -> str:

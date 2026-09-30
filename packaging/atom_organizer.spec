@@ -2,6 +2,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all, collect_data_files
 
+import os as _spec_os
+# Este .spec vive en packaging/: SPECPATH = su carpeta. Las rutas se anclan a la
+# raíz del repo (independientes del cwd desde el que se lance pyinstaller).
+_ROOT = _spec_os.path.abspath(_spec_os.path.join(SPECPATH, '..'))
+_SRC = _spec_os.path.join(_ROOT, 'src')
+def _r(*p):
+    return _spec_os.path.join(_ROOT, *p)
+
 block_cipher = None
 
 # pyexiv2 arrastra libexiv2.so (binario nativo) — imprescindible en runtime
@@ -10,13 +18,13 @@ pyexiv2_datas, pyexiv2_binaries, pyexiv2_hidden = collect_all('pyexiv2')
 mpl_datas = collect_data_files('matplotlib')
 
 a = Analysis(
-    ['gui.py'],
-    pathex=[],
+    [_r('src', 'gui.py')],
+    pathex=[_SRC],
     binaries=pyexiv2_binaries,
     datas=[
-        ('config/Config.ini', 'config'),
-        ('Logo_atom_uas_horizonta-02.png', '.'),
-        ('programas_externos', 'programas_externos'),
+        (_r('config', 'Config.ini'), 'config'),
+        (_r('assets', 'Logo_atom_uas_horizonta-02.png'), '.'),
+        (_r('programas_externos'), 'programas_externos'),
     ] + pyexiv2_datas + mpl_datas,
     hiddenimports=['pyexiv2', 'ipaddress'] + pyexiv2_hidden,
     hookspath=[],

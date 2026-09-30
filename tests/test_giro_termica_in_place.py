@@ -224,7 +224,7 @@ def test_el_giro_va_despues_de_la_conversion_a_tiff():
     # Las fases del pipeline salieron de gui.py a atom_core/phases.py (para que
     # el host headless no arrastre Qt); el orden que vigila este test es el de
     # `split_images`, que vive ahí.
-    with open(os.path.join(raiz, "atom_core", "phases.py"), encoding="utf-8") as fh:
+    with open(os.path.join(raiz, "src", "atom_core", "phases.py"), encoding="utf-8") as fh:
         fuente = fh.read()
 
     giros = [m.start() for m in re.finditer(r"rotate_thermal_jpgs_in_place", fuente)]

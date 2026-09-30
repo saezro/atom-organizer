@@ -4,8 +4,12 @@
 # vía organize_cli.py), no una reimplementación: si el contenedor y el PC dan
 # resultados distintos es un bug, no una diferencia esperada.
 #
-# Contexto de build = la raíz del repo, porque el pipeline necesita el árbol
-# entero (atom_core/, pipeline/, exif/, utils.py) más las .so del SDK DJI.
+# Contexto de build = la raíz del repo (el Dockerfile vive en packaging/, se invoca
+# con `-f packaging/Dockerfile.job .`), porque el pipeline necesita el árbol
+# entero (src/atom_core/, pipeline/, exif/, utils.py) más las .so del SDK DJI.
+# En la imagen se conserva el layout del repo (/app/src, /app/config,
+# /app/programas_externos): `external_tools.app_base_dir()` en modo no-frozen
+# resuelve la raíz como el padre de src/.
 # Bookworm CLAVADO, no `slim` a secas: el tag flotante ya apunta a Debian 13 y
 # ahí varias de estas libs cambiaron de nombre (transición t64: libglib2.0-0 →
 # libglib2.0-0t64). Subir de Debian es una decisión aparte, no algo que deba
@@ -32,10 +36,10 @@ WORKDIR /app
 # Las dependencias primero y en su propia capa: el árbol de código cambia en cada
 # commit y la lista de deps casi nunca, así que así el rebuild normal no vuelve a
 # compilar pandas/numpy.
-COPY requirements-server.txt ./
+COPY packaging/requirements/requirements-server.txt ./
 RUN pip install --no-cache-dir -r requirements-server.txt
 
-# `google-cloud-storage` va SOLO aquí, no en requirements-server.txt: el
+# `google-cloud-storage` va SOLO aquí, no en packaging/requirements/requirements-server.txt: el
 # escritorio (PyInstaller) y la Raspberry Pi comparten ese fichero y el SDK no
 # debe entrar en el bundle — los .spec lo excluyen y
 # `tests/test_escritorio_sin_sdk.py` lo vigila. El Job es el único entorno que
@@ -43,17 +47,18 @@ RUN pip install --no-cache-dir -r requirements-server.txt
 # `abrir_almacen()` aborta con ImportError en la primera ruta gs://.
 RUN pip install --no-cache-dir google-cloud-storage==3.13.1
 
-COPY atom_core/ ./atom_core/
+COPY src/atom_core/ ./src/atom_core/
 COPY config/ ./config/
-# pipeline.py y exif.py son módulos sueltos en la raíz, no paquetes. gui.py y
+# pipeline.py y exif.py son módulos sueltos en src/, no paquetes. gui.py y
 # qt_designer_files/ NO entran: las fases del pipeline salieron de la clase Qt a
-# atom_core/phases.py, así que la ruta headless no toca nada de la GUI.
+# src/atom_core/phases.py, así que la ruta headless no toca nada de la GUI.
 # `rjpeg_a_tiff.py` entra desde 3.4.50: pipeline.py importa de el
 # `resolucion_desde_raw` (deduce la resolucion termica del tamano del .raw en vez
 # de hardcodear 640x512). Sin este fichero la conversion a TIFF muere con
 # ModuleNotFoundError en la primera imagen.
-COPY organize_cli.py external_tools.py utils.py version.py dji_irp_linux.py \
-     pipeline.py exif.py rjpeg_a_tiff.py ./
+COPY src/organize_cli.py src/external_tools.py src/utils.py src/version.py \
+     src/dji_irp_linux.py src/pipeline.py src/exif.py src/rjpeg_a_tiff.py \
+     ./src/
 
 # Solo la parte Linux del SDK DJI (.so). Los .exe y .dll son ~500 KB de peso
 # muerto en una imagen que nunca va a correr en Windows.
@@ -81,4 +86,4 @@ ENV MPLBACKEND=Agg
 # Args (--origen, --destino, --estadillo) los pasa el trigger como
 # containerOverrides. Sale 0 si el pipeline terminó y 1 si emitió un error, que
 # es lo que mira el Job para decidir si reintentar.
-ENTRYPOINT ["python", "organize_cli.py"]
+ENTRYPOINT ["python", "src/organize_cli.py"]

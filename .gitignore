@@ -20,3 +20,8 @@ google_client.json
 # Interno (no publicar)
 .workflow/
 docs/superpowers/
+
+bench/
+tmpwork/
+.dfout.txt
+webui/test-results/

@@ -8,8 +8,16 @@
 # Onedir (no onefile) para Linux: más fácil de depurar QtWebEngine dentro del AppDir y
 # de montar luego un AppImage sobre dist/atom_organizer/.
 #
-# Tras el build: ejecutar `python inject_ipaddress.py` (ipaddress no entra en base_library.zip).
+# Tras el build: ejecutar `python packaging/inject_ipaddress.py` (ipaddress no entra en base_library.zip).
 from PyInstaller.utils.hooks import collect_all, collect_data_files
+
+import os as _spec_os
+# Este .spec vive en packaging/: SPECPATH = su carpeta. Las rutas se anclan a la
+# raíz del repo (independientes del cwd desde el que se lance pyinstaller).
+_ROOT = _spec_os.path.abspath(_spec_os.path.join(SPECPATH, '..'))
+_SRC = _spec_os.path.join(_ROOT, 'src')
+def _r(*p):
+    return _spec_os.path.join(_ROOT, *p)
 
 block_cipher = None
 
@@ -54,15 +62,15 @@ for _gpu_pkg in (
     gpu_hidden += _gh
 
 a = Analysis(
-    ['app_webview.py'],
-    pathex=[],
+    [_r('src', 'app_webview.py')],
+    pathex=[_SRC],
     binaries=pyexiv2_binaries + numpy_binaries + pandas_binaries + openpyxl_binaries + gpu_binaries,
     datas=[
-        ('webui/dist', 'webui/dist'),          # UI React buildeada (npm run build)
-        ('config/Config.ini', 'config'),
-        ('Logo_atom_uas_horizonta-02.png', '.'),
-        ('assets', 'assets'),
-        ('programas_externos', 'programas_externos'),  # DJI/ libdirp.so + deps (Linux)
+        (_r('webui', 'dist'), 'webui/dist'),          # UI React buildeada (npm run build)
+        (_r('config', 'Config.ini'), 'config'),
+        (_r('assets', 'Logo_atom_uas_horizonta-02.png'), '.'),
+        (_r('assets'), 'assets'),
+        (_r('programas_externos'), 'programas_externos'),  # DJI/ libdirp.so + deps (Linux)
     ] + pyexiv2_datas + numpy_datas + pandas_datas + mpl_datas + openpyxl_datas + gpu_datas,
     hiddenimports=[
         'pyexiv2', 'ipaddress',
@@ -85,10 +93,10 @@ a = Analysis(
     ] + pyexiv2_hidden + numpy_hidden + pandas_hidden + openpyxl_hidden + gpu_hidden,
     hookspath=[],
     hooksconfig={},
-    # pyi_rth_cuda.py (raíz del repo): en Linux solo fija CUPY_CACHE_DIR si no
+    # packaging/pyi_rth_cuda.py: en Linux solo fija CUPY_CACHE_DIR si no
     # está ya definida (no toca LD_LIBRARY_PATH). Tolerante: no falla si no
     # hay GPU ni paquetes GPU empaquetados.
-    runtime_hooks=['pyi_rth_cuda.py'],
+    runtime_hooks=[_r('packaging', 'pyi_rth_cuda.py')],
     excludes=[
         'IPython', 'ipykernel', 'jupyter_client', 'jupyter_core',
         'debugpy', 'jedi', 'parso',

@@ -24,7 +24,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SCHEMA = os.path.join(REPO, "webui", "src", "schema.js")
 TASKBLOCK = os.path.join(REPO, "webui", "src", "TaskBlock.jsx")
-ORGANIZE = os.path.join(REPO, "atom_core", "organize.py")
+ORGANIZE = os.path.join(REPO, "src", "atom_core", "organize.py")
 
 
 def _leer(path):

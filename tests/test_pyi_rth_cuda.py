@@ -6,6 +6,11 @@ import ctypes
 
 import pytest
 
+import os
+import sys
+
+# pyi_rth_cuda.py es un runtime hook de PyInstaller: vive en packaging/, no en src/.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "packaging"))
 import pyi_rth_cuda
 
 
