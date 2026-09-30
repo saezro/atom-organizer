@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "inject_ipaddress.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "packaging" / "inject_ipaddress.py"
 
 
 @pytest.mark.parametrize("relativa", ["_internal/base_library.zip", "base_library.zip"])

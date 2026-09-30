@@ -31,9 +31,9 @@ from utils import RunConfig, CompressRgbsConfig
 
 
 _RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MAIN_APP_PATH = os.path.join(_RAIZ, "gui.py")
+MAIN_APP_PATH = os.path.join(_RAIZ, "src", "gui.py")
 # Las fases del pipeline (las 14 funciones de negocio) viven fuera de la clase Qt.
-PHASES_PATH = os.path.join(_RAIZ, "atom_core", "phases.py")
+PHASES_PATH = os.path.join(_RAIZ, "src", "atom_core", "phases.py")
 
 BUSINESS_FUNCTIONS_AND_CFG_TYPES = {
     "call_to_compress_image": "CompressRgbsConfig",

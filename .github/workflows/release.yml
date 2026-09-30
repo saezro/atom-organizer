@@ -12,7 +12,7 @@ name: release
 #   - push de un tag  vX.Y.Z-rc1 → igual, pero marcada pre-release (no se ofrece).
 #   - manual (workflow_dispatch) → indicar la versión; crea el tag en el sha actual.
 #
-# El tag DEBE coincidir con version.py (el job de Windows lo verifica y falla si no).
+# El tag DEBE coincidir con src/version.py (el job de Windows lo verifica y falla si no).
 on:
   push:
     tags: ['v*']
@@ -121,7 +121,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .venv
-          key: checks-venv-${{ runner.os }}-py3.11-${{ hashFiles('requirements-linux.txt', 'requirements-webview.txt') }}
+          key: checks-venv-${{ runner.os }}-py3.11-${{ hashFiles('packaging/requirements/requirements-linux.txt', 'packaging/requirements/requirements-webview.txt') }}
       - name: Crear venv
         if: steps.cache-venv.outputs.cache-hit != 'true'
         run: python -m venv .venv
@@ -129,8 +129,8 @@ jobs:
         if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
           .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/pip install -r requirements-linux.txt
-          .venv/bin/pip install -r requirements-webview.txt
+          .venv/bin/pip install -r packaging/requirements/requirements-linux.txt
+          .venv/bin/pip install -r packaging/requirements/requirements-webview.txt
           .venv/bin/pip install pytest
       # Con o sin cache-hit, el venv (con o sin instalar de nuevo) pasa a ser
       # el `python`/`pytest` que ven los pasos siguientes.
@@ -171,7 +171,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .venv
-          key: build-linux-venv-${{ runner.os }}-py3.11-gpu${{ inputs.build_gpu }}-${{ hashFiles('requirements-linux.txt', 'requirements-webview.txt', 'requirements-gpu.txt') }}
+          key: build-linux-venv-${{ runner.os }}-py3.11-gpu${{ inputs.build_gpu }}-${{ hashFiles('packaging/requirements/requirements-linux.txt', 'packaging/requirements/requirements-webview.txt', 'packaging/requirements/requirements-gpu.txt') }}
       - name: Crear venv
         if: steps.cache-venv.outputs.cache-hit != 'true'
         run: python -m venv .venv
@@ -181,16 +181,16 @@ jobs:
           BUILD_GPU: ${{ github.event.inputs.build_gpu }}
         run: |
           .venv/bin/python -m pip install --upgrade pip
-          # requirements-linux.txt (NO requirements.txt: esa lleva pywin32, solo-Windows)
-          .venv/bin/pip install -r requirements-linux.txt
-          .venv/bin/pip install -r requirements-webview.txt
+          # packaging/requirements/requirements-linux.txt (NO packaging/requirements/requirements.txt: esa lleva pywin32, solo-Windows)
+          .venv/bin/pip install -r packaging/requirements/requirements-linux.txt
+          .venv/bin/pip install -r packaging/requirements/requirements-webview.txt
           # cupy + nvImageCodec para el camino GPU opt-in (ORGANIZER_RGB_GPU=1,
           # atom_core/rgb_gpu.py). Build oficial va SIN esto (como 3.4.101):
           # el bundle GPU (~150MB de DLLs nvidia) precargaba con
           # pyi_rth_cuda.py y colgaba pywebview en máquinas sin runtime CUDA
           # (incidente 3.4.102). Solo se instala con ATOM_BUILD_GPU=1
           # (workflow_dispatch manual, opt-in).
-          if [ "$BUILD_GPU" = "true" ]; then .venv/bin/pip install -r requirements-gpu.txt; fi
+          if [ "$BUILD_GPU" = "true" ]; then .venv/bin/pip install -r packaging/requirements/requirements-gpu.txt; fi
       - name: Activar venv
         run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       # El client_secret no está en el repo (es público: Google revocaría el
@@ -201,9 +201,9 @@ jobs:
           ATOM_GOOGLE_CLIENT_SECRET: ${{ secrets.ATOM_GOOGLE_CLIENT_SECRET }}
         run: python scripts/inject_oauth_client.py
       - name: PyInstaller (onedir Qt/QtWebEngine)
-        run: pyinstaller --clean --noconfirm atom_organizer_webview_linux.spec
+        run: pyinstaller --clean --noconfirm packaging/atom_organizer_webview_linux.spec
       - name: Inject ipaddress en base_library.zip
-        run: python inject_ipaddress.py
+        run: python packaging/inject_ipaddress.py
       - name: Montar AppImage
         env:
           VERSION: ${{ needs.meta.outputs.version }}
@@ -248,7 +248,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .venv
-          key: build-windows-venv-${{ runner.os }}-py3.11-gpu${{ inputs.build_gpu }}-${{ hashFiles('requirements.txt', 'requirements-webview.txt', 'requirements-gpu.txt') }}
+          key: build-windows-venv-${{ runner.os }}-py3.11-gpu${{ inputs.build_gpu }}-${{ hashFiles('packaging/requirements/requirements.txt', 'packaging/requirements/requirements-webview.txt', 'packaging/requirements/requirements-gpu.txt') }}
       - name: Crear venv
         if: steps.cache-venv.outputs.cache-hit != 'true'
         run: python -m venv .venv
@@ -264,16 +264,16 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           .venv\Scripts\python.exe -m pip install --upgrade pip
-          .venv\Scripts\pip.exe install -r requirements.txt
-          .venv\Scripts\pip.exe install -r requirements-webview.txt
+          .venv\Scripts\pip.exe install -r packaging/requirements/requirements.txt
+          .venv\Scripts\pip.exe install -r packaging/requirements/requirements-webview.txt
           # cupy + nvImageCodec para el camino GPU opt-in (ORGANIZER_RGB_GPU=1,
           # atom_core/rgb_gpu.py). Build oficial va SIN esto (como 3.4.101):
           # el bundle GPU (~150MB de DLLs nvidia) precargaba con
           # pyi_rth_cuda.py y colgaba pywebview en máquinas sin runtime CUDA
           # (incidente 3.4.102). Solo se instala con ATOM_BUILD_GPU=1
           # (workflow_dispatch manual, opt-in).
-          if ($env:BUILD_GPU -eq "true") { .venv\Scripts\pip.exe install -r requirements-gpu.txt }
-          # NO reinstalar PyInstaller aqui: manda el pin de requirements.txt
+          if ($env:BUILD_GPU -eq "true") { .venv\Scripts\pip.exe install -r packaging/requirements/requirements-gpu.txt }
+          # NO reinstalar PyInstaller aqui: manda el pin de packaging/requirements/requirements.txt
           # (6.22.2 + pyinstaller-hooks-contrib 2026.6). El 6.6.0 que habia
           # fijado desde la v3.4.32 degradaba esa version y sus hooks son
           # anteriores a numpy 2.x: no recogian las DLL de numpy.libs, asi que
@@ -285,18 +285,18 @@ jobs:
         shell: pwsh
         run: "'{0}\\.venv\\Scripts' -f $PWD | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append"
       # El tag manda, pero la versión que la app enseña (y con la que compara al
-      # buscar actualizaciones) sale de version.py: si no coinciden, el updater
+      # buscar actualizaciones) sale de src/version.py: si no coinciden, el updater
       # ofrecería una actualización ya instalada en bucle. Se falla aquí.
-      - name: Comprobar que el tag coincide con version.py
+      - name: Comprobar que el tag coincide con src/version.py
         shell: pwsh
         env:
           VERSION: ${{ needs.meta.outputs.version }}
         run: |
-          $py = (.venv\Scripts\python.exe -c "from version import __version__; print(__version__)").Trim()
-          # v3.2.0 y v3.2.0-rc1 valen los dos para version.py = 3.2.0
+          $py = (.venv\Scripts\python.exe -c "import sys; sys.path.insert(0, 'src'); from version import __version__; print(__version__)").Trim()
+          # v3.2.0 y v3.2.0-rc1 valen los dos para src/version.py = 3.2.0
           $tag = ($env:VERSION.TrimStart('v') -split '-')[0]
           if ($py -ne $tag) {
-            Write-Error "Tag ($tag) != version.py ($py). Actualiza version.py y vuelve a etiquetar."
+            Write-Error "Tag ($tag) != src/version.py ($py). Actualiza src/version.py y vuelve a etiquetar."
             exit 1
           }
       - name: Inyectar credenciales OAuth
@@ -306,12 +306,12 @@ jobs:
         run: .venv\Scripts\python.exe scripts/inject_oauth_client.py
       - name: PyInstaller (onedir Qt/QtWebEngine)
         # El .spec (atom_organizer_webview.spec) solo empaqueta cupy/nvidia si
-        # ATOM_BUILD_GPU == '1' (mira os.environ, no si requirements-gpu.txt se
+        # ATOM_BUILD_GPU == '1' (mira os.environ, no si packaging/requirements/requirements-gpu.txt se
         # instaló). Sin esto, un build_gpu=true instala los paquetes GPU pero
         # el .spec los ignora igual: bundle GPU nunca se empaqueta.
         env:
           ATOM_BUILD_GPU: ${{ inputs.build_gpu && '1' || '0' }}
-        run: .venv\Scripts\pyinstaller.exe --clean --noconfirm atom_organizer_webview.spec
+        run: .venv\Scripts\pyinstaller.exe --clean --noconfirm packaging\atom_organizer_webview.spec
       # Solo para builds de validación (publicar=false): Inno Setup 6.7.0 no lo
       # abre ningún extractor, así que sin esto no hay forma de probar el .exe
       # sin instalar. Se sube el onedir crudo (dist/ATOM-Organizer) comprimido.
@@ -365,17 +365,17 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Mismo control que hace build-windows: el tag manda sobre el nombre, pero
-      # el código que va DENTRO de la imagen es el de version.py. Si no coinciden,
+      # el código que va DENTRO de la imagen es el de src/version.py. Si no coinciden,
       # se publicaría una imagen mintiendo sobre su versión — justo el tipo de
       # divergencia que este job existe para evitar.
-      - name: Comprobar que el tag coincide con version.py
+      - name: Comprobar que el tag coincide con src/version.py
         env:
           VERSION: ${{ needs.meta.outputs.version }}
         run: |
-          PY=$(python3 -c "from version import __version__; print(__version__)")
+          PY=$(python3 -c "import sys; sys.path.insert(0, 'src'); from version import __version__; print(__version__)")
           TAG=$(printf '%s' "$VERSION" | sed 's/^v//' | cut -d- -f1)
           if [ "$PY" != "$TAG" ]; then
-            echo "::error::Tag ($TAG) != version.py ($PY)"
+            echo "::error::Tag ($TAG) != src/version.py ($PY)"
             exit 1
           fi
       # Workload Identity Federation, no una clave JSON: el provider
@@ -408,7 +408,7 @@ jobs:
           VER: ${{ needs.meta.outputs.version }}
         run: |
           set -euo pipefail
-          ID=$(gcloud builds submit --config=cloudbuild-job.yaml \
+          ID=$(gcloud builds submit --config=packaging/cloudbuild-job.yaml \
                  --substitutions=_VERSION="$VER" \
                  --project=aerotools-484814 \
                  --gcs-source-staging-dir=gs://aerotools-484814-cloudbuild-staging/staging \

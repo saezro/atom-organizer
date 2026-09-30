@@ -9,11 +9,11 @@ REM    - Node.js 22 (incluye npm)                        ->  node --version
 REM    - Edge WebView2 Runtime (ya viene en Win10/11 actualizados; si no,
 REM      instalar el "Evergreen Standalone" de Microsoft, gratis).
 REM
-REM  Uso:  doble-clic, o en una consola:  build_windows.bat
+REM  Uso:  doble-clic, o en una consola:  packaging\build_windows.bat
 REM  PyInstaller NO cross-compila -> esto DEBE correr en Windows, no en Linux.
 REM ============================================================================
 setlocal enabledelayedexpansion
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 echo(
 echo === [1/5] Comprobando Python y Node ===
@@ -28,8 +28,8 @@ if not exist ".venv\Scripts\python.exe" python -m venv .venv || (echo ERROR crea
 call .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
 REM requirements.txt = pinned base (mismo que Windows); + capa webview; + PyInstaller.
-pip install -r requirements.txt            || (echo ERROR: pip requirements.txt & pause & exit /b 1)
-pip install -r requirements-webview.txt    || (echo ERROR: pip requirements-webview & pause & exit /b 1)
+pip install -r packaging\requirements\requirements.txt            || (echo ERROR: pip requirements.txt & pause & exit /b 1)
+pip install -r packaging\requirements\requirements-webview.txt    || (echo ERROR: pip requirements-webview & pause & exit /b 1)
 pip install pyinstaller==6.22.2            || (echo ERROR: pip pyinstaller & pause & exit /b 1)
 REM En Windows pywebview arrastra pythonnet (WebView2) por marker de plataforma.
 
@@ -43,7 +43,7 @@ if not exist "webui\dist\index.html" (echo ERROR: no se genero webui\dist & paus
 
 echo(
 echo === [4/5] Empaquetado onedir con PyInstaller ===
-pyinstaller --clean --noconfirm atom_organizer_webview.spec || (echo ERROR: PyInstaller & pause & exit /b 1)
+pyinstaller --clean --noconfirm packaging\atom_organizer_webview.spec || (echo ERROR: PyInstaller & pause & exit /b 1)
 
 echo(
 echo === [5/5] Resultado ===

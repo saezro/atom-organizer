@@ -13,10 +13,13 @@ un `import` de Qt de vuelta en la cadena headless rompe el build de servidor
 meses después, no aquí.
 """
 import importlib
+import os
 import subprocess
 import sys
 
 import pytest
+
+_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 
 # Las 15 fases que el host headless necesita para cubrir los 13 tasks de run_task.
 FASES = (
@@ -49,7 +52,7 @@ def test_phases_no_importa_qt():
         "sys.meta_path.insert(0, Veto())\n"
         "import atom_core.phases\n"
     )
-    proc = subprocess.run([sys.executable, "-c", codigo], capture_output=True, text=True)
+    proc = subprocess.run([sys.executable, "-c", codigo], capture_output=True, text=True, cwd=_SRC)
     assert proc.returncode == 0, (
         "atom_core.phases arrastra Qt:\n" + proc.stderr)
 
@@ -67,7 +70,7 @@ def test_organize_no_importa_qt_ni_gui():
         "assert 'gui' not in sys.modules, 'organize sigue importando gui.py'\n"
         "assert 'PySide6' not in sys.modules\n"
     )
-    proc = subprocess.run([sys.executable, "-c", codigo], capture_output=True, text=True)
+    proc = subprocess.run([sys.executable, "-c", codigo], capture_output=True, text=True, cwd=_SRC)
     assert proc.returncode == 0, (
         "atom_core.organize arrastra Qt o gui.py:\n" + proc.stderr)
 

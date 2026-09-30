@@ -22,6 +22,14 @@
 #  - programas_externos/{exiftool.exe, DJI/dji_irp.exe} son binarios Windows: imprescindibles.
 from PyInstaller.utils.hooks import collect_all, collect_data_files
 
+import os as _spec_os
+# Este .spec vive en packaging/: SPECPATH = su carpeta. Las rutas se anclan a la
+# raíz del repo (independientes del cwd desde el que se lance pyinstaller).
+_ROOT = _spec_os.path.abspath(_spec_os.path.join(SPECPATH, '..'))
+_SRC = _spec_os.path.join(_ROOT, 'src')
+def _r(*p):
+    return _spec_os.path.join(_ROOT, *p)
+
 block_cipher = None
 
 # pyexiv2 arrastra su binario nativo (libexiv2 / .pyd) — imprescindible en runtime
@@ -148,15 +156,15 @@ for _d in _vc_dlls:
         vcruntime_binaries.append((_p, 'PySide6'))
 
 a = Analysis(
-    ['app_webview.py'],
-    pathex=[],
+    [_r('src', 'app_webview.py')],
+    pathex=[_SRC],
     binaries=pyexiv2_binaries + vcruntime_binaries + numpy_binaries + pandas_binaries + pytz_binaries + openpyxl_binaries + gpu_binaries,
     datas=[
-        ('webui/dist', 'webui/dist'),          # UI React buildeada (npm run build)
-        ('config/Config.ini', 'config'),
-        ('Logo_atom_uas_horizonta-02.png', '.'),
-        ('assets', 'assets'),                  # atom-icon.svg, check.svg, dot.svg, fonts/ (los referencia gui.py)
-        ('programas_externos', 'programas_externos'),
+        (_r('webui', 'dist'), 'webui/dist'),          # UI React buildeada (npm run build)
+        (_r('config', 'Config.ini'), 'config'),
+        (_r('assets', 'Logo_atom_uas_horizonta-02.png'), '.'),
+        (_r('assets'), 'assets'),                  # atom-icon.svg, check.svg, dot.svg, fonts/ (los referencia gui.py)
+        (_r('programas_externos'), 'programas_externos'),
     ] + pyexiv2_datas + mpl_datas + webview_datas + pyexiv2_native + numpy_datas + pandas_datas + pytz_datas + openpyxl_datas + gpu_datas,
     hiddenimports=[
         'pyexiv2', 'ipaddress',
@@ -187,12 +195,12 @@ a = Analysis(
     ] + pyexiv2_hidden + numpy_hidden + pandas_hidden + pytz_hidden + openpyxl_hidden + ['pytz'] + gpu_hidden,
     hookspath=[],
     hooksconfig={},
-    # pyi_rth_cuda.py (raíz del repo): registra las carpetas de DLL nvidia-*-cu12
+    # packaging/pyi_rth_cuda.py: registra las carpetas de DLL nvidia-*-cu12
     # con os.add_dll_directory y fija CUPY_CACHE_DIR si no está ya definida.
     # Solo se incluye si de verdad se empaquetó algo de GPU (ATOM_BUILD_GPU=1
     # + paquetes instalados) — en el build por defecto NO se registra, para no
     # tocar el arranque en máquinas sin GPU (incidente 3.4.102).
-    runtime_hooks=(['pyi_rth_cuda.py'] if gpu_hidden else []),
+    runtime_hooks=([_r('packaging', 'pyi_rth_cuda.py')] if gpu_hidden else []),
     excludes=[
         'IPython', 'ipykernel', 'jupyter_client', 'jupyter_core',
         'debugpy', 'jedi', 'parso',
@@ -236,7 +244,7 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 # en las heurísticas de Defender/SmartScreen: un .exe anónimo y sin firmar es
 # justo el perfil que marcan. Se genera al vuelo desde version.py (fuente única).
 import sys as _sys_v
-_sys_v.path.insert(0, _os.path.abspath('.'))
+_sys_v.path.insert(0, _SRC)
 from version import __version__ as _APP_VER
 _v_parts = tuple((list(int(x) for x in _APP_VER.split('.')[:3]) + [0, 0, 0])[:4])
 
@@ -257,7 +265,7 @@ _version_res = '''VSVersionInfo(
     VarFileInfo([VarStruct('Translation', [0x40a, 1200])])
   ]
 )'''.format(v=_v_parts, s=_APP_VER)
-with open('file_version_info.txt', 'w', encoding='utf-8') as _fh:
+with open(_r('file_version_info.txt'), 'w', encoding='utf-8') as _fh:
     _fh.write(_version_res)
 
 # ONEDIR (antes onefile). Dos motivos:
@@ -282,8 +290,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version='file_version_info.txt',
-    icon='assets/atom-icon.ico' if _os.path.exists('assets/atom-icon.ico') else None,
+    version=_r('file_version_info.txt'),
+    icon=_r('assets', 'atom-icon.ico') if _os.path.exists(_r('assets', 'atom-icon.ico')) else None,
 )
 
 coll = COLLECT(

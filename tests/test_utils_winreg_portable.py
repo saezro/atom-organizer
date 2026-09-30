@@ -21,7 +21,7 @@ PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 def _run_subprocess(code: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code)],
-        cwd=PROJECT_DIR,
+        cwd=os.path.join(PROJECT_DIR, "src"),  # `-c` pone el cwd en sys.path: src/ para imports planos
         capture_output=True,
         text=True,
     )

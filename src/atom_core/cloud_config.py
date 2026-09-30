@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,7 +65,11 @@ def _from_env() -> OAuthClient | None:
 # `client_file_candidates`) para que los tests puedan apuntarla a un directorio
 # vacío: si no, un `google_client.json` real en la raíz se cuela como candidato
 # y los casos «sin credenciales» pasan a encontrar las del operador.
-_REPO_DIR = Path(__file__).resolve().parent.parent
+# Bajo PyInstaller atom_core/ cuelga de _MEIPASS (dos niveles); en el árbol de
+# código vive en <raíz>/src/atom_core/ (tres niveles hasta la raíz del repo).
+_REPO_DIR = (Path(__file__).resolve().parent.parent
+             if getattr(sys, "frozen", False)
+             else Path(__file__).resolve().parent.parent.parent)
 
 
 def client_file_candidates(base_dir: Path | None = None) -> list[Path]:

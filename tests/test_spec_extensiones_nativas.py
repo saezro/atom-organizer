@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-SPEC = Path(__file__).resolve().parent.parent / "atom_organizer_webview.spec"
-SPEC_LINUX = Path(__file__).resolve().parent.parent / "atom_organizer_webview_linux.spec"
+SPEC = Path(__file__).resolve().parent.parent / "packaging" / "atom_organizer_webview.spec"
+SPEC_LINUX = Path(__file__).resolve().parent.parent / "packaging" / "atom_organizer_webview_linux.spec"
 
 # Librerías cuyo binario nativo se carga por C-API y que PyInstaller no recoge
 # entero con su hook genérico. Añadir aquí cualquier otra que dé "DLL load

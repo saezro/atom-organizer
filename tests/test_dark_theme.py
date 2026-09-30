@@ -12,7 +12,7 @@ Por eso el segundo test NO hace `import gui`, sino que verifica vía `ast`
 import ast
 import os
 
-MAIN_APP_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gui.py")
+MAIN_APP_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src", "gui.py")
 
 
 def _load_dark_qss_from_source() -> str:

@@ -103,7 +103,7 @@ def test_las_libs_que_declara_el_sdk_existen(seccion):
 
 def _copias_del_dockerfile_job() -> list:
     """Patrones de origen de todas las instrucciones COPY de Dockerfile.job."""
-    texto = (REPO / "Dockerfile.job").read_text(encoding="utf-8")
+    texto = (REPO / "packaging" / "Dockerfile.job").read_text(encoding="utf-8")
     texto = texto.replace("\\\n", " ")  # continuaciones de linea
     patrones = []
     for linea in texto.splitlines():

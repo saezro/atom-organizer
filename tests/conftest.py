@@ -18,7 +18,14 @@ import sys
 import types
 import datetime as dt
 
+import os
 import pytest
+
+# El código de la app vive en <raíz>/src (imports planos: `import pipeline`,
+# `from atom_core import ...`). Se añade al path ANTES de recolectar tests.
+_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 # `mimetypes` fija su `_winreg` interno UNA SOLA VEZ, en el propio import
 # (`try: import winreg as _winreg / except ImportError: _winreg = None`). Si

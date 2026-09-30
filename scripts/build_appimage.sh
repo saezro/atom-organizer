@@ -4,8 +4,8 @@
 #
 # Prerrequisitos (ya ejecutados por el workflow / build local, en este orden):
 #   1. cd webui && npm ci && npm run build      → webui/dist
-#   2. pyinstaller --clean --noconfirm atom_organizer_webview_linux.spec
-#   3. python inject_ipaddress.py               → ipaddress en base_library.zip
+#   2. pyinstaller --clean --noconfirm packaging/atom_organizer_webview_linux.spec
+#   3. python packaging/inject_ipaddress.py            → ipaddress en base_library.zip
 #
 # Uso:  scripts/build_appimage.sh <version>     (p.ej. v3.3)
 # Sale: ATOM_Organizer-<version>-x86_64.AppImage en la raíz del repo.
@@ -16,7 +16,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 if [ ! -d dist/atom_organizer ]; then
-  echo "ERROR: falta dist/atom_organizer (¿corriste PyInstaller con atom_organizer_webview_linux.spec?)" >&2
+  echo "ERROR: falta dist/atom_organizer (¿corriste PyInstaller con packaging/atom_organizer_webview_linux.spec?)" >&2
   exit 1
 fi
 

@@ -18,7 +18,7 @@ import os
 import sys
 from pathlib import Path
 
-DESTINO = Path(__file__).resolve().parent.parent / "atom_core" / "cloud_config.py"
+DESTINO = Path(__file__).resolve().parent.parent / "src" / "atom_core" / "cloud_config.py"
 
 
 def main() -> int:
