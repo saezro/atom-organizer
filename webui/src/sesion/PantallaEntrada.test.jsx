@@ -114,3 +114,45 @@ describe('PantallaEntrada', () => {
     expect(tile.textContent).toContain('A')
   })
 })
+
+describe('PantallaEntrada login con contraseña', () => {
+  it('pinta el formulario y Google sigue presente', async () => {
+    render(<PantallaEntrada {...props()} onPassword={vi.fn()} />)
+    await waitFor(() => expect(listarPerfilesMock).toHaveBeenCalled())
+    expect(screen.getByLabelText('Usuario o correo')).toBeTruthy()
+    expect(screen.getByLabelText('Contraseña')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Entrar' })).toBeTruthy()
+    expect(screen.getByText('Entrar con Google')).toBeTruthy()
+  })
+
+  it('envía usuario y contraseña con click y con Enter', async () => {
+    const onPassword = vi.fn().mockResolvedValue(true)
+    render(<PantallaEntrada {...props()} onPassword={onPassword} />)
+    await userEvent.type(screen.getByLabelText('Usuario o correo'), 'ana')
+    await userEvent.type(screen.getByLabelText('Contraseña'), 'secreto')
+    await userEvent.click(screen.getByRole('button', { name: 'Entrar' }))
+    await waitFor(() => expect(onPassword).toHaveBeenCalledWith('ana', 'secreto'))
+    await userEvent.type(screen.getByLabelText('Contraseña'), '{Enter}')
+    await waitFor(() => expect(onPassword).toHaveBeenCalledTimes(2))
+  })
+
+  it('muestra "Entrando…" y deshabilita mientras envía', async () => {
+    let resolver
+    const onPassword = vi.fn(() => new Promise((r) => { resolver = r }))
+    render(<PantallaEntrada {...props()} onPassword={onPassword} />)
+    await userEvent.type(screen.getByLabelText('Usuario o correo'), 'ana')
+    await userEvent.type(screen.getByLabelText('Contraseña'), 'x')
+    await userEvent.click(screen.getByRole('button', { name: 'Entrar' }))
+    expect(await screen.findByText('Entrando…')).toBeTruthy()
+    resolver(false)
+    await waitFor(() => expect(screen.queryByText('Entrando…')).toBeNull())
+  })
+
+  it('muestra el error recibido y no envía con campos vacíos', async () => {
+    const onPassword = vi.fn()
+    render(<PantallaEntrada {...props()} error="Credenciales inválidas" onPassword={onPassword} />)
+    expect(screen.getByText('Credenciales inválidas')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Entrar' }).disabled).toBe(true)
+    expect(onPassword).not.toHaveBeenCalled()
+  })
+})

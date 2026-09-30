@@ -50,7 +50,7 @@ def test_foto_final_marca_final():
 def test_snapshot_marcado_final_propaga_la_marca():
     # `organize._emit_stats(final=True)` marca el snapshot de cierre. Si la
     # marca no llega al cuerpo, `RunReporter.progreso` la descarta por throttle
-    # y el run queda con el penúltimo latido: en el e2e de ANTOLIN v3.4.36 los
+    # y el run queda con el penúltimo latido: en el e2e de PLANTA_B v3.4.36 los
     # 8 shards cerraron `ok` sumando 2194 de 2516 imágenes reales.
     cuerpo = progreso_desde_stats({"done": 314, "total": 314, "final": True})
     assert cuerpo == {"files_done": 314, "files_total": 314, "final": True}

@@ -67,7 +67,7 @@ def test_tipo_fs_linux_elige_montaje_mas_largo(tmp_path, monkeypatch):
     import io
     monkeypatch.setattr("builtins.open", lambda *a, **k: io.StringIO(montajes))
     monkeypatch.setattr(m.os.path, "realpath", lambda r: r)
-    assert m._tipo_fs_linux("/media/pi/USB_HDD/KL19/.organizado") == "fuseblk"
+    assert m._tipo_fs_linux("/media/pi/USB_HDD/PLANTA_C/.organizado") == "fuseblk"
     assert m._tipo_fs_linux("/media/pi/USB_HDDX") == "ext4"
     assert m._tipo_fs_linux("/home/pi") == "ext4"
 
@@ -221,7 +221,7 @@ def test_fila_unassigned_admite_pb_y_vuelo_vacios(tmp_path):
 
 
 def test_balance_de_bytes_solo_cuenta_las_hechas(tmp_path):
-    """La pregunta de Rodrigo (2026-09-09) era por qué el resumen decía 28 GB
+    """La pregunta del responsable (2026-09-09) era por qué el resumen decía 28 GB
     leídos y 9 escritos: aquello es I/O de disco de toda la máquina, no el
     tamaño de los datos. Esto sí compara lo entregado con lo que entró, y solo
     de las filas terminadas — una pendiente todavía no ha entregado nada."""

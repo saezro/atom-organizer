@@ -110,44 +110,44 @@ def test_preguntar_no_crea_ficheros(tmp_path, store):
 
 
 def test_lo_guardado_se_recupera(store):
-    store.guardar("piloto@aerotools.es", TOKEN)
+    store.guardar("piloto@ejemplo.com", TOKEN)
     sesion = store.leer()
-    assert sesion.email == "piloto@aerotools.es"
+    assert sesion.email == "piloto@ejemplo.com"
     assert sesion.refresh_token == TOKEN
 
 
 def test_el_token_no_esta_en_claro_en_la_bd(tmp_path, store):
     """El motivo entero del cambio: un `strings session.db` no puede dar el
     refresh token."""
-    store.guardar("piloto@aerotools.es", TOKEN)
+    store.guardar("piloto@ejemplo.com", TOKEN)
     assert TOKEN.encode() not in (tmp_path / "session.db").read_bytes()
 
 
 def test_guardar_dos_veces_no_acumula_sesiones(tmp_path, store):
-    store.guardar("uno@aerotools.es", TOKEN)
-    store.guardar("dos@aerotools.es", TOKEN + "-nuevo")
+    store.guardar("uno@ejemplo.com", TOKEN)
+    store.guardar("dos@ejemplo.com", TOKEN + "-nuevo")
 
     con = sqlite3.connect(tmp_path / "session.db")
     try:
         assert con.execute("SELECT COUNT(*) FROM sesion").fetchone()[0] == 1
     finally:
         con.close()
-    assert store.leer().email == "dos@aerotools.es"
+    assert store.leer().email == "dos@ejemplo.com"
 
 
 def test_borrar_deja_el_almacen_sin_sesion(store):
-    store.guardar("piloto@aerotools.es", TOKEN)
+    store.guardar("piloto@ejemplo.com", TOKEN)
     store.borrar()
     assert store.leer() is None
 
 
 def test_no_se_guarda_una_sesion_sin_token(store):
     with pytest.raises(ValueError):
-        store.guardar("piloto@aerotools.es", "")
+        store.guardar("piloto@ejemplo.com", "")
 
 
 def test_marcar_validada_deja_constancia(store):
-    store.guardar("piloto@aerotools.es", TOKEN)
+    store.guardar("piloto@ejemplo.com", TOKEN)
     assert store.leer().validada_en is None
     store.marcar_validada(1_700_000_000.0)
     assert store.leer().validada_en == 1_700_000_000.0
@@ -155,7 +155,7 @@ def test_marcar_validada_deja_constancia(store):
 
 @pytest.mark.skipif(sys.platform.startswith("win"), reason="permisos POSIX")
 def test_ni_la_bd_ni_la_clave_quedan_legibles_para_todos(tmp_path, store):
-    store.guardar("piloto@aerotools.es", TOKEN)
+    store.guardar("piloto@ejemplo.com", TOKEN)
     for nombre in ("session.db", "session.key"):
         modo = oct(os.stat(tmp_path / nombre).st_mode & 0o777)
         assert modo == "0o600", f"{nombre} quedó en {modo}"
@@ -176,7 +176,7 @@ def test_si_la_clave_se_pierde_la_sesion_se_descarta_y_se_explica(tmp_path):
     uso; se retira y se dice por qué."""
     db = tmp_path / "session.db"
     store = SessionStore(db, protector=KeyfileProtector(tmp_path / "session.key"))
-    store.guardar("piloto@aerotools.es", TOKEN)
+    store.guardar("piloto@ejemplo.com", TOKEN)
 
     (tmp_path / "session.key").unlink()
     otro = SessionStore(db, protector=KeyfileProtector(tmp_path / "session.key"))
@@ -191,20 +191,20 @@ def test_si_la_clave_se_pierde_la_sesion_se_descarta_y_se_explica(tmp_path):
 
 def test_la_sesion_del_json_antiguo_se_importa(tmp_path, store):
     legacy = tmp_path / "google_auth.json"
-    legacy.write_text(json.dumps({"refresh_token": TOKEN, "email": "piloto@aerotools.es"}))
+    legacy.write_text(json.dumps({"refresh_token": TOKEN, "email": "piloto@ejemplo.com"}))
 
     assert store.importar_legacy(legacy) is True
 
     sesion = store.leer()
     assert sesion.refresh_token == TOKEN
-    assert sesion.email == "piloto@aerotools.es"
+    assert sesion.email == "piloto@ejemplo.com"
 
 
 def test_el_json_en_claro_deja_de_estar_donde_estaba(tmp_path, store):
     """Migrar sin retirar el fichero sería no haber migrado: el secreto en
     claro seguiría en el perfil, que es justo lo que se venía a quitar."""
     legacy = tmp_path / "google_auth.json"
-    legacy.write_text(json.dumps({"refresh_token": TOKEN, "email": "p@aerotools.es"}))
+    legacy.write_text(json.dumps({"refresh_token": TOKEN, "email": "p@ejemplo.com"}))
 
     store.importar_legacy(legacy)
 
@@ -213,7 +213,7 @@ def test_el_json_en_claro_deja_de_estar_donde_estaba(tmp_path, store):
 
 def test_un_json_sin_token_no_se_mira_en_cada_arranque(tmp_path, store):
     legacy = tmp_path / "google_auth.json"
-    legacy.write_text(json.dumps({"email": "p@aerotools.es"}))
+    legacy.write_text(json.dumps({"email": "p@ejemplo.com"}))
 
     assert store.importar_legacy(legacy) is False
     assert not legacy.exists()
@@ -235,7 +235,7 @@ def test_una_bd_danada_se_aparta_para_no_bloquear_el_siguiente_guardado(tmp_path
 
     assert store.leer() is None
 
-    store.guardar("piloto@aerotools.es", TOKEN)
+    store.guardar("piloto@ejemplo.com", TOKEN)
     assert store.leer().refresh_token == TOKEN
     assert (tmp_path / "session.db.dañado").exists()
 
@@ -265,7 +265,7 @@ def test_una_bd_sin_columna_modo_se_migra_sola_sin_perder_la_sesion(tmp_path):
     con.execute(
         "INSERT INTO sesion (id, email, refresh_cifrado, backend, creado_en, "
         "actualizado_en, validada_en) VALUES (1, ?, ?, ?, ?, ?, NULL)",
-        ("piloto@aerotools.es", cifrado, protector.nombre, 1.0, 1.0))
+        ("piloto@ejemplo.com", cifrado, protector.nombre, 1.0, 1.0))
     con.commit()
     con.close()
 
@@ -274,7 +274,7 @@ def test_una_bd_sin_columna_modo_se_migra_sola_sin_perder_la_sesion(tmp_path):
 
     assert sesion is not None
     assert sesion.refresh_token == TOKEN
-    assert sesion.email == "piloto@aerotools.es"
+    assert sesion.email == "piloto@ejemplo.com"
     # Sin `pair()`, una fila que ya existía antes del broker es una sesión
     # 'google' de toda la vida: el `DEFAULT 'google'` del ALTER TABLE es lo
     # que lo garantiza.
@@ -311,7 +311,7 @@ def test_una_bd_sin_columna_picture_se_migra_sola_sin_perder_la_sesion(tmp_path)
     con.execute(
         "INSERT INTO sesion (id, email, refresh_cifrado, backend, creado_en, "
         "actualizado_en, validada_en, modo) VALUES (1, ?, ?, ?, ?, ?, NULL, ?)",
-        ("piloto@aerotools.es", cifrado, protector.nombre, 1.0, 1.0, "broker"))
+        ("piloto@ejemplo.com", cifrado, protector.nombre, 1.0, 1.0, "broker"))
     con.commit()
     con.close()
 
@@ -320,7 +320,7 @@ def test_una_bd_sin_columna_picture_se_migra_sola_sin_perder_la_sesion(tmp_path)
 
     assert sesion is not None
     assert sesion.refresh_token == TOKEN
-    assert sesion.email == "piloto@aerotools.es"
+    assert sesion.email == "piloto@ejemplo.com"
     assert sesion.modo == "broker"
     # Sin la columna nueva no hay foto que rescatar: cae a vacío, no a error.
     assert sesion.picture == ""
@@ -331,7 +331,7 @@ def test_una_bd_sin_columna_picture_se_migra_sola_sin_perder_la_sesion(tmp_path)
 
 
 def test_guardar_y_leer_una_picture_va_y_vuelve(store):
-    store.guardar("piloto@aerotools.es", TOKEN, modo="broker",
+    store.guardar("piloto@ejemplo.com", TOKEN, modo="broker",
                   picture="https://lh3.googleusercontent.com/foo")
 
     sesion = store.leer()
@@ -368,7 +368,7 @@ def test_una_bd_sin_columna_nombre_se_migra_sola_sin_perder_la_sesion(tmp_path):
     con.execute(
         "INSERT INTO sesion (id, email, refresh_cifrado, backend, creado_en, "
         "actualizado_en, validada_en, modo, picture) VALUES (1, ?, ?, ?, ?, ?, NULL, ?, ?)",
-        ("piloto@aerotools.es", cifrado, protector.nombre, 1.0, 1.0, "broker",
+        ("piloto@ejemplo.com", cifrado, protector.nombre, 1.0, 1.0, "broker",
          "https://lh3.googleusercontent.com/foo"))
     con.commit()
     con.close()
@@ -378,7 +378,7 @@ def test_una_bd_sin_columna_nombre_se_migra_sola_sin_perder_la_sesion(tmp_path):
 
     assert sesion is not None
     assert sesion.refresh_token == TOKEN
-    assert sesion.email == "piloto@aerotools.es"
+    assert sesion.email == "piloto@ejemplo.com"
     assert sesion.modo == "broker"
     assert sesion.picture == "https://lh3.googleusercontent.com/foo"
     # Sin la columna nueva no hay nombre que rescatar: cae a vacío, no a error.
@@ -390,7 +390,7 @@ def test_una_bd_sin_columna_nombre_se_migra_sola_sin_perder_la_sesion(tmp_path):
 
 
 def test_guardar_y_leer_un_nombre_va_y_vuelve(store):
-    store.guardar("piloto@aerotools.es", TOKEN, modo="broker",
+    store.guardar("piloto@ejemplo.com", TOKEN, modo="broker",
                   picture="https://lh3.googleusercontent.com/foo",
                   nombre="Piloto Aerotools")
 

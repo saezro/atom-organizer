@@ -305,19 +305,19 @@ class TestDerivePlant:
 
     def test_con_inspeccion_gana_sobre_estadillo_y_destino(self):
         params = {
-            "inspeccion": "KL19 - Inspección térmica agosto",
-            "estadillo": "/vuelos/2026_08_19_estadillo_KL19.csv",
-            "destino": "/salida/KL19",
+            "inspeccion": "PLANTA_C - Inspección térmica agosto",
+            "estadillo": "/vuelos/2026_08_19_estadillo_PLANTA_C.csv",
+            "destino": "/salida/PLANTA_C",
         }
-        assert organize._derive_plant(params) == "KL19 - Inspección térmica agosto"
+        assert organize._derive_plant(params) == "PLANTA_C - Inspección térmica agosto"
 
     def test_sin_inspeccion_cae_al_estadillo_sin_extension(self):
-        params = {"estadillo": "/vuelos/2026_08_19_estadillo_KL19.csv", "destino": "/salida/KL19"}
-        assert organize._derive_plant(params) == "2026_08_19_estadillo_KL19"
+        params = {"estadillo": "/vuelos/2026_08_19_estadillo_PLANTA_C.csv", "destino": "/salida/PLANTA_C"}
+        assert organize._derive_plant(params) == "2026_08_19_estadillo_PLANTA_C"
 
     def test_sin_inspeccion_ni_estadillo_cae_al_destino(self):
-        params = {"destino": "/salida/KL19"}
-        assert organize._derive_plant(params) == "KL19"
+        params = {"destino": "/salida/PLANTA_C"}
+        assert organize._derive_plant(params) == "PLANTA_C"
 
 
 class TestTeeLog:

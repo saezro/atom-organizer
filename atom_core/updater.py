@@ -17,6 +17,7 @@ Puntos importantes:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -27,6 +28,7 @@ import sys
 import tempfile
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +42,13 @@ RELEASES_PAGE = f"https://github.com/{REPO}/releases/latest"
 ASSET_RE = re.compile(r"^ATOM-Organizer-Setup-v.+\.exe$", re.IGNORECASE)
 TIMEOUT = 15
 USER_AGENT = "ATOM-Organizer-Updater"
+# Dominios desde los que se acepta descargar (URL inicial y CADA redirección).
+ALLOWED_HOSTS = frozenset({
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+})
+SUMS_NAME = "SHA256SUMS.txt"
 
 
 def current_version() -> str:
@@ -124,17 +133,113 @@ def check() -> dict:
     }
 
 
+class UpdateSecurityError(Exception):
+    """URL fuera de la lista blanca, checksum ausente o que no coincide."""
+
+
+def _check_url(url: str) -> None:
+    """Sólo https y host en ALLOWED_HOSTS. Lanza UpdateSecurityError."""
+    parts = urllib.parse.urlsplit(url or "")
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or host not in ALLOWED_HOSTS:
+        raise UpdateSecurityError(
+            f"URL de descarga no permitida ({parts.scheme}://{host}). "
+            f"Sólo https en: {', '.join(sorted(ALLOWED_HOSTS))}.")
+
+
+def validate_asset_url(url: str) -> str:
+    """Valida que `url` sea un asset de una release del repo propio y devuelve
+    el nombre de fichero seguro (sólo basename, casado con ASSET_RE)."""
+    _check_url(url)
+    parts = urllib.parse.urlsplit(url)
+    prefijo = f"/{REPO}/releases/download/"
+    if parts.hostname.lower() != "github.com" or not parts.path.startswith(prefijo):
+        raise UpdateSecurityError(
+            f"URL de descarga fuera del repo {REPO} (se esperaba {prefijo}...).")
+    resto = parts.path[len(prefijo):].split("/")
+    if len(resto) != 2 or not resto[0] or not resto[1]:
+        raise UpdateSecurityError("URL de descarga con formato de release inesperado.")
+    raw = urllib.parse.unquote(resto[1])
+    name = Path(raw.replace("\\", "/")).name
+    if name != raw or not ASSET_RE.match(name):
+        raise UpdateSecurityError(f"Nombre de instalador no válido: {raw!r}.")
+    return name
+
+
+class _HostCheckRedirect(urllib.request.HTTPRedirectHandler):
+    """Valida el host de cada redirección antes de seguirla."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _check_url(urllib.parse.urljoin(req.full_url, newurl))
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open(url: str):
+    """urlopen con lista blanca en la URL inicial, en cada redirección y en la final."""
+    _check_url(url)
+    opener = urllib.request.build_opener(_HostCheckRedirect)
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    resp = opener.open(req, timeout=TIMEOUT)
+    try:
+        _check_url(resp.geturl())
+    except UpdateSecurityError:
+        resp.close()
+        raise
+    return resp
+
+
+def _parse_sums(text: str, name: str) -> str | None:
+    """Busca `name` en un SHA256SUMS (`<hex>  <nombre>` o `<hex> *<nombre>`)."""
+    for line in text.splitlines():
+        m = re.match(r"^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$", line)
+        if m and m.group(2) == name:
+            return m.group(1).lower()
+    return None
+
+
+def _expected_sha256(url: str, name: str) -> str:
+    """Descarga SHA256SUMS.txt de la MISMA release que `url` y devuelve el hash de `name`."""
+    sums_url = url.rsplit("/", 1)[0] + "/" + SUMS_NAME
+    try:
+        with _open(sums_url) as resp:
+            text = resp.read(1024 * 1024).decode("utf-8", "replace")
+    except UpdateSecurityError:
+        raise
+    except Exception as exc:
+        raise UpdateSecurityError(
+            f"Esta release no publica {SUMS_NAME} (o no se pudo descargar: {exc}). "
+            "No se instala sin verificar la integridad; descarga el instalador "
+            "manualmente desde la página de la release.") from exc
+    digest = _parse_sums(text, name)
+    if not digest:
+        raise UpdateSecurityError(f"{SUMS_NAME} no contiene una línea para {name}. No se instala.")
+    return digest
+
+
 def download(url: str, expected_size: int = 0, progress=None) -> dict:
-    """Descarga el instalador a %TEMP%. `progress(pct, done, total)` opcional."""
+    """Descarga el instalador a %TEMP% y verifica su SHA-256. `progress(pct, done, total)` opcional.
+
+    Aborta (sin fallback) si el host no está permitido, si la release no trae
+    SHA256SUMS.txt o si el hash no coincide; en ese caso el fichero se borra.
+    """
     if not url:
         return {"ok": False, "error": "La release no trae instalador adjunto."}
+    try:
+        name = validate_asset_url(url)
+        expected = _expected_sha256(url, name)
+    except UpdateSecurityError as exc:
+        logger.error("updater: descarga rechazada: %s", exc)
+        return {"ok": False, "error": str(exc)}
+
     dest_dir = Path(tempfile.gettempdir()) / "atom-organizer-update"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / (url.rsplit("/", 1)[-1] or "ATOM-Organizer-Setup.exe")
+    dest = dest_dir / name
+    if dest.resolve().parent != dest_dir.resolve():
+        return {"ok": False, "error": "Ruta de descarga no válida."}
 
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    h = hashlib.sha256()
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp, open(dest, "wb") as fh:
+        with _open(url) as resp, open(dest, "wb") as fh:
             total = int(resp.headers.get("Content-Length") or expected_size or 0)
             done = 0
             while True:
@@ -142,24 +247,38 @@ def download(url: str, expected_size: int = 0, progress=None) -> dict:
                 if not chunk:
                     break
                 fh.write(chunk)
+                h.update(chunk)
                 done += len(chunk)
                 if progress:
                     pct = int(done * 100 / total) if total else 0
                     progress(pct, done, total)
     except Exception as exc:
+        _unlink(dest)
+        logger.error("updater: descarga fallida: %s", exc)
         return {"ok": False, "error": f"Descarga fallida: {exc}"}
 
     # Sanity: el instalador pesa >20 MB; si es menos, algo cortó la descarga
     # (portal cautivo, proxy que devuelve HTML). Mejor fallar aquí que ejecutar basura.
     size = dest.stat().st_size
     if size < 20 * 1024 * 1024 or (expected_size and size != expected_size):
-        try:
-            dest.unlink()
-        except OSError:
-            pass
+        _unlink(dest)
         return {"ok": False, "error": "El fichero descargado está incompleto o corrupto."}
 
-    return {"ok": True, "path": str(dest), "size": size}
+    if h.hexdigest() != expected:
+        _unlink(dest)
+        logger.error("updater: SHA-256 no coincide para %s", name)
+        return {"ok": False, "error": (
+            f"Verificación de integridad fallida: el SHA-256 de {name} no coincide "
+            f"con {SUMS_NAME}. No se instala.")}
+
+    return {"ok": True, "path": str(dest), "size": size, "sha256": expected}
+
+
+def _unlink(p: Path) -> None:
+    try:
+        p.unlink()
+    except OSError:
+        pass
 
 
 # Códigos de salida de Inno Setup que conviene traducir. El 5 es el que salía
@@ -199,7 +318,7 @@ def _install_log_path() -> Path:
         return Path(tempfile.gettempdir()) / "atom-organizer-update" / name
 
 
-def install(path: str, on_failure=None) -> dict:
+def install(path: str, on_failure=None, expected_sha256: str | None = None) -> dict:
     """Lanza el instalador en silencio y deja que cierre/reabra la app.
 
     Flags Inno Setup:
@@ -217,7 +336,7 @@ def install(path: str, on_failure=None) -> dict:
       /LOG="<ruta>"           deja el log de la instalación en la carpeta de logs.
 
     Sobre el `/LOG` (2026-08-04): sin él la instalación era una caja negra —
-    exactamente el mismo agujero que tenía el conversor DJI. Cuando a Daniel le
+    exactamente el mismo agujero que tenía el conversor DJI. Cuando a un usuario le
     saltó el modal y la app no volvió a abrirse, no hubo forma de saber si la
     instalación había ido bien y sólo falló el relanzado, o si había fallado
     entera: `_watch` no sirve para eso, porque cuando la instalación va bien esta
@@ -235,6 +354,22 @@ def install(path: str, on_failure=None) -> dict:
     exe = Path(path)
     if not exe.exists():
         return {"ok": False, "error": "No se encuentra el instalador descargado."}
+    if expected_sha256 is not None:
+        # Recalcula justo antes del Popen: cierra la ventana entre download y
+        # install en la que otro proceso local podría sustituir el .exe.
+        try:
+            h = hashlib.sha256()
+            with open(exe, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    h.update(chunk)
+            actual = h.hexdigest()
+        except OSError as exc:
+            return {"ok": False, "error": f"No se pudo verificar el instalador: {exc}"}
+        if not expected_sha256 or actual != expected_sha256.lower():
+            logger.error("updater: SHA-256 del instalador no coincide antes de ejecutar")
+            return {"ok": False, "error": (
+                "El instalador ha cambiado desde que se verificó (SHA-256 no coincide). "
+                "No se ejecuta.")}
     log_path = _install_log_path()
     try:
         creationflags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW

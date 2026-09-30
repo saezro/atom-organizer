@@ -129,7 +129,7 @@ def api(monkeypatch, tmp_path):
     monkeypatch.setattr(estadillo_mod, "detectar_estadillos",
                         lambda carpeta, **kw: {"rutas": [str(estadillo_falso)],
                                                "descartados": []})
-    monkeypatch.setattr(a, "_subir_objeto_json", lambda remoto, contenido: None)
+    monkeypatch.setattr(a, "_subir_objeto_json", lambda remoto, contenido, **kw: None)
     return a, sink, root
 
 
@@ -384,7 +384,7 @@ def test_verificacion_detecta_objeto_que_falta_y_da_otra_ronda(api, monkeypatch)
 
     manifests = []
     monkeypatch.setattr(a, "_subir_objeto_json",
-                        lambda remoto, contenido: manifests.append(remoto))
+                        lambda remoto, contenido, **kw: manifests.append(remoto))
 
     a.cloud_upload(str(root), prefix="PLANTA_V")
     _esperar_fin(a)
@@ -416,7 +416,7 @@ def test_verificacion_que_nunca_cuadra_no_escribe_manifest(api, monkeypatch):
 
     manifests = []
     monkeypatch.setattr(a, "_subir_objeto_json",
-                        lambda remoto, contenido: manifests.append(remoto))
+                        lambda remoto, contenido, **kw: manifests.append(remoto))
 
     a.cloud_upload(str(root), prefix="PLANTA_W")
     _esperar_fin(a, timeout=20.0)
@@ -444,7 +444,7 @@ def test_listado_caido_no_bloquea_el_manifest_pero_lo_dice(api, monkeypatch):
 
     manifests = []
     monkeypatch.setattr(a, "_subir_objeto_json",
-                        lambda remoto, contenido: manifests.append(remoto))
+                        lambda remoto, contenido, **kw: manifests.append(remoto))
 
     a.cloud_upload(str(root), prefix="PLANTA_Z")
     _esperar_fin(a)

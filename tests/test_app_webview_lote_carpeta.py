@@ -95,7 +95,7 @@ def api(monkeypatch, tmp_path):
     monkeypatch.setattr(estadillo_mod, "detectar_estadillos",
                         lambda carpeta, **kw: {"rutas": [str(estadillo_falso)],
                                                "descartados": []})
-    monkeypatch.setattr(a, "_subir_objeto_json", lambda remoto, contenido: None)
+    monkeypatch.setattr(a, "_subir_objeto_json", lambda remoto, contenido, **kw: None)
     return a, sink, root
 
 

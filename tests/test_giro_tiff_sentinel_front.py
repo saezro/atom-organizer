@@ -1,7 +1,7 @@
 """
 El sentinel `__tif_rot_mode`: distinguir «Sin giro» de «front viejo».
 
-BUG QUE FIJA ESTO (v3.4.5). Con v3.4.4 el log de una corrida real de Daniel
+BUG QUE FIJA ESTO (v3.4.5). Con v3.4.4 el log de una corrida real de un usuario
 mostró `convert_to_tiff_rotate_auto: False` dentro de `[advanced]`, y ese dato
 NO cierra el diagnóstico: el dict que manda el front es EXACTAMENTE el mismo en
 dos escenarios opuestos —

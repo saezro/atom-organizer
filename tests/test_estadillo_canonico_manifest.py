@@ -21,17 +21,17 @@ def _validacion():
 
 def test_manifest_lleva_version_y_planta():
     m = ec.construir_manifest(
-        planta="MARISOLES_LOS MANGOS",
+        planta="PLANTA_J",
         subido_en=datetime(2026, 8, 17, 3, 45, 1, tzinfo=timezone.utc),
-        subido_por="daniel@aerotools.es",
+        subido_por="pilotob@ejemplo.com",
         ficheros=_ficheros(),
         validacion=_validacion(),
     )
 
     assert m["version"] == 1
-    assert m["planta"] == "MARISOLES_LOS_MANGOS"
+    assert m["planta"] == "PLANTA_J"
     assert m["subido_en"] == "2026-08-17T034501Z"
-    assert m["subido_por"] == "daniel@aerotools.es"
+    assert m["subido_por"] == "pilotob@ejemplo.com"
 
 
 def test_manifest_conserva_nombre_original_como_metadato():
@@ -80,7 +80,7 @@ def test_normalizado_usa_el_shape_que_acepta_la_suite():
     vuelos = [
         {
             "fecha": "2026-08-17",
-            "piloto": "Daniel",
+            "piloto": "PilotoB",
             "equipo_vuelo": "E1",
             "pb": "1",
             "num_vuelo": "1",

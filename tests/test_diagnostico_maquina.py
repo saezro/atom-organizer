@@ -71,7 +71,7 @@ def test_tipo_disco_linux_ssd_en_caja_usb_rpm_0_es_ssd(monkeypatch):
     _parchea_linux_rotational(
         monkeypatch, "1\n", udev="E:ID_BUS=ata\nE:ID_ATA_ROTATION_RATE_RPM=0\nG:systemd\n"
     )
-    assert dm.tipo_disco("/media/pi/USB_HDD/KL19")["tipo"] == "SSD"
+    assert dm.tipo_disco("/media/pi/USB_HDD/PLANTA_C")["tipo"] == "SSD"
 
 
 def test_tipo_disco_linux_hdd_con_rpm_sigue_hdd(monkeypatch):

@@ -1,14 +1,14 @@
-"""Regla de Rodrigo (2026-09-28, caso KL88): una planta con
-`plantas_pv.orientacion = 'Horizontal'` NUNCA se gira -ángulo 0 para todas
+"""Regla del responsable (2026-09-28, caso de una planta): una planta con
+orientación 'Horizontal' NUNCA se gira -ángulo 0 para todas
 sus imágenes, sea cual sea el GimbalYaw-. El resto de orientaciones
 ('Vertical', 'Varias') y la orientación desconocida siguen el consenso por
 yaw de siempre (`atom_core.indice._consenso_de_angulo_por_vuelo`).
 
-Yaws de este test: reales de KL88 (`plantas_pv` id 1959, orientacion=
+Yaws de este test: de una planta real (orientacion=
 'Horizontal'), leídos del índice real de la organización del 2026-09-28
-(`INDICE_KL88_ORGANIZADO_PRUEBA.xlsx`, hoja `Imagenes`): PB1_V1 (yaw~16.2,
+(`INDICE_<PLANTA>_ORGANIZADO_PRUEBA.xlsx`, hoja `Imagenes`): PB1_V1 (yaw~16.2,
 860 imágenes → 90º con la regla vieja), PB2_V1 (yaw~-52.5, 1120 imágenes →
-270º con la regla vieja) y GENERALES/KL88 (yaw~18.4, 6 imágenes → 90º con la
+270º con la regla vieja) y GENERALES/<PLANTA> (yaw~18.4, 6 imágenes → 90º con la
 regla vieja). Con `orientacion='Horizontal'` las tres deben quedar en 0.
 
 Mismo estilo que `tests/test_indice_organizado.py`: dobles a mano, sin
@@ -87,7 +87,7 @@ def _cfg(tmp_path, **overrides):
         cropping_rgb=False, cropping_mode_auto=True, crop_percentage="50",
         gen_meta_location=False, gen_thumbnails=False, seconds_range=5.0,
         include_v=True, calculate_proyected_distance=False, flight_height=0.0,
-        # Bandas reales de KL88 (`utils.ROTATION_YAW_MARGIN=80`, ver la
+        # Bandas de una planta Horizontal (`utils.ROTATION_YAW_MARGIN=80`, ver la
         # task): yaw~16.2 y yaw~-52.5 caen dentro del margen de giro.
         gen_thumbnails_rotate_90=False, gen_thumbnails_add_to_angle=80,
         gen_thumbnails_max_error=50, gen_thumbnails_subs_to_angle=80,
@@ -120,8 +120,8 @@ def _manifiesto(tmp_path, nombre="manifiesto.db"):
     return m
 
 
-def _preparar_dos_vuelos_kl88(tmp_path, **overrides):
-    """PB1_V1 (yaw~16.2) y PB2_V1 (yaw~-52.5), los dos vuelos reales de KL88
+def _preparar_dos_vuelos_planta_e(tmp_path, **overrides):
+    """PB1_V1 (yaw~16.2) y PB2_V1 (yaw~-52.5), los dos vuelos de una planta Horizontal
     que en el organizado del 2026-09-28 giraron por consenso de yaw (90º y
     270º respectivamente). Una imagen de cada uno basta: el consenso por
     mayoría con una sola imagen por vuelo ya decide la banda."""
@@ -154,12 +154,12 @@ def _preparar_dos_vuelos_kl88(tmp_path, **overrides):
     return filas, ruta_pb1, ruta_pb2
 
 
-def test_orientacion_horizontal_nunca_gira_con_yaws_reales_de_kl88(tmp_path):
-    """KL88 (`plantas_pv.orientacion='Horizontal'`): con la regla vieja el
+def test_orientacion_horizontal_nunca_gira_con_yaws_reales_de_planta_e(tmp_path):
+    """Planta Horizontal (orientacion='Horizontal'): con la regla vieja el
     PB1_V1 giraba a 90º y el PB2_V1 a 270º (860+1120 imágenes reales, ver
     docstring del módulo). Con `orientacion='Horizontal'` ambos deben
     quedar en 0, pase lo que pase con el yaw."""
-    filas, ruta_pb1, ruta_pb2 = _preparar_dos_vuelos_kl88(tmp_path, orientacion="Horizontal")
+    filas, ruta_pb1, ruta_pb2 = _preparar_dos_vuelos_planta_e(tmp_path, orientacion="Horizontal")
     assert filas[ruta_pb1]["angulo_giro"] == 0
     assert filas[ruta_pb2]["angulo_giro"] == 0
 
@@ -168,7 +168,7 @@ def test_orientacion_vertical_mantiene_consenso_por_yaw(tmp_path):
     """`orientacion='Vertical'` (o cualquier otra que no sea 'Horizontal')
     no cambia nada: sigue el consenso por yaw de siempre, igual que
     `test_todas_las_filas_de_un_vuelo_comparten_angulo`."""
-    filas, ruta_pb1, ruta_pb2 = _preparar_dos_vuelos_kl88(tmp_path, orientacion="Vertical")
+    filas, ruta_pb1, ruta_pb2 = _preparar_dos_vuelos_planta_e(tmp_path, orientacion="Vertical")
     assert filas[ruta_pb1]["angulo_giro"] == 90
     assert filas[ruta_pb2]["angulo_giro"] == 270
 

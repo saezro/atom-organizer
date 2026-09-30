@@ -23,7 +23,7 @@ const { default: KioskScreen } = await import('./KioskScreen.jsx')
 
 const STATUS = {
   logged_in: true,
-  email: 'rebeca@aerotools.es',
+  email: 'rebeca@ejemplo.com',
   picture: 'https://ejemplo/foto.jpg',
   validada_en: 1756000000,
   pendientes: 3,
@@ -46,7 +46,7 @@ describe('pantalla de perfil del kiosco', () => {
     pintar()
     const foto = screen.getByTestId('kiosk-perfil-foto')
     expect(foto.getAttribute('src')).toBe('https://ejemplo/foto.jpg')
-    expect(screen.getByText('rebeca@aerotools.es')).toBeTruthy()
+    expect(screen.getByText('rebeca@ejemplo.com')).toBeTruthy()
   })
 
   it('sin foto cae a la inicial del email', () => {
@@ -80,13 +80,13 @@ describe('pantalla de perfil del kiosco', () => {
   it('muestra el nombre cuando status.nombre viene informado', () => {
     pintar({ ...STATUS, nombre: 'Rebeca García' })
     expect(screen.getByTestId('kiosk-perfil-nombre').textContent).toBe('Rebeca García')
-    expect(screen.getByText('rebeca@aerotools.es')).toBeTruthy()
+    expect(screen.getByText('rebeca@ejemplo.com')).toBeTruthy()
   })
 
   it('sin nombre no pinta el elemento y el email se sigue viendo', () => {
     pintar({ ...STATUS, nombre: '' })
     expect(screen.queryByTestId('kiosk-perfil-nombre')).toBeNull()
-    expect(screen.getByText('rebeca@aerotools.es')).toBeTruthy()
+    expect(screen.getByText('rebeca@ejemplo.com')).toBeTruthy()
   })
 
   it('con nombre ausente tampoco pinta el elemento', () => {

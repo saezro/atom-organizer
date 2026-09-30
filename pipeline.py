@@ -379,7 +379,7 @@ def rotate_one_image(image_name: str, input_folder: str, degrees, quality: int) 
 
 # --- Separación RGB / térmica en paralelo (fase 1) ---------------------------
 # Era la fase más cara del proceso entero y la última grande que seguía en un bucle
-# secuencial: 188 ms por imagen RGB medidos sobre ANTOLIN, de los que el 94 % es el
+# secuencial: 188 ms por imagen RGB medidos sobre PLANTA_B, de los que el 94 % es el
 # decode+encode de `compress_image`. Reutiliza los stand-ins de la rotación
 # (`_WorkerLogger`, `_CollectingProgress`), porque el problema es el mismo: ni el logger
 # de fichero ni los signals de Qt cruzan a un proceso hijo.
@@ -3235,7 +3235,7 @@ class SplitImages:
         if not (rotate_90 or rotate_minus_90 or auto_rotate):
             # Salida silenciosa NO: los tres flags a False es indistinguible, desde el
             # log, de "el criterio salió 0" o de "el paso ni se ejecutó". Costó una
-            # ronda entera de diagnóstico con Daniel (v3.4.3): el TIFF salía sin girar
+            # ronda entera de diagnóstico con un usuario (v3.4.3): el TIFF salía sin girar
             # y aquí no se giraba nada, sin una sola línea que dijera por qué.
             progress_callback.emit(
                 "\nNo se giran los JPG térmicos: el modo de giro del TIFF está en «Sin giro» "
@@ -3657,7 +3657,7 @@ class SplitImages:
                         # cwd = carpeta del SDK. Es lo correcto (libdirp.dll lee
                         # `libv_list.ini` por nombre relativo, o sea contra el CWD, para
                         # saber qué libv_*.dll cargar), pero que quede claro que NO era la
-                        # causa del fallo de LA_ISLA, aunque el commit que lo introdujo lo
+                        # causa del fallo de PLANTA_G, aunque el commit que lo introdujo lo
                         # diera por hecho: con este cwd el SDK arranca bien y aun asi falla.
                         # Log de la corrida del 2026-08-04 15:12 ya con 3.2.6:
                         #     DIRP API version number : 0x13          <- el SDK carga OK

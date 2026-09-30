@@ -537,7 +537,7 @@ class GeneralInformationFromImage:
         es como se venía haciendo. Cada una de las dos abría el JPEG con pyexiv2 y lo
         REESCRIBÍA entero: dos pasadas completas sobre un fichero de 5-20 MB para grabar
         once claves que caben en un único `modify_xmp`. Medido sobre las RGB reales de
-        ANTOLIN: 19,8 ms -> 8,4 ms por imagen. En Windows la diferencia es mayor, porque
+        PLANTA_B: 19,8 ms -> 8,4 ms por imagen. En Windows la diferencia es mayor, porque
         cada reescritura dispara el escaneo del antivirus.
 
         Las dos funciones originales se mantienen: hay tests y otros puntos del pipeline
@@ -1108,7 +1108,7 @@ class MetaLocation:
 
         # El location.csv NO se copia a la carpeta del vuelo térmico: describe las imágenes
         # RGB (`_W`) y en `TERMICA/<PBX>/<PBX_VXX>/` es un duplicado byte a byte del que ya
-        # está en `RGB/<PBX>/<PBX_VXX>/`. Daniel lo reportó como salida sobrante (v3.4.6).
+        # está en `RGB/<PBX>/<PBX_VXX>/`. Un usuario lo reportó como salida sobrante (v3.4.6).
         # El par meta+location sigue llegando junto a `CSVs/`, que es donde se consulta:
         # `SplitImages.copy_flight_csvs_to_csvs_folder` lee el location de la carpeta RGB
         # hermana, no de TERMICA, así que esto no le afecta.

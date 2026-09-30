@@ -19,21 +19,21 @@ def _auth(tmp_path):
 def test_save_da_de_alta_el_perfil_con_email(tmp_path):
     auth, store = _auth(tmp_path)
     auth._refresh_token = TOKEN
-    auth._identity = Identity(email="uno@aerotools.es", domain="aerotools.es",
+    auth._identity = Identity(email="uno@ejemplo.com", domain="ejemplo.com",
                               picture="https://example/foto.png", nombre="Uno")
 
     auth._save()
 
     perfiles = store.listar_perfiles()
     assert len(perfiles) == 1
-    assert perfiles[0].email == "uno@aerotools.es"
+    assert perfiles[0].email == "uno@ejemplo.com"
     assert perfiles[0].nombre == "Uno"
     assert perfiles[0].picture == "https://example/foto.png"
     assert perfiles[0].tiene_credencial is True
     # También sigue guardando la sesión activa, comportamiento previo intacto.
     sesion = store.leer()
     assert sesion is not None
-    assert sesion.email == "uno@aerotools.es"
+    assert sesion.email == "uno@ejemplo.com"
 
 
 def test_save_sin_identity_no_da_de_alta_perfil_pero_guarda_sesion(tmp_path):
@@ -52,7 +52,7 @@ def test_save_sin_identity_no_da_de_alta_perfil_pero_guarda_sesion(tmp_path):
 def test_save_no_lanza_si_el_catalogo_de_perfiles_peta(tmp_path, monkeypatch):
     auth, store = _auth(tmp_path)
     auth._refresh_token = TOKEN
-    auth._identity = Identity(email="uno@aerotools.es", domain="aerotools.es")
+    auth._identity = Identity(email="uno@ejemplo.com", domain="ejemplo.com")
 
     def _guardar_perfil_roto(*args, **kwargs):
         raise RuntimeError("disco lleno")
@@ -63,4 +63,4 @@ def test_save_no_lanza_si_el_catalogo_de_perfiles_peta(tmp_path, monkeypatch):
     auth._save()
     sesion = store.leer()
     assert sesion is not None
-    assert sesion.email == "uno@aerotools.es"
+    assert sesion.email == "uno@ejemplo.com"

@@ -25,20 +25,20 @@ def _fuente(nombre: str) -> str:
         return fh.read()
 
 
-UNA = ins.Inspeccion(empresa="Antolin", planta="Los Mangos", anio="2026",
+UNA = ins.Inspeccion(empresa="Planta_B", planta="Planta J", anio="2026",
                      tipo="T_Modulos", id=416, fase="Confirmada")
 
 
 # --- montar y desmontar ------------------------------------------------------
 
 def test_el_prefijo_sale_de_los_campos_de_la_inspeccion():
-    assert UNA.prefijo == "Antolin--Los_Mangos--2026--T_Modulos"
+    assert UNA.prefijo == "Planta_B--Planta_J--2026--T_Modulos"
 
 
 def test_el_prefijo_se_desmonta_en_los_mismos_campos():
     v = ins.parse_prefijo(UNA.prefijo)
     assert (v.empresa, v.planta, v.anio, v.tipo) == (
-        "Antolin", "Los_Mangos", "2026", "T_Modulos")
+        "Planta_B", "Planta_J", "2026", "T_Modulos")
 
 
 def test_acentos_y_enes_no_llegan_al_bucket():
@@ -63,8 +63,8 @@ def test_un_guion_dentro_de_un_campo_no_rompe_el_desmontaje():
 def test_un_campo_que_falta_deja_hueco_marcado():
     """Siempre cuatro piezas: si se colapsaran, `parse` tendría que adivinar
     cuál falta."""
-    p = ins.Inspeccion(empresa="Antolin", anio="2026", tipo="T_Modulos").prefijo
-    assert p == "Antolin--_--2026--T_Modulos"
+    p = ins.Inspeccion(empresa="Planta_B", anio="2026", tipo="T_Modulos").prefijo
+    assert p == "Planta_B--_--2026--T_Modulos"
     assert ins.parse_prefijo(p).planta == ""
 
 
@@ -73,10 +73,10 @@ def test_una_inspeccion_sin_nada_no_da_prefijo():
 
 
 def test_un_prefijo_ajeno_no_se_inventa_una_inspeccion():
-    """`ANTOLIN/` ya existe en el bucket de antes de este cambio, y el operador
+    """`PLANTA_B/` ya existe en el bucket de antes de este cambio, y el operador
     puede teclear una inspección a mano: eso no es una inspección parseable, y
     fingir que sí daría datos falsos."""
-    assert ins.parse_prefijo("ANTOLIN") is None
+    assert ins.parse_prefijo("PLANTA_B") is None
     assert ins.parse_prefijo("a--b--c") is None
     assert ins.parse_prefijo("") is None
 
@@ -118,7 +118,7 @@ def _falsa_descarga(payload, capturado: dict):
 
 def test_el_catalogo_se_pide_a_la_suite_con_el_id_token(monkeypatch):
     """La app se autentica con el `id_token`, NO con el access token de Storage:
-    el backend verifica el JWT contra Google y exige `hd=aerotools.es`. Mandar
+    el backend verifica el JWT contra Google y exige `hd=ejemplo.com`. Mandar
     aquí el access token daría 401 y nadie sabría por qué."""
     cap: dict = {}
     monkeypatch.setattr(ins.urllib.request, "urlopen", _falsa_descarga(
@@ -208,7 +208,7 @@ def test_la_ui_recibe_prefijo_y_etiqueta_ya_hechos():
     implementación de la regla."""
     d = UNA.to_dict()
     assert d["prefijo"] == UNA.prefijo
-    assert "Antolin" in d["etiqueta"] and "Confirmada" in d["etiqueta"]
+    assert "Planta_B" in d["etiqueta"] and "Confirmada" in d["etiqueta"]
 
 
 # --- cableado ----------------------------------------------------------------

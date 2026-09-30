@@ -38,7 +38,7 @@ ESTADO_LOTES = "lotes_carpetas.json"
 
 
 def nombre_lote(ahora: datetime, usuario: str) -> str:
-    """Timestamp UTC + usuario saneado: `2026-08-20T154210Z__rodrigo_saez`.
+    """Timestamp UTC + usuario saneado: `2026-08-20T154210Z__usuario_a`.
 
     Idéntico byte a byte al `nombreLote` de `Atom-suite/lib/organizer-lotes.js`
     (mismo sello sin dos puntos, mismo separador `__`, mismo saneado de

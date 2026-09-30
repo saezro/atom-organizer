@@ -4,6 +4,7 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 const cloudStatusMock = vi.fn()
 const cloudLoginMock = vi.fn()
 const cloudLogoutMock = vi.fn()
+const cloudLoginPasswordMock = vi.fn()
 const listarPerfilesMock = vi.fn()
 
 vi.mock('../bridge.js', () => ({
@@ -11,6 +12,7 @@ vi.mock('../bridge.js', () => ({
     cloudStatus: (...args) => cloudStatusMock(...args),
     cloudLogin: (...args) => cloudLoginMock(...args),
     cloudLogout: (...args) => cloudLogoutMock(...args),
+    cloudLoginPassword: (...args) => cloudLoginPasswordMock(...args),
     // Se ejerce en PantallaEntrada.test.jsx, no aquí: el hook solo necesita
     // no romperse si el bridge la expone (fail-soft ya cubierto si no).
     listarPerfiles: (...args) => listarPerfilesMock(...args),
@@ -32,6 +34,7 @@ beforeEach(() => {
   cloudStatusMock.mockReset()
   cloudLoginMock.mockReset()
   cloudLogoutMock.mockReset()
+  cloudLoginPasswordMock.mockReset()
   listarPerfilesMock.mockReset()
   localStorage.clear()
   cloudStatusMock.mockResolvedValue({ ok: true, configured: true, logged_in: false })
@@ -201,5 +204,41 @@ describe('useSesion', () => {
     await waitFor(() => expect(result.current.cargando).toBe(false))
     expect(result.current.entrado).toBe(false)
     expect(result.current.error).toBe('Consentimiento cancelado.')
+  })
+
+  it('loginPassword ok refresca la sesión', async () => {
+    const { result } = renderHook(() => useSesion())
+    await waitFor(() => expect(result.current.cargando).toBe(false))
+    cloudLoginPasswordMock.mockResolvedValue({ ok: true })
+    cloudStatusMock.mockResolvedValue({ ok: true, configured: true, logged_in: true, email: 'a@x.com' })
+    let res
+    await act(async () => { res = await result.current.loginPassword('ana', 'pw') })
+    expect(cloudLoginPasswordMock).toHaveBeenCalledWith('ana', 'pw')
+    expect(res).toBe(true)
+    await waitFor(() => expect(result.current.entrado).toBe(true))
+  })
+
+  it('loginPassword con fallo expone el mensaje del backend', async () => {
+    const { result } = renderHook(() => useSesion())
+    await waitFor(() => expect(result.current.cargando).toBe(false))
+    cloudLoginPasswordMock.mockResolvedValue({ ok: false, error: 'Credenciales inválidas' })
+    let res
+    await act(async () => { res = await result.current.loginPassword('ana', 'mal') })
+    expect(res).toBe(false)
+    expect(result.current.error).toBe('Credenciales inválidas')
+    expect(result.current.entrado).toBe(false)
+  })
+
+  it('loginPassword no espera eventos atom:cloud: la respuesta síncrona basta', async () => {
+    const { result } = renderHook(() => useSesion())
+    await waitFor(() => expect(result.current.cargando).toBe(false))
+    const espia = vi.spyOn(window, 'addEventListener')
+    cloudLoginPasswordMock.mockResolvedValue({ ok: true, started: true })
+    cloudStatusMock.mockResolvedValue({ ok: true, configured: true, logged_in: true, email: 'a@x.com' })
+    let res
+    await act(async () => { res = await result.current.loginPassword('ana', 'pw') })
+    expect(res).toBe(true)
+    expect(espia.mock.calls.some(([t]) => t === 'atom:cloud')).toBe(false)
+    espia.mockRestore()
   })
 })

@@ -72,11 +72,20 @@ REVOKE_URI = "https://oauth2.googleapis.com/revoke"
 # La env existe por lo mismo que en `inspecciones.py`: apuntar a dev sin recompilar.
 SUITE_URL = os.environ.get("ATOM_SUITE_URL") or "https://suite.atom-uas.com"
 BROKER_TOKEN_URI = f"{SUITE_URL}/api/organizer/token"
+# Modo "password": usuario/contraseña de la Suite -> `sesion` opaca -> gcs-token por prefijo.
+LOGIN_URI = f"{SUITE_URL}/api/auth/login"
+LOGOUT_URI = f"{SUITE_URL}/api/auth/logout"
+GCS_TOKEN_URI = f"{SUITE_URL}/api/organizer/gcs-token"
+# Clave de `meta` donde se guarda la caducidad de la sesión password (la tabla
+# `sesion` no tiene columna para ello y no se toca `session_store`).
+META_SESION_EXPIRA = "sesion_password_expira"
+META_ACCESO_MODULOS = "sesion_password_acceso_modulos"
 
 # Modos de sesión guardados en `session_store` (columna `modo`, no `backend`:
 # esa ya significaba "con qué se cifró la fila").
 MODO_GOOGLE = "google"
 MODO_BROKER = "broker"
+MODO_PASSWORD = "password"
 
 # No existe un scope "solo escribir" en Cloud Storage: `read_write` es el mínimo
 # práctico. Quien acota de verdad es IAM — con `roles/storage.objectCreator`
@@ -241,12 +250,13 @@ class GoogleAuth:
                  scopes: tuple[str, ...] = SCOPES,
                  store_path: Path | None = None,
                  store: SessionStore | None = None,
-                 broker_only: bool = False):
+                 broker_only: bool = False,
+                 sin_cliente: bool = False):
         # `broker_only`: la Raspberry Pi construye esta instancia sin cliente
         # OAuth (nunca lo tendrá, ver docstring de clase), así que aquí no hay
         # `client_id`/`client_secret` que exigir. En el resto de equipos (el
         # escritorio de verdad) el `raise` de abajo sigue intacto.
-        if not client_id and not broker_only:
+        if not client_id and not broker_only and not sin_cliente:
             raise ValueError("client_id vacío")
         self.client_id = client_id
         self.client_secret = client_secret
@@ -270,8 +280,17 @@ class GoogleAuth:
         self._id_token: str | None = None
         self._identity: Identity | None = None
         self._validada_en: float | None = None
+        # Modo password: caducidad de la `sesion` de la Suite y caché de tokens
+        # de GCS por prefijo ({prefix: (token, expires_at)}).
+        self._sesion_expira: float = 0.0
+        self._gcs_cache: dict[str, tuple[str, float]] = {}
+        self._gcs_prefijos: dict[str, str] = {}
+        self._acceso_modulos: dict | None = None
         self._aviso_store: str | None = None
         self.broker_only = bool(broker_only)
+        # Escritorio sin `google_client.json`: solo sirve el modo password
+        # (no usa OAuth). `login()` de Google sigue sin poder funcionar.
+        self.sin_cliente = bool(sin_cliente)
         # 'google' por defecto: hasta que no se llame a `pair()`, esta instancia
         # se comporta exactamente igual que antes de que existiera el broker.
         # Salvo en `broker_only`: ahí no hay flujo Google posible (no hay
@@ -300,6 +319,27 @@ class GoogleAuth:
                 if self._aviso_store is None:
                     self._aviso_store = aviso_lectura
                 return
+        if sesion.modo == MODO_PASSWORD:
+            # La sesión password caduca a diario y no se renueva: si ya pasó su
+            # `expires_at` (o no consta), es como no tener sesión.
+            try:
+                expira = float(self._store.meta_get(META_SESION_EXPIRA) or 0)
+            except Exception:  # noqa: BLE001
+                expira = 0.0
+            if time.time() >= expira:
+                try:
+                    self._store.borrar()
+                    self._store.meta_set(META_SESION_EXPIRA, None)
+                except Exception:  # noqa: BLE001
+                    pass
+                return
+            self._sesion_expira = expira
+            try:
+                raw = self._store.meta_get(META_ACCESO_MODULOS)
+                am = json.loads(raw) if raw else None
+                self._acceso_modulos = am if isinstance(am, dict) else None
+            except Exception:  # noqa: BLE001
+                self._acceso_modulos = None
         self._refresh_token = sesion.refresh_token
         self._validada_en = sesion.validada_en
         self._modo = sesion.modo or MODO_GOOGLE
@@ -352,7 +392,12 @@ class GoogleAuth:
         # funcionó y ya dejó la sesión activa guardada arriba.
         if email:
             try:
-                self._store.guardar_perfil(email, self._refresh_token,
+                # En modo password el perfil se recuerda SIN credencial: la
+                # sesión caduca a diario, así que al volver a entrar hay que
+                # pedir la contraseña otra vez (`activar_perfil` devuelve False).
+                self._store.guardar_perfil(
+                    email,
+                    None if self._modo == MODO_PASSWORD else self._refresh_token,
                                            modo=self._modo, picture=picture,
                                            nombre=nombre)
             except Exception:  # noqa: BLE001 - el catálogo es secundario a la sesión
@@ -366,6 +411,15 @@ class GoogleAuth:
         self._id_token = None
         self._expires_at = 0.0
         self._validada_en = None
+        self._sesion_expira = 0.0
+        self._gcs_cache = {}
+        self._gcs_prefijos = {}
+        self._acceso_modulos = None
+        try:
+            self._store.meta_set(META_SESION_EXPIRA, None)
+            self._store.meta_set(META_ACCESO_MODULOS, None)
+        except Exception:  # noqa: BLE001
+            pass
         # En una instancia `broker_only` no hay vuelta al modo google: sin
         # cliente OAuth ese flujo no puede completarse nunca en este equipo.
         self._modo = MODO_BROKER if self.broker_only else MODO_GOOGLE
@@ -407,6 +461,27 @@ class GoogleAuth:
         """
         return self._refresh_token if self._modo == MODO_BROKER else None
 
+    @property
+    def acceso_modulos(self) -> dict | None:
+        """`{organizer, estadillos}` del login en modo password; `None` en
+        Google/broker (todo visible) o si la Suite no lo devolvió."""
+        if self._modo != MODO_PASSWORD:
+            return None
+        return dict(self._acceso_modulos) if self._acceso_modulos is not None else None
+
+    @property
+    def es_password(self) -> bool:
+        """¿La sesión actual es usuario/contraseña de la Suite?"""
+        return self._modo == MODO_PASSWORD
+
+    @property
+    def sesion_token(self) -> str | None:
+        """`sesion` de la Suite, solo en modo password y mientras no caduque."""
+        if (self._modo == MODO_PASSWORD and self._refresh_token
+                and time.time() < self._sesion_expira):
+            return self._refresh_token
+        return None
+
     def verificar(self) -> tuple[bool, str]:
         """¿Sigue viva la sesión? Pregunta a Google — hace red.
 
@@ -416,6 +491,11 @@ class GoogleAuth:
         """
         if not self._refresh_token:
             return False, "No hay sesión iniciada."
+        if self._modo == MODO_PASSWORD:
+            # Sin refresh posible ni prefijo con el que pedir token: basta la caducidad.
+            if self.sesion_token is None:
+                return False, "Sesión caducada, vuelve a entrar con tu usuario"
+            return True, "Sesión válida."
         try:
             self.access_token(force_refresh=True)
         except AuthError as exc:
@@ -438,6 +518,8 @@ class GoogleAuth:
     def login(self, *, open_browser=abrir_en_navegador,
               timeout: int = LOGIN_TIMEOUT) -> Identity:
         """Abre el navegador, espera el consentimiento y guarda la sesión."""
+        if self.sin_cliente:
+            raise AuthError("Falta el cliente OAuth de Google (google_client.json).")
         if self.broker_only:
             # Sin `client_id`/`client_secret` no hay nada que abrir: fallar
             # rápido en vez de mandar al navegador (que aquí ni existe, es la
@@ -533,7 +615,7 @@ class GoogleAuth:
         """Empareja este equipo con la Suite (modo broker, Raspberry Pi).
 
         No hay canje con Google aquí: el `device_token` lo emite la Suite tras
-        el consentimiento OAuth que hizo Rodrigo desde el móvil escaneando el
+        el consentimiento OAuth que hizo el responsable desde el móvil escaneando el
         QR (ver `app_webview.cloud_pair_poll`). Lo único que hace esta llamada
         es guardar ese token como si fuera la credencial de sesión — igual que
         `login()` guarda el `refresh_token` — pero marcando `modo='broker'`
@@ -571,6 +653,80 @@ class GoogleAuth:
                 pass
         return identidad
 
+    def login_password(self, usuario: str, password: str) -> Identity:
+        """Entra con usuario/email y contraseña de la Suite (modo password).
+
+        La contraseña solo viaja en el body de este POST: no se guarda, no se
+        loguea y no entra en ningún mensaje de error. Lo que se guarda es la
+        `sesion` opaca que devuelve la Suite (caduca a diario, sin refresh).
+        """
+        usuario = (usuario or "").strip()
+        if not usuario or not password:
+            raise AuthError("Escribe tu usuario y contraseña")
+        campo = "email" if "@" in usuario else "usuario"
+        body = json.dumps({campo: usuario, "password": password,
+                           "app": "organizer"}).encode()
+        req = urllib.request.Request(
+            LOGIN_URI, data=body, method="POST",
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+                cuerpo = resp.read().decode()
+        except urllib.error.HTTPError as exc:
+            codigo = _codigo_de_error(exc)
+            if exc.code == 401:
+                raise AuthError("Usuario o contraseña incorrectos") from None
+            if exc.code == 403:
+                if codigo == "sin_modulo_organizer":
+                    raise AuthError("Tu cuenta no tiene acceso al Organizer") from None
+                raise AuthError("Acceso denegado por ATOM Suite") from None
+            if exc.code == 429:
+                raise AuthError("Demasiados intentos, espera unos minutos") from None
+            if exc.code == 400:
+                raise AuthError("Datos de acceso no válidos") from None
+            raise AuthError(f"ATOM Suite devolvió un error ({exc.code})") from None
+        except (urllib.error.URLError, OSError):
+            raise AuthError("Sin conexión con la Suite") from None
+        try:
+            datos = json.loads(cuerpo) if cuerpo else {}
+        except ValueError:
+            datos = {}
+        sesion = datos.get("sesion")
+        if not sesion:
+            raise AuthError("ATOM Suite no devolvió una sesión")
+        u = datos.get("usuario") or {}
+        email = u.get("email") or (usuario if "@" in usuario else "")
+        if not email:
+            email = usuario
+        identidad = Identity(email=email, domain=email.rsplit("@", 1)[-1],
+                             nombre=u.get("nombre") or "")
+        with self._lock:
+            self._refresh_token = sesion
+            self._modo = MODO_PASSWORD
+            self._identity = identidad
+            self._aviso_store = None
+            self._access_token = None
+            self._id_token = None
+            self._expires_at = 0.0
+            self._gcs_cache = {}
+            self._gcs_prefijos = {}
+            am = datos.get("acceso_modulos")
+            self._acceso_modulos = ({"organizer": bool(am.get("organizer")),
+                                     "estadillos": bool(am.get("estadillos"))}
+                                    if isinstance(am, dict) else None)
+            self._sesion_expira = _parse_expira(datos.get("expires_at"))
+            self._validada_en = time.time()
+            self._save()
+            try:
+                self._store.meta_set(META_SESION_EXPIRA, repr(self._sesion_expira))
+                self._store.meta_set(META_ACCESO_MODULOS,
+                                     json.dumps(self._acceso_modulos)
+                                     if self._acceso_modulos is not None else None)
+                self._store.marcar_validada(self._validada_en)
+            except Exception:  # noqa: BLE001
+                pass
+        return identidad
+
     def logout(self) -> None:
         """Olvida la sesión local y revoca el refresh token en Google."""
         logger.info("logout: cierre de sesión explícito del usuario.")
@@ -580,10 +736,21 @@ class GoogleAuth:
             # refresh_token de Google: mandarlo a `REVOKE_URI` no revocaría
             # nada (no es un token de Google) y solo lo pasearía sin motivo.
             # La revocación del device_token es cosa de la Suite, no de aquí.
-            revocar_en_google = token and self._modo != MODO_BROKER
+            cerrar_en_suite = token if self._modo == MODO_PASSWORD else None
+            revocar_en_google = token and self._modo not in (MODO_BROKER, MODO_PASSWORD)
             self._identity = None
             self._aviso_store = None
             self._olvidar_local()
+        if cerrar_en_suite:
+            try:
+                req = urllib.request.Request(
+                    LOGOUT_URI, data=b"{}", method="POST",
+                    headers={"Authorization": f"Bearer {cerrar_en_suite}",
+                             "Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=TIMEOUT):
+                    pass
+            except Exception:  # noqa: BLE001 - cerrar en la Suite es cortesía
+                pass
         if revocar_en_google:
             try:
                 self._post(REVOKE_URI, {"token": token})
@@ -591,13 +758,24 @@ class GoogleAuth:
                 pass
 
     # -- tokens -----------------------------------------------------------
-    def access_token(self, *, force_refresh: bool = False) -> str:
+    def access_token(self, *, force_refresh: bool = False,
+                     prefix: str | None = None,
+                     inspeccion_id: int | None = None,
+                     planta_id: int | None = None,
+                     ambito: str | None = None) -> str:
         """Token válido para llamar a la API de Cloud Storage.
 
         Se refresca solo. Es lo que hace viable una subida de horas: el token
         de acceso de Google vive 1 h, bastante menos que un vuelo grande.
+
+        `prefix`/`inspeccion_id`/`planta_id`/`ambito` solo se usan en modo
+        password (token de GCS acotado a un prefijo); en google/broker se
+        ignoran.
         """
         with self._lock:
+            if self._modo == MODO_PASSWORD and self._refresh_token:
+                return self._gcs_token_password(prefix, inspeccion_id, force_refresh,
+                                                planta_id=planta_id, ambito=ambito)
             vigente = (self._access_token
                        and time.time() < self._expires_at - EXPIRY_MARGIN)
             if vigente and not force_refresh:
@@ -623,7 +801,7 @@ class GoogleAuth:
         """`id_token` vigente de Google, para autenticarse ante ATOM Suite.
 
         El backend (`GET /api/organizer/inspecciones`) verifica este JWT contra
-        las claves públicas de Google y exige `hd=aerotools.es`. Es lo que evita
+        las claves públicas de Google y exige `hd=ejemplo.com`. Es lo que evita
         meter un secreto de larga vida en un `.exe` público: el id_token caduca
         en 1 h y se renueva con el mismo refresh que ya usa la subida.
 
@@ -632,6 +810,8 @@ class GoogleAuth:
         una llamada de red extra.
         """
         with self._lock:
+            if self._modo == MODO_PASSWORD:
+                raise AuthError("El modo usuario/contraseña no usa id_token de Google.")
             vigente = (self._id_token
                        and time.time() < self._expires_at - EXPIRY_MARGIN)
             if vigente:
@@ -679,6 +859,97 @@ class GoogleAuth:
                     f"La sesión de Google ya no es válida ({detalle}). "
                     "Vuelve a iniciar sesión.") from exc
             raise AuthError(f"Google devolvió un error ({exc.code}): {detalle}") from exc
+
+    def prefijo_estadillos(self, planta_id: int | None,
+                           inspeccion_id: int | None = None) -> str:
+        """Prefijo de estadillos de la planta, decidido por la Suite (modo
+        password). Pide el token si aún no se conoce. Sin `planta_id` o sin
+        `inspeccion_id` falla."""
+        with self._lock:
+            self.access_token(planta_id=planta_id, inspeccion_id=inspeccion_id,
+                              ambito="estadillos")
+            return self._gcs_prefijos[f"@estadillos:{planta_id}:{inspeccion_id}"]
+
+    def _gcs_token_password(self, prefix, inspeccion_id, force_refresh, *,
+                            planta_id=None, ambito=None) -> str:
+        """Token de GCS por prefijo, pedido a la Suite con la `sesion` (Bearer).
+
+        Con `ambito="estadillos"` se pide por `planta_id` + `inspeccion_id`
+        (sin prefijo): el prefijo lo decide el servidor y se guarda en
+        `_gcs_prefijos`. La Suite exige una inspección visible y vigente."""
+        if ambito:
+            if ambito != "estadillos":
+                raise AuthError(f"Ámbito de GCS no soportado: {ambito}")
+            if planta_id is None:
+                raise AuthError(
+                    "Falta el id de la planta para acceder a los estadillos: "
+                    "elige la inspección en la lista.")
+            if inspeccion_id is None:
+                raise AuthError(
+                    "Falta el id de la inspección para acceder a los estadillos: "
+                    "elige la inspección en la lista.")
+            clave = f"@estadillos:{planta_id}:{inspeccion_id}"
+            cuerpo_req = {"planta_id": planta_id, "inspeccion_id": inspeccion_id,
+                          "ambito": ambito}
+        else:
+            if not prefix:
+                raise AuthError("Falta el prefijo para pedir acceso a GCS")
+            clave = prefix
+            cuerpo_req = {"inspeccion_id": inspeccion_id, "prefix": prefix}
+        if self.sesion_token is None:
+            self._olvidar_local()
+            raise AuthError("Sesión caducada, vuelve a entrar con tu usuario")
+        en_cache = self._gcs_cache.get(clave)
+        if (en_cache and not force_refresh
+                and time.time() < en_cache[1] - EXPIRY_MARGIN
+                and (not ambito or clave in self._gcs_prefijos)):
+            return en_cache[0]
+        req = urllib.request.Request(
+            GCS_TOKEN_URI, method="POST",
+            data=json.dumps(cuerpo_req).encode(),
+            headers={"Authorization": f"Bearer {self._refresh_token}",
+                     "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+                cuerpo = resp.read().decode()
+        except urllib.error.HTTPError as exc:
+            detalle = _mensaje_de_error(exc)
+            if exc.code == 401:
+                logger.warning("gcs-token: la Suite devolvió 401 (sesión caducada).")
+                self._olvidar_local()
+                raise AuthError(
+                    "Sesión caducada, vuelve a entrar con tu usuario") from exc
+            if exc.code == 403:
+                raise AuthError(f"Acceso denegado a GCS: {detalle}") from exc
+            if exc.code == 404 and ambito:
+                raise AuthError(f"Planta no encontrada: {detalle}") from exc
+            if exc.code == 400 and ambito:
+                raise AuthError(
+                    f"Inspección no indicada o no válida para los estadillos: {detalle}") from exc
+            if exc.code == 400:
+                raise AuthError(f"Prefijo no válido: {detalle}") from exc
+            raise AuthError(
+                f"ATOM Suite devolvió un error ({exc.code}): {detalle}") from exc
+        except (urllib.error.URLError, OSError) as exc:
+            raise AuthError("Sin conexión con la Suite") from exc
+        try:
+            datos = json.loads(cuerpo) if cuerpo else {}
+        except ValueError:
+            raise AuthError(
+                "ATOM Suite devolvió una respuesta no válida al pedir el acceso a GCS"
+            ) from None
+        if not isinstance(datos, dict):
+            raise AuthError(
+                "ATOM Suite devolvió una respuesta no válida al pedir el acceso a GCS")
+        if not datos.get("ok") or not datos.get("access_token"):
+            raise AuthError("ATOM Suite no pudo emitir un access_token.")
+        if ambito:
+            if not datos.get("prefix"):
+                raise AuthError("ATOM Suite no devolvió el prefijo de estadillos.")
+            self._gcs_prefijos[clave] = datos["prefix"]
+        caduca = time.time() + float(datos.get("expires_in", 3600))
+        self._gcs_cache[clave] = (datos["access_token"], caduca)
+        return datos["access_token"]
 
     def _broker_token_request(self) -> dict:
         """Pide el access_token a ATOM Suite en vez de a Google (modo broker).
@@ -733,6 +1004,43 @@ def _mensaje_de_error(exc: urllib.error.HTTPError) -> str:
         return data.get("error_description") or data.get("error") or str(exc.code)
     except Exception:  # noqa: BLE001
         return str(exc.code)
+
+
+def _codigo_de_error(exc: urllib.error.HTTPError) -> str:
+    try:
+        return str(json.loads(exc.read().decode()).get("error") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _parse_expira(valor) -> float:
+    """`expires_at` de la Suite (epoch s/ms o ISO 8601) -> epoch en segundos.
+
+    Si no viene o no se entiende, se asume la caducidad diaria de las 03:00
+    Europe/Madrid (o 12 h si no hay base de zonas horarias).
+    """
+    try:
+        if isinstance(valor, (int, float)):
+            v = float(valor)
+            return v / 1000 if v > 1e11 else v
+        if isinstance(valor, str) and valor:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(valor.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        ahora = datetime.now(ZoneInfo("Europe/Madrid"))
+        prox = ahora.replace(hour=3, minute=0, second=0, microsecond=0)
+        if prox <= ahora:
+            prox += timedelta(days=1)
+        return prox.timestamp()
+    except Exception:  # noqa: BLE001
+        return time.time() + 12 * 3600
 
 
 def _identidad_de_id_token(id_token: str) -> Identity | None:

@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 from atom_core.cloud_config import prefijo_desde_carpeta
 
 # Cuelga de la planta en el bucket de ENTRADA (`BUCKET_DATOS`), que es el único
-# donde escriben las cuentas de oficina: `ofi@aerotools.es` no tiene ningún
-# binding IAM en `plantas_pv_nl`, así que la app de escritorio no puede dejar
+# donde escriben las cuentas de oficina: `ofi@ejemplo.com` no tiene ningún
+# binding IAM en el bucket de plantas, así que la app de escritorio no puede dejar
 # nada ahí. Sin `PREPARACION/` a propósito: esa jerarquía es del bucket de
 # destino, y el de entrada ya usa `<PLANTA>/ESTADILLOS/` (regla de Cas).
 PREFIJO_ESTADILLOS = "ESTADILLOS"
@@ -92,6 +92,7 @@ def plan_subida(
     validacion: dict,
     ahora: datetime,
     subido_por: str | None = None,
+    base: str | None = None,
 ) -> list[dict]:
     """Objetos a escribir, EN ORDEN.
 
@@ -99,7 +100,8 @@ def plan_subida(
     "subida completa", así que una subida cortada deja la carpeta inválida
     sin necesidad de estado extra.
     """
-    base = prefijo_planta(planta)
+    # `base`: raíz decidida por la Suite (modo password); si no, la canónica.
+    base = base.strip("/") if base else prefijo_planta(planta)
     carpeta = carpeta_subida(ahora)
 
     ficheros_manifest = []

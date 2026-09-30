@@ -5,7 +5,7 @@ from atom_core import validacion_vuelos
 
 def _vuelo(pb="1", num_vuelo="1", fecha="2026-09-20", inicio="09:00:00", final="09:20:00", **extra):
     d = {
-        "fecha": fecha, "piloto": "Rebeca", "equipo_vuelo": "M300",
+        "fecha": fecha, "piloto": "PilotoA", "equipo_vuelo": "M300",
         "pb": pb, "num_vuelo": num_vuelo, "hora_inicio": inicio, "hora_fin": final,
     }
     d.update(extra)

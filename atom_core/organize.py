@@ -822,7 +822,7 @@ def run_task(
         # rutas). Se corta AQUÍ con la UNIÓN de los estadillos autodetectados
         # en la carpeta de origen y los que el usuario haya aportado a mano en
         # el campo de la UI —NUNCA solo autodetección: `detectar_estadillos`
-        # falla en algunos lotes (KL91) y si el usuario aporta la ruta el lote
+        # falla en algunos lotes (PLANTA_F) y si el usuario aporta la ruta el lote
         # tiene que poder organizarse.
         #
         # Se evalúa DESPUÉS de `plant`/`plan` (no antes, como en su día): el
@@ -843,7 +843,7 @@ def run_task(
                                "name": plan_names[0] if plan_names else "Índice",
                                "prev": None})
                 # NUNCA se coge el estadillo del padre en automático (decisión
-                # de Rodrigo, caso Marcos): si hay candidatos sueltos ahí se
+                # del responsable): si hay candidatos sueltos ahí se
                 # avisa con su ruta completa, pero no se usan solos.
                 _candidatos_padre = detectar_estadillos_en_padre(
                     getattr(cfg, "input_folder", "") or "")["rutas"]
@@ -995,7 +995,7 @@ def run_task(
                 # `intervalo_latido`, y el último snapshot de un run cae casi
                 # siempre ahí: el run terminaba `ok` con `items_hechos` clavado
                 # en el penúltimo múltiplo de IMAGE_EMIT_EVERY (2194 de 2516
-                # reales en el e2e de ANTOLIN). Esta marca es la única forma de
+                # reales en el e2e de PLANTA_B). Esta marca es la única forma de
                 # saltarse el throttle, y sin ella un shard de menos de
                 # IMAGE_EMIT_EVERY imágenes acaba persistiendo 0.
                 snapshot = {**snapshot, "final": True}

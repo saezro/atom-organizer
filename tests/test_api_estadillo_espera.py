@@ -76,7 +76,7 @@ def test_iniciar_calcula_fotos_en_hilo_aparte(api, monkeypatch, tmp_path):
         lambda carpeta: (3, "2026-09-20T08:00:00", "2026-09-20T09:10:00"),
     )
 
-    res = api.estadillo_espera_iniciar(str(tmp_path), {"planta": "KL05"})
+    res = api.estadillo_espera_iniciar(str(tmp_path), {"planta": "PLANTA_A"})
     assert res == {"ok": True}
 
     estado = _esperar_calculo(api)
@@ -86,7 +86,7 @@ def test_iniciar_calcula_fotos_en_hilo_aparte(api, monkeypatch, tmp_path):
         "total": 3, "primera": "2026-09-20T08:00:00",
         "ultima": "2026-09-20T09:10:00", "calculando": False,
     }
-    assert estado["inspeccion"] == {"planta": "KL05"}
+    assert estado["inspeccion"] == {"planta": "PLANTA_A"}
     assert estado["recibido"] is False
     assert "red" in estado
     assert "ips" in estado["red"]
@@ -189,7 +189,7 @@ def test_recibir_sin_espera_activa_no_escribe_nada(api):
 
 def _vuelo(vuelo, inicio, final):
     return {
-        "Trabajo": "KL05", "Fecha": "2026:09:20", "Piloto": "Rebeca",
+        "Trabajo": "PLANTA_A", "Fecha": "2026:09:20", "Piloto": "PilotoA",
         "PB": "1", "Vuelo": vuelo, "Hora_de_inicio": inicio, "Hora_final": final,
         "Termica": "1", "RGB": "1", "Vuelo_abortado": "No",
         "dron": "M300", "GB1": f"GB1_{vuelo}", "GB2": f"GB2_{vuelo}",
@@ -201,7 +201,7 @@ def test_recibir_convierte_json_valida_y_marca_recibido(api, monkeypatch, tmp_pa
     monkeypatch.setattr(google_auth_mod, "estadillos_recibidos_dir",
                          lambda: tmp_path / "estadillos_recibidos")
 
-    api.estadillo_espera_iniciar(str(tmp_path / "fotos"), {"planta": "KL05"})
+    api.estadillo_espera_iniciar(str(tmp_path / "fotos"), {"planta": "PLANTA_A"})
     _esperar_calculo(api)
 
     vuelos = [_vuelo("1", "09:00:00", "09:20:00"), _vuelo("2", "09:25:00", "09:40:00")]
@@ -213,8 +213,8 @@ def test_recibir_convierte_json_valida_y_marca_recibido(api, monkeypatch, tmp_pa
     # disco): sin EXIF que leer, `_estadillo_filtrar_por_tarjeta` no filtra
     # nada -los 2 vuelos llegan igual- y avisa.
     assert res["resumen"] == {
-        "planta": "KL05", "fecha": "2026:09:20", "fechas": ["2026:09:20"],
-        "pilotos": ["Rebeca"], "drones": ["M300"], "n_vuelos": 2,
+        "planta": "PLANTA_A", "fecha": "2026:09:20", "fechas": ["2026:09:20"],
+        "pilotos": ["PilotoA"], "drones": ["M300"], "n_vuelos": 2,
         "vuelos": [
             {"pb": "1", "vuelo": "1", "fecha": "2026:09:20",
              "inicio": "09:00:00", "final": "09:20:00", "cruza_medianoche": False},
@@ -251,7 +251,7 @@ def test_recibido_con_caduca_en_pasado_sigue_mostrando_recibido_ok(api, monkeypa
     reloj = {"t": datetime(2026, 9, 21, 10, 0, 0, tzinfo=_TZ)}
     api._estadillo_reloj = lambda: reloj["t"]
 
-    api.estadillo_espera_iniciar(str(tmp_path / "fotos"), {"planta": "KL05"}, segundos=60)
+    api.estadillo_espera_iniciar(str(tmp_path / "fotos"), {"planta": "PLANTA_A"}, segundos=60)
     _esperar_calculo(api)
 
     vuelos = [_vuelo("1", "09:00:00", "09:20:00")]
@@ -281,7 +281,7 @@ def test_iniciar_nueva_espera_reinicia_recibido_previo(api, monkeypatch, tmp_pat
     monkeypatch.setattr(google_auth_mod, "estadillos_recibidos_dir",
                          lambda: tmp_path / "estadillos_recibidos")
 
-    api.estadillo_espera_iniciar(str(tmp_path / "fotos"), {"planta": "KL05"})
+    api.estadillo_espera_iniciar(str(tmp_path / "fotos"), {"planta": "PLANTA_A"})
     _esperar_calculo(api)
 
     vuelos = [_vuelo("1", "09:00:00", "09:20:00")]
@@ -289,7 +289,7 @@ def test_iniciar_nueva_espera_reinicia_recibido_previo(api, monkeypatch, tmp_pat
     assert res["ok"] is True
     assert api.estadillo_espera_estado()["recibido"] is True
 
-    api.estadillo_espera_iniciar(str(tmp_path / "fotos2"), {"planta": "KL05"})
+    api.estadillo_espera_iniciar(str(tmp_path / "fotos2"), {"planta": "PLANTA_A"})
     _esperar_calculo(api)
 
     estado = api.estadillo_espera_estado()
@@ -393,7 +393,7 @@ def test_recibir_ok_guarda_resumen_en_el_estado(api, monkeypatch, tmp_path):
     monkeypatch.setattr(exif_mod, "rango_horas_exif", lambda carpeta: (0, None, None))
     monkeypatch.setattr(google_auth_mod, "user_data_dir", lambda: tmp_path)
 
-    api.estadillo_espera_iniciar(str(tmp_path / "fotos"), {"planta": "KL05"})
+    api.estadillo_espera_iniciar(str(tmp_path / "fotos"), {"planta": "PLANTA_A"})
     _esperar_calculo(api)
 
     vuelos = [_vuelo("1", "09:00:00", "09:20:00")]
@@ -402,7 +402,7 @@ def test_recibir_ok_guarda_resumen_en_el_estado(api, monkeypatch, tmp_path):
     estado = api.estadillo_espera_estado()
     assert estado["fase"] == "recibido_ok"
     assert estado["resumen"]["n_vuelos"] == 1
-    assert estado["resumen"]["planta"] == "KL05"
+    assert estado["resumen"]["planta"] == "PLANTA_A"
 
 
 # ---- validacion vuelos<->fotos (atom_core.validacion_vuelos) --------------
@@ -417,7 +417,7 @@ def test_recibir_calcula_validacion_contra_fotos_reales(api, monkeypatch, tmp_pa
         lambda c: [datetime(2026, 9, 20, 9, 5, 0)] if c == str(carpeta) else [],
     )
 
-    api.estadillo_espera_iniciar(str(carpeta), {"planta": "KL05"})
+    api.estadillo_espera_iniciar(str(carpeta), {"planta": "PLANTA_A"})
     _esperar_calculo(api)
 
     vuelos = [_vuelo("1", "09:00:00", "09:20:00")]
@@ -441,7 +441,7 @@ def test_recibir_avisa_de_vuelo_sin_fotos(api, monkeypatch, tmp_path):
     carpeta.mkdir()
     monkeypatch.setattr(exif_mod, "listar_horas_exif", lambda c: [])
 
-    api.estadillo_espera_iniciar(str(carpeta), {"planta": "KL05"})
+    api.estadillo_espera_iniciar(str(carpeta), {"planta": "PLANTA_A"})
     _esperar_calculo(api)
 
     vuelos = [_vuelo("1", "09:00:00", "09:20:00")]
@@ -471,7 +471,7 @@ def test_recibir_marca_pendiente_si_el_escaneo_exif_tarda(api, monkeypatch, tmp_
     # aqui a 0 para no alargar el test.
     monkeypatch.setattr(app_webview.Api, "_ESTADILLO_VALIDACION_TIMEOUT_S", 0)
 
-    api.estadillo_espera_iniciar(str(carpeta), {"planta": "KL05"})
+    api.estadillo_espera_iniciar(str(carpeta), {"planta": "PLANTA_A"})
     _esperar_calculo(api)
 
     vuelos = [_vuelo("1", "09:00:00", "09:20:00")]

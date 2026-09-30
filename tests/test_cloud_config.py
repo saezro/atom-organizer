@@ -74,8 +74,8 @@ def test_el_secret_no_esta_en_el_repo():
 
 
 @pytest.mark.parametrize("nombre,esperado", [
-    ("ANTOLIN", "ANTOLIN"),
-    ("MARISOLES_LOS MANGOS", "MARISOLES_LOS_MANGOS"),   # espacio real en BD
+    ("PLANTA_B", "PLANTA_B"),
+    ("PLANTA_J", "PLANTA_J"),   # espacio real en BD
     ("OCAÑA", "OCANA"),                                  # eñe real en BD
     ("  vuelo 2025  ", "vuelo_2025"),
     ("a//b", "a_b"),

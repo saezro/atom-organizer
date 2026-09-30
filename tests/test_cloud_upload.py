@@ -197,13 +197,13 @@ def test_build_plan_conserva_subcarpetas_y_descarta_basura(tmp_path):
         "notas.docx": b"no es de vuelo",
     })
 
-    plan = cu.build_plan(root, prefix="vuelos/antolin")
+    plan = cu.build_plan(root, prefix="vuelos/planta_b")
     remotos = sorted(i.remote for i in plan.items)
 
     assert remotos == [
-        "vuelos/antolin/DJI_202608/DJI_0001_T.JPG",
-        "vuelos/antolin/DJI_202608/DJI_0001_W.JPG",
-        "vuelos/antolin/location.csv",
+        "vuelos/planta_b/DJI_202608/DJI_0001_T.JPG",
+        "vuelos/planta_b/DJI_202608/DJI_0001_W.JPG",
+        "vuelos/planta_b/location.csv",
     ]
     assert plan.total_bytes == 10 + 20 + len(b"lat,lon\n")
 

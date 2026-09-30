@@ -8,7 +8,7 @@ Lo que estos tests sujetan:
 
 1. Que `--etapa todo` — el default, y lo que usan la app de escritorio y la GUI
    Qt — siga llamando a las MISMAS fases que antes de que existieran las etapas.
-   El troceado no puede cambiar el producto que Daniel prueba en Windows.
+   El troceado no puede cambiar el producto que un usuario prueba en Windows.
 2. Que cada etapa ejecute lo suyo y NADA más. Si `post` arrastrase la separación,
    las 8 tareas volverían a copiar el vuelo entero 8 veces.
 3. Que el checklist de fases que ve el usuario cuente sobre las fases de SU etapa

@@ -1,6 +1,6 @@
 # Setup de entorno (NO es un Step de test, es instrucción de instalación):
 #
-# Desde /home/rodrigo_saez/atom-organizer-src/src-v2.1.5 :
+# Desde <raíz del repo> :
 #   python3 -m venv .venv-test
 #   source .venv-test/bin/activate
 #   pip install pytest piexif Pillow numpy pandas natsort exifread pyexiv2

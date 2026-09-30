@@ -2,7 +2,7 @@
 La fase 1 (separación RGB / térmica) pasa de bucle secuencial a `utils.run_batch`.
 
 Es la fase más cara del proceso: 188 ms por imagen medidos sobre las RGB reales de
-ANTOLIN, de los que el 94 % es el decode+encode de `compress_image`. Iba imagen a
+PLANTA_B, de los que el 94 % es el decode+encode de `compress_image`. Iba imagen a
 imagen mientras el resto de la máquina miraba.
 
 Paralelizarla mete los riesgos que fijan estos tests, ninguno visible leyendo el código:

@@ -19,7 +19,7 @@ const api = {
   cloudStatus: vi.fn(async () => ({
     configured: true,
     logged_in: true,
-    email: 'operador@aerotools.es',
+    email: 'operador@ejemplo.com',
     bucket: 'datos-para-organizar',
   })),
   cloudVerify: vi.fn(async () => ({ ok: true })),

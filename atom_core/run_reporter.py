@@ -101,6 +101,13 @@ class RunReporter:
             device_token = getattr(self._auth, "device_token", None) if self._auth is not None else None
             if device_token:
                 req.add_header("X-Organizer-Device", device_token)
+            elif self._auth is not None and getattr(self._auth, "es_password", False):
+                # Modo usuario/contraseña: `sesion` de la Suite como Bearer.
+                sesion = self._auth.sesion_token
+                if not sesion:
+                    from atom_core.google_auth import AuthError
+                    raise AuthError("Sesión caducada, vuelve a entrar con tu usuario")
+                req.add_header("Authorization", f"Bearer {sesion}")
             elif self._auth is not None:
                 req.add_header("Authorization", f"Bearer {self._auth.id_token()}")
             elif self._secreto:

@@ -1,7 +1,7 @@
 """El location.csv NO se duplica dentro de la carpeta del vuelo térmico.
 
 Hasta v3.4.6, `gen_meta_location` copiaba el `<vuelo>_location.csv` de la carpeta RGB
-hermana dentro de `TERMICA/<PBX>/<PBX_VXX>/`. Daniel lo reportó como salida sobrante: ese
+hermana dentro de `TERMICA/<PBX>/<PBX_VXX>/`. Un usuario lo reportó como salida sobrante: ese
 CSV lista las imágenes `_W` (RGB), no las `_T`, y era un duplicado byte a byte del que ya
 está en `RGB/<PBX>/<PBX_VXX>/`. En TERMICA se queda solo el `_meta.csv`, que sí describe
 sus imágenes.

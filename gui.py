@@ -4,7 +4,7 @@
             la información generada en los vuelos.
 
  Versión 1.x-2.1.5 (2023):  Manuel Álvarez Souto
- Versión 3.x (2026- ):      Rodrigo Sáez Escobar — Aerotools-UAV
+ Versión 3.x (2026- ):      Aerotools / ATOM
                             Rediseño y desarrollo: nueva interfaz webview,
                             pipeline de rotación, conversor DJI, empaquetado
                             multiplataforma y actualizador automático.

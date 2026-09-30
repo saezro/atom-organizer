@@ -56,25 +56,25 @@ def _falso_listado(items, capturado: dict):
 def test_prefijo_libre_devuelve_cero(monkeypatch):
     cap: dict = {}
     monkeypatch.setattr(cu.urllib.request, "urlopen", _falso_listado([], cap))
-    assert cu.objetos_en_prefijo("datos_para_organizar", "ANTOLIN", _Auth()) == 0
-    assert "prefix=ANTOLIN%2F" in cap["url"]
+    assert cu.objetos_en_prefijo("datos_para_organizar", "PLANTA_B", _Auth()) == 0
+    assert "prefix=PLANTA_B%2F" in cap["url"]
     assert cap["auth"] == "Bearer tok"
 
 
 def test_prefijo_ocupado_lo_dice(monkeypatch):
     cap: dict = {}
     monkeypatch.setattr(cu.urllib.request, "urlopen",
-                        _falso_listado([{"name": "ANTOLIN/DJI_0001.JPG"}], cap))
-    assert cu.objetos_en_prefijo("datos_para_organizar", "ANTOLIN", _Auth()) == 1
+                        _falso_listado([{"name": "PLANTA_B/DJI_0001.JPG"}], cap))
+    assert cu.objetos_en_prefijo("datos_para_organizar", "PLANTA_B", _Auth()) == 1
 
 
 def test_el_prefijo_consultado_termina_en_barra(monkeypatch):
-    """Sin la barra, «ANTOLIN» casaría también con «ANTOLIN_2», y una carpeta
+    """Sin la barra, «PLANTA_B» casaría también con «PLANTA_B_2», y una carpeta
     nueva parecería ocupada por otra que no tiene nada que ver."""
     cap: dict = {}
     monkeypatch.setattr(cu.urllib.request, "urlopen", _falso_listado([], cap))
-    cu.objetos_en_prefijo("b", "ANTOLIN", _Auth())
-    assert "ANTOLIN%2F" in cap["url"]
+    cu.objetos_en_prefijo("b", "PLANTA_B", _Auth())
+    assert "PLANTA_B%2F" in cap["url"]
 
 
 def test_un_fallo_de_consulta_no_se_confunde_con_vacio(monkeypatch):
@@ -85,7 +85,7 @@ def test_un_fallo_de_consulta_no_se_confunde_con_vacio(monkeypatch):
 
     monkeypatch.setattr(cu.urllib.request, "urlopen", revienta)
     with pytest.raises(urllib.error.HTTPError):
-        cu.objetos_en_prefijo("b", "ANTOLIN", _Auth())
+        cu.objetos_en_prefijo("b", "PLANTA_B", _Auth())
 
 
 # --- Cableado del bridge -----------------------------------------------------

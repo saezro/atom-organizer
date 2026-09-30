@@ -19,8 +19,8 @@ def test_carpetas_de_subida_ordenan_alfabeticamente_por_tiempo():
 
 
 def test_prefijo_planta_normaliza_el_nombre():
-    assert ec.prefijo_planta("MARISOLES_LOS MANGOS") == (
-        "MARISOLES_LOS_MANGOS/ESTADILLOS"
+    assert ec.prefijo_planta("PLANTA_J") == (
+        "PLANTA_J/ESTADILLOS"
     )
 
 

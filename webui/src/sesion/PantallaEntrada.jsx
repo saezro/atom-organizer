@@ -68,10 +68,13 @@ function TilePerfil({ perfil, editando, onEntrar, onQuitar }) {
 // shell viejo): remonta la webview entera para que `useSesion` relea el
 // `cloud_status`, y es el único camino de entrada que hace eso — por eso NO
 // debe ser el habitual.
-export default function PantallaEntrada({ onGoogle, onInvitado, cargando, error, onPerfilActivado }) {
+export default function PantallaEntrada({ onGoogle, onInvitado, cargando, error, onPerfilActivado, onPassword }) {
   const [perfiles, setPerfiles] = useState(null) // null = aún sin respuesta
   const [editando, setEditando] = useState(false)
   const [activando, setActivando] = useState(false)
+  const [usuario, setUsuario] = useState('')
+  const [password, setPassword] = useState('')
+  const [enviando, setEnviando] = useState(false)
 
   useEffect(() => {
     let vivo = true
@@ -104,6 +107,17 @@ export default function PantallaEntrada({ onGoogle, onInvitado, cargando, error,
     // Sin confirmación ni error: es una decisión de producto, no un fallo
     // que haya que explicarle al operador.
     onGoogle()
+  }
+
+  const enviarPassword = async (ev) => {
+    ev.preventDefault()
+    if (!onPassword || enviando || !usuario.trim() || !password) return
+    setEnviando(true)
+    try {
+      await onPassword(usuario.trim(), password)
+    } finally {
+      setEnviando(false)
+    }
   }
 
   const quitar = async (email) => {
@@ -186,6 +200,38 @@ export default function PantallaEntrada({ onGoogle, onInvitado, cargando, error,
             Entrar sin cuenta
           </button>
         </div>
+      )}
+
+      {onPassword && (
+        <form className="entrada-acciones entrada-form" onSubmit={enviarPassword}>
+          <input
+            type="text"
+            className="glass-input"
+            placeholder="Usuario o correo"
+            aria-label="Usuario o correo"
+            autoComplete="username"
+            value={usuario}
+            onChange={(e) => setUsuario(e.target.value)}
+            disabled={enviando}
+          />
+          <input
+            type="password"
+            className="glass-input"
+            placeholder="Contraseña"
+            aria-label="Contraseña"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            disabled={enviando}
+          />
+          <button
+            type="submit"
+            className="btn-run entrada-btn"
+            disabled={enviando || !usuario.trim() || !password}
+          >
+            {enviando ? 'Entrando…' : 'Entrar'}
+          </button>
+        </form>
       )}
 
       {error && <p className="entrada-error">{error}</p>}

@@ -20,7 +20,7 @@ from atom_core.lotes import (
 
 def test_nombre_lote_igual_que_la_suite():
     ahora = datetime(2026, 8, 20, 15, 42, 10, tzinfo=timezone.utc)
-    assert nombre_lote(ahora, "rodrigo.saez") == "2026-08-20T154210Z__rodrigo_saez"
+    assert nombre_lote(ahora, "usuario.a") == "2026-08-20T154210Z__usuario_a"
 
 
 def test_nombre_lote_sin_usuario():
@@ -42,16 +42,16 @@ def test_nombre_lote_convierte_a_utc_si_viene_en_otra_zona():
     from datetime import timedelta
     ahora_local = datetime(2026, 8, 20, 17, 42, 10,
                            tzinfo=timezone(timedelta(hours=2)))
-    assert nombre_lote(ahora_local, "rodrigo.saez") == "2026-08-20T154210Z__rodrigo_saez"
+    assert nombre_lote(ahora_local, "usuario.a") == "2026-08-20T154210Z__usuario_a"
 
 
 def test_manifest_lote_v2():
-    m = manifest_lote("L", "rodrigo.saez", ["ESTADILLOS/e.csv"], 91)
+    m = manifest_lote("L", "usuario.a", ["ESTADILLOS/e.csv"], 91)
     assert m["version"] == 2
     assert m["lote"] == "L"
     assert m["estadillos"] == ["ESTADILLOS/e.csv"]
     assert m["num_objetos"] == 91
-    assert m["subido_por"] == "rodrigo.saez"
+    assert m["subido_por"] == "usuario.a"
     assert m["subido_en"].endswith("Z")
 
 

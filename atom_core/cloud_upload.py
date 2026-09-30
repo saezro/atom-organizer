@@ -4,7 +4,7 @@ Pieza cliente de la arquitectura "la app solo sube, el server organiza": en vez
 de procesar las ~1300 imágenes en el PC del usuario, se suben en bruto a un
 bucket y el procesado ocurre en Cloud Run.
 
-Números que condicionan TODO el diseño (medidos sobre el vuelo ANTOLIN,
+Números que condicionan TODO el diseño (medidos sobre el vuelo PLANTA_B,
 2026-08-05): un vuelo son **8,7 GB / 2530 ficheros** (2,1 GB de térmicas `_T` +
 6,5 GB de RGB, y las RGB también se procesan, así que no se pueden descartar).
 A 300 Mbps de subida eso son ~4 min; a 50 Mbps, ~23. De ahí que aquí importe
@@ -38,11 +38,11 @@ más la robustez de la transferencia que cualquier microoptimización:
 
 Uso típico::
 
-    auth = GoogleAuth(CLIENT_ID, CLIENT_SECRET, hosted_domain="aerotools.es")
+    auth = GoogleAuth(CLIENT_ID, CLIENT_SECRET, hosted_domain="ejemplo.com")
     if not auth.is_logged_in():
         auth.login()
 
-    plan = build_plan(Path(r"D:/Vuelos/ANTOLIN"), prefix="vuelos/antolin")
+    plan = build_plan(Path(r"D:/Vuelos/PLANTA_B"), prefix="vuelos/planta_b")
     result = upload_plan(plan, GcsOAuthProvider("aerotools-vuelos", auth),
                          on_progress=print)
     if not result.ok:
@@ -99,7 +99,7 @@ _CHUNK_MULTIPLE = 256 * 1024
 CHUNK_SIZE = 16 * 1024 * 1024
 assert CHUNK_SIZE % _CHUNK_MULTIPLE == 0
 
-# Subidas simultáneas. Medido sobre ANTOLIN (2518 ficheros, 8,5 GB) el
+# Subidas simultáneas. Medido sobre PLANTA_B (2518 ficheros, 8,5 GB) el
 # 2026-08-06: con 4 la línea se pasa el rato esperando round-trips (cada
 # fichero paga la apertura de sesión resumable) y no se satura ni una conexión
 # mala. Misma red, mismo momento: 4 → 4,4 Mbps · 16 → 11 Mbps. Por cable, 16
@@ -186,7 +186,7 @@ def build_plan(root: Path, prefix: str = "", *,
                on_progress=None, should_stop=None) -> UploadPlan:
     """Recorre `root` y construye el plan de subida.
 
-    `prefix` es la carpeta destino dentro del bucket (p.ej. `vuelos/antolin`).
+    `prefix` es la carpeta destino dentro del bucket (p.ej. `vuelos/planta_b`).
     La estructura de subcarpetas del vuelo se conserva tal cual: el server
     necesita saber qué imagen venía de qué carpeta `DJI_*`.
 
@@ -249,9 +249,44 @@ def agregar_estadillos(plan: UploadPlan, rutas: Iterable[str]) -> list[str]:
     return relativas
 
 
+def token_gcs(auth, prefix: str | None = None, *,
+              inspeccion_id: int | None = None,
+              planta_id: int | None = None,
+              ambito: str | None = None,
+              force_refresh: bool = False) -> str:
+    """`auth.access_token(...)` pasando `prefix`/`inspeccion_id` solo en modo
+    password (token de GCS acotado a un prefijo). En Google/broker la llamada
+    es la de siempre. Sin prefijo en modo password, `access_token` falla con un
+    error explícito: no hay fallback."""
+    kw: dict = {}
+    if force_refresh:
+        kw["force_refresh"] = True
+    if getattr(auth, "es_password", False) and ambito:
+        # Ámbito estadillos: sin prefijo (lo decide la Suite), pero con la
+        # planta y la inspección concreta (la Suite valida visibilidad y
+        # vigencia de esa inspección; sin ella responde 400).
+        kw["planta_id"] = planta_id
+        kw["inspeccion_id"] = inspeccion_id
+        kw["ambito"] = ambito
+    elif getattr(auth, "es_password", False):
+        if inspeccion_id is None:
+            # La Suite exige `inspeccion_id` (400 inspeccion-id-requerido):
+            # se corta aquí con un error legible, nunca un listado vacío.
+            from atom_core.google_auth import AuthError
+            raise AuthError("Falta el id de la inspección para pedir el token "
+                            "de GCS en modo usuario/contraseña.")
+        kw["prefix"] = prefix
+        kw["inspeccion_id"] = inspeccion_id
+    return auth.access_token(**kw)
+
+
 def objetos_en_prefijo(bucket: str, prefix: str, auth, *,
                        base: str = "https://storage.googleapis.com",
-                       timeout: int = TIMEOUT) -> int:
+                       timeout: int = TIMEOUT,
+                       token_prefix: str | None = None,
+                       inspeccion_id: int | None = None,
+                       planta_id: int | None = None,
+                       ambito: str | None = None) -> int:
     """Cuántos objetos hay ya bajo `prefix` (se corta al llegar a unos pocos).
 
     Existe para no pisar datos en silencio: dos vuelos distintos pueden generar
@@ -270,7 +305,7 @@ def objetos_en_prefijo(bucket: str, prefix: str, auth, *,
     })
     url = f"{base.rstrip('/')}/storage/v1/b/{urllib.parse.quote(bucket)}/o?{q}"
     req = urllib.request.Request(url, method="GET")
-    req.add_header("Authorization", f"Bearer {auth.access_token()}")
+    req.add_header("Authorization", f"Bearer {token_gcs(auth, token_prefix or prefix, inspeccion_id=inspeccion_id, planta_id=planta_id, ambito=ambito)}")
     req.add_header("User-Agent", USER_AGENT)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode("utf-8") or "{}")
@@ -279,7 +314,11 @@ def objetos_en_prefijo(bucket: str, prefix: str, auth, *,
 
 def descargar_objeto(bucket: str, name: str, auth, dest_path: "Path", *,
                      base: str = "https://storage.googleapis.com",
-                     timeout: int = TIMEOUT) -> None:
+                     timeout: int = TIMEOUT,
+                     token_prefix: str | None = None,
+                     inspeccion_id: int | None = None,
+                     planta_id: int | None = None,
+                     ambito: str | None = None) -> None:
     """Baja UN objeto del bucket a `dest_path` (JSON API, `alt=media`).
 
     Contraparte de lectura de `upload_file`: mismo esquema de auth
@@ -290,7 +329,7 @@ def descargar_objeto(bucket: str, name: str, auth, dest_path: "Path", *,
     url = (f"{base.rstrip('/')}/storage/v1/b/{urllib.parse.quote(bucket)}/o/"
            f"{urllib.parse.quote(name, safe='')}?alt=media")
     req = urllib.request.Request(url, method="GET")
-    req.add_header("Authorization", f"Bearer {auth.access_token()}")
+    req.add_header("Authorization", f"Bearer {token_gcs(auth, token_prefix, inspeccion_id=inspeccion_id, planta_id=planta_id, ambito=ambito)}")
     req.add_header("User-Agent", USER_AGENT)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -310,7 +349,11 @@ class RemoteObject:
 def listar_objetos_remotos(bucket: str, prefix: str, auth, *,
                            base: str = "https://storage.googleapis.com",
                            timeout: int = TIMEOUT,
-                           max_paginas: int = 50) -> dict[str, RemoteObject]:
+                           max_paginas: int = 50,
+                           token_prefix: str | None = None,
+                           inspeccion_id: int | None = None,
+                           planta_id: int | None = None,
+                           ambito: str | None = None) -> dict[str, RemoteObject]:
     """Inventario COMPLETO de lo que hay bajo `prefix`, indexado por nombre.
 
     Esta es la pieza que hace que reseleccionar la misma carpeta no vuelva a
@@ -344,7 +387,7 @@ def listar_objetos_remotos(bucket: str, prefix: str, auth, *,
             params["pageToken"] = token
         url = f"{base.rstrip('/')}/storage/v1/b/{bucket_q}/o?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(url, method="GET")
-        req.add_header("Authorization", f"Bearer {auth.access_token()}")
+        req.add_header("Authorization", f"Bearer {token_gcs(auth, token_prefix or prefijo, inspeccion_id=inspeccion_id, planta_id=planta_id, ambito=ambito)}")
         req.add_header("User-Agent", USER_AGENT)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8") or "{}")
@@ -373,8 +416,13 @@ def listar_objetos_remotos(bucket: str, prefix: str, auth, *,
     return encontrados
 
 
+class SobrescrituraNoPermitida(RuntimeError):
+    """El plan exige reemplazar objetos ya subidos y el token no puede borrar."""
+
+
 def reconciliar(plan: UploadPlan, remotos: dict[str, RemoteObject],
-                manifest: "Manifest | None" = None) -> tuple[list[UploadItem], list[UploadItem]]:
+                manifest: "Manifest | None" = None, *,
+                permitir_sobrescribir: bool = True) -> tuple[list[UploadItem], list[UploadItem]]:
     """Parte el plan en `(pendientes, ya_subidos)` cruzando local, bucket y manifiesto.
 
     Un fichero se da por subido si el bucket tiene un objeto con **su mismo
@@ -403,6 +451,11 @@ def reconciliar(plan: UploadPlan, remotos: dict[str, RemoteObject],
     del todo exigiría leer y hashear los 8,7 GB locales en cada arranque, que
     cuesta más que la propia subida; la protección real es que cada vuelo vaya
     a su inspección, que es lo que la pantalla obliga a elegir.
+
+    `permitir_sobrescribir=False` (modo usuario/contraseña: el token de GCS no
+    tiene permiso de borrado, y reemplazar un objeto lo exige): si hiciera
+    falta sobrescribir algo se lanza `SobrescrituraNoPermitida` ANTES de
+    devolver el plan, es decir, antes de subir o mutar nada.
     """
     pendientes: list[UploadItem] = []
     hechos: list[UploadItem] = []
@@ -438,6 +491,17 @@ def reconciliar(plan: UploadPlan, remotos: dict[str, RemoteObject],
             continue
 
         hechos.append(item)
+
+    if not permitir_sobrescribir:
+        pisar = [it.remote for it in pendientes if it.sobrescribir]
+        if pisar:
+            raise SobrescrituraNoPermitida(
+                f"{len(pisar)} fichero(s) ya existen en el destino con distinto "
+                "contenido y habría que sobrescribirlos (p. ej. "
+                f"{pisar[0]}). Con usuario y contraseña el acceso al bucket no "
+                "permite borrar ni reemplazar objetos: no se ha subido nada. "
+                "Entra con tu cuenta de Google o pide a un administrador que "
+                "elimine esos ficheros.")
 
     return pendientes, hechos
 
@@ -509,12 +573,26 @@ class GcsOAuthProvider(UrlProvider):
 
     BASE = "https://storage.googleapis.com"
 
-    def __init__(self, bucket: str, auth, *, base: str | None = None):
+    def __init__(self, bucket: str, auth, *, base: str | None = None,
+                 prefix: str | None = None, inspeccion_id: int | None = None,
+                 planta_id: int | None = None, ambito: str | None = None):
         if not bucket:
             raise ValueError("falta el nombre del bucket")
         self.bucket = bucket
         self.auth = auth
+        # Prefijo/inspección con los que pedir el token acotado (modo password).
+        self.prefix = prefix
+        self.inspeccion_id = inspeccion_id
+        # Ámbito por planta (estadillos, modo password): sin prefijo/inspección.
+        self.planta_id = planta_id
+        self.ambito = ambito
         self.base = (base or self.BASE).rstrip("/")
+
+    @property
+    def solo_crear(self) -> bool:
+        """En modo password el token de GCS no puede borrar: no se puede
+        reemplazar un objeto existente (ver `reconciliar`)."""
+        return bool(getattr(self.auth, "es_password", False))
 
     def upload_url(self, remote: str, size: int, *,
                    sobrescribir: bool = False) -> str:
@@ -530,17 +608,25 @@ class GcsOAuthProvider(UrlProvider):
         return url
 
     def headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.auth.access_token()}"}
+        return {"Authorization": "Bearer " + token_gcs(
+            self.auth, self.prefix, inspeccion_id=self.inspeccion_id,
+            planta_id=self.planta_id, ambito=self.ambito)}
 
     def recover_auth(self) -> bool:
         # Fuerza el refresco; si el usuario revocó el acceso, `access_token`
         # levanta AuthError y la subida falla con un mensaje que se entiende.
-        self.auth.access_token(force_refresh=True)
+        token_gcs(self.auth, self.prefix, inspeccion_id=self.inspeccion_id,
+                  planta_id=self.planta_id, ambito=self.ambito,
+                  force_refresh=True)
         return True
 
     def listar_remotos(self, prefix: str) -> dict[str, RemoteObject] | None:
         return listar_objetos_remotos(self.bucket, prefix, self.auth,
-                                      base=self.base)
+                                      base=self.base,
+                                      token_prefix=self.prefix or prefix,
+                                      inspeccion_id=self.inspeccion_id,
+                                      planta_id=self.planta_id,
+                                      ambito=self.ambito)
 
 
 class SignedUrlProvider(UrlProvider):
@@ -1009,7 +1095,9 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
 
     if remotos is not None:
         result.reconciliado = True
-        pending, hechos = reconciliar(plan, remotos, manifest)
+        pending, hechos = reconciliar(
+            plan, remotos, manifest,
+            permitir_sobrescribir=not getattr(provider, "solo_crear", False))
         result.skipped_remoto = len(hechos)
         nuevas = manifest.hidratar(hechos, remotos)
         if nuevas:

@@ -465,6 +465,8 @@ class Api:
         # delata un DLL de selector inservible.
         self._rc_dialogo: int | None = 0
         self._update_path: str | None = None
+        self._update_sha256: str | None = None
+        self._update_asset_url: str | None = None
         # Último aviso "hay versión nueva" del chequeo automático (ver
         # `start_update_check`). El modal (`UpdateModal.jsx`) no está montado
         # mientras el usuario no ha entrado, así que el evento `atom:update`
@@ -925,7 +927,7 @@ class Api:
         `atom_core.estadillo.detectar_estadillos_en_padre`): NUNCA se mezclan
         con `rutas` ni se usan en automático — el front los muestra con su
         ruta completa y solo entran si el operario confirma uno a mano (caso
-        Marcos: estadillos antiguos sacados a propósito al padre).
+        caso de campo: estadillos antiguos sacados a propósito al padre).
         """
         try:
             # El candado de `precargar_pandas` serializa el primer import de pandas
@@ -1113,10 +1115,33 @@ class Api:
     def check_update(self) -> dict:
         from atom_core import updater
 
-        return updater.check()
+        res = updater.check()
+        # Sólo se descarga lo que `check()` anunció, y sólo si es del repo propio.
+        self._update_asset_url = None
+        url = (res or {}).get("asset_url")
+        if url:
+            try:
+                updater.validate_asset_url(url)
+                self._update_asset_url = url
+            except updater.UpdateSecurityError as exc:
+                res = dict(res, asset_url=None, error=str(exc))
+        return res
 
-    def download_update(self, url: str, size: int = 0) -> dict:
-        """Descarga en un hilo; el progreso llega a JS como `atom:update`."""
+    def download_update(self, url: str = "", size: int = 0) -> dict:
+        """Descarga en un hilo; el progreso llega a JS como `atom:update`.
+
+        `url` viene del JS y NO se usa para descargar: se descarga únicamente el
+        `asset_url` que devolvió `check_update`. Si difiere, error visible."""
+        permitido = getattr(self, "_update_asset_url", None)
+        if not permitido:
+            msg = "No hay una actualización verificada: vuelve a comprobar las actualizaciones."
+            self._push_update({"kind": "error", "text": msg})
+            return {"started": False, "reason": msg}
+        if url and url != permitido:
+            msg = "La URL de descarga no coincide con la de la release anunciada. Descarga cancelada."
+            self._push_update({"kind": "error", "text": msg})
+            return {"started": False, "reason": msg}
+        url = permitido
         if self._downloading:
             return {"started": False, "reason": "Ya se está descargando."}
         self._downloading = True
@@ -1137,6 +1162,7 @@ class Api:
             res = updater.download(url, size, progress)
             self._downloading = False
             self._update_path = res.get("path") if res.get("ok") else None
+            self._update_sha256 = res.get("sha256") if res.get("ok") else None
             self._push_update({"kind": "downloaded" if res.get("ok") else "error",
                                "path": res.get("path"), "text": res.get("error")})
 
@@ -1155,7 +1181,16 @@ class Api:
         def on_failure(code: int, msg: str) -> None:
             self._push_update({"kind": "error", "text": f"No se pudo instalar: {msg}"})
 
-        return updater.install(path or self._update_path or "", on_failure=on_failure)
+        # `path` (del JS) se ignora: sólo el fichero descargado y verificado.
+        if not self._update_path or not getattr(self, "_update_sha256", None):
+            msg = "No hay un instalador verificado. Vuelve a descargar la actualización."
+            self._push_update({"kind": "error", "text": msg})
+            return {"ok": False, "error": msg}
+        res = updater.install(self._update_path, on_failure=on_failure,
+                              expected_sha256=self._update_sha256)
+        if not res.get("ok"):
+            self._push_update({"kind": "error", "text": res.get("error")})
+        return res
 
     def _push_update(self, detail: dict) -> None:
         if not self._sink:
@@ -1218,9 +1253,17 @@ class Api:
     # ---- subida al bucket «datos para organizar» ---------------------------
     # Cuenta de Google del operador + IAM del bucket. La app no lleva ninguna
     # credencial de servicio: quién puede subir se decide fuera, en el IAM.
-    def _get_auth(self):
-        """`GoogleAuth` cacheado, o None si no hay cliente OAuth configurado."""
+    def _get_auth(self, *, solo_password: bool = False):
+        """`GoogleAuth` cacheado, o None si no hay cliente OAuth configurado.
+
+        Sin `google_client.json` el modo password (que no usa OAuth) sigue
+        siendo posible: se construye una instancia `sin_cliente` que solo se
+        devuelve si `solo_password` o si ya hay una sesión password activa. El
+        login Google sigue viendo None (ayuda de "falta el cliente")."""
         if self._auth is not None:
+            if (getattr(self._auth, "sin_cliente", False) and not solo_password
+                    and not self._auth.es_password):
+                return None
             return self._auth
         from atom_core import cloud_config
         from atom_core.google_auth import GoogleAuth
@@ -1228,8 +1271,13 @@ class Api:
         client = cloud_config.load_client(ROOT)
         if client is None:
             if not self._broker:
-                # Escritorio sin `google_client.json`: comportamiento de
-                # siempre, la UI ofrece el mensaje de "falta el cliente OAuth".
+                # Escritorio sin `google_client.json`: la UI ofrece el mensaje
+                # de "falta el cliente OAuth", salvo para el modo password.
+                auth = GoogleAuth("", "", sin_cliente=True,
+                                  hosted_domain=cloud_config.HOSTED_DOMAIN)
+                self._auth = auth
+                if solo_password or auth.es_password:
+                    return auth
                 return None
             # Raspberry Pi: nunca va a tener `google_client.json` (ese es
             # justo el punto del broker), así que la ausencia de cliente aquí
@@ -1272,6 +1320,9 @@ class Api:
                 # "Iniciar sesión con Google": este equipo no tiene cliente
                 # OAuth propio (ver `_get_auth`), solo puede emparejarse.
                 "pairing": bool(getattr(auth, "broker_only", False)),
+                # `{organizer, estadillos}` en modo password; `None` = todo
+                # visible (Google/broker o sesión sin dato).
+                "acceso_modulos": getattr(auth, "acceso_modulos", None),
                 "estado": self._credencial.actual()["estado"],
                 "estado_mensaje": self._credencial.actual()["mensaje"],
                 "pendientes": len(cola_subidas.pendientes())}
@@ -1349,6 +1400,85 @@ class Api:
 
         threading.Thread(target=worker, daemon=True).start()
         return {"started": True}
+
+    @staticmethod
+    def _prefijo_token(prefix: str) -> str:
+        """Prefijo de inspección (`EMPRESA--PLANTA--AÑO--TIPO/`) con el que se
+        pide el token de GCS en modo password: primer segmento del destino."""
+        return (prefix or "").strip("/").split("/")[0] + "/"
+
+    def _id_inspeccion(self, prefix: str, inspeccion_id: int | None = None,
+                       auth=None) -> int | None:
+        """Id de la inspección de `prefix`: el explícito o el del último
+        catálogo cargado (`cloud_inspecciones`). En modo password, sin id se
+        lanza un error explícito (la Suite responde 400 sin él): nunca se deja
+        que un fallo acabe como listado vacío."""
+        if inspeccion_id is None:
+            clave = (prefix or "").strip("/").split("/")[0]
+            inspeccion_id = getattr(self, "_ids_inspeccion", {}).get(clave)
+        if inspeccion_id is None:
+            auth = auth or self._auth
+            if getattr(auth, "es_password", False):
+                from atom_core.google_auth import AuthError
+                raise AuthError(
+                    "Falta el id de la inspección para acceder al bucket: "
+                    "elige la inspección en la lista.")
+        return inspeccion_id
+
+    def _estadillos_acceso(self, folder: str, auth=None) -> tuple[str, dict]:
+        """`(raiz, kw_token)` de estadillos de la inspección `folder` (prefijo).
+
+        Google/broker: raíz canónica `<PLANTA>/ESTADILLOS` y token por
+        `token_prefix`. Password: la raíz la decide la Suite (token por
+        `{planta_id, inspeccion_id, ambito:'estadillos'}`); `planta_id` e
+        `inspeccion_id` salen del catálogo y si falta alguno es un error
+        visible, sin fallback."""
+        from atom_core import estadillo_canonico
+
+        auth = auth or self._get_auth()
+        if not getattr(auth, "es_password", False):
+            raiz = estadillo_canonico.prefijo_planta(folder)
+            return raiz, {"token_prefix": f"{raiz}/"}
+        from atom_core.google_auth import AuthError
+        clave = (folder or "").strip("/").split("/")[0]
+        planta_id = getattr(self, "_plantas_inspeccion", {}).get(clave)
+        if planta_id is None:
+            raise AuthError(
+                "Falta el id de la planta para acceder a los estadillos: "
+                "recarga la lista de inspecciones y elige la inspección.")
+        # Lanza AuthError explícito en password si la inspección no se conoce.
+        inspeccion_id = self._id_inspeccion(folder, auth=auth)
+        raiz = auth.prefijo_estadillos(planta_id, inspeccion_id).strip("/")
+        return raiz, {"planta_id": planta_id, "inspeccion_id": inspeccion_id,
+                      "ambito": "estadillos"}
+
+    def cloud_login_password(self, usuario: str, password: str) -> dict:
+        """Entra con usuario y contraseña de ATOM Suite (modo password).
+
+        Síncrono: es un POST corto, sin navegador. Devuelve
+        `{"ok": True, "email", "nombre", "domain"}` o `{"ok": False,
+        "error": <mensaje legible>}`. La contraseña no se loguea ni se
+        devuelve nunca.
+        """
+        from atom_core import cloud_config
+        from atom_core.google_auth import AuthError
+
+        auth = self._get_auth(solo_password=True)
+        if auth is None:
+            return {"ok": False, "error": cloud_config.missing_client_help()}
+        if getattr(auth, "broker_only", False):
+            return {"ok": False,
+                    "error": "Este equipo se empareja por QR desde ATOM Suite, "
+                             "no con usuario y contraseña."}
+        try:
+            ident = auth.login_password(usuario, password)
+        except AuthError as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - contrato: nunca reventar el IPC
+            return {"ok": False, "error": f"No se pudo iniciar sesión: {exc}"}
+        self._push_cloud({"kind": "login", "ok": True, "email": ident.email})
+        return {"ok": True, "email": ident.email, "nombre": ident.nombre,
+                "domain": ident.domain}
 
     def cloud_login(self) -> dict:
         """Abre el navegador para el consentimiento. Devuelve al instante; el
@@ -1654,7 +1784,7 @@ class Api:
     # ---- emparejamiento por QR (modo broker, Raspberry Pi) -----------------
     # La Pi no puede abrir el navegador del sistema en su propia pantalla como
     # hace `cloud_login` (o sí puede, pero no tiene sentido: es un kiosco sin
-    # teclado). En vez de eso, Rodrigo escanea un QR con el móvil y consiente
+    # teclado). En vez de eso, el responsable escanea un QR con el móvil y consiente
     # ahí; la Pi solo pregunta a la Suite si ya terminó (`cloud_pair_poll`).
     def cloud_pair_start(self) -> dict:
         """Pide a la Suite un `pair_id` nuevo y la URL para el QR.
@@ -1741,7 +1871,18 @@ class Api:
             return {"ok": False, "inspecciones": [], "origen": "api",
                     "bajado_en": 0.0,
                     "error": "Inicia sesión para ver las inspecciones."}
-        return inspecciones.cargar_catalogo(cloud_config.BUCKET_DATOS, auth)
+        cat = inspecciones.cargar_catalogo(cloud_config.BUCKET_DATOS, auth)
+        if not hasattr(self, "_ids_inspeccion"):
+            self._ids_inspeccion = {}
+        for it in cat.get("inspecciones") or []:
+            if it.get("id") is not None and it.get("prefijo"):
+                self._ids_inspeccion[it["prefijo"]] = it["id"]
+        if not hasattr(self, "_plantas_inspeccion"):
+            self._plantas_inspeccion = {}
+        for it in cat.get("inspecciones") or []:
+            if it.get("planta_id") is not None and it.get("prefijo"):
+                self._plantas_inspeccion[it["prefijo"]] = it["planta_id"]
+        return cat
 
     def _destino(self, folder: str, prefix: str | None) -> tuple[Path | None, str, str]:
         """Carpeta y prefijo destino ya validados. Devuelve `(root, prefix, error)`.
@@ -1783,7 +1924,8 @@ class Api:
             return None
         return inv["remotos"]
 
-    def _verificar_lote_completo(self, plan, prefix_lote: str, auth
+    def _verificar_lote_completo(self, plan, prefix_lote: str, auth,
+                                 inspeccion_id: int | None = None
                                  ) -> tuple[list[tuple[str, str]], bool]:
         """Cruza el plan contra un listado FRESCO del bucket.
 
@@ -1801,8 +1943,13 @@ class Api:
 
         try:
             remotos = cloud_upload.listar_objetos_remotos(
-                cloud_config.BUCKET_DATOS, prefix_lote, auth)
+                cloud_config.BUCKET_DATOS, prefix_lote, auth,
+                token_prefix=self._prefijo_token(prefix_lote),
+                inspeccion_id=self._id_inspeccion(prefix_lote, inspeccion_id, auth))
         except Exception as exc:  # noqa: BLE001 - informativo, no bloquea
+            if getattr(auth, "es_password", False):
+                # En modo password el fallo NO es informativo: debe verse.
+                raise
             self._log_subida("verificacion de %s: no se pudo listar (%s)",
                              prefix_lote, exc)
             return [], False
@@ -1842,14 +1989,16 @@ class Api:
             try:
                 t0 = time.monotonic()
                 remotos = cloud_upload.listar_objetos_remotos(
-                    cloud_config.BUCKET_DATOS, prefix, auth)
+                    cloud_config.BUCKET_DATOS, prefix, auth,
+                    token_prefix=self._prefijo_token(prefix),
+                    inspeccion_id=self._id_inspeccion(prefix, auth=auth))
             except Exception as exc:  # noqa: BLE001 - informativo, no bloquea
                 self._log_subida("inventario de %s: no se pudo listar (%s)",
                                  prefix, exc)
                 with self._inv_lock:
                     self._inv_hilos.discard(prefix)
                 self._push_cloud({"kind": "inventario", "prefix": prefix,
-                                  "ok": False})
+                                  "ok": False, "error": str(exc)})
                 return
             ahora = time.monotonic()
             with self._inv_lock:
@@ -2059,7 +2208,7 @@ class Api:
         rutas_estadillos = estadillo_mod.detectar_estadillos(folder)["rutas"]
         if not rutas_estadillos:
             # NUNCA se coge el estadillo del padre en automático (decisión de
-            # Rodrigo, caso Marcos): si hay candidatos sueltos ahí se avisa
+            # el responsable): si hay candidatos sueltos ahí se avisa
             # con su ruta completa, pero no se usan ni se aceptan solos.
             candidatos_padre = estadillo_mod.detectar_estadillos_en_padre(folder)["rutas"]
             if candidatos_padre:
@@ -2114,7 +2263,9 @@ class Api:
                     plan, rutas_estadillos)
 
                 provider = cloud_upload.GcsOAuthProvider(
-                    cloud_config.BUCKET_DATOS, auth)
+                    cloud_config.BUCKET_DATOS, auth,
+                    prefix=self._prefijo_token(prefix),
+                    inspeccion_id=inspeccion_id)
 
                 self._push_cloud({"kind": "start", "files": len(plan.items),
                                   "bytes": plan.total_bytes, "prefix": prefix_lote})
@@ -2193,7 +2344,7 @@ class Api:
                     # comprobado contra GCS, no con "no hubo excepciones".
                     if res.ok and not self._cancel_upload:
                         faltantes, verificado = self._verificar_lote_completo(
-                            plan, prefix_lote, auth)
+                            plan, prefix_lote, auth, inspeccion_id)
                         if faltantes:
                             self._push_cloud({
                                 "kind": "log",
@@ -2258,7 +2409,9 @@ class Api:
                             lote, self._cuenta_actual(), estadillos_rel,
                             len(plan.items))
                         self._subir_objeto_json(
-                            f"{prefix_lote}/manifest.json", manifest)
+                            f"{prefix_lote}/manifest.json", manifest,
+                            prefix=self._prefijo_token(prefix),
+                            inspeccion_id=inspeccion_id)
                     except Exception as exc_manifest:  # noqa: BLE001
                         res.failed.append(("manifest.json", str(exc_manifest)))
                     else:
@@ -2417,10 +2570,10 @@ class Api:
                 return {"existe": False,
                         "error": "Primero inicia sesión con tu cuenta de Aerotools."}
 
-            prefix = (f"{estadillo_canonico.prefijo_planta(prefijo)}/"
-                     f"{estadillo_canonico.CARPETA_ACTUAL}/")
+            raiz, kw_token = self._estadillos_acceso(prefijo, auth)
+            prefix = f"{raiz}/{estadillo_canonico.CARPETA_ACTUAL}/"
             n = cloud_upload.objetos_en_prefijo(
-                cloud_config.BUCKET_DATOS, prefix, auth)
+                cloud_config.BUCKET_DATOS, prefix, auth, **kw_token)
             return {"existe": n > 0, "error": None}
         except Exception as exc:  # noqa: BLE001 - fail-open, la UI solo pre-marca un checkbox
             return {"existe": False, "error": str(exc)}
@@ -2449,10 +2602,10 @@ class Api:
                 return {"ok": False, "rutas": [],
                         "error": "Primero inicia sesión con tu cuenta de Aerotools."}
 
-            prefix = (f"{estadillo_canonico.prefijo_planta(prefijo)}/"
-                     f"{estadillo_canonico.CARPETA_ACTUAL}/")
+            raiz, kw_token = self._estadillos_acceso(prefijo, auth)
+            prefix = f"{raiz}/{estadillo_canonico.CARPETA_ACTUAL}/"
             remotos = cloud_upload.listar_objetos_remotos(
-                cloud_config.BUCKET_DATOS, prefix, auth)
+                cloud_config.BUCKET_DATOS, prefix, auth, **kw_token)
 
             excluidos = {estadillo_canonico.NOMBRE_MANIFEST,
                         estadillo_canonico.NOMBRE_NORMALIZADO}
@@ -2478,7 +2631,8 @@ class Api:
                     objetivo = destino_dir / f"{stem}_{sufijo}{ext}"
                     sufijo += 1
                 cloud_upload.descargar_objeto(
-                    cloud_config.BUCKET_DATOS, nombre_remoto, auth, objetivo)
+                    cloud_config.BUCKET_DATOS, nombre_remoto, auth, objetivo,
+                    **kw_token)
                 rutas.append({"ruta": str(objetivo), "nombre": objetivo.name})
 
             return {"ok": True, "rutas": rutas, "error": None}
@@ -3052,6 +3206,8 @@ class Api:
                         }
                     )
 
+                raiz, kw_token = self._estadillos_acceso(folder)
+                prefix_token = f"{raiz}/"
                 plan = estadillo_canonico.plan_subida(
                     planta=folder,
                     ficheros_locales=locales,
@@ -3059,12 +3215,17 @@ class Api:
                     validacion=validacion,
                     ahora=datetime.now(timezone.utc),
                     subido_por=self._cuenta_actual(),
+                    base=raiz,
                 )
 
+                kw_prov = {k: v for k, v in kw_token.items()
+                           if k in ("planta_id", "inspeccion_id", "ambito")}
                 res = estadillo_canonico.ejecutar_plan(
                     plan,
-                    subir_fichero=self._subir_objeto_fichero,
-                    subir_json=self._subir_objeto_json,
+                    subir_fichero=lambda remoto, ruta: self._subir_objeto_fichero(
+                        remoto, ruta, prefix=prefix_token, **kw_prov),
+                    subir_json=lambda remoto, cont: self._subir_objeto_json(
+                        remoto, cont, prefix=prefix_token, **kw_prov),
                 )
             except Exception as exc:
                 self._push_cloud({"kind": "error", "scope": "estadillo", "error": str(exc)})
@@ -3178,18 +3339,29 @@ class Api:
         reporter.subida(inspeccion_id=inspeccion_id, estado=estado,
                         num_objetos=num_objetos, bytes=bytes_total, error=error)
 
-    def _subir_objeto_fichero(self, remoto: str, ruta_local: str) -> None:
+    def _subir_objeto_fichero(self, remoto: str, ruta_local: str, *,
+                              prefix: str | None = None,
+                              inspeccion_id: int | None = None,
+                              planta_id: int | None = None,
+                              ambito: str | None = None) -> None:
         """Puente fino a `cloud_upload.upload_file`: sube un fichero local ya
         existente al objeto `remoto` del bucket. Sin lógica propia."""
         from atom_core import cloud_config, cloud_upload
 
-        provider = cloud_upload.GcsOAuthProvider(cloud_config.BUCKET_DATOS, self._get_auth())
+        provider = cloud_upload.GcsOAuthProvider(
+            cloud_config.BUCKET_DATOS, self._get_auth(),
+            prefix=prefix, inspeccion_id=inspeccion_id,
+            planta_id=planta_id, ambito=ambito)
         item = cloud_upload.UploadItem(
             local=Path(ruta_local), remote=remoto, size=os.path.getsize(ruta_local),
         )
         cloud_upload.upload_file(item, provider)
 
-    def _subir_objeto_json(self, remoto: str, contenido: dict) -> None:
+    def _subir_objeto_json(self, remoto: str, contenido: dict, *,
+                           prefix: str | None = None,
+                           inspeccion_id: int | None = None,
+                           planta_id: int | None = None,
+                           ambito: str | None = None) -> None:
         """Puente fino: vuelca `contenido` a un fichero temporal y lo sube
         como si fuera un objeto normal, reutilizando `_subir_objeto_fichero`."""
         import tempfile
@@ -3202,7 +3374,9 @@ class Api:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
                 tmp_path = tmp.name
                 tmp.write(data)
-            self._subir_objeto_fichero(remoto, tmp_path)
+            self._subir_objeto_fichero(remoto, tmp_path, prefix=prefix,
+                                       inspeccion_id=inspeccion_id,
+                                       planta_id=planta_id, ambito=ambito)
         finally:
             if tmp_path is not None:
                 os.unlink(tmp_path)

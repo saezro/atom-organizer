@@ -4,13 +4,13 @@ import MenuCuenta from './MenuCuenta.jsx'
 
 describe('MenuCuenta', () => {
   it('muestra la inicial y el email de la cuenta al abrir el menú', () => {
-    render(<MenuCuenta cuenta={{ email: 'ana@aerotools.es', nombre: 'Ana' }} invitado={false} onAjustes={() => {}} onSalir={() => {}} />)
+    render(<MenuCuenta cuenta={{ email: 'ana@ejemplo.com', nombre: 'Ana' }} invitado={false} onAjustes={() => {}} onSalir={() => {}} />)
     const avatar = screen.getByTestId('cuenta-avatar')
     expect(avatar).toHaveTextContent('A')
     expect(avatar).toHaveAttribute('aria-expanded', 'false')
     fireEvent.click(avatar)
     expect(avatar).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('ana@aerotools.es')).toBeInTheDocument()
+    expect(screen.getByText('ana@ejemplo.com')).toBeInTheDocument()
   })
 
   it('el invitado ve «Sin cuenta» como cabecera', () => {
@@ -39,14 +39,14 @@ describe('MenuCuenta', () => {
   // imagen de lh3.googleusercontent.com no carga, debe verse la inicial en
   // vez de un hueco vacío.
   it('sin picture pinta la inicial en vez de un <img>', () => {
-    render(<MenuCuenta cuenta={{ email: 'ana@aerotools.es', nombre: 'Ana', picture: null }} invitado={false} onAjustes={() => {}} onSalir={() => {}} />)
+    render(<MenuCuenta cuenta={{ email: 'ana@ejemplo.com', nombre: 'Ana', picture: null }} invitado={false} onAjustes={() => {}} onSalir={() => {}} />)
     const avatar = screen.getByTestId('cuenta-avatar')
     expect(avatar.querySelector('img')).toBeNull()
     expect(avatar).toHaveTextContent('A')
   })
 
   it('si la <img> del avatar falla al cargar, cae a la inicial', () => {
-    render(<MenuCuenta cuenta={{ email: 'ana@aerotools.es', nombre: 'Ana', picture: 'http://x/pic.png' }} invitado={false} onAjustes={() => {}} onSalir={() => {}} />)
+    render(<MenuCuenta cuenta={{ email: 'ana@ejemplo.com', nombre: 'Ana', picture: 'http://x/pic.png' }} invitado={false} onAjustes={() => {}} onSalir={() => {}} />)
     const avatar = screen.getByTestId('cuenta-avatar')
     const img = avatar.querySelector('img')
     expect(img).not.toBeNull()

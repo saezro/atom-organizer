@@ -28,7 +28,7 @@ def discos(tmp_path, monkeypatch):
     """Dos discos ficticios montados, con carpetas de sistema y un symlink
     que se escapa de uno de ellos, para ejercitar el confinamiento."""
     disco1 = tmp_path / "media" / "USB_HDD"
-    disco2 = tmp_path / "media" / "KL19"
+    disco2 = tmp_path / "media" / "PLANTA_C"
     fuera = tmp_path / "fuera_del_disco"
     for d in (disco1, disco2, fuera):
         d.mkdir(parents=True)
@@ -38,12 +38,12 @@ def discos(tmp_path, monkeypatch):
     (disco1 / "System Volume Information").mkdir()
     (disco1 / "lost+found").mkdir()
     (disco1 / ".oculta").mkdir()
-    (disco1 / "FOTOS" / "KL05").mkdir()
+    (disco1 / "FOTOS" / "PLANTA_A").mkdir()
     os.symlink(fuera, disco1 / "enlace_fuera")
 
     lista = [
         {"nombre": "USB_HDD", "punto_montaje": str(disco1), "libre_gb": 12.3, "total_gb": 64.0},
-        {"nombre": "KL19", "punto_montaje": str(disco2), "libre_gb": 3.0, "total_gb": 32.0},
+        {"nombre": "PLANTA_C", "punto_montaje": str(disco2), "libre_gb": 3.0, "total_gb": 32.0},
     ]
     monkeypatch.setattr(aw.estado_lan, "discos_externos", lambda: lista)
     return {"disco1": disco1, "disco2": disco2, "fuera": fuera}
@@ -61,7 +61,7 @@ def test_raiz_sin_path_es_la_lista_de_discos(discos):
     assert r["is_root"] is True
     assert r["parent"] is None
     nombres = {d["name"] for d in r["dirs"]}
-    assert nombres == {"USB_HDD", "KL19"}
+    assert nombres == {"USB_HDD", "PLANTA_C"}
     assert r["files"] == []
     disco1 = next(d for d in r["dirs"] if d["name"] == "USB_HDD")
     assert disco1["libre_gb"] == 12.3
@@ -72,7 +72,7 @@ def test_default_dir_arranca_en_la_lista_de_discos(discos):
     r = _api().default_dir()
     assert r["ok"] is True
     assert r["is_root"] is True
-    assert {d["name"] for d in r["dirs"]} == {"USB_HDD", "KL19"}
+    assert {d["name"] for d in r["dirs"]} == {"USB_HDD", "PLANTA_C"}
 
 
 def test_raiz_sin_discos_montados_es_lista_vacia(monkeypatch):
@@ -109,7 +109,7 @@ def test_subcarpeta_trae_rel_parts_y_parent_dentro_del_disco(discos):
     assert r["disk_name"] == "USB_HDD"
     assert r["rel_parts"] == ["FOTOS"]
     assert r["parent"] == str(discos["disco1"])
-    assert {d["name"] for d in r["dirs"]} == {"KL05"}
+    assert {d["name"] for d in r["dirs"]} == {"PLANTA_A"}
 
 
 def test_ruta_fuera_de_todo_disco_se_rechaza(discos):

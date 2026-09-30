@@ -152,7 +152,7 @@ class _Pool:
                 # Si el worker no llega a nacer (p. ej. falta el runtime x86), el
                 # cupo reservado debe volver: si no, tras _MAX_WORKERS fallos el
                 # pool se cree lleno y todos los hilos esperan en `_idle.get()`
-                # para siempre (cuelgue KL19 Pi 2026-09-11).
+                # para siempre (cuelgue PLANTA_C Pi 2026-09-11).
                 with self._lock:
                     self._n_created = max(0, self._n_created - 1)
                 raise

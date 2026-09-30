@@ -112,15 +112,15 @@ def _endpoint_espera() -> dict:
                 ),
                 "ejemplo": {
                     "esperando": True, "caducado": False,
-                    "inspeccion": {"planta": "KL05"},
+                    "inspeccion": {"planta": "PLANTA_A"},
                     "fotos": {"total": 42, "primera": "2026-09-20T08:00:00",
                               "ultima": "2026-09-20T09:30:00", "calculando": False},
                     "recibido": False,
                     "caduca_en": "2026-09-20T10:00:00+02:00",
                     "segundos_restantes": 480,
-                    "red": {"hostname": "raspi-kl05", "puerto": 80, "ips": [], "url": "http://raspi-kl05"},
+                    "red": {"hostname": "raspi-planta-a", "puerto": 80, "ips": [], "url": "http://raspi-planta-a"},
                     "carpeta_seleccionada": True,
-                    "carpeta": "/home/pi/vuelo/KL05",
+                    "carpeta": "/home/pi/vuelo/PLANTA_A",
                     "estadillo_en_carpeta": {"encontrado": False, "nombre": None, "buscando": False},
                 },
             },
@@ -170,12 +170,12 @@ def _endpoint_recibir() -> dict:
             "alias_de_columna": alias,
             "ejemplo": {
                 "vuelos": [
-                    {"Fecha": "2026-09-20", "Piloto": "Rebeca", "dron": "M300",
+                    {"Fecha": "2026-09-20", "Piloto": "PilotoA", "dron": "M300",
                      "PB": "1", "Vuelo": "1", "Hora_de_inicio": "08:00:00", "Hora_final": "08:25:00",
-                     "sync_uid": "2026-09-20_REBECA_V1_H080000_PB1"},
-                    {"Fecha": "2026-09-20", "Piloto": "Rebeca", "dron": "M300",
+                     "sync_uid": "2026-09-20_PILOTOA_V1_H080000_PB1"},
+                    {"Fecha": "2026-09-20", "Piloto": "PilotoA", "dron": "M300",
                      "PB": "1", "Vuelo": "2", "Hora_de_inicio": "08:30", "Hora_final": "08:55",
-                     "sync_uid": "2026-09-20_REBECA_V2_H0830_PB1"},
+                     "sync_uid": "2026-09-20_PILOTOA_V2_H0830_PB1"},
                 ],
             },
         },
@@ -184,8 +184,8 @@ def _endpoint_recibir() -> dict:
                 "codigo": 200,
                 "cuando": "El estadillo se acepto y valido correctamente. Si el kiosco todavia no tenia carpeta de vuelo elegida, se acepta igual -se guarda y se asocia a la espera- y la respuesta añade `pendiente_carpeta: true`. Antes de validar, el Organizer FILTRA los vuelos recibidos a los que corresponden a la tarjeta elegida (`vuelos_recibidos`/`vuelos_en_tarjeta`/`vuelos_descartados` en `resumen`): la app de Christian manda toda la campaña, no solo la SD que se esta organizando.",
                 "ejemplo": {"ok": True, "resumen": {
-                    "planta": "KL05", "fecha": "2026-09-20",
-                    "pilotos": ["Rebeca"], "drones": ["M300"], "n_vuelos": 1,
+                    "planta": "PLANTA_A", "fecha": "2026-09-20",
+                    "pilotos": ["PilotoA"], "drones": ["M300"], "n_vuelos": 1,
                     "vuelos_recibidos": 2, "vuelos_en_tarjeta": 1,
                     "vuelos_descartados": [
                         {"pb": "1", "vuelo": "2", "hora_inicio": "08:30", "hora_fin": "08:55"},
@@ -291,7 +291,7 @@ def _endpoint_recibir() -> dict:
         "curl": (
             f"curl -X POST {HOST_EJEMPLO}{_RUTA_ESTADILLO_RECIBIR} "
             "-H 'Content-Type: application/json' "
-            "-d '{\"vuelos\":[{\"Fecha\":\"2026-09-20\",\"Piloto\":\"Rebeca\","
+            "-d '{\"vuelos\":[{\"Fecha\":\"2026-09-20\",\"Piloto\":\"PilotoA\","
             "\"PB\":\"1\",\"Vuelo\":\"1\"}]}'"
         ),
     }
@@ -388,10 +388,10 @@ def _endpoint_control_carpeta() -> dict:
             "campos": [
                 {"campo": "path", "tipo": "string", "obligatorio": True, "nota": "Ruta dentro de un disco externo montado."},
             ],
-            "ejemplo": {"path": "/media/usb1/vuelo/KL05"},
+            "ejemplo": {"path": "/media/usb1/vuelo/PLANTA_A"},
         },
         "respuestas": [
-            {"codigo": 200, "cuando": "`path` valido.", "ejemplo": {"ok": True, "path": "/media/usb1/vuelo/KL05"}},
+            {"codigo": 200, "cuando": "`path` valido.", "ejemplo": {"ok": True, "path": "/media/usb1/vuelo/PLANTA_A"}},
             {"codigo": 400, "cuando": "Falta `path`, o cae fuera de los discos montados.",
              "ejemplo": {"ok": False, "codigo": "path_no_permitido", "error": "Fuera de los discos externos montados."}},
             *_RESPUESTAS_PIN_CONTROL,
@@ -404,7 +404,7 @@ def _endpoint_control_carpeta() -> dict:
         "curl": (
             f"curl -X POST {HOST_EJEMPLO}{_RUTA_CONTROL_CARPETA} "
             "-H 'X-Atom-Pin: 1234' -H 'Content-Type: application/json' "
-            "-d '{\"path\":\"/media/usb1/vuelo/KL05\"}'"
+            "-d '{\"path\":\"/media/usb1/vuelo/PLANTA_A\"}'"
         ),
     }
 
@@ -453,7 +453,7 @@ def _endpoint_control_estado() -> dict:
         "request": None,
         "respuestas": [
             {"codigo": 200, "cuando": "Siempre, con PIN valido.",
-             "ejemplo": {"carpeta": "/media/usb1/vuelo/KL05",
+             "ejemplo": {"carpeta": "/media/usb1/vuelo/PLANTA_A",
                          "estadillo": {"encontrado": True, "nombre": "estadillo.csv", "buscando": False},
                          "en_curso": False, "fase": None, "progreso": None, "ultimo_error": None}},
             *_RESPUESTAS_PIN_CONTROL,
@@ -586,7 +586,7 @@ def especificacion() -> dict:
             "3. POST /api/estadillo con `{\"vuelos\": [...]}` una sola vez. "
             "`curl -X POST http://organizer.local/api/estadillo "
             "-H 'Content-Type: application/json' "
-            "-d '{\"vuelos\":[{\"Fecha\":\"2026-09-20\",\"Piloto\":\"Rebeca\","
+            "-d '{\"vuelos\":[{\"Fecha\":\"2026-09-20\",\"Piloto\":\"PilotoA\","
             "\"PB\":\"1\",\"Vuelo\":\"1\"}]}'`",
             "4. Interpretar la respuesta: 200 -> aceptado (mostrar "
             "`resumen`; si trae `pendiente_carpeta: true`, avisar que se "
@@ -607,7 +607,7 @@ def especificacion() -> dict:
             "6. Fijar la carpeta con `POST /api/control/carpeta` -- "
             "`curl -X POST http://organizer.local/api/control/carpeta "
             "-H 'X-Atom-Pin: 1234' -H 'Content-Type: application/json' "
-            "-d '{\"path\":\"/media/usb1/vuelo/KL05\"}'` -- despues "
+            "-d '{\"path\":\"/media/usb1/vuelo/PLANTA_A\"}'` -- despues "
             "`GET /api/control/estado` para confirmar carpeta y estadillo "
             "detectados -- "
             "`curl -H 'X-Atom-Pin: 1234' http://organizer.local/api/control/estado` "

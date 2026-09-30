@@ -5,6 +5,8 @@ import PasoEstadillo from './PasoEstadillo'
 import PanelOrganizar from './PanelOrganizar'
 import PanelSubida from './PanelSubida'
 
+const ESTADILLO_OMITIDO = { rutas: [], listo: true, subiendo: false, subir: async () => {} }
+
 const DESTINOS = [
   { id: 'local', titulo: 'Organizar aquí', detalle: 'Se organiza en este ordenador, en la carpeta que elijas.' },
   { id: 'bucket', titulo: 'Subir al bucket', detalle: 'Las imágenes van a la nube tal cual; se organizan después.' },
@@ -14,7 +16,10 @@ const DESTINOS = [
 // `destinoInicial` llega desde las cards de «Inicio» (organizar → 'local',
 // subir en crudo → 'bucket'). App.jsx remonta el componente con `key`, así que
 // basta con usarlo como valor inicial del state.
-export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChange, destinoInicial = null }) {
+export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChange, destinoInicial = null, acceso = null }) {
+  // `acceso` = `{organizer, estadillos}` (login usuario+contraseña); null = todo.
+  const verOrganizer = acceso?.organizer !== false
+  const verEstadillos = acceso?.estadillos !== false
   const [carpeta, setCarpeta] = useState('')
   const [prefijo, setPrefijo] = useState('')
   const [elegida, setElegida] = useState(null)
@@ -32,6 +37,9 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
   const [inspeccionReloadToken, setInspeccionReloadToken] = useState(0)
 
   const ocupado = running || subidaOcupada
+  // Sin módulo estadillos no hay paso de estadillo: se trata como «subir sin
+  // estadillo» (listo, sin ficheros).
+  const est = verEstadillos ? estadillo : ESTADILLO_OMITIDO
 
   return (
     <div className="card">
@@ -43,20 +51,23 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
           setPrefijo(p)
           setElegida(e)
         }}
-        disabled={ocupado || estadillo.subiendo}
+        disabled={ocupado || est.subiendo}
         reloadToken={inspeccionReloadToken}
       />
-      <PasoEstadillo
-        prefijo={prefijo}
-        carpeta={carpeta}
-        inspeccion={elegida}
-        disabled={ocupado}
-        onEstado={setEstadillo}
-      />
+      {verEstadillos && (
+        <PasoEstadillo
+          prefijo={prefijo}
+          carpeta={carpeta}
+          inspeccion={elegida}
+          disabled={ocupado}
+          onEstado={setEstadillo}
+        />
+      )}
 
       {/* Los destinos se ven SIEMPRE, deshabilitados hasta que haya carpeta:
           si solo aparecían al elegirla, no se entendía que organizar fuese
           una opción (feedback de Rodrigo, 2026-08-28). */}
+      {verOrganizer && (<>
       <div className="field">
         <span className="field-label">¿Qué hacemos con este trabajo?</span>
         {!carpeta && (
@@ -80,7 +91,7 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
       </div>
 
       {carpeta && destino === 'local' && (
-        <PanelOrganizar origen={carpeta} estadillos={estadillo.rutas} inspeccion={elegida} ready={ready} running={running} onRun={onRun} />
+        <PanelOrganizar origen={carpeta} estadillos={est.rutas} inspeccion={elegida} ready={ready} running={running} onRun={onRun} />
       )}
 
       {carpeta && (destino === 'bucket' || destino === 'nube') && (
@@ -89,15 +100,16 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
           prefijo={prefijo}
           inspeccionId={elegida?.id}
           destino={destino}
-          estadilloListo={estadillo.listo}
-          estadilloSubiendo={estadillo.subiendo}
-          subirEstadillo={estadillo.subir}
+          estadilloListo={est.listo}
+          estadilloSubiendo={est.subiendo}
+          subirEstadillo={est.subir}
           ready={ready}
           onCloudStatusChange={onCloudStatusChange}
           onOcupadoChange={setSubidaOcupada}
           onLoginOk={() => setInspeccionReloadToken((n) => n + 1)}
         />
       )}
+      </>)}
     </div>
   )
 }

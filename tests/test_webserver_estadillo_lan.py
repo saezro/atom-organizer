@@ -16,8 +16,8 @@ class _ApiEstadillo:
         self.recibir_llamadas = []
         self.recibir_resultado = {
             "ok": True,
-            "resumen": {"planta": "KL05", "fecha": "2026:09:20",
-                        "pilotos": ["Rebeca"], "drones": ["M300"], "n_vuelos": 2},
+            "resumen": {"planta": "PLANTA_A", "fecha": "2026:09:20",
+                        "pilotos": ["PilotoA"], "drones": ["M300"], "n_vuelos": 2},
         }
         self.eventos_registrados = []
 
@@ -112,23 +112,23 @@ def test_espera_activa_da_200_con_datos(servidor):
     _, api, base = servidor
     api.estado = {
         "esperando": True, "caducado": False,
-        "inspeccion": {"planta": "KL05"},
+        "inspeccion": {"planta": "PLANTA_A"},
         "fotos": {"total": 10, "primera": "2026-09-20T08:00:00",
                   "ultima": "2026-09-20T09:00:00", "calculando": False},
         "recibido": False, "caduca_en": "2026-09-20T10:00:00+02:00",
         "segundos_restantes": 500,
-        "red": {"hostname": "raspi-kl05", "puerto": 80, "ips": [], "url": "http://raspi-kl05"},
-        "carpeta_seleccionada": True, "carpeta": "/home/pi/vuelo/KL05",
+        "red": {"hostname": "raspi-planta-a", "puerto": 80, "ips": [], "url": "http://raspi-planta-a"},
+        "carpeta_seleccionada": True, "carpeta": "/home/pi/vuelo/PLANTA_A",
     }
     status, body, _ = _get(base, "/api/estadillo/espera")
     assert status == 200
     assert body["esperando"] is True
-    assert body["inspeccion"] == {"planta": "KL05"}
+    assert body["inspeccion"] == {"planta": "PLANTA_A"}
     assert body["fotos"]["total"] == 10
     assert body["segundos_restantes"] == 500
-    assert body["red"]["hostname"] == "raspi-kl05"
+    assert body["red"]["hostname"] == "raspi-planta-a"
     assert body["carpeta_seleccionada"] is True
-    assert body["carpeta"] == "/home/pi/vuelo/KL05"
+    assert body["carpeta"] == "/home/pi/vuelo/PLANTA_A"
     assert "aviso" not in body
 
 
@@ -139,7 +139,7 @@ def test_espera_activa_sin_carpeta_avisa(servidor):
         "inspeccion": {}, "fotos": {"total": 0, "primera": None, "ultima": None, "calculando": False},
         "recibido": False, "caduca_en": "2026-09-20T10:00:00+02:00",
         "segundos_restantes": 500,
-        "red": {"hostname": "raspi-kl05", "puerto": 80, "ips": [], "url": "http://raspi-kl05"},
+        "red": {"hostname": "raspi-planta-a", "puerto": 80, "ips": [], "url": "http://raspi-planta-a"},
         "carpeta_seleccionada": False, "carpeta": None,
         "aviso": "No hay carpeta seleccionada en el Organizer",
     }

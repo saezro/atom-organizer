@@ -60,7 +60,7 @@ def test_el_margen_sano_no_se_come_la_zona_de_no_rotar():
     """
     Con yaw ~0 (cámara alineada con la línea de vuelo) NO hay que rotar. Un
     margen de 90 se tragaría ese caso; por eso el valor sano es menor que 90.
-    Vuelo real ANTOLIN: hay tomas con yaw -1.4.
+    Vuelo real PLANTA_B: hay tomas con yaw -1.4.
     """
     add, subs, _ = sane_rotation_criteria(0, 0, 0)
     assert not (-90 - subs < -1.4 < -90 + add), (

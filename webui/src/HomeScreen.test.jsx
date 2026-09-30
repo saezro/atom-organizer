@@ -35,4 +35,18 @@ describe('HomeScreen', () => {
     await userEvent.click(screen.getByRole('button', { name: /^herramientas extra\b/i }))
     expect(onElegir).toHaveBeenCalledWith('herramientas')
   })
+
+  it('sin módulo organizer solo ofrece Estadillos y Herramientas', () => {
+    render(<HomeScreen onElegir={vi.fn()} acceso={{ organizer: false, estadillos: true }} />)
+    expect(screen.queryByRole('button', { name: /^organizar\b/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^subir en crudo\b/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /^estadillos\b/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^herramientas extra\b/i })).toBeInTheDocument()
+  })
+
+  it('con organizer y sin estadillos mantiene las tres tarjetas de siempre', () => {
+    render(<HomeScreen onElegir={vi.fn()} acceso={{ organizer: true, estadillos: false }} />)
+    expect(screen.getByRole('button', { name: /^organizar\b/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^estadillos\b/i })).toBeNull()
+  })
 })

@@ -38,7 +38,7 @@ METODOS_EXPUESTOS = frozenset({
     "render_estado", "render_confirmar", "render_set_modo",
     "app_version", "check_update", "download_update", "install_update",
     "start_update_check", "get_ultimo_update", "estado_update",
-    "cloud_status", "cloud_verify", "cloud_login", "cloud_logout",
+    "cloud_status", "cloud_verify", "cloud_login", "cloud_login_password", "cloud_logout",
     "cloud_pair_start", "cloud_pair_poll",
     "cloud_inspecciones", "cloud_prepare", "cloud_prepare_start", "cloud_upload", "cloud_organizar",
     "cloud_cancel",
@@ -293,14 +293,59 @@ _PAGINA_LAN_INFO = """<!doctype html>
 """
 
 
+# Anti DNS-rebinding: un dominio del atacante que resuelve a 127.0.0.1 / a la IP
+# de la Pi llega con `Host: dominio-atacante`. Solo se acepta el Host que el
+# equipo puede tener legitimamente: loopback, el alias del portal y su mDNS, el
+# hostname propio y cualquier IP literal (IPv4 o `[v6]`; una IP no se puede
+# "rebindear" por DNS: cubre la IP del AP `10.42.0.1` y las IPs LAN).
+_HOSTS_PERMITIDOS = frozenset({
+    "127.0.0.1", "localhost", "::1", "organizer.atom", "organizer.local",
+})
+
+
+def _split_host(hostport: str) -> tuple[str, str]:
+    """`"host:8080"` -> (`"host"`, `"8080"`); soporta `[::1]:8080`."""
+    hp = (hostport or "").strip().lower()
+    if hp.startswith("["):
+        fin = hp.find("]")
+        if fin < 0:
+            return "", ""
+        return hp[1:fin], hp[fin + 2:] if hp[fin + 1:fin + 2] == ":" else ""
+    if hp.count(":") == 1:
+        h, _, pt = hp.partition(":")
+        return h, pt
+    return hp, ""
+
+
+def _host_permitido(hostport: str, puerto: int | None = None) -> bool:
+    host, pt = _split_host(hostport)
+    if not host:
+        return False
+    if pt and not (pt.isdigit() and (pt == "80" or puerto is None or int(pt) == puerto)):
+        return False
+    if host in _HOSTS_PERMITIDOS or _es_ip(host):
+        return True
+    try:
+        import ipaddress
+        ipaddress.IPv6Address(host)
+        return True
+    except ValueError:
+        pass
+    propio = socket.gethostname().lower()
+    return bool(propio) and host in (propio, propio + ".local")
+
+
 def _origen_permitido(origin: str, host: str = "") -> bool:
     hostname = urlsplit(origin).hostname
     if hostname in _ORIGENES_LOOPBACK:
         return True
     # El movil llega por el hotspot de la propia Pi: su Origin trae la IP/host
-    # a la que se conecto, que es justo la que el cliente puso en `Host`. Se
-    # acepta ese caso concreto en vez de abrir a cualquier origen.
-    host_sin_puerto = (host or "").split(":", 1)[0]
+    # a la que se conecto, que es justo la que el cliente puso en `Host`. Solo
+    # si ese Host esta en la lista blanca (si no, un dominio rebindeado tendria
+    # Origin == Host).
+    if not _host_permitido(host):
+        return False
+    host_sin_puerto = _split_host(host)[0]
     return bool(host_sin_puerto) and hostname == host_sin_puerto
 
 
@@ -764,6 +809,13 @@ def _handler_factory(api, dist_dir: str, sink):
         def _es_local(self) -> bool:
             return self.client_address[0] in _IPS_LOOPBACK
 
+        def _host_ok(self) -> bool:
+            try:
+                puerto = self.server.server_address[1]
+            except Exception:  # noqa: BLE001
+                puerto = None
+            return _host_permitido(self.headers.get("Host") or "", puerto)
+
         def _marcar_actividad_remota(self) -> None:
             """Enciende el marco azul del kiosco (`App.jsx`
             `encenderControlRemoto`, evento `atom:control_ui`): CUALQUIER
@@ -841,6 +893,8 @@ def _handler_factory(api, dist_dir: str, sink):
             # remoto (`_RUTAS_CONTROL`, que ademas mandan `X-Atom-Pin`): el
             # resto del servidor no necesita preflight (loopback/hotspot no
             # lo mandan).
+            if not self._host_ok():
+                return self.send_error(403, "host no permitido")
             ruta = self.path.split("?", 1)[0].rstrip("/")
             if ruta not in _RUTAS_LAN_ABIERTAS and ruta not in _RUTAS_CONTROL:
                 return self.send_error(404)
@@ -852,6 +906,11 @@ def _handler_factory(api, dist_dir: str, sink):
             self.end_headers()
 
         def do_GET(self):
+            # Anti DNS-rebinding en loopback. Los remotos con Host ajeno son las
+            # sondas de portal cautivo (connectivitycheck...): siguen recibiendo
+            # el 302 de `_destino_portal`; sus rutas /api exigen token igualmente.
+            if self._es_local() and not self._host_ok():
+                return self.send_error(403, "host no permitido")
             # Rutas LAN abiertas (ver `_RUTAS_LAN_ABIERTAS`): antes que nada
             # (portal cautivo, token...), no son parte del kiosco ni del AP.
             ruta_lan = self.path.split("?", 1)[0].rstrip("/")
@@ -1020,6 +1079,8 @@ def _handler_factory(api, dist_dir: str, sink):
                 sink.unsubscribe(cola)
 
         def do_POST(self):
+            if not self._host_ok():
+                return self._json(403, {"error": "host no permitido"})
             ruta = self.path.split("?", 1)[0]
             ruta_sin_barra = ruta.rstrip("/")
             # Punto unico de marcado (ver `_marcar_si_api_remota`): cualquier

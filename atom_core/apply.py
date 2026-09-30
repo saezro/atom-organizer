@@ -468,7 +468,7 @@ class _AforoDinamico:
 
 def _formatear_duracion(segundos: float) -> str:
     """`312.4` -> `5 min 12 s`. Para el resumen de fase: los minutos son la
-    unidad en la que Rodrigo mide el organizado, no los segundos."""
+    unidad en la que el responsable mide el organizado, no los segundos."""
     segundos = max(0.0, segundos)
     if segundos < 60:
         return f"{segundos:.1f} s"
@@ -1064,7 +1064,7 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
         # --- Metadatos: exiftool en lotes, sobre lo que sí se convirtió ----
         # Los lotes van en PARALELO, cada uno en su propio exiftool: cada par
         # escribe un TIFF distinto, así que no se pisan, y el Perl de exiftool es
-        # CPU de un solo hilo. Medido en la Pi con 400 TIFFs de KL19: 32,6 s en
+        # CPU de un solo hilo. Medido en la Pi con 400 TIFFs de PLANTA_C: 32,6 s en
         # serie frente a 13,2 s con 4 procesos, salida byte a byte idéntica. Si hay
         # más lotes que procesos, se redondea a un múltiplo del nº de procesos con
         # lotes equilibrados, para que la última ronda no deje procesos ociosos

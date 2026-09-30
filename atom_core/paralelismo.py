@@ -5,7 +5,7 @@ PORQUÉ EXISTE
 Hoy el número de trabajadores lo fija `utils.workers_para_lote` (`utils.py:1305`)
 UNA sola vez al arrancar, a partir de núcleos y RAM. Eso ignora dos cosas: el
 tipo de disco (en HDD, más hilos es thrashing, no más velocidad) y la carga
-del resto de la máquina mientras el organizado corre. Rodrigo reportó el
+del resto de la máquina mientras el organizado corre. El responsable reportó el
 2026-09-08 que un mismo organizado tardó 10 minutos más con el PC ocupado por
 otros procesos: el dimensionado estático pidió los mismos trabajadores de
 siempre y se peleó por CPU con lo demás.
@@ -90,7 +90,7 @@ _VENTANAS_ESPERA_TRAS_BAJADA = 3
 #: saltando entre pistas (seek thrashing), no más throughput. Con menos
 #: workers el disco lee más secuencial y el conjunto va más rápido de
 #: verdad, aunque la CPU se vea "ociosa".
-#: Bench KL19 (2026-09-11, PC i7-7700K sobre HDD): tope 5 = 1026 s, 6 = 850 s,
+#: Bench PLANTA_C (2026-09-11, PC i7-7700K sobre HDD): tope 5 = 1026 s, 6 = 850 s,
 #: 7 = 826 s, 8 = 767 s (±50 s entre rondas). Con 3 se quedaba muy corto; 7
 #: es el punto donde deja de mejorar fuera del ruido. Además hay SSD USB que
 #: el kernel reporta rotational=1 y caían en este tope sin serlo.

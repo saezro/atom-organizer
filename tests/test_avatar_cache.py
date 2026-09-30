@@ -15,7 +15,7 @@ import pytest
 from atom_core import avatar_cache
 
 URL = "https://lh3.googleusercontent.com/a/foo=s96-c"
-EMAIL = "operador@aerotools.es"
+EMAIL = "operador@ejemplo.com"
 
 PIXEL_PNG = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -94,17 +94,17 @@ def test_cache_caducada_vuelve_a_descargar(tmp_path):
 
 def test_limpiar_borra_solo_los_que_no_estan_vivos(tmp_path):
     descargador, _ = _descargador_contador()
-    avatar_cache.obtener(URL, "vivo@aerotools.es", tmp_path, descargador=descargador)
-    avatar_cache.obtener(URL, "muerto@aerotools.es", tmp_path, descargador=descargador)
+    avatar_cache.obtener(URL, "vivo@ejemplo.com", tmp_path, descargador=descargador)
+    avatar_cache.obtener(URL, "muerto@ejemplo.com", tmp_path, descargador=descargador)
 
     carpeta = avatar_cache.ruta_cache(tmp_path)
     assert len(list(carpeta.iterdir())) == 2
 
-    avatar_cache.limpiar(tmp_path, {"vivo@aerotools.es"})
+    avatar_cache.limpiar(tmp_path, {"vivo@ejemplo.com"})
 
     restantes = list(carpeta.iterdir())
     assert len(restantes) == 1
-    assert restantes[0].name == avatar_cache._nombre_fichero("vivo@aerotools.es")
+    assert restantes[0].name == avatar_cache._nombre_fichero("vivo@ejemplo.com")
 
 
 def test_url_vacia_devuelve_vacio_sin_llamar_al_descargador(tmp_path):
