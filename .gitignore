@@ -16,3 +16,7 @@ venv/
 
 # Credenciales del cliente OAuth de escritorio (repo PUBLICO: nunca commitear)
 google_client.json
+
+# Interno (no publicar)
+.workflow/
+docs/superpowers/

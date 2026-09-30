@@ -13,7 +13,7 @@
 #   - rol `serviceusage.serviceUsageConsumer` a nivel proyecto — solo habilita
 #     *usar* APIs, no da acceso a ningún dato.
 #   - `storage.objectAdmin` SOLO sobre gs://aerotools-484814-cloudbuild-staging.
-#     A nivel proyecto NO: le daría escritura sobre gs://plantas_pv_nl.
+#     A nivel proyecto NO: le daría escritura sobre gs://<bucket>.
 # Por eso el `--gcs-source-staging-dir` es obligatorio: el bucket de staging por
 # defecto (aerotools-484814_cloudbuild) no le está concedido, y sin el flag el
 # submit muere al subir el contexto, antes siquiera de empezar a construir.
