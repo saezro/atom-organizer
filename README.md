@@ -14,7 +14,9 @@
 
 ## Qué es
 
-ATOM Organizer es una herramienta de escritorio de Aerotools que ordena las imágenes de vuelos de dron de inspección de plantas fotovoltaicas, tanto RGB como térmicas. Las agrupa por vuelo con ayuda de un estadillo (la hoja donde se registran los vuelos) y les da una nomenclatura homogénea, lista para su análisis.
+ATOM Organizer forma parte de la plataforma ATOM de [Aerotools](https://aerotools.es), especializada en inspección de plantas fotovoltaicas con drones.
+
+Es una herramienta de escritorio que ordena las imágenes de vuelos de dron de inspección de plantas fotovoltaicas, tanto RGB como térmicas. Las agrupa por vuelo con ayuda de un estadillo (la hoja donde se registran los vuelos) y les da una nomenclatura homogénea, lista para su análisis.
 
 > **Uso sujeto a licencia.** Para usar ATOM Organizer necesitas una licencia o cuenta autorizada por Aerotools. El código visible en este repositorio no concede ningún derecho de uso. Contacto: ver [Soporte](#soporte).
 
@@ -39,10 +41,10 @@ La aplicación te avisa cuando hay una versión nueva.
 
 Al abrir la aplicación, inicia sesión de una de estas dos formas:
 
-- **Usuario y contraseña** de la plataforma de Aerotools.
+- **Usuario y contraseña** de [ATOM Suite](https://suite.atom-uas.com), la plataforma de Aerotools.
 - **Entrar con Google**, con la cuenta asociada a tu acceso.
 
-Las credenciales las proporciona Aerotools. Sin ellas no se puede usar la aplicación. Si no tienes acceso, solicítalo a tu contacto en Aerotools.
+Las credenciales las proporciona Aerotools (más información en [aerotools.es](https://aerotools.es)). Sin ellas no se puede usar la aplicación. Si no tienes acceso, solicítalo a tu contacto en Aerotools.
 
 ## Requisitos
 
@@ -95,11 +97,18 @@ Es el aviso habitual de SmartScreen para aplicaciones nuevas. Elige *Más inform
 **¿Cómo actualizo?**
 La aplicación te lo propone al detectar una versión nueva. También puedes descargar el instalador más reciente desde [Releases](https://github.com/saezro/atom-organizer/releases/latest) e instalarlo encima.
 
+## Plataforma ATOM
+
+- [Aerotools](https://aerotools.es): web de la empresa.
+- [ATOM Suite](https://suite.atom-uas.com): plataforma de gestión de inspecciones, donde se da de alta el acceso.
+- [ATOM Results](https://resultados.atom-uas.com): portal de resultados para clientes.
+- [atom-uas.com](https://www.atom-uas.com): web de la plataforma ATOM.
+
 ## Soporte
 
 Si ya tienes acceso y algo no funciona, o tienes una sugerencia, abre una incidencia en [GitHub Issues](https://github.com/saezro/atom-organizer/issues) indicando tu sistema operativo, la versión de la aplicación y qué estabas haciendo. No adjuntes datos de clientes ni credenciales.
 
-Para solicitar una licencia o acceso, escribe a tu contacto habitual en Aerotools.
+Para solicitar una licencia o acceso, escribe a tu contacto habitual en Aerotools o consulta [aerotools.es](https://aerotools.es).
 
 ---
 
@@ -107,4 +116,4 @@ Para solicitar una licencia o acceso, escribe a tu contacto habitual en Aerotool
 
 ## Licencia
 
-Software propietario. © 2026 Aerotools. Todos los derechos reservados. Ver [LICENSE](LICENSE).
+Software propietario. © 2026 Aerotools. Todos los derechos reservados. Ver [LICENSE](LICENSE). Más información sobre Aerotools en [aerotools.es](https://aerotools.es).
