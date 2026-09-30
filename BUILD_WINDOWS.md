@@ -1,35 +1,29 @@
-# ATOM Organizer — compilar el EXE portable de Windows
+# ATOM Organizer: compilar el instalador de Windows
 
-La nueva UI (React + pywebview) se reparte como **un solo `.exe` portable** (un click, sin instalación).
-**PyInstaller no cross-compila** → el `.exe` hay que generarlo **en una máquina Windows**, no en Linux.
+Windows se distribuye como instalador **Inno Setup** (`ATOM-Organizer-Setup-vX.Y.Z.exe`) sobre un
+empaquetado PyInstaller **onedir** (`atom_organizer_webview.spec`, con `COLLECT`). Ya no hay `.exe` portable.
+El instalador lo define `packaging/windows/ATOM-Organizer.iss`.
 
-## Requisitos (una sola vez, en el Windows donde compiles)
+## Camino normal: CI
 
-- **Python 3.11** — al instalar marca *"Add Python to PATH"*.
-- **Node.js 18+** (trae `npm`).
-- **Edge WebView2 Runtime** — ya viene en Windows 10/11 actualizados. Si el `.exe` no abre,
-  instala el *"WebView2 Evergreen Standalone Installer"* de Microsoft (gratis).
+`.github/workflows/release.yml` compila y publica en cada release:
 
-## Compilar
+- Windows: `ATOM-Organizer-Setup-vX.Y.Z.exe`.
+- Linux: AppImage `ATOM_Organizer-<ver>-x86_64.AppImage` (`atom_organizer_webview_linux.spec`).
 
-1. Copia **toda** la carpeta del proyecto (`atom-organizer/`) a la máquina Windows.
-2. Doble-clic en **`build_windows.bat`** (o ejecútalo en una consola).
-   Hace: venv → deps Python → `npm ci && npm run build` → PyInstaller onefile.
-3. Sale **`dist\ATOM-Organizer.exe`**.
+El CI usa Python 3.11 y Node 22, y **inyecta `google_client.json` desde secretos (`ATOM_GOOGLE_CLIENT_ID` y `ATOM_GOOGLE_CLIENT_SECRET`)** (el repo no
+contiene ningún valor de cliente OAuth).
 
-## Repartir al compañero
+## Compilar a mano (solo Windows, PyInstaller no cross-compila)
 
-- Copia **solo** `dist\ATOM-Organizer.exe` — es portable (doble-clic y abre).
-- **ThermoViewer.exe NO va dentro** (licencia). Para procesar vídeo térmico `.TMC` el compañero
-  debe instalarlo aparte; la app lo busca en `C:\Program Files (x86)\ThermoViewer\`.
-  El resto del pipeline (RGB/térmica, estadillo, GPS, TIF) funciona sin él.
+Requisitos: Python 3.11 (con PATH), Node.js 22, Edge WebView2 Runtime, Inno Setup 6.
 
-## Ojo / no validado todavía
+1. Ejecuta `build_windows.bat`: venv, dependencias Python, `npm ci && npm run build` y PyInstaller.
+2. Resultado onedir: `dist\ATOM-Organizer\`.
+3. Instalador: `ISCC.exe /DMyVersion=X.Y.Z /DMyTag=vX.Y.Z packaging\windows\ATOM-Organizer.iss`.
+4. Para probar en local necesitas tu propio `google_client.json` (no se versiona).
 
-- **Nunca se ha ejecutado en Windows real.** La primera compilación es también la primera prueba:
-  ábrelo tú antes de repartirlo y confirma que arranca y hace una corrida.
-- Tamaño esperado ~150–250 MB (onefile mete Python + PySide6 core + front). Arranque algo lento
-  (autoextrae a temp) — normal en onefile.
-- Si al abrir no se ve nada: falta el **WebView2 Runtime** (ver arriba).
-- Icono del `.exe`: hoy no hay `assets\atom-icon.ico` → sale sin icono. Para ponerlo, convierte
-  `assets\atom-icon.svg` a `.ico` y recompila (el spec lo detecta solo).
+## Notas
+
+- `ThermoViewer.exe` no se incluye (licencia). Se instala aparte para vídeo térmico `.TMC`.
+- Si la ventana no muestra nada, falta el WebView2 Runtime.

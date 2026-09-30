@@ -1,88 +1,74 @@
-# ATOM Organizer
+<div align="center">
 
-Aplicación de escritorio **standalone** (Python 3.11 + PySide6) para organizar y procesar
-imágenes de vuelos de dron (RGB + térmico) de Aerotools. Es una herramienta independiente:
-**no** forma parte de Atom-suite ni toca su infraestructura.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/banner-light.svg">
+  <img alt="ATOM Organizer" src="docs/assets/banner.svg" width="100%">
+</picture>
 
-> Versión de código base: **v2.1.5** (fuente). Los binarios distribuidos se etiquetan como **v3**.
+[![Última versión](https://img.shields.io/github/v/release/saezro/atom-organizer?style=flat-square&color=EE763C&label=%C3%BAltima%20versi%C3%B3n)](https://github.com/saezro/atom-organizer/releases/latest)
+![Plataformas](https://img.shields.io/badge/plataformas-Windows%20%7C%20Linux-EE763C?style=flat-square)
+[![Descargas](https://img.shields.io/github/downloads/saezro/atom-organizer/total?style=flat-square&color=EE763C&label=descargas)](https://github.com/saezro/atom-organizer/releases)
 
-## Qué hace
+</div>
 
-Interfaz de pestañas sobre `gui.py` / `pipeline.py`. Las principales:
+## Qué es
 
-- **Procesado RGB AEROTOOLS** (organizar) — reorganiza/renombra las imágenes de un vuelo según
-  la nomenclatura Aerotools. **No destructivo**: copia con `shutil.copy2`, nunca toca el origen.
-- **Extracción TMC** — extrae imágenes térmicas de contenedores `.TMC` (ThermoViewer).
-  ⚠️ **Mueve/borra en el directorio de origen.**
-- **Convertir DJI a TIFF** — convierte capturas térmicas DJI (R-JPEG) a TIFF radiométrico.
-  ⚠️ **Mueve/borra en el directorio de origen.**
+ATOM Organizer es la aplicación de escritorio de Aerotools para organizar y procesar las imágenes de tus vuelos de dron, tanto RGB como térmicas, con una nomenclatura homogénea lista para su análisis.
 
-> **Aviso de datos:** las pestañas de Extracción TMC y Convertir DJI a TIFF **modifican el
-> origen**. Para pruebas o material irreemplazable, trabajar siempre sobre una **copia** del vuelo.
-> Solo *Procesado RGB AEROTOOLS* es garantizadamente no destructivo.
+## Descarga
 
-## Herramientas externas
+<div align="center">
 
-La app se apoya en binarios externos (resueltos vía PATH / `external_tools.py`):
+[**Descargar para Windows**](https://github.com/saezro/atom-organizer/releases/latest) &nbsp;·&nbsp; [**Descargar para Linux**](https://github.com/saezro/atom-organizer/releases/latest)
 
-- **exiftool** (13.59) — lectura/escritura de metadatos EXIF.
-- **ffmpeg** (7.0.2) — manipulación de vídeo/imágenes.
-- **dji_irp** (`libdirp.so` / `dji_irp.exe`) — SDK térmico DJI para conversión radiométrica.
+</div>
 
-## Compilar
+En la página de la última versión encontrarás, dentro de *Assets*:
 
-El build usa **PyInstaller 5.13.2** en modo *onedir* con `atom_organizer.spec`.
+| Sistema | Archivo | Cómo instalarlo |
+| --- | --- | --- |
+| Windows | `ATOM-Organizer-Setup-vX.Y.Z.exe` | Ejecuta el instalador y sigue los pasos. No requiere permisos de administrador. |
+| Linux | `ATOM_Organizer-vX.Y.Z-x86_64.AppImage` | Dale permisos de ejecución (`chmod +x`) y ábrelo con doble clic. |
 
-### Gotcha obligatorio: `ipaddress` (ambas plataformas)
+La aplicación te avisa cuando hay una versión nueva.
 
-PyInstaller con Python 3.11 **no** incluye `ipaddress` en `base_library.zip`. El bootstrap
-(`urllib.parse`) lo importa en cabecera y la app peta con `ModuleNotFoundError: No module named
-'ipaddress'` **antes de arrancar**. `hiddenimports` NO lo cura (va al PYZ, no al `base_library.zip`
-que se carga en el bootstrap).
+## Cómo entrar
 
-**Fix:** tras CADA build de PyInstaller, ejecutar `python inject_ipaddress.py` (idempotente, vale
-Linux y Windows). El workflow de Windows ya lo hace; el build de AppImage también.
+Al abrir la aplicación, inicia sesión de una de estas dos formas:
 
-### Windows (.exe) — vía GitHub Actions
+- **Usuario y contraseña** de la Suite.
+- **Entrar con Google**, con la cuenta asociada a tu acceso.
 
-No requiere máquina Windows. El workflow [`.github/workflows/build-windows.yml`](.github/workflows/build-windows.yml)
-compila en `windows-latest`:
+Si no tienes acceso, pídelo a tu contacto en Aerotools.
 
-1. Push a `main` (o `workflow_dispatch` manual) → dispara el job.
-2. Instala deps + PyInstaller 5.13.2, corre `pyinstaller --clean --noconfirm atom_organizer.spec`.
-3. Inyecta `ipaddress` (`python inject_ipaddress.py`).
-4. Empaqueta `dist/atom_organizer/*` en `ATOM_Organizer-v3-win-x64.zip`.
-5. Sube el zip como **artifact** (retención 14 días) — descargar desde la pestaña Actions del run.
+## Requisitos
 
-El zip incluye `atom_organizer.exe`, `base_library.zip` (con `ipaddress.pyc`), PySide6,
-`dji_irp.exe` y `exiftool.exe`.
+- **Windows:** 10 o 11, 64 bits.
+- **Linux:** distribución de 64 bits (x86_64) con soporte para AppImage.
+- Conexión a internet para iniciar sesión y comprobar actualizaciones.
+- Espacio libre en disco suficiente para las copias de tus vuelos.
 
-### Linux (AppImage)
+## Preguntas frecuentes
 
-Proceso manual documentado en `build-appimage/.progress.md`. Resumen:
+**¿Modifica mis imágenes originales?**
+*Procesado RGB* trabaja siempre sobre copias y nunca toca el origen. Las opciones de *Extracción TMC* y *Convertir DJI a TIFF* mueven o eliminan archivos en la carpeta de origen: en material irreemplazable, trabaja sobre una copia del vuelo.
 
-1. venv de build con Python 3.11 y `requirements-linux.txt` (= `requirements.txt` **sin** `pywin32`
-   / `pywin32-ctypes`).
-2. `pyinstaller --clean --noconfirm atom_organizer.spec` → `dist/atom_organizer/` (onedir).
-3. `python inject_ipaddress.py` (re-inyectar tras cada rebuild).
-4. Montar el `AppDir` (binario + `ffmpeg`/`exiftool` en `usr/bin` + `AppRun` + `.desktop` + icono).
-5. `appimagetool --appimage-extract-and-run` → `ATOM_Organizer-v3-x86_64.AppImage` (~137 MB).
+**¿Funciona el procesado térmico en Linux?**
+Parcialmente. La conversión radiométrica DJI a TIFF y la extracción de archivos `.TMC` dependen de componentes solo disponibles en Windows. Para el flujo térmico completo, usa la versión de Windows. El resto de funciones son iguales en ambos sistemas.
 
-### Degradaciones térmicas conocidas en Linux
+**Windows me muestra un aviso al instalar.**
+Es el aviso habitual de SmartScreen para aplicaciones nuevas. Elige *Más información* y después *Ejecutar de todos modos*.
 
-El pipeline térmico DJI depende de binarios **solo-Windows**. En el AppImage de Linux:
+**¿Cómo actualizo?**
+La aplicación te lo propone al detectar una versión nueva. También puedes descargar el instalador más reciente desde [Releases](https://github.com/saezro/atom-organizer/releases/latest) e instalarlo encima.
 
-- **`dji_irp` / `libdirp.so`** — el SDK radiométrico DJI solo funciona en Windows. La conversión
-  DJI→TIFF radiométrico **no está disponible** en Linux.
-- **`.TMC` (ThermoViewer)** — la extracción de contenedores `.TMC` depende de ThermoViewer, que es
-  **solo Windows**. No disponible en Linux.
+## Soporte
 
-El resto de funciones (organización RGB, EXIF, ffmpeg) funcionan igual en ambas plataformas.
-**Para el flujo térmico completo, usar la build de Windows.**
+¿Algo no funciona o tienes una sugerencia? Abre una incidencia en [GitHub Issues](https://github.com/saezro/atom-organizer/issues) indicando tu sistema operativo, la versión de la aplicación y qué estabas haciendo. No adjuntes datos de clientes ni credenciales.
 
-## Binarios
+También puedes escribir a tu contacto habitual en Aerotools.
 
-Ambos se distribuyen por Drive (folder privado de Rodrigo):
+---
 
-- **Windows:** `ATOM_Organizer-v3-win-x64.zip` (~92 MB)
-- **Linux:** `ATOM_Organizer-v3-x86_64.AppImage` (~137 MB)
+<sub>Documentación para desarrolladores: [docs/DESARROLLO.md](docs/DESARROLLO.md)</sub>
