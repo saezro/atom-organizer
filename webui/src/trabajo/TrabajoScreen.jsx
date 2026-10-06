@@ -47,6 +47,8 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
       <PasoInspeccion
         ready={ready}
         prefijo={prefijo}
+        carpeta={carpeta}
+        estadilloRutas={est.rutas}
         onChange={(p, e) => {
           setPrefijo(p)
           setElegida(e)
