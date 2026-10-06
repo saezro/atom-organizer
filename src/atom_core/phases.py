@@ -32,6 +32,7 @@ import time
 import external_tools as config
 import pipeline
 import utils
+from atom_core import cancelacion
 from atom_core import cierre as cierre_mod
 from atom_core import estadillo as estadillo_mod
 from atom_core import indice as indice_mod
@@ -1093,6 +1094,7 @@ class PipelinePhasesMixin:
                 tiempos: dict[str, float] = {}
                 marca = time.monotonic()
 
+                cancelacion.comprobar()
                 _copiar_estadillos_a_salida(cfg, self.organizer_logger_obj.logger)
 
                 resumen_indice = indice_mod.construir_indice(
@@ -1100,6 +1102,7 @@ class PipelinePhasesMixin:
                     progress_callback, progress_bar, progress_summarize, ejecucion_id=ejecucion_id)
                 tiempos["Índice"] = time.monotonic() - marca
                 marca = time.monotonic()
+                cancelacion.comprobar()
 
                 # Sin `controlador` ambos apply corren SECUENCIALES, una imagen a la
                 # vez en este mismo proceso (`apply.py:321`). Eso es el camino de los
@@ -1128,6 +1131,7 @@ class PipelinePhasesMixin:
                            contador_rotacion=contador_rotacion)
                 tiempos["RGB"] = time.monotonic() - marca
                 marca = time.monotonic()
+                cancelacion.comprobar()
 
                 # Las térmicas van a un `ThreadPoolExecutor`: el tiempo se va
                 # esperando a procesos externos, así que el techo no es la RAM por
@@ -1136,12 +1140,18 @@ class PipelinePhasesMixin:
                 aplicar_termicas(manifiesto, cfg, self.split_images_obj, progress_callback,
                                 progress_bar, progress_summarize,
                                 controlador=paralelismo_mod.ControladorAdaptativo(
+                                    # Suelo 8: con el origen lento (Drive) el MB/s cae
+                                    # aunque la CPU esté ociosa y el controlador
+                                    # estrangulaba a 3-7 hilos; hilos esperando I/O no
+                                    # cuestan CPU. Respeta el tope `max_io_workers`.
+                                    minimo=min(8, utils.max_io_workers()),
                                     maximo=utils.max_io_workers(),
                                     arranque=utils.arranque_io(),
                                     etiqueta="Termicas"),
                                 contador_rotacion=contador_rotacion)
                 tiempos["Térmicas"] = time.monotonic() - marca
                 marca = time.monotonic()
+                cancelacion.comprobar()
 
                 progress_summarize.emit("---> SUBPROCESO: Cierre")
                 proyecciones: dict = {}
@@ -1171,8 +1181,27 @@ class PipelinePhasesMixin:
                         progress_callback.emit(f"  - {problema}\n")
                     self.organizer_logger_obj.logger.warning(
                         "Cierre con %d problema(s): %s", len(problemas), problemas)
+                elif (resumen_indice or {}).get("no_disponibles"):
+                    no_disp = resumen_indice["no_disponibles"]
+                    progress_callback.emit(
+                        f"\nHA HABIDO AVISOS: {len(no_disp)} fichero(s) no estaban "
+                        "disponibles (sin respuesta del origen, p. ej. Drive sin "
+                        "descargar) y NO se han organizado:\n")
+                    for ruta in no_disp:
+                        progress_callback.emit(f"  - {ruta}\n")
                 else:
                     progress_callback.emit("\nOrganizado completado sin problemas.\n")
+            except cancelacion.RunCancelado as cancelada:
+                # Cancelado: se sale SIN cierre (CSVs/verificación darían las
+                # filas 'pendiente' por run roto). Las filas 'hecho' están
+                # completas; el resto sigue 'pendiente' y se retoma al relanzar.
+                try:
+                    conteo = manifiesto.resumen()
+                    cancelada.hechas = conteo.get("hecho", 0)
+                    cancelada.total = sum(conteo.values())
+                except Exception:  # noqa: BLE001 — el recuento es informativo
+                    pass
+                raise
             finally:
                 # `cerrar_ejecucion` tiene que quedar registrado SIEMPRE, haya
                 # o no excepción: si no, una ejecución que revienta a mitad se

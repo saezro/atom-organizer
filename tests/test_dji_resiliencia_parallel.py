@@ -46,11 +46,20 @@ def _es_conversor_dji(cmd):
     return "dji_irp" in texto or "dji_utility" in texto
 
 
-def _make_raw(image_path, input_folder, image_name):
+def _raw_de_cmd(cmd):
+    """Ruta del .raw que el conversor debe escribir (ahora en un temporal local,
+    ya no junto a la imagen): se lee del propio comando."""
+    if isinstance(cmd, (list, tuple)):
+        return next(str(a) for a in cmd if str(a).endswith(".raw"))
+    import re
+    return re.search(r'"([^"]+\.raw)"', str(cmd)).group(1)
+
+
+def _make_raw(image_path, raw_path):
     """Genera el .raw sintético (floats 0..N) del tamaño de la imagen dada."""
     w, h = PILImage.open(image_path).size  # (64, 48) -> w=64, h=48
     values = [float(i) for i in range(h * w)]
-    with open(os.path.join(str(input_folder), image_name + ".raw"), "wb") as f:
+    with open(raw_path, "wb") as f:
         f.write(struct.pack(f"{h * w}f", *values))
 
 
@@ -106,10 +115,10 @@ def test_raw_truncado_no_tumba_el_lote(tmp_path, logger, make_dji_jpeg, monkeypa
             if n in _cmd_text(cmd) and _es_conversor_dji(cmd):
                 if n == "DJI_0002_T.JPG":
                     # dji_irp "corrupto": escribe un .raw truncado -> struct/reshape peta.
-                    with open(os.path.join(str(input_folder), n + ".raw"), "wb") as f:
+                    with open(_raw_de_cmd(cmd), "wb") as f:
                         f.write(struct.pack("4f", 1.0, 2.0, 3.0, 4.0))
                 else:
-                    _make_raw(paths[n], input_folder, n)
+                    _make_raw(paths[n], _raw_de_cmd(cmd))
                 break
         return subprocess.CompletedProcess(args=cmd, returncode=0)
 
@@ -173,7 +182,7 @@ def test_paralelo_identico_a_secuencial(tmp_path, logger, make_dji_jpeg, monkeyp
         def fake_run(cmd, *args, **kwargs):
             for n in names:
                 if n in _cmd_text(cmd) and _es_conversor_dji(cmd):
-                    _make_raw(paths[n], input_folder, n)
+                    _make_raw(paths[n], _raw_de_cmd(cmd))
                     break
             return subprocess.CompletedProcess(args=cmd, returncode=0)
 

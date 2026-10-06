@@ -258,6 +258,8 @@ export const api = {
   defaultDir: () => call('default_dir'),
   runOrganize: (params, advanced) => call('run_organize', params, advanced ?? null),
   runTask: (task, params, advanced) => call('run_task', task, params, advanced ?? null),
+  // Pide parar el run en curso (cooperativo: termina el fichero en curso).
+  runCancelar: () => call('run_cancelar'),
   // Lectura sincrónica del estadillo para el modal previo (pilotos, dron,
   // nº de vuelos, franjas horarias). Devuelve el dict de info o {error}.
   readEstadilloInfo: (path) => call('read_estadillo_info', path),

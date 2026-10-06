@@ -136,3 +136,90 @@ def test_caso_campo_carpeta_propia_gana_sobre_estadillo_viejo_del_padre(tmp_path
 
     assert res["rutas"] == [e_dentro]
     assert res_padre["rutas"] == [e_padre]
+
+
+# --- Raíz con varios días sobre Drive: poda de carpetas de vuelo/imágenes ----
+
+def _arbol_chile(raiz, n_jpg=2000):
+    cols = ("PB", "Vuelo", "Fecha", "Hora_de_inicio", "Hora_final")
+    esperados = []
+    for i, dia in enumerate(["2026_09_28", "2026_09_30", "2026_10_03", "2026_10_04"]):
+        d = raiz / f"{dia}_Willka"
+        d.mkdir(parents=True)
+        esperados.append(_csv(d / f"{dia}_estadillo.csv", [(str(i), "1", "2026:09:28", "10:00:00", "10:05:00")]))
+        (d / "Conteo_Data.txt").write_text("x")
+        (d / "mapa.png").write_bytes(b"")
+        rev = d / "Revision_Poliginos_Termales"
+        rev.mkdir()
+        for k in range(300):
+            (rev / f"p{k}.png").write_bytes(b"")
+        for v in range(2):
+            dji = d / f"DJI_20260928152{v}_00{v}_X"
+            dji.mkdir()
+            for k in range(n_jpg):
+                (dji / f"DJI_{k:04d}_T.JPG").write_bytes(b"")
+    return sorted(esperados)
+
+
+def test_raiz_con_varios_dias_no_lista_carpetas_de_vuelo_ni_de_imagenes(tmp_path, monkeypatch):
+    import os
+    esperados = _arbol_chile(tmp_path)
+    listados = []
+    real_scandir = os.scandir
+    real_listdir = os.listdir
+
+    def scandir_espia(ruta="."):
+        listados.append(os.fspath(ruta))
+        return real_scandir(ruta)
+
+    def listdir_espia(ruta="."):
+        listados.append(os.fspath(ruta))
+        return real_listdir(ruta)
+
+    monkeypatch.setattr(os, "scandir", scandir_espia)
+    monkeypatch.setattr(os, "listdir", listdir_espia)
+
+    res = estadillo.detectar_estadillos(str(tmp_path))
+
+    assert res["rutas"] == esperados
+    assert res["descartados"] == []
+    assert not [r for r in listados if os.path.basename(r).startswith("DJI_")]
+    # la carpeta de imágenes se lista una vez (para contarlas) pero no se desciende
+    assert not [r for r in listados if os.path.dirname(r).endswith("Revision_Poliginos_Termales")]
+
+
+def test_csv_sin_columna_esencial_sigue_descartado_en_arbol_con_dias(tmp_path):
+    d = tmp_path / "2026_09_28_Willka"
+    d.mkdir()
+    malo = _csv(d / "malo.csv", [("1", "1", "2026:09:28", "10:00:00")],
+                columnas=("PB", "Vuelo", "Fecha", "Hora_de_inicio"))
+    res = estadillo.detectar_estadillos(str(tmp_path))
+    assert res["rutas"] == []
+    assert res["descartados"] == [malo]
+
+
+def test_profundidad_2_dentro_de_carpeta_no_de_vuelo_y_no_mas(tmp_path):
+    (tmp_path / "a" / "b" / "c").mkdir(parents=True)
+    ok = _csv(tmp_path / "a" / "b" / "ok.csv", [("1", "1", "2026:03:17", "10:00:00", "10:05:00")])
+    _csv(tmp_path / "a" / "b" / "c" / "fuera.csv", [("1", "1", "2026:03:17", "10:00:00", "10:05:00")])
+    assert estadillo.detectar_estadillos(str(tmp_path))["rutas"] == [ok]
+
+
+def test_csv_en_carpeta_con_mas_de_50_imagenes_se_detecta(tmp_path):
+    d = tmp_path / "fotos"
+    d.mkdir()
+    for k in range(estadillo._MAX_IMAGENES_POR_CARPETA + 5):
+        (d / f"img_{k}.jpg").write_bytes(b"")
+    ok = _csv(d / "e.csv", [("1", "1", "2026:03:17", "10:00:00", "10:05:00")])
+    assert estadillo.detectar_estadillos(str(tmp_path))["rutas"] == [ok]
+
+
+def test_carpeta_dji_notas_no_se_poda_pero_dji_con_fecha_si(tmp_path):
+    (tmp_path / "dji_notas").mkdir()
+    (tmp_path / "DJI_202609301234").mkdir()
+    ok = _csv(tmp_path / "dji_notas" / "e.csv", [("1", "1", "2026:03:17", "10:00:00", "10:05:00")])
+    _csv(tmp_path / "DJI_202609301234" / "e.csv", [("1", "1", "2026:03:17", "10:00:00", "10:05:00")])
+    assert estadillo._es_carpeta_de_vuelo("DJI_202609301234")
+    assert estadillo._es_carpeta_de_vuelo("dji_202609301234_004")
+    assert not estadillo._es_carpeta_de_vuelo("dji_notas")
+    assert estadillo.detectar_estadillos(str(tmp_path))["rutas"] == [ok]

@@ -709,6 +709,11 @@ select.glass-input option {
 .pm-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 0.75rem;
+}
+.pm-cancel:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 .pm-close {
   min-width: 8.75rem;

@@ -89,7 +89,7 @@ def test_tiff_rotation_preserves_radiometry_and_copies_exif(
         calls.append(cmd)
         if len(calls) == 1:
             # Simula la utilidad DJI generando el .raw con datos radiométricos conocidos.
-            with open(os.path.join(str(input_folder), image_name + ".raw"), "wb") as f:
+            with open(next(str(a) for a in cmd if str(a).endswith(".raw")), "wb") as f:
                 f.write(raw_bytes)
         return subprocess.CompletedProcess(args=cmd, returncode=0)
 

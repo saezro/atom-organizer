@@ -43,8 +43,10 @@ def _convierte_con_raw(monkeypatch, logger, tmp_path, make_dji_jpeg, valores):
     assert len(valores) == w * h, "el .raw sintético debe cubrir la imagen entera"
 
     def fake_run(cmd, *args, **kwargs):
-        with open(os.path.join(str(vuelo), "DJI_0001_T.JPG.raw"), "wb") as f:
-            f.write(struct.pack(f"{len(valores)}f", *valores))
+        raw = next((str(a) for a in cmd if str(a).endswith(".raw")), None)
+        if raw:  # el .raw va a un temporal local; el exiftool no lleva .raw
+            with open(raw, "wb") as f:
+                f.write(struct.pack(f"{len(valores)}f", *valores))
         return subprocess.CompletedProcess(args=cmd, returncode=0)
 
     monkeypatch.setattr(split_images.subprocess, "run", fake_run)

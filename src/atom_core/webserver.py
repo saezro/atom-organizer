@@ -45,7 +45,7 @@ METODOS_EXPUESTOS = frozenset({
     "cloud_comprobar", "cloud_asegurar_estado", "cloud_pendientes", "cloud_drenar",
     "listar_perfiles", "activar_perfil", "borrar_perfil",
     "estadillo_validar", "estadillo_subir", "estadillo_existente", "estadillo_bajar_nube",
-    "run_organize", "run_task",
+    "run_organize", "run_task", "run_cancelar",
     "sistema_apagar",
     "red_listar", "red_conectar", "red_conexion",
     "red_ap_estado", "red_ap_activar", "red_ap_desactivar",

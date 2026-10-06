@@ -252,6 +252,8 @@ def test_staging_se_borra_en_excepcion(logger, monkeypatch):
 
     def _mkdtemp_espia(*args, **kwargs):
         ruta = real_mkdtemp(*args, **kwargs)
+        if kwargs.get("prefix") != "dji_tif_":
+            return ruta  # temporal de .raw: no es el staging
         rutas_creadas.append(ruta)
         return ruta
 
@@ -288,7 +290,11 @@ def test_staging_se_borra_en_excepcion(logger, monkeypatch):
 # --- 5) Local: sin temporales ni copias extra --------------------------------
 
 def test_local_no_crea_ningun_temporal(tmp_path, logger, monkeypatch):
+    real_mkdtemp = pipeline.tempfile.mkdtemp
+
     def _mkdtemp_prohibido(*args, **kwargs):
+        if kwargs.get("prefix") != "dji_tif_":
+            return real_mkdtemp(*args, **kwargs)  # temporal de .raw: permitido
         raise AssertionError("No debía crearse ningún directorio de staging en local.")
 
     monkeypatch.setattr(pipeline.tempfile, "mkdtemp", _mkdtemp_prohibido)
@@ -490,6 +496,8 @@ def test_staging_no_queda_huerfano_si_falla_la_descarga(logger, monkeypatch):
 
     def _mkdtemp_espia(*args, **kwargs):
         ruta = real_mkdtemp(*args, **kwargs)
+        if kwargs.get("prefix") != "dji_tif_":
+            return ruta  # temporal de .raw: no es el staging
         rutas_creadas.append(ruta)
         return ruta
 

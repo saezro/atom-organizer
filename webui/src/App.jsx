@@ -461,13 +461,26 @@ function App() {
                   recursos: closed.recursos || null,
                 }
               }
+              // Cancelado: la fase activa no se completó, no se pinta como hecha.
+              if (info && info.status === 'cancelled') {
+                return p.status === 'active' ? { ...p, status: 'pending' } : p
+              }
               // Fases que nunca corrieron o seguían activas: cerrar como
               // hechas, preservando las que ya quedaron marcadas con error.
               return p.status === 'error' ? p : { ...p, status: 'done' }
             })
           )
           setFinished(
-            info
+            info && info.status === 'cancelled'
+              ? {
+                  // Ni éxito ni error: estado propio con lo que se llegó a hacer.
+                  ok: true,
+                  cancelled: true,
+                  hechas: info.hechas ?? null,
+                  total: info.total_filas ?? null,
+                  elapsed: info.elapsed,
+                }
+              : info
               ? {
                   ok: true,
                   // Ámbar tanto para errores no fatales como para avisos (SIN_ORDENAR).
@@ -1078,6 +1091,7 @@ function App() {
           recursosTotales={recursosTotales}
           maquina={maquina}
           onClose={() => setModalOpen(false)}
+          onCancel={() => api.runCancelar()}
         />
       )}
 

@@ -454,12 +454,15 @@ def test_emite_stats_marker_con_desglose_rgb_extra_separado(tmp_path):
 
     construir_indice(cfg, pipeline, exif, manifiesto, _Signal(), _Signal(), psum)
 
-    marcadores = [m for m in psum.mensajes if str(m).startswith(STATS_INDICE_PREFIX)]
+    # Los marcadores con "subpaso" son progreso intermedio; el desglose es el único con "vuelos".
+    marcadores = [m for m in psum.mensajes
+                  if str(m).startswith(STATS_INDICE_PREFIX) and '"vuelos"' in str(m)]
     assert len(marcadores) == 1, "el índice debe emitir el desglose UNA sola vez, al cerrar"
     payload = json.loads(marcadores[0][len(STATS_INDICE_PREFIX):])
     assert payload == {
         "fase": "Índice", "total": 3, "rgb": 1, "termica": 1, "rgb_extra": 1,
         "sin_asignar": 0, "sin_timestamp": 0, "vuelos": 1, "ya_organizadas": 0,
+        "no_disponibles": 0,
     }
     manifiesto.cerrar()
 

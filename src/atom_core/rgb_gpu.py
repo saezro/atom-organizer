@@ -19,6 +19,7 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
+from atom_core import cancelacion
 from exif import extraer_bloque_xmp_crudo
 
 _ESTADO: dict = {}
@@ -146,6 +147,8 @@ def aplicar(filas, cfg, pipeline_mod, apply_mod, cerrar_fila, fallback_cpu,
                 lecturas[i] = [pool.submit(_leer, f, pipeline_mod) for f in lotes[i]]
 
         for i, filas_lote in enumerate(lotes):
+            if cancelacion.cancelado():
+                break  # punto seguro: entre lotes; lo en vuelo se drena abajo
             _pedir(i)
             _pedir(i + 1)  # lectura adelantada mientras la GPU trabaja
             _pedir(i + 2)
@@ -210,6 +213,7 @@ def aplicar(filas, cfg, pipeline_mod, apply_mod, cerrar_fila, fallback_cpu,
             _drenar(False)
         _drenar(True)
 
+    cancelacion.comprobar()
     seg = time.monotonic() - stats["t0"]
     progress_callback.emit(
         f"\n[gpu] Imágenes RGB: {stats['gpu']} en GPU, {stats['cpu']} en CPU (fallback), "

@@ -33,6 +33,7 @@ import urllib.parse
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from atom_core import cancelacion
 from atom_core import cola_subidas
 from atom_core.credencial import (
     ESTADO_OK, ESTADO_SIN_CREDENCIAL, ESTADO_SIN_CONEXION,
@@ -3445,6 +3446,7 @@ class Api:
         if self._running:
             return {"started": False, "reason": "Ya hay un proceso en curso."}
         self._running = True
+        cancelacion.limpiar()  # un run nuevo no hereda la cancelación del anterior
         # Estado del panel de control remoto (`GET /api/control/estado`): un
         # run nuevo empieza limpio, sin arrastrar la fase/progreso/error del
         # anterior (`_push` los va actualizando mientras corre).
@@ -3455,6 +3457,18 @@ class Api:
             target=self._run_task_worker, args=(task, params, advanced), daemon=True
         ).start()
         return {"started": True}
+
+    def run_cancelar(self) -> dict:
+        """Pide parar el run en curso (botón «Cancelar» del modal de progreso).
+
+        Cooperativo: el pipeline mira la bandera en puntos seguros (entre
+        ficheros/filas/fases), termina el fichero en curso y emite `done` con
+        status `cancelled`. Lo ya organizado se conserva (manifiesto) y se
+        retoma al relanzar. No toca el origen."""
+        if not self._running:
+            return {"ok": False, "reason": "No hay ningún proceso en curso."}
+        cancelacion.solicitar()
+        return {"ok": True}
 
     def _cloud_estado_en_segundo_plano(self) -> None:
         """Refresca el indicador de credencial sin bloquear a quien lo pidió."""
@@ -3492,8 +3506,14 @@ class Api:
         except Exception as exc:  # noqa: BLE001 — el front tiene que enterarse SIEMPRE
             logger.exception("El task %s murió antes de poder informar", task)
             emit("error", f"{type(exc).__name__}: {exc}")
+        except cancelacion.RunCancelado:
+            # Cancelación que no pasó por el manejo de organize.run_task: sin
+            # esto la UI se quedaba en «Cancelando…» (BaseException).
+            emit("done", {"status": "cancelled", "cancelled": True,
+                          "mensaje": "Cancelado por el usuario"})
         finally:
             self._running = False
+            cancelacion.limpiar()  # no dejar la bandera armada tras cancelar
             # Sin esto, lo que quedara en el buffer cuando el pipeline deja de
             # emitir no llegaria nunca: el vaciado lo dispara el evento
             # SIGUIENTE, y despues del ultimo no hay ninguno.
