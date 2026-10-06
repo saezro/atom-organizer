@@ -155,6 +155,9 @@ class _MetadatosImagen:
     posicion: "_Posicion | None" = None
     meta_leida: bool = False
     make: str | None = None
+    # True si la propia lectura de cabecera detectó que el fichero está a
+    # medio copiar (ver `_leer_cabecera`): el índice lo deja fuera.
+    a_medias: bool = False
 
 
 def _sin_utils_helper() -> "utils.Utils":
@@ -261,8 +264,8 @@ def _cola_de_ceros(ruta: str, tamano: int) -> bool:
             f.seek(max(0, tamano - 16))
             cola = f.read(16)
     except OSError:
-        return False
-    return len(cola) > 0 and not any(cola)
+        return True
+    return len(cola) < min(16, tamano) or (len(cola) > 0 and not any(cola))
 
 
 def _a_medio_copiar(ruta: str) -> bool:
@@ -275,6 +278,87 @@ def _a_medio_copiar(ruta: str) -> bool:
     except OSError:
         return False
     return tamano == 0 or _en_uso_windows(ruta) or _cola_de_ceros(ruta, tamano)
+
+
+def _abrir_compartido_windows(ruta: str):
+    """Windows: abre `ruta` en lectura con share=FILE_SHARE_READ (la MISMA
+    semántica que `_error_apertura_compartida`) y devuelve `(fichero, 0)`, o
+    `(None, codigo_win32)` si falla. El `fichero` es un objeto binario normal
+    (`os.fdopen`), así que el lector no necesita una segunda apertura."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                     wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+                                     wintypes.HANDLE]
+    GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING = 0x80000000, 0x1, 3
+    manejador = kernel32.CreateFileW(ruta, GENERIC_READ, FILE_SHARE_READ, None,
+                                     OPEN_EXISTING, 0, None)
+    if manejador in (None, wintypes.HANDLE(-1).value):
+        return None, ctypes.get_last_error()
+    try:
+        fd = msvcrt.open_osfhandle(manejador, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    except Exception:
+        kernel32.CloseHandle(manejador)
+        raise
+    return os.fdopen(fd, "rb"), 0
+
+
+def _leer_cabecera(ruta: str) -> "tuple[bytes | None, bool]":
+    """UNA sola apertura de `ruta` (local): devuelve `(cabecera, a_medias)`.
+
+    `cabecera` son los primeros `_BYTES_CABECERA` bytes (`None` si no se pudo
+    abrir/leer: cada campo cae entonces a su función original por ruta).
+    `a_medias` aplica los mismos criterios que `_a_medio_copiar`, pero sobre
+    el MISMO handle: tamaño 0 (`fstat`), en Windows bloqueo por escritor
+    (apertura con share=FILE_SHARE_READ: error 32 = en uso) y, en
+    .jpg/.jpeg, últimos 16 bytes a cero (del buffer ya leído si el fichero
+    cabe en él; si no, `seek` + `read(16)` en el mismo handle). Con el filtro
+    desactivado (`_FILTRO_ARCHIVO_A_MEDIAS`) solo lee la cabecera."""
+    filtro = _FILTRO_ARCHIVO_A_MEDIAS
+    fichero = None
+    try:
+        if filtro and _es_windows():
+            try:
+                fichero, error = _abrir_compartido_windows(ruta)
+            except Exception:  # noqa: BLE001 — como `_en_uso_windows`: ante la duda, no excluir
+                fichero, error = None, 0
+            if fichero is None and error == _ERROR_SHARING_VIOLATION:
+                return None, True
+        if fichero is None:
+            fichero = open(ruta, 'rb')
+        with fichero:
+            cabecera = fichero.read(_BYTES_CABECERA)
+            if not filtro:
+                return cabecera, False
+            try:
+                tamano = os.fstat(fichero.fileno()).st_size
+            except OSError:
+                return cabecera, False  # un fallo de stat NO la omite
+            if tamano == 0:
+                return cabecera, True
+            # Lectura corta (DriveFS declara un st_size que luego no sirve):
+            # menos bytes de los esperados = incompleto, se excluye y se avisa.
+            if len(cabecera) < min(_BYTES_CABECERA, tamano):
+                return cabecera, True
+            if os.path.splitext(ruta)[1].lower() in (".jpg", ".jpeg"):
+                try:
+                    if tamano <= len(cabecera):
+                        cola = cabecera[-16:]
+                    else:
+                        fichero.seek(max(0, tamano - 16))
+                        cola = fichero.read(16)
+                except OSError:
+                    return cabecera, True  # cola ilegible: NO entra como buena
+                if len(cola) < min(16, tamano):
+                    return cabecera, True
+                if len(cola) > 0 and not any(cola):
+                    return cabecera, True
+            return cabecera, False
+    except Exception:  # noqa: BLE001 — lectura fallida: se excluye (aviso de omitidas)
+        return None, True
 
 
 # --- Progreso y límite de espera por fichero ---------------------------------
@@ -470,13 +554,9 @@ def _ejecutar_con_limite(items: list, funcion, hilos: int, timeout_s: float,
 
 @dataclass
 class _Limite:
-    """Parámetros de la espera acotada que recibe `_listar_imagenes`."""
+    """Lo que recibe `_listar_imagenes` para emitir progreso del listado."""
 
     emisor: "_EmisorIndice"
-    hilos: int
-    timeout_s: float
-    watchdog_s: float
-    lentas: list
 
 
 def _listar_imagenes(input_folder: str, omitidas: "list[str] | None" = None,
@@ -489,9 +569,9 @@ def _listar_imagenes(input_folder: str, omitidas: "list[str] | None" = None,
     si se pasa `omitidas`, se apuntan ahí. Solo en carpetas locales: en
     `gs://` el listado no trae mtime.
 
-    Con `limite`, el listado emite progreso y el filtro (que abre cada JPG y
-    en Drive dispara su descarga) corre con tiempo máximo por fichero: los
-    que vencen NO se descartan, van a `limite.lentas` para el reintento."""
+    Con `limite`, el listado emite progreso y NO filtra (ni rellena
+    `omitidas`): la detección de a medio copiar se hace al leer los metadatos
+    (`_leer_cabecera`, una sola apertura por fichero)."""
     rutas: list[str] = []
     if almacen.es_uri_gcs(input_folder):
         rutas.extend(_listar_imagenes_gcs(input_folder))
@@ -510,17 +590,15 @@ def _listar_imagenes(input_folder: str, omitidas: "list[str] | None" = None,
             limite.emisor.progreso(len(candidatas), 0)
     if limite is not None:
         limite.emisor.progreso(len(candidatas), 0, forzar=True)
-    if limite is None or not _FILTRO_ARCHIVO_A_MEDIAS:
-        medias = [_a_medio_copiar(r) for r in candidatas] if limite is None else \
-            [False] * len(candidatas)
+    # Con `limite` (índice normal) NO hay pasada de filtro: `_leer_metadatos`
+    # detecta "a medio copiar" en su propia (única) apertura (`_leer_cabecera`).
+    # Sin `limite` (llamadas sueltas) se conserva el filtro por fichero.
+    if limite is None and _FILTRO_ARCHIVO_A_MEDIAS:
+        medias = [_a_medio_copiar(r) for r in candidatas]
     else:
-        limite.emisor.iniciar("Filtrar", len(candidatas))
-        medias = _ejecutar_con_limite(candidatas, _a_medio_copiar, limite.hilos,
-                                      limite.timeout_s, limite.emisor, limite.watchdog_s)
+        medias = [False] * len(candidatas)
     for ruta, media in zip(candidatas, medias):
-        if media is _VENCIDO:
-            limite.lentas.append(ruta)
-        elif media:
+        if media:
             if omitidas is not None:
                 omitidas.append(ruta)
         else:
@@ -595,11 +673,12 @@ def _gps_desde_buffer(buf: bytes) -> tuple[float, float] | None:
     img = PIL.Image.open(io.BytesIO(buf))
     try:
         datos_exif = img.getexif()
+        if len(datos_exif) == 0:
+            return None
+        # Antes de cerrar: en TIFF `get_ifd` lee perezosamente del fichero.
+        coordenadas = datos_exif.get_ifd(34853)
     finally:
         img.close()
-    if len(datos_exif) == 0:
-        return None
-    coordenadas = datos_exif.get_ifd(34853)
     lat_ref = coordenadas.get(1)
     lon_ref = coordenadas.get(3)
     if lat_ref is None or lon_ref is None:
@@ -629,6 +708,28 @@ def _dimensiones_desde_buffer(buf: bytes) -> tuple[int | None, int | None]:
         return None, None
 
 
+def _tiff_xmp_desde_buffer(buf: bytes) -> str | None:
+    """XMP de un TIFF (tag 700 de IFD0) con IFD0 ya validado dentro de `buf`
+    (`_tiff_exif_en_buffer`). Sin tag 700 -> ausente con certeza: '' (equivale
+    a "sin XMP" para quien lo parsea). Con tag y valor dentro del buffer ->
+    su texto (latin-1, saltos normalizados como `leer_bloque_xmp`). Valor
+    fuera del buffer -> None: quien llama relee con `leer_bloque_xmp`."""
+    orden = 'little' if buf[:2] == b'II' else 'big'
+    off = int.from_bytes(buf[4:8], orden)
+    cuenta = int.from_bytes(buf[off:off + 2], orden)
+    for i in range(cuenta):
+        e = off + 2 + 12 * i
+        if int.from_bytes(buf[e:e + 2], orden) != 700:
+            continue
+        tipo = int.from_bytes(buf[e + 2:e + 4], orden)
+        tam = _TIFF_TAMANO_TIPO.get(tipo, 1) * int.from_bytes(buf[e + 4:e + 8], orden)
+        voff = e + 8 if tam <= 4 else int.from_bytes(buf[e + 8:e + 12], orden)
+        if voff + tam > len(buf):
+            return None
+        return buf[voff:voff + tam].decode('latin-1').replace('\r\n', '\n').replace('\r', '\n')
+    return ''
+
+
 def _bloque_xmp_desde_buffer(buf: bytes, ruta: str) -> str:
     """Réplica de `exif.leer_bloque_xmp` a partir de una cabecera ya leída
     en memoria: mismo criterio (latin-1 + universal newlines) y mismo
@@ -649,10 +750,56 @@ def _bloque_xmp_desde_buffer(buf: bytes, ruta: str) -> str:
     prefijo antes de encontrarlo": en ese caso (raro: solo si el bloque XMP
     queda pasados los primeros `_BYTES_CABECERA` bytes crudos) se llama a la
     función original, que relee el fichero con el mismo criterio exacto."""
+    if len(buf) >= _BYTES_CABECERA and buf[:4] in (b'II*\x00', b'MM\x00*') \
+            and _tiff_exif_en_buffer(buf):
+        xmp_tiff = _tiff_xmp_desde_buffer(buf)
+        if xmp_tiff is not None:
+            return xmp_tiff
     texto = buf.decode('latin-1').replace('\r\n', '\n').replace('\r', '\n')
     if texto.find('</x:xmpmeta') != -1:
         return texto
     return exif_mod.leer_bloque_xmp(ruta)
+
+
+_TIFF_TAMANO_TIPO = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8,
+                     13: 4, 16: 8, 17: 8, 18: 8}
+
+
+def _tiff_exif_en_buffer(buf: bytes) -> bool:
+    """TIFF: True solo si IFD0 y los sub-IFD EXIF (0x8769) y GPS (0x8825),
+    con TODOS sus valores por offset (PIL aborta en silencio la lectura de un
+    IFD si un valor cae fuera: perdería GPS/EXIF sin error), caen
+    ENTEROS dentro de `buf`. Cualquier duda (offset fuera, BigTIFF, bucle,
+    estructura corrupta) -> False y se lee el fichero entero como siempre."""
+    orden = 'little' if buf[:2] == b'II' else 'big'
+    n = len(buf)
+
+    def u(pos, tam):
+        return int.from_bytes(buf[pos:pos + tam], orden)
+
+    pendientes = [u(4, 4)]
+    vistos = set()
+    es_ifd0 = True
+    while pendientes:
+        off = pendientes.pop()
+        if off in vistos or off < 8 or off + 2 > n:
+            return False
+        vistos.add(off)
+        cuenta = u(off, 2)
+        if off + 2 + 12 * cuenta > n:
+            return False
+        for i in range(cuenta):
+            e = off + 2 + 12 * i
+            tag, tipo, count = u(e, 2), u(e + 2, 2), u(e + 4, 4)
+            tam = _TIFF_TAMANO_TIPO.get(tipo, 1) * count
+            if tam > 4:
+                voff = u(e + 8, 4)
+                if voff + tam > n:
+                    return False
+            if es_ifd0 and tag in (0x8769, 0x8825):
+                pendientes.append(u(e + 8, 4))
+        es_ifd0 = False
+    return True
 
 
 def _exif_entero_en_buffer(buf: bytes) -> bool:
@@ -661,10 +808,13 @@ def _exif_entero_en_buffer(buf: bytes) -> bool:
     excepción (no dispararía el fallback). Solo se fía del buffer si es el
     fichero entero, o si es un JPEG cuyo segmento APP1 `Exif` termina dentro
     de él (los offsets EXIF son relativos a ese segmento, así que todos sus
-    valores quedan dentro). Cualquier otro caso (TIFF, marcadores raros) ->
+    valores quedan dentro). Un TIFF solo si `_tiff_exif_en_buffer` confirma que sus IFD y
+    valores caben. Cualquier otro caso (PNG, marcadores raros) ->
     False, y timestamp/modelo usan las funciones originales por ruta."""
     if len(buf) < _BYTES_CABECERA:
         return True
+    if buf[:4] in (b'II*\x00', b'MM\x00*'):
+        return _tiff_exif_en_buffer(buf)
     if buf[:2] != b'\xff\xd8':
         return False
     pos = 2
@@ -689,6 +839,10 @@ def _con_reintento_fichero_completo(funcion_pura, buf: bytes, ruta: str):
     tamaño del recorte). Si sigue fallando, la excepción sube tal cual."""
     try:
         return funcion_pura(buf)
+    except AttributeError:
+        # Limitación de formato (p. ej. TIFF sin `_getexif`), no un recorte:
+        # releer el fichero entero no lo arregla; quien llama cae al fallback.
+        raise
     except Exception:
         with open(ruta, 'rb') as fd:
             buf_completo = fd.read()
@@ -719,11 +873,10 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
 
     buf = None
     if not almacen.es_uri_gcs(ruta):
-        try:
-            with open(ruta, 'rb') as fd:
-                buf = fd.read(_BYTES_CABECERA)
-        except Exception:  # noqa: BLE001 — sin buffer, cada campo cae a su original
-            buf = None
+        buf, a_medias = _leer_cabecera(ruta)
+        if a_medias:
+            return _MetadatosImagen(ruta=ruta, nombre=nombre, timestamp=None,
+                                    modelo=None, yaw=None, gps=None, a_medias=True)
     buf_exif = buf if buf is not None and _exif_entero_en_buffer(buf) else None
 
     timestamp = None
@@ -1380,16 +1533,8 @@ def construir_indice(
     lentas: list[str] = []
     imagenes = _listar_imagenes(
         cfg.input_folder, omitidas_copiandose,
-        _Limite(emisor, hilos, timeout_s, watchdog_s, lentas))
+        _Limite(emisor))
     cancelacion.comprobar()
-    if omitidas_copiandose:
-        ejemplos = ", ".join(os.path.basename(r) for r in omitidas_copiandose[:_MAX_EJEMPLOS_OMITIDAS])
-        progress_callback.emit(
-            f"\nAVISO: {len(omitidas_copiandose)} imágenes omitidas por estar aún "
-            f"copiándose/subiendo (tamaño 0, en uso o incompletas): {ejemplos}"
-            f"{'…' if len(omitidas_copiandose) > _MAX_EJEMPLOS_OMITIDAS else ''}. "
-            "Se recogerán en la siguiente tanda.\n")
-
     # Scoping por carpeta: cada imagen solo compite contra las ventanas del
     # estadillo cuyo directorio es su ancestro más cercano (ver
     # `_ventanas_para_imagen`/`_bajo_carpeta`). Un estadillo cuyo directorio
@@ -1443,22 +1588,17 @@ def construir_indice(
 
     ventanas_por_carpeta: dict[str, list[dict]] = {}
     ventanas_sin_carpeta: list[dict] = []
+    # El chequeo "¿tiene imágenes en su carpeta?" se hace tras leer los
+    # metadatos, sobre las imágenes realmente leídas (sin las omitidas por
+    # estar a medio copiar).
+    grupos_pendientes: list[tuple[str, list[str], list[dict]]] = []
     for directorio, rutas_grupo in grupos_carpeta.items():
         sub_df = estadillo_mod.combinar_estadillos(rutas_grupo)
         nombres_columnas_grupo = utils_helper.get_nombres_columnas(list(sub_df.columns.values))
         ventanas_grupo = _ventanas_por_vuelo(sub_df, nombres_columnas_grupo, pipeline, cfg,
                                              progress_callback, colisiones_pb_vuelo)
         ventanas_por_carpeta[directorio] = ventanas_grupo
-        if any(_bajo_carpeta(directorio, imagen) for imagen in imagenes):
-            continue
-        es_autodetectado = all(
-            estadillo_mod.clave_ruta(r) in rutas_autodetectables for r in rutas_grupo)
-        if es_autodetectado:
-            progress_callback.emit(
-                f"\nWARNING: El estadillo {', '.join(rutas_grupo)} no tiene "
-                "imágenes en su carpeta; no se ha usado.\n")
-            continue
-        ventanas_sin_carpeta.extend(ventanas_grupo)
+        grupos_pendientes.append((directorio, rutas_grupo, ventanas_grupo))
 
     ventanas = [v for lista in ventanas_por_carpeta.values() for v in lista]
 
@@ -1478,15 +1618,16 @@ def construir_indice(
         for ruta, lectura in zip(imagenes, lecturas):
             if lectura is _VENCIDO:
                 lentas.append(ruta)
+            elif lectura.a_medias:
+                omitidas_copiandose.append(ruta)
             else:
                 metadatos.append(lectura)
 
     no_disponibles: list[str] = []
     if lentas:
         def _filtrar_y_leer(ruta: str):
-            if _a_medio_copiar(ruta):
-                return None
-            return _leer_metadatos(ruta, exif, progress_callback)
+            lectura = _leer_metadatos(ruta, exif, progress_callback)
+            return None if lectura.a_medias else lectura
 
         emisor.aviso(
             f"\nÍndice · {len(lentas)} fichero(s) lentos (más de {int(timeout_s)} s); "
@@ -1502,6 +1643,27 @@ def construir_indice(
             else:
                 metadatos.append(lectura)
         metadatos.sort(key=lambda dato: dato.ruta)
+    rutas_leidas = [dato.ruta for dato in metadatos]
+    for directorio, rutas_grupo, ventanas_grupo in grupos_pendientes:
+        if any(_bajo_carpeta(directorio, imagen) for imagen in rutas_leidas):
+            continue
+        es_autodetectado = all(
+            estadillo_mod.clave_ruta(r) in rutas_autodetectables for r in rutas_grupo)
+        if es_autodetectado:
+            progress_callback.emit(
+                f"\nWARNING: El estadillo {', '.join(rutas_grupo)} no tiene "
+                "imágenes en su carpeta; no se ha usado.\n")
+            continue
+        ventanas_sin_carpeta.extend(ventanas_grupo)
+
+    if omitidas_copiandose:
+        ejemplos = ", ".join(os.path.basename(r) for r in omitidas_copiandose[:_MAX_EJEMPLOS_OMITIDAS])
+        progress_callback.emit(
+            f"\nAVISO: {len(omitidas_copiandose)} imágenes omitidas por estar aún "
+            f"copiándose/subiendo (tamaño 0, en uso o incompletas): {ejemplos}"
+            f"{'…' if len(omitidas_copiandose) > _MAX_EJEMPLOS_OMITIDAS else ''}. "
+            "Se recogerán en la siguiente tanda.\n")
+
     if no_disponibles:
         no_disponibles.sort()
         detalle = "\n".join(f"  - {ruta}" for ruta in no_disponibles)

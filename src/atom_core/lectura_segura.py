@@ -28,6 +28,20 @@ class LecturaIncompleta(OSError):
             "lectura incompleta: leídos {0} de {1} bytes tras {2} intentos ({3})".format(
                 leidos, esperados, intentos, self.ruta))
 
+    def __reduce__(self):  # picklable: el pool de procesos lo necesita
+        return (type(self), (self.ruta, self.leidos, self.esperados, self.intentos))
+
+
+VENTANA_COLA_JPEG = 4096
+
+
+def jpeg_cola_valida(bytes_cola: bytes) -> bool:
+    """Función pura: la cola (últimos <=4096 B) de un JPEG es plausible.
+    Falso si está vacía, toda a ceros o no contiene el marcador FFD9 en
+    ninguna posición (no se exige al final: los R-JPEG de DJI llevan datos
+    tras EOI)."""
+    return bool(bytes_cola) and any(bytes_cola) and b"\xff\xd9" in bytes_cola
+
 
 def _hidratar(ruta) -> None:
     """Fuerza la hidratación: lee el fichero entero en secuencial hasta EOF."""
@@ -53,6 +67,9 @@ class FicheroCambiado(LecturaIncompleta):
         OSError.__init__(
             self, "el fichero cambió desde el índice: {0} vs {1} bytes ({2})".format(
                 indexado, actual, self.ruta))
+
+    def __reduce__(self):
+        return (type(self), (self.ruta, self.actual, self.indexado))
 
 
 def _esperados(ruta, bytes_origen) -> int:
