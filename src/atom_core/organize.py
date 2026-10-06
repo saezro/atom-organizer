@@ -850,7 +850,22 @@ def run_task(
                 detectar_estadillos_en_padre,
             )
             _rutas_manuales = desempaquetar_rutas(getattr(cfg, "estad", "") or "")
-            _rutas_auto = detectar_estadillos(getattr(cfg, "input_folder", "") or "")["rutas"]
+            _origen_busq = getattr(cfg, "input_folder", "") or ""
+            _det_origen = detectar_estadillos(_origen_busq)
+            _rutas_auto = _det_origen["rutas"]
+            if not _rutas_manuales and not _rutas_auto and params.get("solo_fallidas"):
+                # Reintento de fallidas: el run original ya copió el estadillo
+                # a `<destino>/ESTADILLOS` (`phases.py`), se reutiliza de ahí.
+                _dest_est = os.path.join(_out, "ESTADILLOS") if _out else ""
+                _det_dest = detectar_estadillos(_dest_est) if _dest_est else {"rutas": []}
+                if _det_dest["rutas"]:
+                    _rutas_auto = _det_dest["rutas"]
+                    # El resto del pipeline lee `cfg.estad`: sin esto el
+                    # estadillo reutilizado no llegaría al índice.
+                    from atom_core.estadillo import empaquetar_rutas
+                    cfg = replace(cfg, estad=empaquetar_rutas(_rutas_auto))
+                    emit("log", f"[estadillo] reutilizo el de {_dest_est}: "
+                                + ", ".join(_rutas_auto))
             if not _rutas_manuales and not _rutas_auto:
                 emit("phase", {"index": 1, "total": len(plan_names),
                                "name": plan_names[0] if plan_names else "Índice",
@@ -866,9 +881,18 @@ def run_task(
                                   "automático: " + ", ".join(_candidatos_padre) + ". "
                                   "Confírmalo explícitamente para usarlo.")
                 else:
-                    emit("error", "No hay estadillo: sin estadillo el lote no se puede "
-                                  "organizar. Indica la ruta del estadillo o colócalo "
-                                  "junto a la carpeta de fotos.")
+                    _desc = dict(_det_origen.get("motivos") or {})
+                    _msg = (f"No hay estadillo: se buscó en «{_origen_busq}»"
+                            + (" (la carpeta no existe o no es accesible ahora mismo)"
+                               if _det_origen.get("no_existe") else "") + ". ")
+                    if params.get("solo_fallidas"):
+                        _msg += f"Tampoco hay en «{os.path.join(_out, 'ESTADILLOS')}». "
+                    if _desc:
+                        _msg += ("Descartados: " + "; ".join(
+                            f"{r} ({m})" for r, m in _desc.items()) + ". ")
+                    _msg += ("Indica la ruta del estadillo o colócalo junto a la "
+                             "carpeta de fotos.")
+                    emit("error", _msg)
                 return
 
         # Lock del destino (tras las validaciones baratas, para no crear

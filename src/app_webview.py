@@ -961,6 +961,12 @@ class Api:
                 read_estadillo_info,
             )
             detectado = detectar_estadillos(carpeta, incluir_recibidos=incluir_recibidos)
+            if detectado.get("no_existe"):
+                # Carpeta aún no disponible (montaje sincronizando): el front
+                # reintenta, no es lo mismo que "sin estadillo".
+                return {"rutas": [], "n_estadillos": 0, "info": None, "error": None,
+                        "no_existe": True, "candidatos_padre": [],
+                        "aviso_misma_carpeta": None}
             rutas = detectado["rutas"]
             candidatos_padre = detectar_estadillos_en_padre(carpeta)["rutas"]
             info = read_estadillo_info(rutas) if rutas else None
@@ -996,6 +1002,12 @@ class Api:
                     read_estadillo_info,
                 )
                 detectado = detectar_estadillos(carpeta)
+                if detectado.get("no_existe"):
+                    self._push_analisis({"kind": "done", "scope": "estadillos", "data": {
+                        "rutas": [], "n_estadillos": 0, "info": None, "error": None,
+                        "no_existe": True, "candidatos_padre": [],
+                        "aviso_misma_carpeta": None}})
+                    return
                 rutas = detectado["rutas"]
                 candidatos_padre = detectar_estadillos_en_padre(carpeta)["rutas"]
                 info = read_estadillo_info(rutas) if rutas else None

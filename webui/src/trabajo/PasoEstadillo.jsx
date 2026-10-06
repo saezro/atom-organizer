@@ -13,6 +13,10 @@ import EsperaEstadillo from './EsperaEstadillo'
 // `bridge.js`) para que sea ESTE plazo quien gane la carrera casi siempre y
 // el mensaje sea siempre el mismo.
 const ESPERA_AUTODETECCION_MS = 15000
+// Carpeta aún no disponible (montaje Drive sincronizando): se reintenta cada
+// REINTENTO_CARPETA_MS hasta ESPERA_CARPETA_MAX_MS antes de dar error visible.
+const REINTENTO_CARPETA_MS = 3000
+const ESPERA_CARPETA_MAX_MS = 120000
 
 // Estadillo → ubicación canónica del bucket: acción propia, no depende de
 // haber organizado ni de la carpeta a subir de arriba. Preview obligatorio
@@ -53,7 +57,7 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
   const [estadBajando, setEstadBajando] = useState(false)
   const [estadBajarError, setEstadBajarError] = useState(null)
   // Resultado de la autodetección en la carpeta del vuelo, solo para el
-  // rótulo: null (silencio) | {estado:'buscando'|'encontrado'|'nada', n}.
+  // rótulo: null (silencio) | {estado:'buscando'|'encontrado'|'nada'|'error', n, mensaje}.
   const [autoDeteccion, setAutoDeteccion] = useState(null)
   // Estadillos válidos sueltos en la carpeta PADRE de `carpeta`
   // (`candidatos_padre` de `estadillosDetectar`): NUNCA se añaden solos a
@@ -172,18 +176,22 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
   // siguen ahí como fallback: `detectar_estadillos` exige columnas válidas y
   // no acierta siempre (carpetas sin estadillo, ficheros con otro formato).
   useEffect(() => {
-    if (!carpeta || !prefijo) return
-    const clave = `${carpeta}|${prefijo}`
+    // Basta la carpeta: el estadillo se busca nada más elegirla, sin esperar a
+    // la inspección (la detección no usa `prefijo`, solo lo lleva la clave).
+    if (!carpeta) return
+    const clave = `${carpeta}|${prefijo || ''}`
     if (autoDeteccionRef.current === clave) return
     autoDeteccionRef.current = clave
     let cancelado = false
+    let temporizador = null
+    const inicio = Date.now()
     setAutoDeteccion({ estado: 'buscando' })
     // Limpia los candidatos de la detección anterior ANTES de lanzar esta:
     // si esta detección falla o no encuentra padre, un `candidatosPadre` de
     // una carpeta ya abandonada se quedaría mostrándose como si fuera de la
     // carpeta actual.
     setCandidatosPadre([])
-    ;(async () => {
+    const lanzar = async () => {
       try {
         // `incluirRecibidos: true` (solo aquí, escritorio): además de la
         // carpeta del vuelo, suma como candidatos los CSV/XLSX que haya en
@@ -196,6 +204,21 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
           'La búsqueda del estadillo ha tardado demasiado.'
         )
         if (cancelado) return
+        if (r?.no_existe) {
+          // La carpeta aún no está disponible (no es «sin estadillo»): se
+          // reintenta sin marcar `autoDeteccionRef` como resuelta.
+          if (Date.now() - inicio >= ESPERA_CARPETA_MAX_MS) {
+            setAutoDeteccion({
+              estado: 'error',
+              mensaje: 'La carpeta sigue sin estar disponible tras 2 minutos. Comprueba el montaje y pulsa «Reintentar».',
+            })
+            autoDeteccionRef.current = null
+            return
+          }
+          setAutoDeteccion({ estado: 'buscando', esperandoCarpeta: true })
+          temporizador = setTimeout(() => { if (!cancelado) lanzar() }, REINTENTO_CARPETA_MS)
+          return
+        }
         const rutas = Array.isArray(r?.rutas) ? r.rutas : []
         // Candidatos sueltos en la carpeta PADRE: solo informativo, nunca se
         // añaden solos a `estadRutas` (ver declaración de `candidatosPadre`).
@@ -228,9 +251,14 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
           setAutoDeteccion({ estado: 'nada' })
         }
       }
-    })()
+    }
+    lanzar()
     return () => {
       cancelado = true
+      if (temporizador) clearTimeout(temporizador)
+      // Cancelada a medias (cambio de carpeta/desmontaje): la clave no queda
+      // como resuelta, para que volver a esta carpeta la busque de nuevo.
+      if (autoDeteccionRef.current === clave) autoDeteccionRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [carpeta, prefijo, autoDeteccionTick])
@@ -514,7 +542,11 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
         <span>{estadPrevio?.existe ? 'Ya subí el estadillo de esta inspección' : 'Subir sin estadillo'}</span>
       </label>
       {autoDeteccion?.estado === 'buscando' && (
-        <span className="field-hint">Buscando el estadillo en la carpeta del vuelo…</span>
+        <span className="field-hint">
+          {autoDeteccion.esperandoCarpeta
+            ? 'Esperando a que la carpeta esté disponible…'
+            : 'Buscando el estadillo en la carpeta del vuelo…'}
+        </span>
       )}
       {autoDeteccion?.estado === 'encontrado' && (
         <span className="field-hint hint-ok">

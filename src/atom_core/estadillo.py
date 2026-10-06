@@ -147,8 +147,8 @@ def detectar_estadillos(
     resto del módulo) y se exige que traiga las columnas ESENCIALES
     (`_COLUMNAS_ESENCIALES`, vía el mismo mapeo ES/EN de
     `Utils.get_nombres_columnas` que usa `combinar_estadillos`); si falla la
-    lectura o falta alguna columna, el fichero se descarta EN SILENCIO (no es
-    un estadillo, no es un error) y el escaneo sigue con el resto.
+    lectura o falta alguna columna, el fichero se descarta (no es un estadillo) y
+    el escaneo sigue con el resto, pero la causa queda en `motivos`.
 
     `incluir_recibidos=True` (solo escritorio, ver `app_webview.py`) suma a
     los candidatos los CSV/XLSX que haya sueltos en
@@ -168,14 +168,20 @@ def detectar_estadillos(
     da `detectar_estadillos_en_padre`, para que la UI los muestre con su ruta
     completa y el usuario confirme uno explícitamente si quiere usarlo.
     """
-    vacio = {"rutas": [], "descartados": []}
-    if not carpeta or not os.path.isdir(carpeta):
+    vacio = {"rutas": [], "descartados": [], "motivos": {}}
+    if not carpeta:
         return vacio
+    if not os.path.isdir(carpeta):
+        # Distinguible de "carpeta sin estadillo": montajes que sincronizan
+        # (Drive en Windows) dan a ratos «No existe la carpeta».
+        return {**vacio, "no_existe": True,
+                "motivos": {carpeta: "la carpeta no existe o no es accesible"}}
 
     raiz_normalizada = os.path.normpath(carpeta)
     profundidad_raiz = raiz_normalizada.count(os.sep)
 
     candidatos: list[str] = []
+    motivos: dict[str, str] = {}  # ruta -> causa del descarte (nunca en silencio)
     # Recorrido por niveles con `os.scandir`, sin listar nunca las carpetas de
     # vuelo (`DJI_*`) ni las de imágenes (ver `_es_carpeta_de_vuelo`,
     # `_MAX_IMAGENES_POR_CARPETA`): sobre Google Drive (Dokan) listar miles de
@@ -189,7 +195,8 @@ def detectar_estadillos(
             try:
                 with os.scandir(dirpath) as it:
                     entradas = list(it)
-            except OSError:
+            except OSError as exc:
+                motivos[dirpath] = f"no se pudo listar la carpeta: {type(exc).__name__}: {exc}"
                 continue
             subdirs: list[str] = []
             n_imagenes = 0
@@ -197,7 +204,8 @@ def detectar_estadillos(
                 nombre = entrada.name
                 try:
                     es_dir = entrada.is_dir()
-                except OSError:
+                except OSError as exc:
+                    motivos[entrada.path] = f"no se pudo leer la entrada: {type(exc).__name__}: {exc}"
                     continue
                 if es_dir:
                     if not nombre.startswith(".") and not _es_carpeta_de_vuelo(nombre):
@@ -220,6 +228,7 @@ def detectar_estadillos(
     if incluir_recibidos:
         from atom_core.google_auth import estadillos_recibidos_dir
 
+        recibidos = "estadillos_recibidos"
         try:
             recibidos = estadillos_recibidos_dir()
             for nombre in os.listdir(recibidos):
@@ -228,8 +237,10 @@ def detectar_estadillos(
                     continue
                 if os.path.splitext(nombre)[1].lower() in _EXTENSIONES_CANDIDATAS:
                     candidatos.append(ruta_recibida)
-        except OSError:
-            pass  # sin permiso o carpeta inaccesible: no bloquea el resto del escaneo
+        except OSError as exc:
+            # No bloquea el resto del escaneo, pero queda dicho.
+            motivos[str(recibidos)] = (
+                f"carpeta de recibidos inaccesible: {type(exc).__name__}: {exc}")
 
     rutas: list[str] = []
     descartados: list[str] = []
@@ -237,12 +248,14 @@ def detectar_estadillos(
         try:
             df = _read_dataframe(ruta)
             _validar_columnas_esenciales(df, ruta)
-        except Exception:  # noqa: BLE001 — cualquier fallo por fichero = "no es un estadillo"
+        except Exception as exc:  # noqa: BLE001 — cualquier fallo por fichero = "no es un estadillo", con su causa
             descartados.append(os.path.abspath(ruta))
+            motivos[os.path.abspath(ruta)] = f"{type(exc).__name__}: {exc}"
             continue
         rutas.append(os.path.abspath(ruta))
 
-    return {"rutas": sorted(set(rutas)), "descartados": sorted(set(descartados))}
+    return {"rutas": sorted(set(rutas)), "descartados": sorted(set(descartados)),
+            "motivos": motivos}
 
 
 def detectar_estadillos_en_padre(carpeta: str) -> dict:
@@ -260,9 +273,14 @@ def detectar_estadillos_en_padre(carpeta: str) -> dict:
     Devuelve `{"rutas": [...], "descartados": [...]}`, mismo formato que
     `detectar_estadillos`.
     """
-    vacio = {"rutas": [], "descartados": []}
-    if not carpeta or not os.path.isdir(carpeta):
+    vacio = {"rutas": [], "descartados": [], "motivos": {}}
+    if not carpeta:
         return vacio
+    if not os.path.isdir(carpeta):
+        # Distinguible de "carpeta sin estadillo": montajes que sincronizan
+        # (Drive en Windows) dan a ratos «No existe la carpeta».
+        return {**vacio, "no_existe": True,
+                "motivos": {carpeta: "la carpeta no existe o no es accesible"}}
 
     raiz_normalizada = os.path.normpath(carpeta)
     padre = os.path.dirname(raiz_normalizada)
