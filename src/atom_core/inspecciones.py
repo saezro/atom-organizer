@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import unicodedata
 import urllib.request
@@ -61,6 +62,7 @@ __all__ = [
     "parse_prefijo",
     "descargar_catalogo_api",
     "cargar_catalogo",
+    "sugerir_inspeccion",
 ]
 
 # Backend de ATOM Suite. La env existe para poder apuntar a otro
@@ -263,3 +265,107 @@ def cargar_catalogo(bucket: str, auth) -> dict:
                 "bajado_en": 0.0, "error": f"api: {exc}"}
     return {"ok": True, "inspecciones": [i.to_dict() for i in inspecciones],
             "origen": "api", "bajado_en": time.time(), "error": None}
+
+
+# --------------------------------------------------------------------------
+# Sugerencia automática de inspección (carpeta del vuelo + estadillo)
+# --------------------------------------------------------------------------
+
+_RE_CARPETA = re.compile(
+    r"^(\d{4})[\s_.\-]+(\d{1,2})[\s_.\-]+(\d{1,2})[\s_.\-]+(.+)$")
+_RE_ANIO = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+
+
+def _norm(texto) -> str:
+    """Texto comparable: ASCII, mayúsculas, todo no alfanumérico -> `_`."""
+    base = unicodedata.normalize("NFKD", str(texto if texto is not None else ""))
+    base = base.encode("ascii", "ignore").decode("ascii").upper()
+    return re.sub(r"[^A-Z0-9]+", "_", base).strip("_")
+
+
+def _planta_en_texto(planta: str, texto: str) -> bool:
+    """`planta` (ya normalizada) es igual a `texto` o aparece como token(s)."""
+    if not planta or not texto:
+        return False
+    if planta == texto:
+        return True
+    if len(planta) < 3:
+        return False
+    return f"_{planta}_" in f"_{texto}_"
+
+
+def _get(it, campo):
+    return it.get(campo, "") if isinstance(it, dict) else getattr(it, campo, "")
+
+
+def sugerir_inspeccion(carpeta: str, info_estadillo: dict | None,
+                       catalogo) -> dict:
+    """Propone la inspección a partir de la carpeta del vuelo y el estadillo.
+
+    Función pura (sin red ni disco). `catalogo` son dicts de `to_dict()` o
+    `Inspeccion`. La carpeta suele llamarse `YYYY_MM_DD_<Planta>`; del estadillo
+    se usan `trabajo`/`empresa` (planta) y `fecha` (año). Coincide una
+    inspección si su planta normalizada es igual o token contenido en el texto
+    Y su año es el detectado.
+
+    Devuelve `{"estado", "candidatos": [prefijos], "prefijo"?, "motivo"?}`:
+    - `unica`: un solo prefijo candidato (`prefijo` lo trae).
+    - `varias`: más de uno (p. ej. misma planta/año en dos fases): no se elige.
+    - `ninguna`: sin planta o año detectables, o sin coincidencias.
+    - `conflicto`: carpeta y estadillo apuntan a plantas (o años) distintos.
+    """
+    info = info_estadillo if isinstance(info_estadillo, dict) else {}
+    if info.get("error"):
+        info = {}
+    cat = list(catalogo or [])
+
+    base = os.path.basename(str(carpeta or "").replace("\\", "/").rstrip("/")).strip()
+    anio_c, texto_c = "", _norm(base)
+    m = _RE_CARPETA.match(base)
+    if m:
+        anio_c, texto_c = m.group(1), _norm(m.group(4))
+    texto_e = " ".join(str(info.get(k) or "") for k in ("trabajo", "empresa"))
+    texto_e = _norm(texto_e)
+    fechas = [str(info.get("fecha") or "")] + [str(f) for f in (info.get("fechas") or [])]
+    anio_e = next((a.group(1) for a in (_RE_ANIO.search(f) for f in fechas) if a), "")
+
+    if anio_c and anio_e and anio_c != anio_e:
+        return {"estado": "conflicto", "candidatos": [],
+                "motivo": f"La carpeta es de {anio_c} y el estadillo de {anio_e}."}
+    anio = anio_c or anio_e
+    if not anio:
+        return {"estado": "ninguna", "candidatos": [],
+                "motivo": "No se detecta el año en la carpeta ni en el estadillo."}
+
+    def plantas_que_casan(texto):
+        return {_norm(_get(i, "planta")) for i in cat
+                if _planta_en_texto(_norm(_get(i, "planta")), texto)}
+
+    pc, pe = plantas_que_casan(texto_c), plantas_que_casan(texto_e)
+    if pc and pe:
+        plantas = pc & pe
+        if not plantas:
+            return {"estado": "conflicto", "candidatos": [],
+                    "motivo": "La carpeta y el estadillo apuntan a plantas distintas."}
+    else:
+        plantas = pc or pe
+
+    candidatos: list[str] = []
+    n_entradas = 0
+    for i in cat:
+        if (_norm(_get(i, "planta")) in plantas
+                and str(_get(i, "anio")).strip() == anio):
+            pref = _get(i, "prefijo") or (
+                prefijo_de_inspeccion(i) if isinstance(i, Inspeccion) else "")
+            if pref:
+                n_entradas += 1
+                if pref not in candidatos:
+                    candidatos.append(pref)
+    if not candidatos:
+        return {"estado": "ninguna", "candidatos": [],
+                "motivo": "Ninguna inspección del catálogo coincide con planta y año."}
+    # Dos entradas del catálogo que solo difieren en la fase comparten prefijo,
+    # pero son inspecciones distintas: no se elige sola (decide el operador).
+    if len(candidatos) == 1 and n_entradas == 1:
+        return {"estado": "unica", "prefijo": candidatos[0], "candidatos": candidatos}
+    return {"estado": "varias", "candidatos": candidatos}

@@ -1553,6 +1553,8 @@ class Api:
             auth.logout()
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
+        # El catálogo es de la sesión que se cierra: no reutilizarlo con otro usuario.
+        self._catalogo_cache = None
         # Sin esto el estado cacheado se queda en `ok` hasta el siguiente
         # latido (6 h): la UI seguiria sin avisar de que ya no hay sesion.
         self._credencial.invalidar("Se cerro la sesion en este equipo.")
@@ -1915,7 +1917,36 @@ class Api:
         for it in cat.get("inspecciones") or []:
             if it.get("planta_id") is not None and it.get("prefijo"):
                 self._plantas_inspeccion[it["prefijo"]] = it["planta_id"]
+        if cat.get("ok"):
+            self._catalogo_cache = cat
         return cat
+
+    def inspeccion_sugerir(self, carpeta: str, estadillo_path: "str | list" = "") -> dict:
+        """Sugiere la inspección según carpeta del vuelo y estadillo.
+
+        Devuelve `{estado: unica|varias|ninguna|conflicto, prefijo?, candidatos}`
+        o `{estado: 'error', mensaje}`. Reutiliza el catálogo ya descargado
+        (`_catalogo_cache`, lo rellena `cloud_inspecciones`); si no hay, lo pide
+        igual que `cloud_inspecciones`.
+        """
+        try:
+            from atom_core import inspecciones
+
+            auth = self._get_auth()
+            logueado = auth is not None and auth.is_logged_in()
+            cat = getattr(self, "_catalogo_cache", None) if logueado else None
+            if not cat or not cat.get("ok"):
+                cat = self.cloud_inspecciones()
+            if not cat.get("ok"):
+                return {"estado": "error",
+                        "mensaje": cat.get("error") or "No hay catálogo de inspecciones."}
+            info = None
+            if estadillo_path:
+                info = self.read_estadillo_info(estadillo_path)
+            return inspecciones.sugerir_inspeccion(
+                carpeta, info, cat.get("inspecciones") or [])
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"estado": "error", "mensaje": f"{type(exc).__name__}: {exc}"}
 
     def _destino(self, folder: str, prefix: str | None) -> tuple[Path | None, str, str]:
         """Carpeta y prefijo destino ya validados. Devuelve `(root, prefix, error)`.

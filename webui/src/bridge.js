@@ -351,6 +351,10 @@ export const api = {
   // NUNCA lleva los digitos del PIN ni su longitud/composicion.
   pinTelemetria: (datos) => call('pin_telemetria', datos),
   cloudInspecciones: () => call('cloud_inspecciones'),
+  // Sugerencia de inspección por carpeta + estadillo (ruta, lista de rutas o ''):
+  // {estado: 'unica'|'varias'|'ninguna'|'conflicto'|'error', prefijo?, candidatos[], motivo?, mensaje?}
+  inspeccionSugerir: (carpeta, estadilloPath) =>
+    call('inspeccion_sugerir', carpeta, estadilloPath || ''),
   cloudPrepare: (folder, prefix) => call('cloud_prepare', folder, prefix ?? null),
   cloudPrepareStart: (folder, prefix) => call('cloud_prepare_start', folder, prefix ?? null),
   cloudUpload: (folder, force, prefix, inspeccionId, confirmarSubidaExtra) =>
