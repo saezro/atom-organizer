@@ -20,7 +20,7 @@ import json
 from atom_core import organize
 from atom_core.apply import STATS_APPLY_PREFIX
 from atom_core.indice import STATS_INDICE_PREFIX
-from atom_core.manifiesto import NOMBRE_CARPETA_MANIFIESTO
+from atom_core.manifiesto import NOMBRE_CARPETA_MANIFIESTO, Manifiesto
 from utils import RenameImagesConfig
 
 
@@ -468,7 +468,9 @@ class TestGuardCarpetaSalidaSplitImages:
         """Destino ya organizado por un cachito anterior: se acumula."""
         destino = tmp_path / "salida"
         (destino / NOMBRE_CARPETA_MANIFIESTO).mkdir(parents=True)
-        (destino / NOMBRE_CARPETA_MANIFIESTO / "manifiesto.db").write_bytes(b"")
+        _m = Manifiesto(destino / NOMBRE_CARPETA_MANIFIESTO / "manifiesto.db")
+        _m.crear_esquema()
+        _m.cerrar()
         (destino / "RGB").mkdir()
 
         eventos = self._run_split(monkeypatch, destino)

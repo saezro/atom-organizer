@@ -31,6 +31,37 @@ ESTADOS = ("pendiente", "en_curso", "hecho", "fallido")
 # entregado tiene que ignorarla: no es una imagen, es fontanería del motor.
 NOMBRE_CARPETA_MANIFIESTO = ".organizado"
 
+NOMBRE_FICHERO_MANIFIESTO = "manifiesto.db"
+
+
+def destino_organizado(carpeta: str | Path) -> bool:
+    """¿`carpeta` es un destino ya organizado por el Organizer (apto para
+    añadir otra tanda)? Exige `.organizado/manifiesto.db` que SQLite abra en
+    solo lectura y que (a) tenga la tabla `imagenes`, o (b) no tenga ninguna
+    tabla / mida 0 bytes (crash entre crear el fichero y `crear_esquema`: se
+    reanuda). Una DB bloqueada u ocupada por otro run es nuestra (el lock del
+    destino decide). Corrupta o con tablas ajenas: NO. Regla única compartida
+    por el guard de `organize.run_task` y por `folder_is_empty` de la GUI."""
+    ruta = Path(carpeta) / NOMBRE_CARPETA_MANIFIESTO / NOMBRE_FICHERO_MANIFIESTO
+    if not ruta.is_file():
+        return False
+    try:
+        if ruta.stat().st_size == 0:
+            return True
+        con = sqlite3.connect(f"{ruta.as_uri()}?mode=ro", uri=True, timeout=1.0)
+        try:
+            tablas = {f[0] for f in con.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'")}
+            return "imagenes" in tablas or not tablas
+        finally:
+            con.close()
+    except sqlite3.OperationalError as exc:
+        mensaje = str(exc).lower()
+        return "locked" in mensaje or "busy" in mensaje
+    except (sqlite3.Error, OSError, ValueError):
+        return False
+
+
 # Sistemas de ficheros donde WAL corrompe la base: su índice `-shm` se comparte
 # por mmap entre procesos, y fuse/red no garantizan que todos vean las mismas
 # páginas. Caso real (2026-09-11): SSD NTFS por ntfs-3g en la Pi →

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { api } from '../bridge'
 import FileField from '../FileField'
 
-export default function PasoCarpeta({ label, value, onChange, disabled, avisoNoVacia }) {
+export default function PasoCarpeta({ label, value, onChange, disabled, avisoNoVacia, destinoOrganizado }) {
   const [noVacia, setNoVacia] = useState(null)
 
   async function elegir() {
@@ -12,7 +12,7 @@ export default function PasoCarpeta({ label, value, onChange, disabled, avisoNoV
     if (!avisoNoVacia) return
     try {
       const r = await api.folderIsEmpty(path)
-      setNoVacia(r?.empty ? null : { count: r?.count ?? 0 })
+      setNoVacia(r?.empty || r?.organizado ? null : { count: r?.count ?? 0 })
     } catch {
       setNoVacia(null)
     }
@@ -26,6 +26,11 @@ export default function PasoCarpeta({ label, value, onChange, disabled, avisoNoV
         onPick={disabled ? () => {} : elegir}
         onType={disabled ? undefined : onChange}
       />
+      {destinoOrganizado && (
+        <span className="field-hint">
+          Destino ya organizado: se añadirá la tanda.
+        </span>
+      )}
       {noVacia && (
         <span className="field-hint hint-warn">
           La carpeta ya tiene {noVacia.count} ficheros. Elige una vacía para no mezclar vuelos.
