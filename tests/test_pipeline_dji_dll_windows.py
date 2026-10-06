@@ -116,3 +116,38 @@ def test_dji_dll_falla_cae_a_dji_irp_exe_con_warning(tmp_path, logger, make_dji_
         "si la DLL en proceso falla, debe caer a dji_irp.exe")
     assert any("dji_irp_windows" in a and "ha fallado" in a for a in avisos), (
         "el fallo de la DLL debe quedar avisado (nivel warning) antes del fallback")
+
+
+def test_raw_nunca_en_origen_y_temporal_se_borra(tmp_path, logger, make_dji_jpeg, monkeypatch):
+    """Los .raw intermedios van a un temporal local propio, nunca a la carpeta de
+    origen (puede ser una unidad de Drive montada), y el temporal desaparece."""
+    import pipeline
+
+    input_folder, image_name, dji_utility, llamadas, _dir = _preparar(
+        tmp_path, make_dji_jpeg, monkeypatch)
+    n = 64 * 48
+    rutas_raw = []
+    origen_durante = []
+
+    def fake_measure(image_path, raw_out, humidity, emissivity, sdk_dir):
+        rutas_raw.append(raw_out)
+        with open(raw_out, "wb") as fh:
+            fh.write(struct.pack("<{0}f".format(n), *([1.5] * n)))
+        origen_durante.append(sorted(os.listdir(str(input_folder))))
+
+    monkeypatch.setattr(dji_irp_windows, "enabled", lambda: True)
+    monkeypatch.setattr(dji_irp_windows, "measure", fake_measure)
+
+    obj = pipeline.SplitImages(logger)
+    progress = _sink_progress([])
+    obj.convert_dji_image_to_tif(
+        str(input_folder), str(input_folder), image_name, "exiftool",
+        dji_utility, progress, progress)
+
+    assert len(rutas_raw) == 1
+    assert os.path.dirname(rutas_raw[0]) != str(input_folder)
+    # Ni durante ni después hay .raw en el origen.
+    assert not any(f.endswith(".raw") for f in origen_durante[0])
+    assert not any(f.endswith(".raw") for f in os.listdir(str(input_folder)))
+    # El directorio temporal ya no existe.
+    assert not os.path.exists(os.path.dirname(rutas_raw[0]))

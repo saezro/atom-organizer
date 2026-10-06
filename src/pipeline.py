@@ -3587,8 +3587,12 @@ class SplitImages:
                 shutil.rmtree(staging_dir, ignore_errors=True)
                 raise
 
+        # Los .raw intermedios van a un temporal LOCAL propio de esta llamada: nunca al
+        # origen (puede ser una unidad de Drive montada) ni al destino. Se borra en el
+        # `finally`, incluso con excepcion.
+        raw_dir = tempfile.mkdtemp(prefix="atom-organizer-raw-")
         try:
-            raw_path = os.path.join(disk_input_folder, image_name + ".raw")
+            raw_path = os.path.join(raw_dir, image_name + ".raw")
             # Resultado de la invocación al conversor. Se arrastra hasta el punto donde se
             # abre el .raw: si el fichero no aparece PERO el conversor devolvió 0, el fallo
             # es silencioso y sin este dato no hay forma de distinguirlo de un fallo ruidoso.
@@ -3746,7 +3750,7 @@ class SplitImages:
             # exif_data = imageio.get_exif_data(input_path)
 
             try:
-                f = open(os.path.join(disk_input_folder, image_name + ".raw"), "rb")
+                f = open(raw_path, "rb")
             except FileNotFoundError as file_not_found:
                 # Un .raw ausente con rc == 0 es un fallo SILENCIOSO (el conversor se dio
                 # por bueno sin escribir nada) y apunta a un sitio muy distinto que un
@@ -3759,9 +3763,9 @@ class SplitImages:
                         " fallo silencioso, no un rechazo de la imagen.")
                 else:
                     _diag = " Causa ya indicada arriba (código {0}).".format(dji_rc)
-                progress_callback.emit("\nNo existe el archivo {0}. Posible error del conversor DJI.{1}\n".format(os.path.join(disk_input_folder, image_name + ".raw"), _diag))
+                progress_callback.emit("\nNo existe el archivo {0}. Posible error del conversor DJI.{1}\n".format(raw_path, _diag))
                 self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-                self.organizer_logger.logger.error(f"No existe el archivo {os.path.join(disk_input_folder, image_name + '.raw')}. Posible error del conversor DJI.")
+                self.organizer_logger.logger.error(f"No existe el archivo {raw_path}. Posible error del conversor DJI.")
                 self.organizer_logger.logger.exception(file_not_found.__str__)
                 self.organizer_logger.logger.exception(file_not_found)
                 self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
@@ -3835,10 +3839,10 @@ class SplitImages:
             im.save(os.path.join(disk_output_folder, os.path.splitext(image_name)[0] + ".tiff"), format='TIFF')
             f.close()
             im.close()
-            # os.remove(os.path.join(disk_input_folder, image_name + ".raw"))
+            # os.remove(raw_path)
             # Intentamos eliminar el .raw de forma segura. En Windows puede dar PermissionError si
             # otro proceso aún mantiene el fichero abierto, así que reintentamos varias veces.
-            self._safe_remove(os.path.join(disk_input_folder, image_name + ".raw"), progress_callback)
+            self._safe_remove(raw_path, progress_callback)
             src_exif = os.path.join(disk_input_folder, image_name)
             dst_exif = os.path.join(disk_output_folder, os.path.splitext(image_name)[0] + ".tiff")
             if not defer_exif:
@@ -3874,6 +3878,7 @@ class SplitImages:
                 # `input_folder`/`output_folder`).
                 return (almacen.unir(input_folder, image_name), tiff_path)
         finally:
+            shutil.rmtree(raw_dir, ignore_errors=True)
             if staging_dir is not None:
                 shutil.rmtree(staging_dir, ignore_errors=True)
 
@@ -4734,6 +4739,16 @@ class RGBProcessing:
         # print("La fecha después de sumarle {0} semanas es {1}. Los milisegundos son: {2}".format(semanas_transcurridas, fecha_sumada, milisegundos_adicionales))
         return fecha_resultante
     
+    def _guardar_csv_relacion_final(self, df, name_log_file: str, full_pbx_vx_path: str) -> str:
+        """Graba la relación final imágenes/CAM messages (CSV de diagnóstico, nadie
+        lo lee después) en la carpeta de logs de la app, NUNCA en la carpeta de
+        logs del vuelo: es el origen del usuario y el origen es solo lectura."""
+        carpeta = external_tools.user_log_dir()
+        os.makedirs(carpeta, exist_ok=True)
+        ruta = os.path.join(carpeta, name_log_file + "_Relacion_final_imagenes_log_" + os.path.basename(full_pbx_vx_path) + ".csv")
+        df.to_csv(ruta, sep = ",", header=True, index=False)
+        return ruta
+
     def post_processing_rgb_errors(self, input_folder: str, logs_input_folder: str, path_estadillo: str, pb: int, v: int, images_quantity: int, cam_msgs_quantity: int, progress_callback, progress_bar, manual_log_file: str = None, manual_geotagging: bool = False) -> None:
         """
         Función que empieza el procesamiento de los vuelos que han tenido errores en la obtención de las imágenes RGB.
@@ -4852,7 +4867,7 @@ class RGBProcessing:
                         progress_callback.emit("Las imágenes que faltan están todas al final" + "\n")
                         break
                 # Grabamos la relación final entre las imágenes y los CAM messages en un csv
-                df_to_analyze.to_csv(os.path.join(logs_input_folder, name_log_file + "_Relacion_final_imagenes_log_" + os.path.basename(full_pbx_vx_path) + ".csv"), sep = ",", header=True, index=False)
+                self._guardar_csv_relacion_final(df_to_analyze, name_log_file, full_pbx_vx_path)
 
                 if self.check_final_dataframe(df_to_analyze, final_average, 0.8):
                     self.organizer_logger.logger.debug("The final dataframe is ok")
@@ -4883,7 +4898,7 @@ class RGBProcessing:
                         progress_callback.emit("Las imágenes que faltan están todas al final" + "\n")
                         break
                 # Grabamos la relación final entre las imágenes y los CAM messages en un csv
-                df_to_analyze.to_csv(os.path.join(logs_input_folder, name_log_file + "_Relacion_final_imagenes_log_" + os.path.basename(full_pbx_vx_path) + ".csv"), sep = ",", header=True, index=False)
+                self._guardar_csv_relacion_final(df_to_analyze, name_log_file, full_pbx_vx_path)
                 
                 if self.check_final_dataframe(df_to_analyze, final_average, 0.8):
                     self.organizer_logger.logger.debug("The final dataframe is ok")

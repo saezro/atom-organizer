@@ -24,6 +24,7 @@ tests sujetan:
 import datetime as dt
 import filecmp
 import os
+import tempfile
 import types
 
 import pytest
@@ -62,7 +63,9 @@ class _PipelineDePrueba:
     def __init__(self, lotes_que_fallan=frozenset()):
         self.llamadas_convert = []
         self.llamadas_exif = []
-        self._lotes_que_fallan = set(lotes_que_fallan)
+        self._lotes_que_fallan = {os.path.basename(r) for r in lotes_que_fallan}
+        global _DOBLE_ACTUAL
+        _DOBLE_ACTUAL = self
 
     def convert_dji_image_to_tif(self, input_folder, output_folder, image_name,
                                   exiftool_exe, dji_utility, progress_callback,
@@ -76,11 +79,37 @@ class _PipelineDePrueba:
         PILImage.new("F", (4, 2)).save(tiff_path, format="TIFF")
         return (ruta_origen, tiff_path)
 
-    def _run_exif_batch_local(self, pairs, exiftool_exe, progress_callback=None):
-        self.llamadas_exif.append(list(pairs))
-        for src, _dst in pairs:
-            if src in self._lotes_que_fallan:
-                raise RuntimeError(f"exiftool batch devolvió error (simulado) para {src}")
+    def copiar_exif(self, src, dst):
+        """Lo que hace `_PoolExiftool.copiar` en producción, simulado: anota el
+        par y estampa una marca en el TIFF para poder comprobar, tras publicar,
+        que ya lleva los metadatos."""
+        self.llamadas_exif.append((src, dst))
+        if os.path.basename(src) in self._lotes_que_fallan:
+            raise RuntimeError(f"exiftool devolvió error (simulado) para {src}")
+        with open(dst, "ab") as fh:
+            fh.write(MARCA_EXIF)
+
+
+MARCA_EXIF = b"EXIF_COPIADO"
+_DOBLE_ACTUAL = None
+
+
+class _PoolExiftoolFalso:
+    fatal = None
+
+    def __init__(self, exiftool_exe, procesos):
+        pass
+
+    def copiar(self, src, dst):
+        _DOBLE_ACTUAL.copiar_exif(src, dst)
+
+    def cerrar(self):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _pool_exiftool_falso(monkeypatch):
+    monkeypatch.setattr(apply, "_PoolExiftool", _PoolExiftoolFalso)
 
 
 def _cfg(**overrides):
@@ -179,57 +208,60 @@ def test_el_tiff_usa_el_angulo_del_manifiesto_igual_que_su_jpg(tmp_path, make_dj
     manifiesto.cerrar()
 
 
-def test_los_metadatos_se_copian_en_lotes(tmp_path, make_dji_jpeg):
-    """Con 5 térmicas y `tamano_lote_exif=2`, `_run_exif_batch_local` se
-    llama 3 veces (2+2+1), nunca 5: previene volver al `exiftool` por
-    imagen, que es ~5x más lento (reinicia el intérprete Perl cada vez)."""
+def test_el_tiff_publicado_ya_lleva_los_metadatos_sin_segunda_pasada(tmp_path, make_dji_jpeg):
+    """El EXIF se copia sobre el TIFF en staging local, desde una copia local
+    del R-JPEG y ANTES de publicar: el TIFF del destino ya trae la marca, y
+    ninguna llamada de EXIF apunta al destino ni al origen remoto (no hay 2ª
+    pasada de reescritura sobre el destino). Con giro, igual."""
     filas = []
     for indice in range(5):
         origen = tmp_path / "origen" / f"DJI_{indice:04d}_T.JPG"
         origen.parent.mkdir(parents=True, exist_ok=True)
         make_dji_jpeg(str(origen))
-        salida_jpg = tmp_path / "salida" / f"DJI_{indice:04d}_T.JPG"
-        salida_tiff = tmp_path / "salida" / f"DJI_{indice:04d}_T.tiff"
-        filas.append(_fila_termica(origen, salida_jpg, salida_tiff))
+        filas.append(_fila_termica(origen, tmp_path / "salida" / f"DJI_{indice:04d}_T.JPG",
+                                   tmp_path / "salida" / f"DJI_{indice:04d}_T.tiff",
+                                   angulo_giro=90 if indice % 2 else 0))
 
     manifiesto = _manifiesto_con(tmp_path, filas)
     doble = _PipelineDePrueba()
-
     resultado = apply.aplicar_termicas(
         manifiesto, _cfg(), doble, _SignalFalsa(), _SignalFalsa(), _SignalFalsa(),
-        tamano_lote_exif=2,
     )
 
     assert resultado == {"hecho": 5, "fallido": 0}
-    assert len(doble.llamadas_exif) == 3
-    # Los lotes corren en paralelo: el orden de llegada no está garantizado.
-    assert sorted(len(lote) for lote in doble.llamadas_exif) == [1, 2, 2]
+    assert len(doble.llamadas_exif) == 5
+    for src, dst in doble.llamadas_exif:
+        assert not src.startswith(str(tmp_path / "origen"))
+        assert not dst.startswith(str(tmp_path / "salida"))
+    # Convertir leyó la copia local, no el origen.
+    assert all(not c["ruta_origen"].startswith(str(tmp_path / "origen"))
+               for c in doble.llamadas_convert)
+    for indice in range(5):
+        assert (tmp_path / "salida" / f"DJI_{indice:04d}_T.tiff").read_bytes().endswith(MARCA_EXIF)
+    assert list((tmp_path / "salida").glob("*.parcial*")) == []
     manifiesto.cerrar()
 
 
-def test_lotes_exif_se_reparten_en_multiplo_de_procesos(tmp_path, make_dji_jpeg, monkeypatch):
-    """Con 4 exiftool en paralelo, 9 térmicas y `tamano_lote_exif=2` saldrían
-    5 lotes (2+2+2+2+1), y el quinto correría solo con 3 procesos ociosos: se
-    redondea a 8 lotes equilibrados (2+1×7) y todas las filas quedan hechas."""
-    monkeypatch.setenv("ATOM_EXIF_WORKERS", "4")
+def test_el_staging_local_no_deja_temporales(tmp_path, make_dji_jpeg, monkeypatch):
+    """Ni en éxito ni en fallo de EXIF queda nada del R-JPEG local."""
+    raiz_tmp = tmp_path / "tmp"
+    raiz_tmp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(raiz_tmp))
     filas = []
-    for indice in range(9):
+    for indice in range(2):
         origen = tmp_path / "origen" / f"DJI_{indice:04d}_T.JPG"
         origen.parent.mkdir(parents=True, exist_ok=True)
         make_dji_jpeg(str(origen))
         filas.append(_fila_termica(origen, tmp_path / "salida" / f"DJI_{indice:04d}_T.JPG",
                                    tmp_path / "salida" / f"DJI_{indice:04d}_T.tiff"))
-
     manifiesto = _manifiesto_con(tmp_path, filas)
-    doble = _PipelineDePrueba()
-
+    doble = _PipelineDePrueba(lotes_que_fallan={filas[0].ruta_origen})
     resultado = apply.aplicar_termicas(
         manifiesto, _cfg(), doble, _SignalFalsa(), _SignalFalsa(), _SignalFalsa(),
-        tamano_lote_exif=2,
     )
-
-    assert resultado == {"hecho": 9, "fallido": 0}
-    assert sorted(len(lote) for lote in doble.llamadas_exif) == [1] * 7 + [2]
+    assert resultado == {"hecho": 1, "fallido": 1}
+    assert not (tmp_path / "salida" / "DJI_0000_T.tiff").exists()
+    assert list(raiz_tmp.iterdir()) == []
     manifiesto.cerrar()
 
 
@@ -300,8 +332,8 @@ def test_el_tiff_se_escribe_de_forma_atomica(tmp_path, make_dji_jpeg, monkeypatc
 def test_falta_de_metadatos_marca_la_fila_como_fallida(tmp_path, make_dji_jpeg):
     """Invariante "TIFF con TODOS sus metadatos": si `exiftool` devuelve
     error para el lote de una térmica, esa fila NO puede quedar `hecho`
-    aunque el TIFF ya se haya escrito bien. Con `tamano_lote_exif=1` cada
-    fila es su propio lote, así que el fallo de una no arrastra a la otra."""
+    aunque el TIFF ya se haya escrito bien. El fallo es por imagen:
+    el de una no arrastra a la otra."""
     origen_falla = tmp_path / "origen" / "DJI_0001_T.JPG"
     origen_falla.parent.mkdir(parents=True)
     make_dji_jpeg(str(origen_falla))
@@ -318,7 +350,6 @@ def test_falta_de_metadatos_marca_la_fila_como_fallida(tmp_path, make_dji_jpeg):
 
     resultado = apply.aplicar_termicas(
         manifiesto, _cfg(), doble, _SignalFalsa(), _SignalFalsa(), _SignalFalsa(),
-        tamano_lote_exif=1,
     )
 
     assert resultado == {"hecho": 1, "fallido": 1}
@@ -328,9 +359,9 @@ def test_falta_de_metadatos_marca_la_fila_como_fallida(tmp_path, make_dji_jpeg):
     assert fallida["estado"] == "fallido"
     assert fallida["motivo_fallo"]
     assert hecha["estado"] == "hecho"
-    # El TIFF sí se escribió (la conversión fue OK, lo que falló fue exiftool),
-    # pero eso no basta para que la fila quede 'hecho'.
-    assert (tmp_path / "salida" / "DJI_0001_T.tiff").exists()
+    # El EXIF falla en staging, ANTES de publicar: el TIFF sin metadatos nunca
+    # llega al destino.
+    assert not (tmp_path / "salida" / "DJI_0001_T.tiff").exists()
     manifiesto.cerrar()
 
 

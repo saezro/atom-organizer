@@ -34,10 +34,18 @@ def _es_conversor_dji(cmd):
     return "dji_irp" in texto or "dji_utility" in texto
 
 
-def _make_raw(image_path, input_folder, image_name):
+def _raw_de_cmd(cmd):
+    """Ruta del .raw que el conversor debe escribir (temporal local, no el origen)."""
+    if isinstance(cmd, (list, tuple)):
+        return next(str(a) for a in cmd if str(a).endswith(".raw"))
+    import re
+    return re.search(r'"([^"]+\.raw)"', str(cmd)).group(1)
+
+
+def _make_raw(image_path, raw_path):
     w, h = PILImage.open(image_path).size
     values = [float(i) for i in range(h * w)]
-    with open(os.path.join(str(input_folder), image_name + ".raw"), "wb") as f:
+    with open(raw_path, "wb") as f:
         f.write(struct.pack(f"{h * w}f", *values))
 
 
@@ -52,7 +60,7 @@ def test_segunda_pasada_no_reinvoca_sdk_si_el_tiff_ya_existe(tmp_path, logger, m
     # --- Primera pasada: el SDK "funciona" y deja el .tiff bueno. ---
     def fake_run_ok(cmd, *args, **kwargs):
         if _es_conversor_dji(cmd) and name in _cmd_text(cmd):
-            _make_raw(path, input_folder, name)
+            _make_raw(path, _raw_de_cmd(cmd))
         return subprocess.CompletedProcess(args=cmd, returncode=0)
 
     monkeypatch.setattr(split_images.subprocess, "run", fake_run_ok)

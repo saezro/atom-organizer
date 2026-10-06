@@ -119,6 +119,20 @@ def _read_dataframe(path: str) -> pd.DataFrame:
 _EXTENSIONES_CANDIDATAS = (".csv", ".xlsx", ".xls")
 
 
+# Carpetas de vuelo DJI (`DJI_202609281526_004_...`): solo fotos, ni se listan.
+_EXTENSIONES_IMAGEN = (".jpg", ".jpeg", ".png", ".tif", ".tiff")
+# Más imágenes que esto en una carpeta = carpeta de imágenes: no se desciende.
+_MAX_IMAGENES_POR_CARPETA = 50
+
+
+_RE_CARPETA_VUELO = re.compile(r"^DJI_\d{8,}", re.IGNORECASE)
+
+
+def _es_carpeta_de_vuelo(nombre: str) -> bool:
+    # Solo `DJI_<fecha...>`: una carpeta `dji_notas` puede llevar estadillo.
+    return bool(_RE_CARPETA_VUELO.match(nombre))
+
+
 def detectar_estadillos(
     carpeta: str, max_profundidad: int = 2, incluir_recibidos: bool = False
 ) -> dict:
@@ -162,23 +176,46 @@ def detectar_estadillos(
     profundidad_raiz = raiz_normalizada.count(os.sep)
 
     candidatos: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(raiz_normalizada):
-        # No bajar a carpetas ocultas, y no bajar más allá de max_profundidad
-        # niveles por debajo de la raíz (se poda in-place la lista que os.walk
-        # usa para seguir recorriendo).
-        profundidad_actual = os.path.normpath(dirpath).count(os.sep) - profundidad_raiz
-        if profundidad_actual >= max_profundidad:
-            dirnames[:] = []
-        else:
-            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-
-        for nombre in filenames:
-            if nombre.startswith(".") or nombre.startswith("~$"):
+    # Recorrido por niveles con `os.scandir`, sin listar nunca las carpetas de
+    # vuelo (`DJI_*`) ni las de imágenes (ver `_es_carpeta_de_vuelo`,
+    # `_MAX_IMAGENES_POR_CARPETA`): sobre Google Drive (Dokan) listar miles de
+    # fotos por carpeta hacía caducar la búsqueda cuando el origen era una raíz
+    # con varios días. Mismos candidatos que antes para el resto de carpetas.
+    nivel = [raiz_normalizada]
+    profundidad_actual = 0
+    while nivel:
+        siguiente: list[str] = []
+        for dirpath in nivel:
+            try:
+                with os.scandir(dirpath) as it:
+                    entradas = list(it)
+            except OSError:
                 continue
-            ext = os.path.splitext(nombre)[1].lower()
-            if ext not in _EXTENSIONES_CANDIDATAS:
-                continue
-            candidatos.append(os.path.join(dirpath, nombre))
+            subdirs: list[str] = []
+            n_imagenes = 0
+            for entrada in entradas:
+                nombre = entrada.name
+                try:
+                    es_dir = entrada.is_dir()
+                except OSError:
+                    continue
+                if es_dir:
+                    if not nombre.startswith(".") and not _es_carpeta_de_vuelo(nombre):
+                        subdirs.append(entrada.path)
+                    continue
+                if nombre.startswith(".") or nombre.startswith("~$"):
+                    continue
+                ext = os.path.splitext(nombre)[1].lower()
+                if ext in _EXTENSIONES_IMAGEN:
+                    n_imagenes += 1
+                if ext in _EXTENSIONES_CANDIDATAS:
+                    candidatos.append(os.path.join(dirpath, nombre))
+            if n_imagenes > _MAX_IMAGENES_POR_CARPETA:
+                continue  # carpeta de imágenes: no se desciende
+            siguiente.extend(subdirs)
+        profundidad_actual += 1
+        nivel = siguiente if profundidad_actual <= max_profundidad else []
+    candidatos.sort()
 
     if incluir_recibidos:
         from atom_core.google_auth import estadillos_recibidos_dir

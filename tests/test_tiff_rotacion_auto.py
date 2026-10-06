@@ -59,7 +59,7 @@ def _convierte(monkeypatch, logger, vuelo, image_path):
     def fake_run(cmd, *args, **kwargs):
         llamadas.append(cmd)
         if len(llamadas) == 1:  # la utilidad DJI: deja el .raw radiométrico
-            with open(os.path.join(str(vuelo), "DJI_0001_T.JPG.raw"), "wb") as f:
+            with open(next(str(a) for a in cmd if str(a).endswith(".raw")), "wb") as f:
                 f.write(struct.pack(f"{h * w}f", *valores))
         return subprocess.CompletedProcess(args=cmd, returncode=0)
 

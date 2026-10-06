@@ -19,9 +19,12 @@ import datetime
 import io
 import json
 import os
+import queue
 import re
+import sys
+import threading
+import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 
 import exifread
@@ -30,9 +33,10 @@ import PIL.Image
 import exif as exif_mod
 import utils
 from atom_core import almacen
+from atom_core import cancelacion
 from atom_core import equipo as equipo_mod
 from atom_core import estadillo as estadillo_mod
-from atom_core.manifiesto import FilaManifiesto, Manifiesto
+from atom_core.manifiesto import FilaManifiesto, Manifiesto, clave_imagen
 from rjpeg_a_tiff import EXTS_FUENTE
 
 # Único nombre de la carpeta extra: fija la inconsistencia de casing entre
@@ -202,20 +206,325 @@ def _nombre_carpeta_vuelo(pb: str, vuelo: str, include_v: bool, sufijo: str | No
     return f"{base}_{sufijo}" if sufijo else base
 
 
-def _listar_imagenes(input_folder: str) -> list[str]:
+# Un fichero "aún copiándose/subiéndose" no entra en el índice (la tanda
+# siguiente lo recoge). Criterios, solo en carpetas locales y sin leer el
+# contenido salvo la cola de los JPEG:
+#  - tamaño 0;
+#  - Windows: otro proceso lo tiene abierto sin permitir compartir lectura
+#    (CreateFileW con FILE_SHARE_READ -> error 32, sharing violation);
+#  - .jpg/.jpeg cuyos últimos 16 bytes son todo ceros (copia preasignada sin
+#    terminar). NO se exige el marcador FFD9: los R-JPEG de DJI llevan bytes
+#    tras el EOI.
+# `_FILTRO_ARCHIVO_A_MEDIAS` = False lo desactiva (tests con imágenes vacías).
+_FILTRO_ARCHIVO_A_MEDIAS = True
+_ERROR_SHARING_VIOLATION = 32
+_MAX_EJEMPLOS_OMITIDAS = 5
+
+
+def _es_windows() -> bool:
+    return sys.platform == "win32"
+
+
+def _error_apertura_compartida(ruta: str) -> int:
+    """Windows: intenta abrir `ruta` con share=FILE_SHARE_READ y devuelve el
+    código de error de Win32 (0 si abre bien)."""
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                     wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+                                     wintypes.HANDLE]
+    GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING = 0x80000000, 0x1, 3
+    manejador = kernel32.CreateFileW(ruta, GENERIC_READ, FILE_SHARE_READ, None,
+                                     OPEN_EXISTING, 0, None)
+    if manejador in (None, wintypes.HANDLE(-1).value):
+        return ctypes.get_last_error()
+    kernel32.CloseHandle(manejador)
+    return 0
+
+
+def _en_uso_windows(ruta: str) -> bool:
+    if not _es_windows():
+        return False
+    try:
+        return _error_apertura_compartida(ruta) == _ERROR_SHARING_VIOLATION
+    except Exception:
+        return False
+
+
+def _cola_de_ceros(ruta: str, tamano: int) -> bool:
+    if os.path.splitext(ruta)[1].lower() not in (".jpg", ".jpeg"):
+        return False
+    try:
+        with open(ruta, "rb") as f:
+            f.seek(max(0, tamano - 16))
+            cola = f.read(16)
+    except OSError:
+        return False
+    return len(cola) > 0 and not any(cola)
+
+
+def _a_medio_copiar(ruta: str) -> bool:
+    """True si `ruta` (local) parece a medias. Un fallo de `stat` NO la omite
+    (ya fallará más adelante con su error de siempre)."""
+    if not _FILTRO_ARCHIVO_A_MEDIAS:
+        return False
+    try:
+        tamano = os.stat(ruta).st_size
+    except OSError:
+        return False
+    return tamano == 0 or _en_uso_windows(ruta) or _cola_de_ceros(ruta, tamano)
+
+
+# --- Progreso y límite de espera por fichero ---------------------------------
+# Origen en Drive for Desktop (ficheros "solo en la nube"): abrir/leer un JPG
+# dispara su descarga y el `open()` se queda bloqueado minutos. Antes, el
+# listado (`_a_medio_copiar` abre la cola de cada JPG) y el ThreadPool de EXIF
+# esperaban SIN límite y SIN emitir nada: la UI quedaba en 0/0 img. Ahora cada
+# sub-paso emite «n/total · velocidad» por los canales de siempre
+# (`progress_callback` texto + marcador STATS_INDICE en `progress_summarize`) y
+# cada fichero tiene un tiempo máximo; los que vencen se reintentan al final
+# con un tiempo mayor y, si siguen sin responder, se informan como error.
+TIMEOUT_FICHERO_S = 60.0
+TIMEOUT_REINTENTO_S = 180.0
+WATCHDOG_S = 30.0
+INTERVALO_PROGRESO_S = 2.0
+_MAX_HILOS_ATASCADOS = 64
+
+
+def _env_float(nombre: str, defecto: float) -> float:
+    try:
+        valor = float(os.environ.get(nombre, "") or defecto)
+    except ValueError:
+        return defecto
+    return valor if valor > 0 else defecto
+
+
+class _Vencido:
+    """Marca: el fichero no respondió dentro del tiempo máximo."""
+
+
+_VENCIDO = _Vencido()
+_PENDIENTE = object()
+
+
+class _Fallo:
+    def __init__(self, excepcion: BaseException) -> None:
+        self.excepcion = excepcion
+
+
+class _EmisorIndice:
+    """Emite el progreso de los sub-pasos del índice, como mucho cada
+    `intervalo` segundos. Texto al log (`progress_callback`) y marcador de
+    stats (`progress_summarize`, que `organize` convierte en `emit("stats")`)."""
+
+    def __init__(self, progress_callback, progress_summarize, progress_bar=None,
+                 intervalo: float = INTERVALO_PROGRESO_S) -> None:
+        self._log = progress_callback
+        self._summary = progress_summarize
+        self._bar = progress_bar
+        self.intervalo = intervalo
+        self._subpaso = ""
+        self._t0 = time.monotonic()
+        self._ultimo = 0.0
+        self._bar_base = 0
+        self._bar_ancho = 0
+
+    def iniciar(self, subpaso: str, total: int, barra: tuple[int, int] = (0, 0)) -> None:
+        self._subpaso = subpaso
+        self._t0 = time.monotonic()
+        self._ultimo = 0.0
+        self._bar_base, self._bar_ancho = barra
+        self.progreso(0, total, forzar=True)
+
+    def aviso(self, texto: str) -> None:
+        self._log.emit(texto)
+
+    def progreso(self, hechos: int, total: int, forzar: bool = False) -> None:
+        ahora = time.monotonic()
+        if not forzar and ahora - self._ultimo < self.intervalo:
+            return
+        self._ultimo = ahora
+        transcurrido = max(ahora - self._t0, 1e-6)
+        velocidad = hechos / transcurrido if hechos else 0.0
+        de_total = f"/{total}" if total else ""
+        self._log.emit(
+            f"\nÍndice · {self._subpaso}: {hechos}{de_total} "
+            f"({velocidad:.1f} img/s)\n".replace(".", ","))
+        self._summary.emit(STATS_INDICE_PREFIX + json.dumps({
+            "fase": "Índice", "subpaso": self._subpaso, "done": hechos,
+            "total": total, "img_por_segundo": round(velocidad, 2)}))
+        if self._bar is not None and self._bar_ancho and total:
+            self._bar.emit(int(self._bar_base + self._bar_ancho * hechos / total))
+
+
+def _ejecutar_con_limite(items: list, funcion, hilos: int, timeout_s: float,
+                         emisor: "_EmisorIndice | None", watchdog_s: float,
+                         total_global: int | None = None) -> list:
+    """Aplica `funcion` a cada item con `hilos` hilos DAEMON y devuelve una
+    lista alineada con `items`. Un item cuya llamada pasa de `timeout_s`
+    queda como `_VENCIDO` (el hilo bloqueado se abandona -un `open()` colgado
+    no se puede cancelar- y se arranca otro; si responde tarde, su resultado
+    se acepta mientras la pasada siga viva). Una excepción de `funcion` se
+    relanza aquí, como haría `ejecutor.map`. Cada `watchdog_s` s que un hilo
+    lleva en el mismo fichero se avisa al log: «esperando a <ruta> desde hace
+    N s»."""
+    n = len(items)
+    resultados: list = [_PENDIENTE] * n
+    if not n:
+        return resultados
+    cola: "queue.Queue[int]" = queue.Queue()
+    for i in range(n):
+        cola.put(i)
+    cerrojo = threading.Lock()
+    activos: dict[int, list] = {}  # wid -> [idx, t0, ultimo_aviso_s]
+    abandonados: set[int] = set()
+    contador = {"wid": 0}
+
+    def trabajador(wid: int) -> None:
+        while True:
+            with cerrojo:
+                if wid in abandonados:
+                    return
+            if cancelacion.cancelado():
+                return
+            try:
+                i = cola.get_nowait()
+            except queue.Empty:
+                return
+            with cerrojo:
+                activos[wid] = [i, time.monotonic(), 0.0]
+            try:
+                res = funcion(items[i])
+            except BaseException as exc:  # noqa: BLE001
+                res = _Fallo(exc)
+            with cerrojo:
+                activos.pop(wid, None)
+                resultados[i] = res
+                if wid in abandonados:
+                    return
+
+    def lanzar() -> None:
+        contador["wid"] += 1
+        threading.Thread(target=trabajador, args=(contador["wid"],), daemon=True,
+                         name=f"indice-{contador['wid']}").start()
+
+    for _ in range(min(hilos, n)):
+        lanzar()
+
+    tope = total_global if total_global is not None else n
+    while True:
+        time.sleep(0.05)
+        if cancelacion.cancelado():
+            # Cancelar: NO se espera a los hilos atascados (un `open()` colgado
+            # no se puede interrumpir); se abandonan, son daemon y sus
+            # resultados se ignoran. Los demás paran al terminar su fichero.
+            with cerrojo:
+                abandonados.update(activos.keys())
+                while True:
+                    try:
+                        cola.get_nowait()
+                    except queue.Empty:
+                        break
+            raise cancelacion.RunCancelado()
+        ahora = time.monotonic()
+        avisos: list[str] = []
+        with cerrojo:
+            for wid, (i, t0, ult) in list(activos.items()):
+                espera = ahora - t0
+                if espera >= timeout_s and wid not in abandonados:
+                    abandonados.add(wid)
+                    activos.pop(wid, None)
+                    resultados[i] = _VENCIDO
+                    avisos.append(
+                        f"\nIndice: sin respuesta de {items[i]} tras {int(espera)} s; "
+                        "se marca como lenta y se sigue con las demás.\n")
+                    if len(abandonados) <= _MAX_HILOS_ATASCADOS:
+                        lanzar()
+                    else:  # demasiados hilos bloqueados: el resto pasa al reintento
+                        while True:
+                            try:
+                                j = cola.get_nowait()
+                            except queue.Empty:
+                                break
+                            resultados[j] = _VENCIDO
+                elif espera >= watchdog_s and espera - ult >= watchdog_s:
+                    activos[wid][2] = espera
+                    avisos.append(f"\nIndice: esperando a {items[i]} desde hace {int(espera)} s\n")
+            hechos = sum(1 for r in resultados if r is not _PENDIENTE)
+            pendientes = n - hechos
+        if emisor is not None:
+            for aviso in avisos:
+                emisor.aviso(aviso)
+            emisor.progreso(hechos, tope)
+        if pendientes == 0:
+            break
+    if emisor is not None:
+        emisor.progreso(n, tope, forzar=True)
+    for r in resultados:
+        if isinstance(r, _Fallo):
+            raise r.excepcion
+    return resultados
+
+
+@dataclass
+class _Limite:
+    """Parámetros de la espera acotada que recibe `_listar_imagenes`."""
+
+    emisor: "_EmisorIndice"
+    hilos: int
+    timeout_s: float
+    watchdog_s: float
+    lentas: list
+
+
+def _listar_imagenes(input_folder: str, omitidas: "list[str] | None" = None,
+                     limite: "_Limite | None" = None) -> list[str]:
     """Rutas absolutas de toda imagen FUENTE (`EXTS_FUENTE`) bajo
     `input_folder`, recursivo. Es la única pasada de listado: el resto del
-    índice trabaja sobre esta lista, no vuelve a tocar el árbol de origen."""
+    índice trabaja sobre esta lista, no vuelve a tocar el árbol de origen.
+
+    Las que parecen a medio copiar (ver `_a_medio_copiar`) no se devuelven y,
+    si se pasa `omitidas`, se apuntan ahí. Solo en carpetas locales: en
+    `gs://` el listado no trae mtime.
+
+    Con `limite`, el listado emite progreso y el filtro (que abre cada JPG y
+    en Drive dispara su descarga) corre con tiempo máximo por fichero: los
+    que vencen NO se descartan, van a `limite.lentas` para el reintento."""
     rutas: list[str] = []
     if almacen.es_uri_gcs(input_folder):
         rutas.extend(_listar_imagenes_gcs(input_folder))
         return sorted(rutas)
     if not os.path.isdir(input_folder):
         return []
+    if limite is not None:
+        limite.emisor.iniciar("Listar", 0)
+    candidatas: list[str] = []
     for raiz, _dirs, ficheros in os.walk(input_folder):
+        cancelacion.comprobar()
         for nombre in ficheros:
             if os.path.splitext(nombre)[1].lower() in EXTS_FUENTE:
-                rutas.append(os.path.join(raiz, nombre))
+                candidatas.append(os.path.join(raiz, nombre))
+        if limite is not None:
+            limite.emisor.progreso(len(candidatas), 0)
+    if limite is not None:
+        limite.emisor.progreso(len(candidatas), 0, forzar=True)
+    if limite is None or not _FILTRO_ARCHIVO_A_MEDIAS:
+        medias = [_a_medio_copiar(r) for r in candidatas] if limite is None else \
+            [False] * len(candidatas)
+    else:
+        limite.emisor.iniciar("Filtrar", len(candidatas))
+        medias = _ejecutar_con_limite(candidatas, _a_medio_copiar, limite.hilos,
+                                      limite.timeout_s, limite.emisor, limite.watchdog_s)
+    for ruta, media in zip(candidatas, medias):
+        if media is _VENCIDO:
+            limite.lentas.append(ruta)
+        elif media:
+            if omitidas is not None:
+                omitidas.append(ruta)
+        else:
+            rutas.append(ruta)
     return sorted(rutas)
 
 
@@ -936,26 +1245,50 @@ def _con_sufijo(ruta: str, contador: int) -> str:
     return f"{raiz}_{contador}{ext}"
 
 
-def _desambiguar_colisiones_generales(filas: list[FilaManifiesto]) -> list[FilaManifiesto]:
-    """FOTOS_GENERALES es plana (ver `_construir_fila`): imágenes de vuelos o
-    días distintos que antes vivían en carpetas `PB.../V...` separadas ahora
-    comparten directorio, y pueden traer el MISMO nombre de fichero (p.ej. dos
-    tarjetas SD reiniciando la numeración DJI). Sin este paso, la segunda
-    pisaría a la primera al escribir -nunca sobrescribir-.
+def _desambiguar_colisiones_generales(
+        filas: list[FilaManifiesto],
+        ocupadas: "dict[str, set[str]] | None" = None) -> list[FilaManifiesto]:
+    """Nunca dos imágenes de clave distinta en la misma ruta de salida.
 
-    Sufijo determinista `_2`, `_3`... por orden de aparición (el mismo orden
-    ya `sorted` de `_listar_imagenes`), aplicado a la vez al original, al
-    `_CROP` y al `.tiff` para que los tres seguían siendo el mismo fichero
-    con apellido. Filas que no son GENERALES pasan intactas."""
-    vistos: dict[str, int] = {}
+    Origen del problema: FOTOS_GENERALES es plana (ver `_construir_fila`):
+    imágenes de vuelos o días distintos comparten directorio y pueden traer el
+    MISMO nombre (p.ej. dos tarjetas SD reiniciando la numeración DJI). Lo
+    mismo pasa en SIN_ORDENAR y en carpetas PB/Vuelo cuando no se renombra, y
+    entre TANDAS al mismo destino. Sin este paso la segunda pisaría a la
+    primera -nunca sobrescribir-.
+
+    `ocupadas` = `Manifiesto.rutas_salida_por_clave()` (rutas ya registradas
+    por tandas anteriores, con las claves que las usan). Si la ruta de una
+    fila ya pertenece a OTRA clave -del manifiesto o de esta misma tanda- se
+    le pone `_2`, `_3`... antes de la extensión, aplicado a la vez al
+    original, al `_CROP` y al `.tiff`. Es estable: la misma clave que ya tenía
+    `X_2` registrado vuelve a salir con `X_2`, porque esa ruta es suya.
+
+    Se aplica a GENERALES (siempre, como antes), SIN_ORDENAR y carpetas
+    PB/Vuelo sin renombrar (`nombre_nuevo` vacío; renombradas llevan la hora
+    en el nombre). Sin colisiones las rutas salen idénticas."""
+    ocupadas = ocupadas or {}
+    vistos: dict[str, set[str]] = {}
+
+    def _rutas(fila: FilaManifiesto, contador: int) -> list[str]:
+        return [(_con_sufijo(r, contador) if contador > 1 else r)
+                for r in (fila.ruta_salida_original, fila.ruta_salida_crop,
+                          fila.ruta_salida_tiff) if r]
+
+    def _ajena(ruta: str, clave: str) -> bool:
+        k = ruta.casefold()
+        return bool((ocupadas.get(k, set()) | vistos.get(k, set())) - {clave})
+
     resultado: list[FilaManifiesto] = []
     for fila in filas:
-        if not _es_pb_generales(fila.pb):
-            resultado.append(fila)
-            continue
-        nombre = os.path.basename(fila.ruta_salida_original)
-        vistos[nombre] = vistos.get(nombre, 0) + 1
-        contador = vistos[nombre]
+        clave = clave_imagen(fila.ruta_origen, fila.timestamp_exif, fila.bytes_origen)
+        aplica = (_es_pb_generales(fila.pb) or fila.unassigned or not fila.nombre_nuevo)
+        contador = 1
+        if aplica:
+            while any(_ajena(r, clave) for r in _rutas(fila, contador)):
+                contador += 1
+        for ruta in _rutas(fila, contador):
+            vistos.setdefault(ruta.casefold(), set()).add(clave)
         if contador == 1:
             resultado.append(fila)
             continue
@@ -980,6 +1313,10 @@ def construir_indice(
     progress_summarize,
     max_hilos: int | None = None,
     ejecucion_id: int | None = None,
+    timeout_s: float | None = None,
+    timeout_reintento_s: float | None = None,
+    watchdog_s: float | None = None,
+    intervalo_progreso_s: float | None = None,
 ) -> dict:
     """Construye el manifiesto completo del run: una pasada de metadatos
     sobre `cfg.input_folder`, cruzada con el estadillo, decidiendo vuelo,
@@ -988,9 +1325,25 @@ def construir_indice(
     `manifiesto`.
 
     Devuelve `{"total", "unassigned", "sin_timestamp", "vuelos", "nuevas",
-    "saltadas", "reintentadas", "vuelos_equipo_discrepa"}`.
+    "saltadas", "reintentadas", "vuelos_equipo_discrepa",
+    "no_disponibles"}`.
+
+    Lectura de ficheros con tiempo máximo (`timeout_s`, env
+    `ATOM_INDICE_TIMEOUT_S`, 60 s): los que vencen se reintentan al final con
+    `timeout_reintento_s` (`ATOM_INDICE_TIMEOUT_REINTENTO_S`, 180 s) y los que
+    siguen sin responder se devuelven en `no_disponibles` y se informan como
+    error; NO entran en el manifiesto (se recogerán en otra tanda).
     """
     progress_summarize.emit("---> SUBPROCESO: Índice")
+    timeout_s = timeout_s or _env_float("ATOM_INDICE_TIMEOUT_S", TIMEOUT_FICHERO_S)
+    timeout_reintento_s = timeout_reintento_s or _env_float(
+        "ATOM_INDICE_TIMEOUT_REINTENTO_S", TIMEOUT_REINTENTO_S)
+    watchdog_s = watchdog_s or _env_float("ATOM_INDICE_WATCHDOG_S", WATCHDOG_S)
+    emisor = _EmisorIndice(
+        progress_callback, progress_summarize, progress_bar,
+        intervalo_progreso_s or _env_float("ATOM_INDICE_PROGRESO_S", INTERVALO_PROGRESO_S))
+    hilos = max_hilos or utils.max_io_workers()
+    emisor.aviso("\nÍndice · leyendo estadillos…\n")
 
     rutas_estadillo = estadillo_mod.desempaquetar_rutas(cfg.estad)
     # El DataFrame GLOBAL (todos los estadillos fusionados, en el orden de
@@ -1023,7 +1376,19 @@ def construir_indice(
             f"distinto, y eso no se puede desambiguar con un sufijo de fecha: {detalle}. "
             "Revisa los estadillos de origen antes de reintentar.")
 
-    imagenes = _listar_imagenes(cfg.input_folder)
+    omitidas_copiandose: list[str] = []
+    lentas: list[str] = []
+    imagenes = _listar_imagenes(
+        cfg.input_folder, omitidas_copiandose,
+        _Limite(emisor, hilos, timeout_s, watchdog_s, lentas))
+    cancelacion.comprobar()
+    if omitidas_copiandose:
+        ejemplos = ", ".join(os.path.basename(r) for r in omitidas_copiandose[:_MAX_EJEMPLOS_OMITIDAS])
+        progress_callback.emit(
+            f"\nAVISO: {len(omitidas_copiandose)} imágenes omitidas por estar aún "
+            f"copiándose/subiendo (tamaño 0, en uso o incompletas): {ejemplos}"
+            f"{'…' if len(omitidas_copiandose) > _MAX_EJEMPLOS_OMITIDAS else ''}. "
+            "Se recogerán en la siguiente tanda.\n")
 
     # Scoping por carpeta: cada imagen solo compite contra las ventanas del
     # estadillo cuyo directorio es su ancestro más cercano (ver
@@ -1053,6 +1418,7 @@ def construir_indice(
     # un estadillo que SÍ está dentro de `cfg.input_folder` se trataba como
     # externo (bug: se saltaba `ErrorEstadillosMismaCarpeta` y el WARNING de
     # "sin fotos", acabando reclamando imágenes huérfanas).
+    emisor.aviso("\nÍndice · buscando estadillos en el origen…\n")
     rutas_autodetectables = set(
         estadillo_mod.clave_ruta(r)
         for r in estadillo_mod.detectar_estadillos(cfg.input_folder)["rutas"])
@@ -1101,13 +1467,52 @@ def construir_indice(
     # PROCESOS que decodifican imágenes enteras y topa por RAM (600 MB/worker).
     # El resto del código ya usa este helper para este mismo patrón
     # (`pipeline.py:1642`, `exif.py:985`); el índice era el único que no.
-    hilos = max_hilos or utils.max_io_workers()
+    # Cada lectura con tiempo máximo (`_ejecutar_con_limite`): un fichero de
+    # Drive sin descargar ya no cuelga la fase.
+    metadatos = []
     if imagenes:
-        with ThreadPoolExecutor(max_workers=hilos) as ejecutor:
-            metadatos = list(ejecutor.map(
-                lambda ruta: _leer_metadatos(ruta, exif, progress_callback), imagenes))
-    else:
-        metadatos = []
+        emisor.iniciar("Leer EXIF/XMP", len(imagenes), barra=(5, 75))
+        lecturas = _ejecutar_con_limite(
+            imagenes, lambda ruta: _leer_metadatos(ruta, exif, progress_callback),
+            hilos, timeout_s, emisor, watchdog_s)
+        for ruta, lectura in zip(imagenes, lecturas):
+            if lectura is _VENCIDO:
+                lentas.append(ruta)
+            else:
+                metadatos.append(lectura)
+
+    no_disponibles: list[str] = []
+    if lentas:
+        def _filtrar_y_leer(ruta: str):
+            if _a_medio_copiar(ruta):
+                return None
+            return _leer_metadatos(ruta, exif, progress_callback)
+
+        emisor.aviso(
+            f"\nÍndice · {len(lentas)} fichero(s) lentos (más de {int(timeout_s)} s); "
+            f"reintento con {int(timeout_reintento_s)} s por fichero.\n")
+        emisor.iniciar("Reintentar lentas", len(lentas))
+        reintentos = _ejecutar_con_limite(lentas, _filtrar_y_leer, hilos,
+                                          timeout_reintento_s, emisor, watchdog_s)
+        for ruta, lectura in zip(lentas, reintentos):
+            if lectura is _VENCIDO:
+                no_disponibles.append(ruta)
+            elif lectura is None:
+                omitidas_copiandose.append(ruta)
+            else:
+                metadatos.append(lectura)
+        metadatos.sort(key=lambda dato: dato.ruta)
+    if no_disponibles:
+        no_disponibles.sort()
+        detalle = "\n".join(f"  - {ruta}" for ruta in no_disponibles)
+        texto = (
+            f"\nHa habido {len(no_disponibles)} error(es) en el Índice: "
+            f"{len(no_disponibles)} fichero(s) no disponibles (sin respuesta tras "
+            f"{int(timeout_s)} s y {int(timeout_reintento_s)} s en el reintento; en Drive, "
+            "suelen ser fotos sin descargar). No se han procesado ni asignado; "
+            f"descárgalas/espera a que se sincronicen y vuelve a lanzar:\n{detalle}\n")
+        progress_callback.emit(texto)
+        progress_summarize.emit(texto)
 
     # Falla pronto y en un único golpe si el recorte automático está activo
     # y algún modelo EXIF no tiene % configurado: ANTES de asignar vuelos o
@@ -1116,11 +1521,14 @@ def construir_indice(
     # `ErrorModeloSinRecorte`.
     _validar_modelos_recorte(metadatos, cfg, pipeline)
 
-    asignaciones = [
-        (dato, _asignar_vuelo(dato, _ventanas_para_imagen(
-            dato.ruta, ventanas_por_carpeta, ventanas_sin_carpeta)))
-        for dato in metadatos
-    ]
+    asignaciones = []
+    emisor.iniciar("Asignar vuelos", len(metadatos), barra=(80, 10))
+    for n_asignadas, dato in enumerate(metadatos, 1):
+        cancelacion.comprobar()
+        asignaciones.append((dato, _asignar_vuelo(dato, _ventanas_para_imagen(
+            dato.ruta, ventanas_por_carpeta, ventanas_sin_carpeta))))
+        emisor.progreso(n_asignadas, len(metadatos))
+    emisor.progreso(len(metadatos), len(metadatos), forzar=True)
     vuelos_equipo_discrepa = _avisar_equipo(asignaciones, progress_callback)
     angulos = _consenso_de_angulo_por_vuelo(asignaciones, pipeline, cfg,
                                             cfg.output_folder, progress_callback)
@@ -1133,10 +1541,21 @@ def construir_indice(
     for (pb_cache, vuelo_cache), angulo_cache in manifiesto.angulos_por_vuelo().items():
         angulos[(pb_cache, vuelo_cache, None)] = angulo_cache
 
-    filas = [_construir_fila(dato, ventana, angulos, cfg, pipeline)
-             for dato, ventana in asignaciones]
-    filas = _desambiguar_colisiones_generales(filas)
+    filas = []
+    emisor.iniciar("Construir filas", len(asignaciones), barra=(90, 8))
+    for n_filas, (dato, ventana) in enumerate(asignaciones, 1):
+        cancelacion.comprobar()
+        filas.append(_construir_fila(dato, ventana, angulos, cfg, pipeline))
+        emisor.progreso(n_filas, len(asignaciones))
+    emisor.progreso(len(asignaciones), len(asignaciones), forzar=True)
+    filas = _desambiguar_colisiones_generales(filas, manifiesto.rutas_salida_por_clave())
+    # Último punto seguro: tras insertar, las filas ya existen en el manifiesto.
+    cancelacion.comprobar()
     resultado = manifiesto.insertar_o_reabrir(filas, ejecucion_id=ejecucion_id)
+    if resultado.reasignadas or resultado.siguen_sin_asignar:
+        progress_callback.emit(
+            f"\n{resultado.reasignadas} foto(s) sin asignar de tandas anteriores "
+            f"reasignadas a su vuelo; {resultado.siguen_sin_asignar} siguen sin asignar.\n")
     if resultado.saltadas:
         # `resultado.vuelos_saltados` solo trae (pb, vuelo) -el manifiesto no
         # guarda sufijo-, así que el sufijo de fecha (si ese par colisionó,
@@ -1172,6 +1591,7 @@ def construir_indice(
         "sin_timestamp": sin_timestamp,
         "vuelos": len(ventanas),
         "ya_organizadas": resultado.saltadas,
+        "no_disponibles": len(no_disponibles),
     }))
 
     progress_bar.emit(100)
@@ -1183,5 +1603,9 @@ def construir_indice(
         "nuevas": resultado.nuevas,
         "saltadas": resultado.saltadas,
         "reintentadas": resultado.reintentadas,
+        "reasignadas": resultado.reasignadas,
+        "siguen_sin_asignar": resultado.siguen_sin_asignar,
+        "omitidas_copiandose": len(omitidas_copiandose),
         "vuelos_equipo_discrepa": vuelos_equipo_discrepa,
+        "no_disponibles": no_disponibles,
     }

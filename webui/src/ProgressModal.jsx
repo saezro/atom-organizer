@@ -30,6 +30,7 @@ function indiceStatsLine(s) {
   if (s.sin_asignar > 0) parts.push(`${s.sin_asignar} sin asignar`)
   if (s.sin_timestamp > 0) parts.push(`${s.sin_timestamp} sin timestamp`)
   if (s.vuelos > 0) parts.push(`${s.vuelos} ${s.vuelos === 1 ? 'vuelo' : 'vuelos'}`)
+  if (s.no_disponibles > 0) parts.push(`${s.no_disponibles} no disponibles`)
   return parts.join(' · ')
 }
 
@@ -41,6 +42,7 @@ function statsLine(s) {
   const parts = []
   // `done` no existe en todos los payloads (p.ej. el de Índice, cubierto
   // arriba); sin este `?? s.total` el Math.min da NaN en pantalla.
+  if (s.subpaso) parts.push(s.subpaso)
   if (s.total > 0) parts.push(`${Math.min(s.done ?? s.total, s.total)} de ${s.total} img`)
   else if (s.done > 0) parts.push(`${s.done} img`)
   if (s.rgb > 0 && s.rgb !== s.done) parts.push(`${s.rgb} RGB`)
@@ -201,8 +203,11 @@ export default function ProgressModal({
   recursosTotales,
   maquina,
   onClose,
+  onCancel,
 }) {
   const [showDetail, setShowDetail] = useState(false)
+  // «Cancelando…» desde que se pulsa hasta que el backend confirma (`finished`).
+  const [cancelando, setCancelando] = useState(false)
   const [now, setNow] = useState(Date.now())
   const hasActive = phases.some((p) => p.status === 'active')
 
@@ -213,6 +218,17 @@ export default function ProgressModal({
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
   }, [hasActive, finished])
+
+  async function pedirCancelar() {
+    if (!window.confirm('¿Cancelar el run? Lo ya organizado se conserva y se puede relanzar.')) return
+    setCancelando(true)
+    try {
+      const res = await onCancel()
+      if (res && res.ok === false) setCancelando(false)
+    } catch {
+      setCancelando(false)
+    }
+  }
 
   return (
     <div className="pm-overlay" role="dialog" aria-modal="true">
@@ -303,10 +319,12 @@ export default function ProgressModal({
           <p
             className={
               'pm-status ' +
-              (!finished.ok ? 'err' : finished.warn ? 'warn' : 'ok')
+              (!finished.ok ? 'err' : finished.warn || finished.cancelled ? 'warn' : 'ok')
             }
           >
-            {!finished.ok
+            {finished.cancelled
+              ? `⏹ Cancelado por el usuario${finished.total ? ` · ${finished.hechas ?? 0}/${finished.total} imágenes organizadas` : ''}${finished.elapsed != null ? ` · ${fmtDur(finished.elapsed)}` : ''}`
+              : !finished.ok
               ? `✗ ${finished.msg || 'Error'}`
               : finished.warn
                 ? finished.kind === 'warning'
@@ -350,6 +368,16 @@ export default function ProgressModal({
         )}
 
         <div className="pm-actions">
+          {!finished && onCancel && (
+            <button
+              type="button"
+              className="btn-ghost pm-cancel"
+              onClick={pedirCancelar}
+              disabled={cancelando}
+            >
+              {cancelando ? 'Cancelando…' : 'Cancelar'}
+            </button>
+          )}
           {/* El cierre NUNCA se bloquea. Antes estaba `disabled` hasta que
               llegara `done`/`error`, así que si el backend dejaba de emitir
               (transporte roto, hilo muerto) el operador se quedaba encerrado en

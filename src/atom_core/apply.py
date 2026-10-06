@@ -17,9 +17,12 @@ aforo adaptativo que usará el `ThreadPoolExecutor` de las térmicas.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import queue
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -32,6 +35,8 @@ import external_tools
 import dji_worker_pool
 import pipeline
 from exif import extraer_bloque_xmp_crudo
+from atom_core import almacen as almacen_mod
+from atom_core import cancelacion
 from atom_core import indice as indice_mod
 from atom_core import perfil_rgb
 from atom_core import rgb_gpu
@@ -231,6 +236,48 @@ def _caja_recorte_termico(ancho: int, alto: int, pct: float) -> tuple[int, int, 
     return (left, top, left + cw, top + ch)
 
 
+SUFIJO_PARCIAL = ".parcial"
+
+
+def ruta_parcial(destino: str) -> str:
+    """Nombre del temporal atómico de `destino`: `<raíz>.parcial<ext>`."""
+    raiz, extension = os.path.splitext(destino)
+    return f"{raiz}{SUFIJO_PARCIAL}{extension}"
+
+
+def es_nombre_parcial(nombre: str) -> bool:
+    """True si `nombre` es el resultado de `ruta_parcial` (`X.parcial.JPG`)."""
+    raiz, _ext = os.path.splitext(nombre)
+    return raiz.endswith(SUFIJO_PARCIAL) and len(raiz) > len(SUFIJO_PARCIAL)
+
+
+def limpiar_parciales_huerfanos(carpeta: str, excluir: tuple = (), log=None) -> int:
+    """Borra los `*.parcial.*` que un kill duro dejó en `carpeta` (recursivo).
+    Solo ficheros regulares (sin seguir symlinks), nunca carpetas ni nada
+    fuera de `carpeta`; salta las subcarpetas de primer nivel en `excluir`.
+    Un fallo al borrar se avisa y se sigue. Devuelve el nº borrado."""
+    import logging
+    log = log or logging.getLogger(__name__)
+    borrados = 0
+    if not carpeta or not os.path.isdir(carpeta):
+        return 0
+    for raiz, dirs, ficheros in os.walk(carpeta, followlinks=False):
+        if os.path.abspath(raiz) == os.path.abspath(carpeta):
+            dirs[:] = [d for d in dirs if d not in excluir]
+        for nombre in ficheros:
+            if not es_nombre_parcial(nombre):
+                continue
+            ruta = os.path.join(raiz, nombre)
+            try:
+                if os.path.islink(ruta) or not os.path.isfile(ruta):
+                    continue
+                os.remove(ruta)
+                borrados += 1
+            except OSError as exc:
+                log.warning("No se pudo borrar el parcial huérfano %s: %s", ruta, exc)
+    return borrados
+
+
 def _guardar_atomico(img, destino: str, transpose, crop_box, calidad: int,
                       pipeline_mod, etapa_encode: str = "encode_original",
                       bloque_xmp: bytes | None = None) -> None:
@@ -254,8 +301,7 @@ def _guardar_atomico(img, destino: str, transpose, crop_box, calidad: int,
     # parámetro `format`, y no se toca `pipeline.py` para añadirlo — ver
     # reutilización obligatoria) y `<algo>.parcial` sin extensión reconocida
     # revienta con `ValueError: unknown file extension: .parcial`.
-    raiz, extension = os.path.splitext(destino)
-    parcial = f"{raiz}.parcial{extension}"
+    parcial = ruta_parcial(destino)
     cfg_escritura = pipeline_mod.ImageProcessConfig(
         output_path=parcial,
         quality=calidad,
@@ -554,7 +600,10 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
     # interrumpido sin haberlo estado.
     filas = [dict(fila) for fila in manifiesto.pendientes()
             if fila["tipo"] in indice_mod.TIPOS_RGB]
-    resultado = {"hecho": 0, "fallido": 0}
+    antes_del_veto = len(filas)
+    filas = _vetar_sobrescrituras(manifiesto, filas, progress_callback)
+    # Las vetadas ya quedaron 'fallido' en el manifiesto: cuentan como fallidas.
+    resultado = {"hecho": 0, "fallido": antes_del_veto - len(filas)}
     total = len(filas)
     if total == 0:
         return resultado
@@ -592,7 +641,7 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
                 resultado["hecho"] += 1
         medidor_velocidad.registrar()
         with lock_resultado:
-            completadas = resultado["hecho"] + resultado["fallido"]
+            completadas = resultado["hecho"] + resultado["fallido"] - (antes_del_veto - total)
         if completadas % _EMITIR_STATS_CADA == 0 or completadas == total:
             _emitir_stats_apply(progress_callback, "Imágenes RGB", completadas, total,
                                rgb=completadas, termica=0, medidor=medidor_velocidad,
@@ -616,6 +665,9 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
 
     if controlador is None:
         for indice, fila in enumerate(filas, start=1):
+            # Punto seguro: entre filas. La fila en curso ya terminó y quedó
+            # marcada; las siguientes siguen 'pendiente' para el relanzamiento.
+            cancelacion.comprobar()
             try:
                 verificacion = _escribir_salidas_de_fila(fila, cfg, pipeline_mod)
             except Exception as exc:
@@ -662,8 +714,16 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
 
     with ProcessPoolExecutor(max_workers=controlador.maximo) as executor:
         futuros = []
+        cancelado = False
         for fila in filas:
+            if cancelacion.cancelado():
+                cancelado = True
+                break
             aforo.adquirir()
+            if cancelacion.cancelado():  # se canceló mientras esperaba aforo
+                aforo.liberar()
+                cancelado = True
+                break
             try:
                 futuro = executor.submit(_trabajo_fila, fila, cfg)
             except Exception as exc:
@@ -678,8 +738,12 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
             futuro.add_done_callback(lambda futuro, fila=fila: _al_terminar(fila, futuro))
             futuros.append(futuro)
 
+        # Las filas ya en vuelo terminan (escritura atómica) y se marcan solas
+        # en `_al_terminar`; las no enviadas quedan 'pendiente'.
         _esperar_futuros(futuros)
 
+    if cancelado:
+        raise cancelacion.RunCancelado()
     _emitir_resumen_fase(progress_callback, "Imágenes RGB", "proceso(s)", total,
                          aforo.resumen(controlador.maximo))
     _emitir_resumen_perfil_rgb(progress_callback)
@@ -722,8 +786,7 @@ def _copiar_jpg_destino(origen: str, destino: str, angulo: int = 0) -> None:
     carpeta = os.path.dirname(destino)
     if carpeta:
         os.makedirs(carpeta, exist_ok=True)
-    raiz, extension = os.path.splitext(destino)
-    parcial = f"{raiz}.parcial{extension}"
+    parcial = ruta_parcial(destino)
     transpose = _transpose_para_angulo(angulo, pipeline)
     try:
         if transpose is None:
@@ -787,8 +850,7 @@ def _publicar_tiff_girado(ruta_staging: str, destino: str, angulo: int) -> None:
     carpeta = os.path.dirname(destino)
     if carpeta:
         os.makedirs(carpeta, exist_ok=True)
-    raiz, extension = os.path.splitext(destino)
-    parcial = f"{raiz}.parcial{extension}"
+    parcial = ruta_parcial(destino)
     transpose = _transpose_para_angulo(angulo, pipeline)
     try:
         if transpose is None:
@@ -810,8 +872,193 @@ def _publicar_tiff_girado(ruta_staging: str, destino: str, angulo: int) -> None:
     os.replace(parcial, destino)
 
 
+class ExiftoolNoDisponible(RuntimeError):
+    """exiftool no arranca o muere antes de contestar nada: fallo masivo, no de
+    una imagen. Aborta la fase con un error claro en vez de marcar cada fila."""
+
+
+def _timeout_exif_s() -> float:
+    return float(os.environ.get("ATOM_EXIF_TIMEOUT_S", "120") or 120)
+
+
+class _PoolExiftool:
+    """Pool de procesos `exiftool -stay_open` reutilizables desde los hilos de
+    conversión. Cada hilo reserva un hueco (semáforo de `procesos`), toma un
+    proceso libre o crea uno, le manda UN par (`-tagsfromfile src dst
+    -overwrite_original_in_place`) y espera `{ready}`. El resultado es POR
+    IMAGEN. Un watchdog mata el proceso si no contesta en `timeout` s (la fila
+    falla y el proceso se descarta). Rutas locales (staging) siempre.
+    `comando` (argv) permite sustituir el ejecutable en tests."""
+
+    def __init__(self, exiftool_exe: str, procesos: int, timeout: float | None = None,
+                 comando: "list[str] | None" = None) -> None:
+        self._exiftool_exe = exiftool_exe
+        self._comando = comando
+        self._libres: "queue.Queue" = queue.Queue()
+        self._todos: list = []
+        self._lock = threading.Lock()
+        self._max = max(1, procesos)
+        self._huecos = threading.Semaphore(self._max)
+        self._timeout = _timeout_exif_s() if timeout is None else timeout
+        self._cerrado = False
+        self._alguna_vez_ok = False
+        self.fatal: "str | None" = None
+
+    def _nuevo(self):
+        if self._comando is not None:
+            argv = list(self._comando)
+        else:
+            exe = (self._exiftool_exe if sys.platform == "win32"
+                   else external_tools.resolve_tool("exiftool"))
+            argv = [exe]
+        try:
+            proc = subprocess.Popen(
+                argv + ["-stay_open", "True", "-@", "-"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        except OSError as exc:
+            self.fatal = f"No se pudo arrancar exiftool ({exc})."
+            raise ExiftoolNoDisponible(self.fatal) from exc
+        with self._lock:
+            self._todos.append(proc)
+        return proc
+
+    def _tomar(self):
+        # Con el hueco reservado, si no hay libre es que todos los procesos
+        # existentes están en manos de OTROS titulares (< max): crear no supera max.
+        try:
+            return self._libres.get_nowait()
+        except queue.Empty:
+            return self._nuevo()
+
+    def copiar(self, src: str, dst: str) -> None:
+        if self.fatal:
+            raise ExiftoolNoDisponible(self.fatal)
+        if self._cerrado:
+            raise RuntimeError("el pool de exiftool está cerrado")
+        self._huecos.acquire()
+        try:
+            self._copiar_con_hueco(src, dst)
+        finally:
+            self._huecos.release()
+
+    def _copiar_con_hueco(self, src: str, dst: str) -> None:
+        proc = self._tomar()
+        bueno = False
+        salida: list = []
+        matado_por_timeout = threading.Event()
+
+        def _vencio() -> None:
+            matado_por_timeout.set()
+            self._matar(proc)
+
+        watchdog = threading.Timer(self._timeout, _vencio)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            orden = "-charset\nfilename=utf8\n-tagsfromfile\n{0}\n-overwrite_original_in_place\n{1}\n-execute\n".format(src, dst)
+            try:
+                proc.stdin.write(orden.encode("utf-8"))
+                proc.stdin.flush()
+            except (OSError, ValueError):
+                pass  # el readline de abajo ve el EOF y lo reporta
+            while True:
+                linea = proc.stdout.readline()
+                if not linea:
+                    if not self._alguna_vez_ok and not salida and not matado_por_timeout.is_set():
+                        self.fatal = "exiftool terminó nada más arrancar sin contestar."
+                        raise ExiftoolNoDisponible(self.fatal)
+                    raise RuntimeError(
+                        "exiftool terminó inesperadamente o no contestó en {0:g} s copiando "
+                        "metadatos a {1}".format(self._timeout, dst))
+                texto = linea.decode("utf-8", "replace").strip()
+                pos = texto.find("{ready")
+                if pos >= 0:
+                    if texto[:pos].strip():
+                        salida.append(texto[:pos].strip())
+                    break
+                salida.append(texto)
+            bueno = True
+        finally:
+            watchdog.cancel()
+            # Carrera Timer/reutilización: si el watchdog llegó a disparar o el
+            # proceso ya murió, no se devuelve al pool.
+            if bueno and not matado_por_timeout.is_set() and proc.poll() is None:
+                self._libres.put(proc)
+            else:
+                self._descartar(proc)
+        malo = any(("Error" in t) or ("weren't updated" in t) or t.startswith("0 image files")
+                   for t in salida)
+        bien = any(t.startswith("1 image files updated") or t.startswith("1 image files unchanged")
+                   for t in salida)
+        if malo or not bien:
+            raise RuntimeError("exiftool no copió los metadatos a {0}: {1}".format(
+                dst, " | ".join(t for t in salida if t) or "sin salida"))
+        self._alguna_vez_ok = True
+
+    @staticmethod
+    def _matar(proc) -> None:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    def _descartar(self, proc) -> None:
+        with self._lock:
+            if proc in self._todos:
+                self._todos.remove(proc)
+        self._matar(proc)
+        try:
+            proc.wait(timeout=2)
+        except Exception:
+            pass
+        for pipe in (proc.stdin, proc.stdout):
+            try:
+                pipe.close()
+            except Exception:
+                pass
+
+    def cerrar(self, espera_total: float = 5.0) -> None:
+        self._cerrado = True
+        with self._lock:
+            procesos, self._todos = list(self._todos), []
+        for proc in procesos:
+            try:
+                proc.stdin.write(b"-stay_open\nFalse\n-execute\n")
+                proc.stdin.flush()
+                proc.stdin.close()
+            except Exception:
+                self._matar(proc)
+        limite = time.monotonic() + espera_total
+        for proc in procesos:
+            try:
+                proc.wait(timeout=max(0.05, limite - time.monotonic()))
+            except Exception:
+                self._matar(proc)
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+
+
+def _mover_atomico_a_destino(origen_local: str, destino: str) -> None:
+    """Publica un fichero ya terminado (staging local) en `destino` con
+    `<raíz>.parcial<ext>` + `os.replace`: en el destino solo se escribe una vez."""
+    carpeta = os.path.dirname(destino)
+    if carpeta:
+        os.makedirs(carpeta, exist_ok=True)
+    parcial = ruta_parcial(destino)
+    try:
+        shutil.copyfile(origen_local, parcial)
+    except Exception:
+        if os.path.exists(parcial):
+            os.remove(parcial)
+        raise
+    os.replace(parcial, destino)
+
+
 def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji_utility: str,
-                           progress_callback, progress_bar, carpeta_staging: str) -> None:
+                           progress_callback, progress_bar, carpeta_staging: str,
+                           copiar_exif=None) -> None:
     """Convierte la térmica de `fila` a TIFF vía
     `pipeline_obj.convert_dji_image_to_tif` (una instancia de
     `pipeline.SplitImages`), la publica ya girada en su ruta final y publica
@@ -828,12 +1075,20 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
 
     No toca el manifiesto: solo escribe en disco o lanza si algo falla, para
     que la llamadora decida cómo marcar la fila."""
-    input_folder = os.path.dirname(fila["ruta_origen"])
     nombre_imagen = os.path.basename(fila["ruta_origen"])
     staging_salida = tempfile.mkdtemp(dir=carpeta_staging, prefix="t_")
     try:
+        # Staging local: el R-JPEG de origen (a menudo un montaje de Drive, lento)
+        # se lee UNA sola vez; conversión, EXIF y copia del `*_T.JPG` salen de
+        # esta copia. El `finally` borra todo el directorio, también en error.
+        carpeta_in = os.path.join(staging_salida, "in")
+        carpeta_out = os.path.join(staging_salida, "out")
+        os.makedirs(carpeta_in)
+        os.makedirs(carpeta_out)
+        rjpeg_local = os.path.join(carpeta_in, nombre_imagen)
+        shutil.copy2(fila["ruta_origen"], rjpeg_local)
         resultado = pipeline_obj.convert_dji_image_to_tif(
-            input_folder, staging_salida, nombre_imagen, exiftool_exe, dji_utility,
+            carpeta_in, carpeta_out, nombre_imagen, exiftool_exe, dji_utility,
             progress_callback, progress_bar,
             emissivity=cfg.convert_to_tif_emissivity,
             humidity=cfg.convert_to_tif_humidity,
@@ -854,7 +1109,15 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
 
         ruta_tiff_destino = fila["ruta_salida_tiff"]
         if ruta_tiff_destino:
-            _publicar_tiff_girado(tiff_staging, ruta_tiff_destino, fila["angulo_giro"] or 0)
+            # El giro y el EXIF se resuelven EN STAGING y el destino se escribe una
+            # sola vez. Orden: giro (re-guardar con PIL descarta los tags) -> EXIF
+            # desde el R-JPEG local -> publicación atómica. Mismo resultado que
+            # antes (EXIF sobre el TIFF ya girado), sin reescribir el destino.
+            tiff_listo = os.path.join(staging_salida, "listo_" + os.path.basename(ruta_tiff_destino))
+            _publicar_tiff_girado(tiff_staging, tiff_listo, fila["angulo_giro"] or 0)
+            if copiar_exif is not None:
+                copiar_exif(rjpeg_local, tiff_listo)
+            _mover_atomico_a_destino(tiff_listo, ruta_tiff_destino)
 
         # El giro del `*_T.JPG` cuelga del switch maestro de ROTACION
         # (`gen_thumbnails`, el que apaga `--sin-rotacion`), igual que en el motor
@@ -863,7 +1126,7 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
         # R-JPEG destruidos (incidente CLARE, execution `wpv52`, 2026-08-21). El TIFF
         # sí se gira: lo único que se pierde es que el JPG case visualmente con él.
         angulo_jpg = (fila["angulo_giro"] or 0) if getattr(cfg, "gen_thumbnails", True) else 0
-        _copiar_jpg_destino(fila["ruta_origen"], fila["ruta_salida_original"], angulo_jpg)
+        _copiar_jpg_destino(rjpeg_local, fila["ruta_salida_original"], angulo_jpg)
     finally:
         shutil.rmtree(staging_salida, ignore_errors=True)
 
@@ -879,18 +1142,44 @@ def _procesos_exif() -> int:
     return max(1, min(4, os.cpu_count() or 1))
 
 
-def _repartir(items: list, grupos: int) -> list[list]:
-    """Parte `items` en `grupos` trozos contiguos cuyo tamaño difiere como mucho
-    en 1 (los más grandes primero). Sin items, ningún trozo."""
-    if not items or grupos <= 0:
-        return []
-    base, resto = divmod(len(items), grupos)
-    trozos, inicio = [], 0
-    for indice in range(grupos):
-        fin = inicio + base + (1 if indice < resto else 0)
-        trozos.append(items[inicio:fin])
-        inicio = fin
-    return [trozo for trozo in trozos if trozo]
+def _vetar_sobrescrituras(manifiesto, filas: list[dict], progress_callback) -> list[dict]:
+    """Red final: NUNCA pisar un fichero ya organizado que el manifiesto
+    atribuye a OTRA imagen (otra clave). Para cada fila pendiente, si alguna
+    de sus rutas de salida existe en disco y pertenece a otra clave, la fila
+    se marca fallida con un mensaje claro y no se escribe. La reescritura de
+    la MISMA clave (fila reabierta) sí puede sobrescribir.
+
+    Se comprueba en el proceso padre justo antes de despachar el trabajo (los
+    workers no tienen el manifiesto). Devuelve las filas que sí se pueden
+    escribir."""
+    if not filas:
+        return filas
+    propietarios = manifiesto.rutas_salida_por_clave()
+    libres: list[dict] = []
+    vetadas = 0
+    for fila in filas:
+        conflicto = None
+        for ruta in (fila["ruta_salida_original"], fila.get("ruta_salida_crop"),
+                     fila.get("ruta_salida_tiff")):
+            if not ruta:
+                continue
+            otros = propietarios.get(ruta.casefold(), set()) - {fila.get("clave")}
+            if otros and almacen_mod.existe_ruta(ruta):
+                conflicto = ruta
+                break
+        if conflicto is None:
+            libres.append(fila)
+            continue
+        manifiesto.marcar_fallida(
+            fila["id"],
+            f"No se sobrescribe {conflicto}: ya existe y pertenece a otra imagen "
+            f"del manifiesto (clave distinta de {fila.get('clave')}).")
+        vetadas += 1
+    if vetadas:
+        progress_callback.emit(
+            f"\n[colisión] {vetadas} imagen(es) NO se escribieron para no "
+            "sobrescribir un fichero ya organizado de otra imagen.\n")
+    return libres
 
 
 def _reportar_colisiones_destino(manifiesto, progress_callback) -> None:
@@ -921,7 +1210,7 @@ def _reportar_colisiones_destino(manifiesto, progress_callback) -> None:
 
 
 def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
-                     progress_summarize, controlador=None, tamano_lote_exif: int = 200,
+                     progress_summarize, controlador=None,
                      contador_rotacion: "_ContadorRotacion | None" = None) -> dict:
     """Recorre el manifiesto y escribe las salidas de térmica pendientes.
 
@@ -929,14 +1218,11 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
     una instancia de `pipeline.SplitImages`), lo gira con el MISMO ángulo que
     su RGB hermana del mismo vuelo (`fila["angulo_giro"]` — invariante nº1:
     un TIFF y su JPG nunca pueden divergir de orientación) y copia el JPG de
-    origen a su carpeta final. Los metadatos EXIF se copian DESPUÉS, con
-    exiftool EN LOTES (`pipeline._run_exif_batch_local`, como mucho
-    `tamano_lote_exif` pares por invocación) — nunca un exiftool por imagen.
-
-    `exiftool -stay_open` no da granularidad por imagen dentro de un lote:
-    si un lote falla, TODAS sus filas quedan fallidas. Es la única forma
-    honesta de cumplir "un TIFF sin sus metadatos no puede quedar hecho" sin
-    inventarse una señal que la herramienta no da.
+    origen a su carpeta final. Todo parte de UNA copia local del R-JPEG y los
+    metadatos EXIF se copian en el staging local (pool `_PoolExiftool`,
+    exiftool -stay_open) ANTES de publicar: el destino se escribe una vez y no
+    hay segunda pasada. Un fallo de EXIF deja la fila fallida (por imagen) y
+    el TIFF sin publicar.
 
     Reanudable igual que `aplicar_rgb`: solo toca filas 'pendiente' de tipo
     'TERMICA'. Sin `controlador` la conversión corre secuencial en el
@@ -960,7 +1246,10 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
     _reportar_colisiones_destino(manifiesto, progress_callback)
 
     filas = [dict(fila) for fila in manifiesto.pendientes() if fila["tipo"] == "TERMICA"]
-    resultado = {"hecho": 0, "fallido": 0}
+    antes_del_veto = len(filas)
+    filas = _vetar_sobrescrituras(manifiesto, filas, progress_callback)
+    # Las vetadas ya quedaron 'fallido' en el manifiesto: cuentan como fallidas.
+    resultado = {"hecho": 0, "fallido": antes_del_veto - len(filas)}
     total = len(filas)
     if total == 0:
         return resultado
@@ -972,12 +1261,17 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
     dji_utility = external_tools.dji_utility_path()
 
     staging_raiz = tempfile.mkdtemp(prefix="apply_termicas_")
+    pool_exif = None
     try:
-        convertidas: dict[int, dict] = {}
+        # EXIF: pool de exiftool -stay_open compartido por los hilos; se aplica en
+        # el staging local ANTES de publicar (ver `_convertir_una_termica`), así
+        # que no hay segunda pasada sobre el destino.
+        pool_exif = _PoolExiftool(exiftool_exe, _procesos_exif())
+        # Mitigación de huérfanos: si el proceso sale sin pasar por el finally.
+        atexit.register(pool_exif.cerrar)
         # Velocidad/ETA de la conversión (el paso caro: dji_irp + copia). El
-        # lote de exiftool que cierra la fase es aparte y no lleva medidor
-        # propio: es una operación en bloque, no por-imagen, y su coste no
-        # se refleja bien como "img/s".
+        # EXIF del pool `_PoolExiftool` va aparte y no lleva medidor propio:
+        # su coste no se refleja bien como "img/s".
         medidor_velocidad = _MedidorVelocidad()
         completadas = {"n": 0}
         # `_procesar_una` corre desde varios hilos a la vez (camino paralelo):
@@ -988,17 +1282,32 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
         lock_contadores = threading.Lock()
 
         def _procesar_una(fila: dict) -> None:
+            if pool_exif.fatal:
+                return  # fase abortada: la fila queda sin tocar (se reintenta en otro run)
+            if cancelacion.cancelado():
+                return  # cancelada antes de empezar: queda 'pendiente'
             contador_rotacion.registrar(fila["angulo_giro"] or 0)
             try:
                 _convertir_una_termica(fila, cfg, pipeline, exiftool_exe, dji_utility,
-                                       progress_callback, progress_bar, staging_raiz)
+                                       progress_callback, progress_bar, staging_raiz,
+                                       copiar_exif=pool_exif.copiar)
+                piezas = [
+                    f"{fila['ruta_salida_original']}:{os.path.getsize(fila['ruta_salida_original'])}",
+                ]
+                if fila["ruta_salida_tiff"]:
+                    piezas.append(
+                        f"{fila['ruta_salida_tiff']}:{os.path.getsize(fila['ruta_salida_tiff'])}"
+                    )
+                manifiesto.marcar_hecha(fila["id"], "; ".join(piezas))
+            except ExiftoolNoDisponible:
+                return  # fallo masivo: no marcar fallida cada fila; se aborta al final
             except Exception as exc:
                 manifiesto.marcar_fallida(fila["id"], str(exc))
                 with lock_contadores:
                     resultado["fallido"] += 1
             else:
                 with lock_contadores:
-                    convertidas[fila["id"]] = fila
+                    resultado["hecho"] += 1
             medidor_velocidad.registrar()
             with lock_contadores:
                 completadas["n"] += 1
@@ -1014,8 +1323,9 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
 
         if controlador is None:
             for indice, fila in enumerate(filas, start=1):
+                cancelacion.comprobar()
                 _procesar_una(fila)
-                progress_bar.emit(int(indice / total * 50))
+                progress_bar.emit(int(indice / total * 100))
         else:
             # --- Camino paralelo: threads, no procesos (ver docstring) -----
             aforo = _AforoDinamico(controlador.trabajadores)
@@ -1037,12 +1347,17 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
                         aforo.liberar()
                     with lock_progreso:
                         estado_progreso["completadas"] += 1
-                        emisor.emit(int(estado_progreso["completadas"] / total * 50))
+                        emisor.emit(int(estado_progreso["completadas"] / total * 100))
 
             with ThreadPoolExecutor(max_workers=controlador.maximo) as executor:
                 futuros = []
                 for fila in filas:
+                    if cancelacion.cancelado():
+                        break
                     aforo.adquirir()
+                    if cancelacion.cancelado():
+                        aforo.liberar()
+                        break
                     try:
                         futuros.append(executor.submit(_con_aforo, fila))
                     except Exception as exc:
@@ -1055,58 +1370,23 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
                         continue
                 _esperar_futuros(futuros)
 
-            # La conversión es el grueso de la fase; el lote de exiftool que
-            # viene después es en bloque y no pasa por el aforo, así que este
-            # resumen mide justo la parte paralelizada.
+            # La conversión es el grueso de la fase; el EXIF (pool exiftool) no
+            # pasa por el aforo, así que este resumen mide la parte paralelizada.
             _emitir_resumen_fase(progress_callback, "Conversión térmica", "hilo(s)",
                                  total, aforo.resumen(controlador.maximo))
 
-        # --- Metadatos: exiftool en lotes, sobre lo que sí se convirtió ----
-        # Los lotes van en PARALELO, cada uno en su propio exiftool: cada par
-        # escribe un TIFF distinto, así que no se pisan, y el Perl de exiftool es
-        # CPU de un solo hilo. Medido en la Pi con 400 TIFFs de PLANTA_C: 32,6 s en
-        # serie frente a 13,2 s con 4 procesos, salida byte a byte idéntica. Si hay
-        # más lotes que procesos, se redondea a un múltiplo del nº de procesos con
-        # lotes equilibrados, para que la última ronda no deje procesos ociosos
-        # con un lote residual (1012 pares / 200 daba 5 lotes llenos y uno de 12).
-        pendientes_exif = list(convertidas.values())
-        procesos_exif = _procesos_exif()
-        grupos = -(-len(pendientes_exif) // max(1, tamano_lote_exif))
-        if grupos > procesos_exif:
-            grupos = procesos_exif * -(-grupos // procesos_exif)
-        lotes = _repartir(pendientes_exif, grupos)
-
-        def _lote_exif(lote: list) -> None:
-            pares = [(fila["ruta_origen"], fila["ruta_salida_tiff"]) for fila in lote]
-            pipeline._run_exif_batch_local(pares, exiftool_exe, progress_callback)
-
-        with ThreadPoolExecutor(max_workers=max(1, min(procesos_exif, len(lotes)))) as executor_exif:
-            futuros_exif = [executor_exif.submit(_lote_exif, lote) for lote in lotes]
-            # El manifiesto se escribe desde ESTE hilo y en el orden de los lotes,
-            # igual que cuando iban en serie.
-            for numero_lote, (lote, futuro_exif) in enumerate(zip(lotes, futuros_exif), start=1):
-                exc = futuro_exif.exception()
-                if exc is not None:
-                    for fila in lote:
-                        manifiesto.marcar_fallida(fila["id"], str(exc))
-                        resultado["fallido"] += 1
-                    progress_bar.emit(int(50 + numero_lote / len(lotes) * 50))
-                    continue
-                for fila in lote:
-                    piezas = [
-                        f"{fila['ruta_salida_original']}:{os.path.getsize(fila['ruta_salida_original'])}",
-                    ]
-                    if fila["ruta_salida_tiff"]:
-                        piezas.append(
-                            f"{fila['ruta_salida_tiff']}:{os.path.getsize(fila['ruta_salida_tiff'])}"
-                        )
-                    manifiesto.marcar_hecha(fila["id"], "; ".join(piezas))
-                    resultado["hecho"] += 1
-                progress_bar.emit(int(50 + numero_lote / len(lotes) * 50))
+        cancelacion.comprobar()  # tras terminar las filas en vuelo
+        if pool_exif.fatal:
+            raise ExiftoolNoDisponible(
+                "Fase térmica abortada: {0} Las filas no procesadas siguen pendientes; "
+                "revisa la instalación de exiftool y reintenta.".format(pool_exif.fatal))
     finally:
         # Fin de la fase térmica: cierra los workers persistentes del SDK DJI si se
         # usaron (no-op en Windows/x86 o con ATOM_DJI_PERSISTENT=0).
         dji_worker_pool.shutdown()
+        if pool_exif is not None:
+            pool_exif.cerrar()
+            atexit.unregister(pool_exif.cerrar)
         shutil.rmtree(staging_raiz, ignore_errors=True)
 
     return resultado

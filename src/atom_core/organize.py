@@ -58,7 +58,8 @@ import external_tools as config
 import exif as meta_location
 import pipeline
 import utils
-from atom_core.apply import STATS_APPLY_PREFIX
+from atom_core import cancelacion
+from atom_core.apply import STATS_APPLY_PREFIX, limpiar_parciales_huerfanos
 from atom_core.indice import STATS_INDICE_PREFIX
 from atom_core.progress_stats import StatsTracker
 from atom_core.medicion_recursos import MedidorRecursos
@@ -797,6 +798,10 @@ def run_task(
             if _guard_activo and _restos and _hay_manifiesto:
                 emit("log", f"El destino ya tiene un organizado previo (\"{_out}\"): "
                             "se acumula sobre él y se saltan las imágenes ya hechas.")
+                _n_parc = limpiar_parciales_huerfanos(
+                    _out, excluir=(NOMBRE_CARPETA_MANIFIESTO,))
+                if _n_parc:
+                    emit("log", f"Limpiados {_n_parc} ficheros a medias de un run anterior")
             if _guard_activo and _restos and not _hay_manifiesto:
                 emit("error", "La carpeta de salida no está vacía: "
                               f"\"{_out}\". Vacíala o elige una carpeta vacía "
@@ -1185,6 +1190,41 @@ def run_task(
         if balance is not None:
             payload_done["balance_bytes"] = balance
         emit("done", payload_done)
+    except cancelacion.RunCancelado as cancelada:
+        # Cancelado por el usuario: ni error ni éxito. Estado propio
+        # `cancelled` con lo que se llegó a hacer (n/total).
+        try:
+            _emit_giros()
+        except Exception:
+            pass
+        hechas, total_filas = cancelada.hechas, cancelada.total
+        if hechas is not None and total_filas:
+            _resumen = f"Cancelado por el usuario: {hechas}/{total_filas} imágenes organizadas"
+        else:
+            _resumen = "Cancelado por el usuario: no había imágenes organizadas todavía"
+        _resumen += ". Lo ya organizado se conserva y se puede relanzar."
+        try:
+            _emit_stats(final=True)
+            last = _close_phase(phase_counter["i"]) if _t["phase_start"] else None
+            elapsed = round((datetime.now() - _t["start"]).total_seconds(), 1)
+            fases = _t["fases"]
+            errores, avisos = _t["total_errors"], _t["total_warnings"]
+        except Exception:  # noqa: BLE001 — el cierre del run nunca debe fallar por esto
+            last, elapsed, fases, errores, avisos = None, None, [], 0, 0
+        emit("log", f"\n{_resumen}\n")
+        emit("summary", _resumen)
+        emit("done", {
+            "status": "cancelled",
+            "cancelled": True,
+            "hechas": hechas,
+            "total_filas": total_filas,
+            "errors": errores,
+            "warnings": avisos,
+            "elapsed": elapsed,
+            "last": last,
+            "fases": fases,
+            "mensaje": _resumen,
+        })
     except Exception as exc:  # noqa: BLE001 — se reenvía al front
         # Best-effort: los vuelos ya girados antes del fallo siguen siendo dato
         # útil. `_emit_giros` puede no estar definida aún si petó muy arriba, de

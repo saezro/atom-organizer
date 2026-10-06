@@ -60,7 +60,11 @@ def detect_suffixes(origen: str, max_scan: int = 4000, *,
     total = 0
     no_suffix = 0
     parado = False
-    for root, _dirs, files in os.walk(origen):
+    for root, dirs, files in os.walk(origen):
+        # Con una raíz de varios días, las carpetas de vuelo `DJI_*` son las
+        # que traen los nombres con sufijo: se visitan antes que PNG sueltos
+        # (conteos, revisiones) para que el tope `max_scan` no se agote en ellos.
+        dirs.sort(key=lambda d: (not d.lower().startswith("dji_"), d))
         for f in files:
             if should_stop is not None and should_stop():
                 parado = True

@@ -242,3 +242,23 @@ def synthetic_jpeg(make_dji_jpeg):
 def organizer_logger_stub(logger):
     """Alias canónico de `logger`, consumido por Tasks 6,7,8,10,11,13,21,24."""
     return logger
+
+
+@pytest.fixture(autouse=True)
+def _sin_filtro_archivos_a_medias(monkeypatch):
+    """Los tests crean imágenes vacías: sin esto el índice las omitiría como
+    "aún copiándose" (`indice._FILTRO_ARCHIVO_A_MEDIAS`). Los tests de ese
+    filtro lo reactivan explícitamente."""
+    from atom_core import indice
+    monkeypatch.setattr(indice, "_FILTRO_ARCHIVO_A_MEDIAS", False)
+
+
+@pytest.fixture(autouse=True)
+def _user_data_dir_aislado(request, monkeypatch, tmp_path_factory):
+    """Ningún test escribe en `~/.config/atom-organizer` (lotes_carpetas.json,
+    session.db...): `user_data_dir` apunta a un tmp por test."""
+    from atom_core import google_auth
+    if request.module.__name__.endswith("test_google_auth"):
+        return  # prueba el `user_data_dir` real (ya redirige HOME a tmp por su cuenta)
+    destino = tmp_path_factory.mktemp("user_data")
+    monkeypatch.setattr(google_auth, "user_data_dir", lambda: destino)

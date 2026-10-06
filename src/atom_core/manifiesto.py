@@ -13,6 +13,7 @@ completa, que es lo que hace un journal clásico.
 from __future__ import annotations
 
 import datetime
+import logging
 import os
 import re
 import sqlite3
@@ -125,7 +126,11 @@ _SENTENCIAS_ESQUEMA = (
         flight_yaw TEXT,
         ancho_px INTEGER,
         alto_px INTEGER,
-        ejecucion_id INTEGER
+        ejecucion_id INTEGER,
+        -- Rutas (original/crop/tiff, separadas por salto de línea) que esta imagen tenía en
+        -- SIN_ORDENAR cuando se reabrió porque ahora sí tiene vuelo. Se borran
+        -- SOLO cuando la escritura nueva acaba bien (`marcar_hecha`).
+        previas_sin_ordenar TEXT
     )
     """,
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_clave ON imagenes(clave)",
@@ -230,6 +235,11 @@ class ResultadoInsercion:
     reintentadas: int
     # (pb, vuelo) de las imágenes saltadas, sin repetir y en orden de aparición.
     vuelos_saltados: list[tuple[str, str]]
+    # Fotos `hecho` que estaban sin asignar (SIN_ORDENAR) y que esta tanda sí
+    # asigna: se reabren con su nueva ruta. `siguen_sin_asignar`: hechas sin
+    # asignar que siguen sin ventana en esta tanda.
+    reasignadas: int = 0
+    siguen_sin_asignar: int = 0
 
 
 class Manifiesto:
@@ -307,7 +317,8 @@ class Manifiesto:
         así que reanudar un run empezado con una versión vieja del Organizer
         se quedaría sin las columnas nuevas y reventaría al insertar."""
         existentes = set(self._columnas(conexion))
-        for nombre, definicion in (("bytes_origen", "INTEGER NOT NULL DEFAULT 0"),):
+        for nombre, definicion in (("bytes_origen", "INTEGER NOT NULL DEFAULT 0"),
+                                  ("previas_sin_ordenar", "TEXT")):
             if nombre not in existentes:
                 conexion.execute(f"ALTER TABLE imagenes ADD COLUMN {nombre} {definicion}")
 
@@ -343,6 +354,9 @@ class Manifiesto:
 
         - clave nueva -> fila nueva.
         - clave `hecho` -> no se toca: ya está organizada en este destino.
+          Excepción: estaba `unassigned` (SIN_ORDENAR) y ahora sí tiene
+          pb/vuelo -> se reabre con su ruta nueva y se apuntan las rutas
+          viejas para borrarlas cuando la escritura nueva vaya bien.
         - clave `fallido`/`pendiente`/`en_curso` -> se reescribe con la decisión
           y la ruta de ESTE run y vuelve a `pendiente`.
         """
@@ -352,7 +366,7 @@ class Manifiesto:
         marcadores = ", ".join(f":{c}" for c in columnas)
         asignaciones = ", ".join(f"{c} = :{c}" for c in columnas if c != "clave")
         conexion = self._conexion()
-        nuevas = saltadas = reintentadas = 0
+        nuevas = saltadas = reintentadas = reasignadas = siguen_sin_asignar = 0
         vuelos_saltados: list[tuple[str, str]] = []
         with conexion:
             for fila in filas:
@@ -363,13 +377,27 @@ class Manifiesto:
                 datos["clave"] = clave_imagen(fila.ruta_origen, fila.timestamp_exif, fila.bytes_origen)
                 datos["ejecucion_id"] = ejecucion_id
                 previa = conexion.execute(
-                    "SELECT id, estado, pb, vuelo FROM imagenes WHERE clave = ?",
+                    "SELECT id, estado, pb, vuelo, unassigned, ruta_salida_original, "
+                    "ruta_salida_crop, ruta_salida_tiff FROM imagenes WHERE clave = ?",
                     (datos["clave"],)).fetchone()
                 if previa is None:
                     conexion.execute(f"INSERT INTO imagenes ({lista}) VALUES ({marcadores})", datos)
                     nuevas += 1
+                elif (previa["estado"] == "hecho" and previa["unassigned"]
+                      and not datos["unassigned"]):
+                    previas = "\n".join(
+                        r for r in (previa["ruta_salida_original"], previa["ruta_salida_crop"],
+                                    previa["ruta_salida_tiff"]) if r)
+                    conexion.execute(
+                        f"UPDATE imagenes SET {asignaciones}, estado = 'pendiente', "
+                        f"motivo_fallo = NULL, verificacion = NULL, "
+                        f"previas_sin_ordenar = :previas WHERE id = :id_previa",
+                        dict(datos, id_previa=previa["id"], previas=previas))
+                    reasignadas += 1
                 elif previa["estado"] == "hecho":
                     saltadas += 1
+                    if previa["unassigned"]:
+                        siguen_sin_asignar += 1
                     vuelo = (previa["pb"], previa["vuelo"])
                     if previa["pb"] and previa["vuelo"] and vuelo not in vuelos_saltados:
                         vuelos_saltados.append(vuelo)
@@ -379,7 +407,8 @@ class Manifiesto:
                         f"motivo_fallo = NULL WHERE id = :id_previa",
                         dict(datos, id_previa=previa["id"]))
                     reintentadas += 1
-        return ResultadoInsercion(nuevas, saltadas, reintentadas, vuelos_saltados)
+        return ResultadoInsercion(nuevas, saltadas, reintentadas, vuelos_saltados,
+                                  reasignadas, siguen_sin_asignar)
 
     def insertar_muchas(self, filas: Iterable[FilaManifiesto]) -> int:
         """Compatibilidad: cuántas filas NUEVAS entraron."""
@@ -420,8 +449,60 @@ class Manifiesto:
         self._actualizar(id_fila, estado="en_curso")
 
     def marcar_hecha(self, id_fila: int, verificacion: str) -> None:
+        # Las rutas viejas de SIN_ORDENAR se leen ANTES de marcar y se borran
+        # DESPUÉS: si la escritura nueva falló, nunca se llega aquí y el
+        # fichero viejo se queda donde estaba.
+        previas = self._conexion().execute(
+            "SELECT previas_sin_ordenar, ruta_salida_original, ruta_salida_crop, "
+            "ruta_salida_tiff FROM imagenes WHERE id = ?", (id_fila,)).fetchone()
         self._actualizar(id_fila, estado="hecho", verificacion=verificacion,
-                         motivo_fallo=None)
+                         motivo_fallo=None, previas_sin_ordenar=None)
+        if previas is not None and previas["previas_sin_ordenar"]:
+            nuevas = {r.casefold() for r in (previas["ruta_salida_original"],
+                                             previas["ruta_salida_crop"],
+                                             previas["ruta_salida_tiff"]) if r}
+            for ruta in previas["previas_sin_ordenar"].split("\n"):
+                if ruta and ruta.casefold() not in nuevas:
+                    self._borrar_ruta_previa(ruta, id_fila)
+
+    def _borrar_ruta_previa(self, ruta: str, id_fila: int) -> None:
+        """Borra un fichero viejo de SIN_ORDENAR. Best-effort: un fallo al
+        borrar no debe tumbar la fila ya escrita. No borra si otra fila lo
+        tiene como salida (nunca se quita un fichero ajeno)."""
+        ajena = self._conexion().execute(
+            "SELECT 1 FROM imagenes WHERE id != ? AND (ruta_salida_original = ? "
+            "OR ruta_salida_crop = ? OR ruta_salida_tiff = ?) LIMIT 1",
+            (id_fila, ruta, ruta, ruta)).fetchone()
+        if ajena is not None:
+            return
+        try:
+            from . import almacen
+            if almacen.es_uri_gcs(ruta):
+                almacen_obj, prefijo = almacen.abrir_almacen(ruta)
+                almacen_obj.borrar(prefijo)
+            elif os.path.exists(ruta):
+                os.remove(ruta)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "No se pudo borrar la ruta previa de SIN_ORDENAR %s: %s", ruta, exc)
+
+    def rutas_salida_por_clave(self) -> dict[str, set[str]]:
+        """`ruta de salida (original, crop o tiff)` -> claves de las imágenes
+        del manifiesto que la usan. Comparación sin distinguir mayúsculas
+        (destinos Windows). Base de la desambiguación entre tandas y de la
+        red final del apply."""
+        mapa: dict[str, set[str]] = {}
+        for fila in self._conexion().execute(
+                "SELECT clave, ruta_salida_original, ruta_salida_crop, ruta_salida_tiff, "
+                "previas_sin_ordenar FROM imagenes"):
+            # Las previas SIN_ORDENAR de una fila reabierta siguen en disco
+            # hasta que la escritura nueva acabe: están ocupadas por su clave.
+            previas = (fila["previas_sin_ordenar"] or "").split("\n")
+            for ruta in (fila["ruta_salida_original"], fila["ruta_salida_crop"],
+                         fila["ruta_salida_tiff"], *previas):
+                if ruta:
+                    mapa.setdefault(ruta.casefold(), set()).add(fila["clave"])
+        return mapa
 
     def marcar_fallida(self, id_fila: int, motivo: str) -> None:
         self._actualizar(id_fila, estado="fallido", motivo_fallo=motivo)
