@@ -71,7 +71,8 @@ from atom_core.diagnostico_maquina import (
 )
 from atom_core.phases import PipelinePhasesMixin
 from atom_core.sharding import ETAPAS, normalizar_shard
-from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO
+from atom_core import lock_destino
+from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO, destino_organizado
 from utils import (
     ROTATION_MIN_AGREEMENT_PCT,
     ROTATION_YAW_MARGIN,
@@ -597,6 +598,7 @@ def run_task(
                 pass
         _emit(kind, payload)
 
+    _lock_ruta = None  # LockDestino del run
     try:
         if task not in _TASKS:
             emit("error", f"Task desconocido: {task}")
@@ -793,15 +795,8 @@ def run_task(
                        if n not in (NOMBRE_CARPETA_MANIFIESTO, NOMBRE_CARPETA_LOGS)]
             # Destino ya organizado por un cachito anterior: su manifiesto sabe
             # qué hay dentro, así que se acumula en vez de abortar.
-            _hay_manifiesto = bool(_out) and os.path.isfile(
-                os.path.join(_out, NOMBRE_CARPETA_MANIFIESTO, "manifiesto.db"))
-            if _guard_activo and _restos and _hay_manifiesto:
-                emit("log", f"El destino ya tiene un organizado previo (\"{_out}\"): "
-                            "se acumula sobre él y se saltan las imágenes ya hechas.")
-                _n_parc = limpiar_parciales_huerfanos(
-                    _out, excluir=(NOMBRE_CARPETA_MANIFIESTO,))
-                if _n_parc:
-                    emit("log", f"Limpiados {_n_parc} ficheros a medias de un run anterior")
+            # (manifiesto legible: misma regla que `folder_is_empty` de la GUI)
+            _hay_manifiesto = bool(_out) and destino_organizado(_out)
             if _guard_activo and _restos and not _hay_manifiesto:
                 emit("error", "La carpeta de salida no está vacía: "
                               f"\"{_out}\". Vacíala o elige una carpeta vacía "
@@ -862,6 +857,23 @@ def run_task(
                                   "organizar. Indica la ruta del estadillo o colócalo "
                                   "junto a la carpeta de fotos.")
                 return
+
+        # Lock del destino (tras las validaciones baratas, para no crear
+        # `.organizado/` en un destino elegido por error). Va ANTES de limpiar
+        # parciales: otro run vivo podría tener ficheros a medias ahí.
+        if task == "split_images" and _guard_activo and _out:
+            try:
+                _lock_ruta = lock_destino.adquirir(_out)
+            except lock_destino.DestinoOcupado as _oc:
+                emit("error", str(_oc))
+                return
+        if _lock_ruta is not None and _restos and _hay_manifiesto:
+            emit("log", f"El destino ya tiene un organizado previo (\"{_out}\"): "
+                        "se acumula sobre él y se saltan las imágenes ya hechas.")
+            _n_parc = limpiar_parciales_huerfanos(
+                _out, excluir=(NOMBRE_CARPETA_MANIFIESTO,))
+            if _n_parc:
+                emit("log", f"Limpiados {_n_parc} ficheros a medias de un run anterior")
 
         # Interceptar el inicio de cada fase (prefijo en el canal summary) y
         # re-emitirlo como evento estructurado `phase` para el modal.
@@ -1236,6 +1248,7 @@ def run_task(
         emit("error", f"{type(exc).__name__}: {exc}")
         emit("log", traceback.format_exc())
     finally:
+        lock_destino.liberar(_lock_ruta)
         # Desinstalar el sink de `[paralelismo]` siempre, gane o pierda el run:
         # si no, la próxima llamada (u otro run concurrente) seguiría escribiendo
         # en el `_on_log` de ESTE run, que ya no es válido.

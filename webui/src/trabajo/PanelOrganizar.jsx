@@ -9,7 +9,8 @@ const ADV_FIELDS = SPLIT_ADVANCED.flatMap((s) => s.fields)
 
 export default function PanelOrganizar({ origen, estadillos, inspeccion, ready, running, onRun }) {
   const [destino, setDestino] = useState('')
-  const [destinoFull, setDestinoFull] = useState(null) // {count} si la salida no está vacía
+  const [destinoFull, setDestinoFull] = useState(null) // {count} si la salida no está vacía NI es un destino organizado
+  const [destinoOrganizado, setDestinoOrganizado] = useState(false) // destino con manifiesto válido: se añade otra tanda
   const [rename, setRename] = useState(true)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [adv, setAdv] = useState(() => initialState(ADV_FIELDS))
@@ -89,10 +90,15 @@ export default function PanelOrganizar({ origen, estadillos, inspeccion, ready, 
         onChange={(p) => {
           setDestino(p)
           api.folderIsEmpty(p)
-            .then((r) => setDestinoFull(r?.empty ? null : { count: r?.count ?? 0 }))
-            .catch(() => setDestinoFull(null))
+            .then((r) => {
+              const organizado = !!r?.organizado
+              setDestinoOrganizado(organizado)
+              setDestinoFull(r?.empty || organizado ? null : { count: r?.count ?? 0 })
+            })
+            .catch(() => { setDestinoFull(null); setDestinoOrganizado(false) })
         }}
         avisoNoVacia
+        destinoOrganizado={destinoOrganizado}
       />
       <div className="field">
         <span className="field-label">Sufijos de separación (según el dron)</span>
