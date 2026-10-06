@@ -131,6 +131,9 @@ class YaExiste(Exception):
         super().__init__(f"{remote} ya existe en el bucket")
         self.remote = remote
 
+    def __reduce__(self):  # picklable (pool de procesos)
+        return (type(self), (self.remote,))
+
 
 # --------------------------------------------------------------------------
 # Plan

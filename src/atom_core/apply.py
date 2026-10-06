@@ -407,6 +407,11 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
             # PIL decodifica desde bytes completos, nunca desde el fichero a medias.
             datos_origen = lectura_segura.leer_completo(
                 fila["ruta_origen"], bytes_origen=fila.get("bytes_origen") or bytes_origen)
+            if (os.path.splitext(fila["ruta_origen"])[1].lower() in (".jpg", ".jpeg")
+                    and not lectura_segura.jpeg_cola_valida(
+                        datos_origen[-lectura_segura.VENTANA_COLA_JPEG:])):
+                raise OSError("JPEG truncado en origen (cola a ceros/sin EOI): "
+                              + fila["ruta_origen"])
             img = pipeline_mod.Image.open(io.BytesIO(datos_origen))
             bloque_xmp = _bloque_xmp_de_bytes(datos_origen)
         with perfil_rgb.medir("decode"):
@@ -650,6 +655,7 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
             if fila["tipo"] in indice_mod.TIPOS_RGB]
     antes_del_veto = len(filas)
     filas = _vetar_sobrescrituras(manifiesto, filas, progress_callback)
+    filas = _validar_jpeg_origen(manifiesto, filas, progress_callback)
     # Las vetadas ya quedaron 'fallido' en el manifiesto: cuentan como fallidas.
     resultado = {"hecho": 0, "fallido": antes_del_veto - len(filas)}
     total = len(filas)
@@ -1310,6 +1316,50 @@ def _vetar_sobrescrituras(manifiesto, filas: list[dict], progress_callback) -> l
             f"\n[colisión] {vetadas} imagen(es) NO se escribieron para no "
             "sobrescribir un fichero ya organizado de otra imagen.\n")
     return libres
+
+
+def _motivo_jpeg_truncado(ruta: str) -> "str | None":
+    """None si la cola del JPG `ruta` (local) es plausible; si no, el motivo.
+    Lee los últimos 4096 B con seek: menos de los esperados = origen
+    incompleto (DriveFS); si no, `lectura_segura.jpeg_cola_valida`. Un error
+    de E/S también es motivo."""
+    try:
+        with open(ruta, "rb") as f:
+            tamano = os.fstat(f.fileno()).st_size
+            ini = max(0, tamano - lectura_segura.VENTANA_COLA_JPEG)
+            f.seek(ini)
+            ventana = f.read(lectura_segura.VENTANA_COLA_JPEG)
+    except Exception as exc:  # noqa: BLE001 — E/S: va a fallida con motivo
+        return f"No se pudo leer la cola del JPEG de origen ({type(exc).__name__}: {exc})"
+    if len(ventana) < tamano - ini:
+        return ("origen incompleto en Drive: {0} de {1} bytes servidos"
+                .format(ini + len(ventana), tamano))
+    if not lectura_segura.jpeg_cola_valida(ventana):
+        return "JPEG truncado en origen (cola a ceros/sin EOI)"
+    return None
+
+
+def _validar_jpeg_origen(manifiesto, filas: list[dict], progress_callback) -> list[dict]:
+    """Validación previa (proceso padre, antes del pool) de los JPG/JPEG
+    pendientes: los truncados en origen se marcan fallidos (los recoge
+    "Reintentar fallidas" si el origen se repara) y no llegan al pool. Solo
+    rutas locales. Lecturas de 4 KB en hilos (el origen suele ser Drive)."""
+    objetivo = [f for f in filas
+                if os.path.splitext(f["ruta_origen"])[1].lower() in (".jpg", ".jpeg")
+                and not almacen_mod.es_uri_gcs(f["ruta_origen"])]
+    if not objetivo:
+        return filas
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        motivos = list(ex.map(lambda f: _motivo_jpeg_truncado(f["ruta_origen"]), objetivo))
+    malas = {f["id"]: m for f, m in zip(objetivo, motivos) if m}
+    if not malas:
+        return filas
+    for fila_id, motivo in malas.items():
+        manifiesto.marcar_fallida(fila_id, motivo)
+    progress_callback.emit(
+        f"\n[AVISO] {len(malas)} JPEG(s) RGB rechazados antes de procesar: "
+        "truncados o ilegibles en origen (cola a ceros/sin EOI).\n")
+    return [f for f in filas if f["id"] not in malas]
 
 
 def _reportar_colisiones_destino(manifiesto, progress_callback) -> None:
