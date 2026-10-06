@@ -103,4 +103,28 @@ describe('PanelOrganizar', () => {
       expect.anything(),
     )
   })
+
+  it('con fallidas del mismo origen ofrece Reintentar N fallidas y lanza solo_fallidas', async () => {
+    api.pickFolder.mockResolvedValue('/datos/final')
+    api.folderIsEmpty.mockResolvedValue({ empty: false, count: 9, organizado: true, fallidas: 689 })
+    const onRun = vi.fn()
+    render(<PanelOrganizar origen="/datos/vuelo" estadillos={['/e.xlsx']} ready running={false} onRun={onRun} />)
+    fireEvent.click(screen.getAllByText(/Elegir/i)[0])
+    const boton = await screen.findByText(/Reintentar 689 fallidas/)
+    fireEvent.click(boton)
+    expect(onRun).toHaveBeenCalledWith(
+      'split_images',
+      expect.objectContaining({ origen: '/datos/vuelo', destino: '/datos/final', solo_fallidas: true }),
+      expect.anything(),
+    )
+  })
+
+  it('sin fallidas no muestra el botón de reintento', async () => {
+    api.pickFolder.mockResolvedValue('/datos/final')
+    api.folderIsEmpty.mockResolvedValue({ empty: false, count: 9, organizado: true, fallidas: 0 })
+    render(<PanelOrganizar origen="/datos/vuelo" estadillos={[]} ready running={false} onRun={() => {}} />)
+    fireEvent.click(screen.getAllByText(/Elegir/i)[0])
+    await waitFor(() => expect(screen.getByDisplayValue('/datos/final')).toBeTruthy())
+    expect(screen.queryByText(/Reintentar/)).toBeNull()
+  })
 })

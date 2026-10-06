@@ -134,6 +134,9 @@ function advancePhases(prev, data) {
         status: closed.errors > 0 ? 'error' : 'done',
         duration: closed.duration,
         errors: closed.errors,
+        nFallos: closed.n_fallos ?? closed.errors,
+        csv: closed.csv || null,
+        rutas: closed.rutas || [],
         recursos: closed.recursos || null,
       }
     }
@@ -458,6 +461,9 @@ function App() {
                   status: closed.errors > 0 ? 'error' : 'done',
                   duration: closed.duration,
                   errors: closed.errors,
+                  nFallos: closed.n_fallos ?? closed.errors,
+                  csv: closed.csv || null,
+                  rutas: closed.rutas || [],
                   recursos: closed.recursos || null,
                 }
               }
@@ -484,6 +490,9 @@ function App() {
               ? {
                   ok: true,
                   // Ámbar tanto para errores no fatales como para avisos (SIN_ORDENAR).
+                  // Rojo cuando hay fallos (status 'errors'); ámbar solo para avisos.
+                  fail: info.status === 'errors',
+                  csvs: info.csvs || [],
                   warn: info.status === 'errors' || info.status === 'warning',
                   kind: info.status,
                   errors: info.errors,

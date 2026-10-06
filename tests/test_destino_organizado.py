@@ -147,3 +147,53 @@ def test_lock_en_ruta_imposible_da_mensaje_claro(tmp_path):
     with pytest.raises(lock_destino.DestinoOcupado) as e:
         lock_destino.adquirir(str(f))
     assert "No se puede crear el bloqueo" in str(e.value)
+
+
+def test_lock_escribe_y_lee_propietario_desde_byte_0(tmp_path):
+    lock = lock_destino.adquirir(str(tmp_path))
+    try:
+        ruta = lock_destino._ruta_lock(str(tmp_path))
+        assert os.path.getsize(ruta) > 0
+        assert f"pid {os.getpid()}" in lock_destino._quien_lo_tiene(ruta)
+        with pytest.raises(lock_destino.DestinoOcupado) as e:
+            lock_destino.adquirir(str(tmp_path))
+        assert f"pid {os.getpid()}" in str(e.value)
+    finally:
+        lock_destino.liberar(lock)
+    lock_destino.liberar(lock_destino.adquirir(str(tmp_path)))
+
+
+def test_quien_lo_tiene_ignora_nulos_finales(tmp_path):
+    f = tmp_path / "x.lock"
+    f.write_bytes(b'{"pid": 7, "host": "h", "hora": "t"}\0\0\0')
+    assert lock_destino._quien_lo_tiene(str(f)) == "pid 7, equipo h, desde t"
+
+
+def test_lock_rama_windows_bloquea_byte_lejano(monkeypatch, tmp_path):
+    llamadas = []
+
+    class FakeMsvcrt:
+        LK_NBLCK, LK_UNLCK = 1, 0
+
+        @staticmethod
+        def locking(fd, modo, n):
+            llamadas.append((modo, os.lseek(fd, 0, os.SEEK_CUR), n))
+
+    monkeypatch.setattr(lock_destino, "fcntl", None)
+    monkeypatch.setattr(lock_destino, "msvcrt", FakeMsvcrt, raising=False)
+    lock = lock_destino.adquirir(str(tmp_path))
+    ruta = lock_destino._ruta_lock(str(tmp_path))
+    assert "propietario desconocido" not in lock_destino._quien_lo_tiene(ruta)
+    lock_destino.liberar(lock)
+    off = lock_destino._OFFSET_BLOQUEO
+    assert llamadas == [(1, off, 1), (0, off, 1)]
+
+
+def test_lock_fallo_al_escribir_propietario_loguea_warning(monkeypatch, tmp_path, caplog):
+    def falla(fd, n):
+        raise OSError("boom")
+    monkeypatch.setattr(os, "ftruncate", falla)
+    with caplog.at_level("WARNING"):
+        lock = lock_destino.adquirir(str(tmp_path))
+    lock_destino.liberar(lock)
+    assert "boom" in caplog.text

@@ -62,6 +62,47 @@ def destino_organizado(carpeta: str | Path) -> bool:
         return False
 
 
+def _clave_origen(ruta: str) -> str:
+    return os.path.normcase(os.path.normpath(str(ruta or "")))
+
+
+def _leer_fallidas_y_origenes(ruta: Path, con: sqlite3.Connection) -> tuple[int, set]:
+    try:
+        fallidas = con.execute(
+            "SELECT COUNT(*) FROM imagenes WHERE estado = 'fallido'").fetchone()[0]
+        origenes = {_clave_origen(f[0]) for f in con.execute(
+            "SELECT origen FROM ejecuciones")}
+    finally:
+        con.close()
+    return int(fallidas), origenes
+
+
+def fallidas_reintentables(carpeta: str | Path, origen: str) -> dict:
+    """Solo lectura: `{"fallidas": N, "mismo_origen": bool}` del destino
+    `carpeta`. `mismo_origen` = alguna ejecución del manifiesto se lanzó con
+    ese `origen` (comparado con la ruta normalizada). Sin manifiesto: `{"fallidas": 0,
+    "mismo_origen": False}`. Si el manifiesto existe pero NO se puede leer (ni con
+    `mode=ro` ni con una conexión normal de solo SELECT, p. ej. WAL sin `-shm`),
+    se añade `"error"` con el motivo: la UI lo muestra, el botón no desaparece
+    en silencio. Base de "Reintentar fallidas" (GUI y guard de `organize.run_task`)."""
+    nada = {"fallidas": 0, "mismo_origen": False}
+    if not origen or not destino_organizado(carpeta):
+        return nada
+    ruta = Path(carpeta) / NOMBRE_CARPETA_MANIFIESTO / NOMBRE_FICHERO_MANIFIESTO
+    try:
+        fallidas, origenes = _leer_fallidas_y_origenes(
+            ruta, sqlite3.connect(f"{ruta.as_uri()}?mode=ro", uri=True, timeout=1.0))
+    except (sqlite3.Error, OSError, ValueError):
+        try:
+            # WAL sin -shm: `mode=ro` no puede crearlo. Conexión normal, solo SELECT.
+            con = sqlite3.connect(str(ruta), timeout=5.0)
+            con.execute("PRAGMA query_only=ON")
+            fallidas, origenes = _leer_fallidas_y_origenes(ruta, con)
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            return dict(nada, error=f"no se pudo leer el manifiesto: {type(exc).__name__}: {exc}")
+    return {"fallidas": fallidas, "mismo_origen": _clave_origen(origen) in origenes}
+
+
 # Sistemas de ficheros donde WAL corrompe la base: su índice `-shm` se comparte
 # por mmap entre procesos, y fuse/red no garantizan que todos vean las mismas
 # páginas. Caso real (2026-09-11): SSD NTFS por ntfs-3g en la Pi →
@@ -558,6 +599,18 @@ class Manifiesto:
             )
         return cursor.rowcount
 
+    def reabrir_fallidas(self, ejecucion_id: int | None = None) -> int:
+        """Devuelve a 'pendiente' TODAS las filas 'fallido' (reintento dirigido,
+        sin reescanear el origen). No toca las 'hecho'. Con `ejecucion_id` las
+        adopta para ESTE run (así el cierre no las cuenta dos veces). Devuelve cuántas."""
+        conexion = self._conexion()
+        with conexion:
+            cursor = conexion.execute(
+                "UPDATE imagenes SET estado = 'pendiente', motivo_fallo = NULL, "
+                "ejecucion_id = COALESCE(?, ejecucion_id) WHERE estado = 'fallido'",
+                (ejecucion_id,))
+        return cursor.rowcount
+
     def resumen(self) -> dict[str, int]:
         conteos = {estado: 0 for estado in ESTADOS}
         for fila in self._conexion().execute(
@@ -565,6 +618,41 @@ class Manifiesto:
         ):
             conteos[fila["estado"]] = fila["total"]
         return conteos
+
+    @staticmethod
+    def _filtro_run(tipos, ejecucion_id) -> tuple[str, list]:
+        tipos = sorted(tipos) if tipos is not None else None
+        partes, params = [], []
+        if tipos is not None:
+            partes.append("tipo IN ({0})".format(", ".join("?" for _ in tipos)))
+            params += tipos
+        if ejecucion_id is not None:
+            partes.append("ejecucion_id = ?")
+            params.append(int(ejecucion_id))
+        return (" AND ".join(partes) or "1=1"), params
+
+    def conteo_por_tipos(self, tipos, ejecucion_id: int | None = None) -> dict[str, int]:
+        """Filas del manifiesto por estado, restringido a `tipos` (p. ej. las
+        RGB; `None` = todos) y, con `ejecucion_id`, a las filas de ESTE run
+        (las pendientes de otro shard o de una tanda previa no cuentan: darían
+        un falso 'errors'). Es la verdad que usa el marcador de errores de fase."""
+        donde, params = self._filtro_run(tipos, ejecucion_id)
+        conteos = {estado: 0 for estado in ESTADOS}
+        for fila in self._conexion().execute(
+            f"SELECT estado, COUNT(*) AS total FROM imagenes WHERE {donde} "
+            "GROUP BY estado", params
+        ):
+            conteos[fila["estado"]] = fila["total"]
+        return conteos
+
+    def fallidas_por_tipos(self, tipos, ejecucion_id: int | None = None) -> list[tuple[str, str]]:
+        """`(ruta_origen, motivo_fallo)` de cada fila 'fallido' de `tipos`
+        (y de `ejecucion_id` si se da)."""
+        donde, params = self._filtro_run(tipos, ejecucion_id)
+        return [(fila["ruta_origen"], fila["motivo_fallo"] or "")
+                for fila in self._conexion().execute(
+                    f"SELECT ruta_origen, motivo_fallo FROM imagenes WHERE estado = 'fallido' "
+                    f"AND {donde} ORDER BY id", params)]
 
     def filas_por_vuelo(self, pb: str, vuelo: str) -> list[sqlite3.Row]:
         return list(

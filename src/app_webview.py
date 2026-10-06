@@ -42,7 +42,7 @@ from atom_core.credencial import (
 from atom_core.event_sink import WebviewSink
 from atom_core.google_auth import AuthError
 from atom_core import estado_lan
-from atom_core.manifiesto import destino_organizado
+from atom_core.manifiesto import destino_organizado, fallidas_reintentables
 from atom_core import pin_kiosco
 from atom_core import precarga
 from atom_core import render_state, window_state
@@ -883,11 +883,13 @@ class Api:
             return {"ok": True, "path": os.path.expanduser("~")}
         return self.list_dir(None)
 
-    def folder_is_empty(self, path: str) -> dict:
+    def folder_is_empty(self, path: str, origen: str = "") -> dict:
         """¿Está vacía la carpeta de salida? El front avisa al elegirla (una
         corrida sobre residuos genera duplicados `_1/_2` y errores de recorte).
         El backend igualmente la rechaza al arrancar; esto es feedback previo.
-        Devuelve {exists, empty, count, organizado}. `organizado=True` = destino
+        Devuelve {exists, empty, count, organizado, fallidas}. `fallidas` = filas
+        'fallido' del manifiesto SOLO si es del mismo `origen` (opción
+        "Reintentar fallidas"); 0 en cualquier otro caso. `organizado=True` = destino
         con manifiesto válido de una tanda previa: se puede añadir otra tanda
         aunque no esté vacío (misma regla que el guard de `organize.run_task`).
         Carpeta inexistente = válida (vacía)."""
@@ -897,8 +899,19 @@ class Api:
             # Misma regla que el guard de `organize.run_task`: `.organizado` y
             # `LOGS` los crea el propio Organizer y no cuentan como residuo.
             entries = [n for n in os.listdir(path) if n not in (".organizado", "LOGS")]
-            return {"exists": True, "empty": len(entries) == 0, "count": len(entries),
-                    "organizado": destino_organizado(path)}
+            organizado = destino_organizado(path)
+            fallidas = 0
+            fallidas_error = None
+            if organizado and origen:
+                info = fallidas_reintentables(path, origen)
+                fallidas = info["fallidas"] if info["mismo_origen"] else 0
+                fallidas_error = info.get("error")
+            resultado = {"exists": True, "empty": len(entries) == 0, "count": len(entries),
+                         "organizado": organizado, "fallidas": fallidas}
+            if fallidas_error:
+                # El manifiesto existe pero no se pudo leer: la UI lo muestra.
+                resultado["fallidas_error"] = fallidas_error
+            return resultado
         except Exception as exc:  # noqa: BLE001 — se reenvía al front
             return {"exists": True, "empty": True, "count": 0, "organizado": False,
                     "error": f"{type(exc).__name__}: {exc}"}

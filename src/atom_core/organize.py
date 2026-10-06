@@ -59,7 +59,7 @@ import exif as meta_location
 import pipeline
 import utils
 from atom_core import cancelacion
-from atom_core.apply import STATS_APPLY_PREFIX, limpiar_parciales_huerfanos
+from atom_core.apply import STATS_APPLY_PREFIX, STATS_ERRORES_PREFIX, limpiar_parciales_huerfanos
 from atom_core.indice import STATS_INDICE_PREFIX
 from atom_core.progress_stats import StatsTracker
 from atom_core.medicion_recursos import MedidorRecursos
@@ -72,7 +72,7 @@ from atom_core.diagnostico_maquina import (
 from atom_core.phases import PipelinePhasesMixin
 from atom_core.sharding import ETAPAS, normalizar_shard
 from atom_core import lock_destino
-from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO, destino_organizado
+from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO, destino_organizado, fallidas_reintentables
 from utils import (
     ROTATION_MIN_AGREEMENT_PCT,
     ROTATION_YAW_MARGIN,
@@ -797,7 +797,20 @@ def run_task(
             # qué hay dentro, así que se acumula en vez de abortar.
             # (manifiesto legible: misma regla que `folder_is_empty` de la GUI)
             _hay_manifiesto = bool(_out) and destino_organizado(_out)
-            if _guard_activo and _restos and not _hay_manifiesto:
+            if params.get("solo_fallidas"):
+                # Reintento dirigido: solo con manifiesto del MISMO origen y
+                # con filas 'fallido'; si no, mismo rechazo que un destino ajeno.
+                _info = fallidas_reintentables(_out, str(params.get("origen")
+                                               or getattr(cfg, "input_folder", "") or ""))
+                if _info.get("error"):
+                    emit("error", f"No se pudo leer el manifiesto de \"{_out}\" para reintentar "
+                                  f"fallidas: {_info['error']}")
+                    return
+                if not (_info["mismo_origen"] and _info["fallidas"]):
+                    emit("error", "No hay imágenes fallidas que reintentar en "
+                                  f"\"{_out}\" para este origen.")
+                    return
+            elif _guard_activo and _restos and not _hay_manifiesto:
                 emit("error", "La carpeta de salida no está vacía: "
                               f"\"{_out}\". Vacíala o elige una carpeta vacía "
                               "antes de organizar (una corrida sobre residuos "
@@ -892,6 +905,11 @@ def run_task(
               # (se actualiza DESPUÉS de cada `_close_phase`, así que en el
               # momento del cierre todavía apunta a la fase saliente).
               "phase_name": None,
+              # Marcador estructurado de errores de la fase abierta
+              # (`apply.STATS_ERRORES_PREFIX`): fuente PRINCIPAL; el regex de
+              # texto solo vale de respaldo si la fase no lo ha emitido.
+              "marcador": None,
+              "procesadas": 0, "origen": 0, "csvs": [],
               # Duración de CADA fase cerrada, en orden de ejecución
               # (`payload_done["fases"]`): a diferencia de `last` (solo la
               # última), el modal necesita el listado completo para destacar
@@ -951,7 +969,41 @@ def run_task(
                                        name="sonda-maquina", daemon=True)
         _hilo_sonda.start()
 
+        def _marcador_errores(text: str) -> bool:
+            """`STATS_ERRORES` + json: fuente principal del estado de fase.
+            JSON corrupto NO se ignora: se cuenta como 1 error visible."""
+            if not text.startswith(STATS_ERRORES_PREFIX):
+                return False
+            try:
+                datos = json.loads(text[len(STATS_ERRORES_PREFIX):])
+                n_fallos = int(datos["n_fallos"])
+            except (ValueError, TypeError, KeyError):
+                _t["cur_errors"] += 1
+                _t["total_errors"] += 1
+                emit("log", "ERROR: marcador de errores de fase ilegible: " + text[:200])
+                return True
+            _t["marcador"] = datos
+            if datos.get("cierre"):
+                # Marcador del cierre: fallidas de ESTE run de cualquier tipo. Ya
+                # incluye lo contado por RGB/TERMICA, así que se toma el máximo
+                # (nunca se suma: un reintento que vuelve a fallar no se duplica).
+                _t["cur_errors"] = max(_t["cur_errors"], n_fallos)
+                _t["total_errors"] = max(_t["total_errors"], n_fallos)
+                return True
+            _t["cur_errors"] += n_fallos
+            _t["total_errors"] += n_fallos
+            _t["procesadas"] += int(datos.get("n_hechas", 0) or 0)
+            _t["origen"] += int(datos.get("n_total", 0) or 0)
+            if datos.get("csv"):
+                _t["csvs"].append(datos["csv"])
+            return True
+
         def _scan_errors(text: str) -> None:
+            if _t["marcador"] is not None:
+                # Respaldo por regex solo cuando la fase no trajo marcador.
+                if "HA HABIDO AVISOS" in text:
+                    _t["total_warnings"] += 1
+                return
             m = _ERR_COUNT_RE.search(text)
             if m:
                 n = int(m.group(1))
@@ -971,6 +1023,11 @@ def run_task(
             duracion = round(dur, 1)
             resultado = {"index": idx, "duration": duracion,
                          "errors": _t["cur_errors"]}
+            if _t["marcador"] is not None:
+                resultado["n_fallos"] = _t["marcador"].get("n_fallos", 0)
+                resultado["n_total"] = _t["marcador"].get("n_total", 0)
+                resultado["csv"] = _t["marcador"].get("csv")
+                resultado["rutas"] = _t["marcador"].get("rutas", [])
             recursos = medidor.cerrar_fase()
             if recursos is not None:
                 resultado["recursos"] = recursos
@@ -1072,6 +1129,8 @@ def run_task(
             text = str(s)
             if _emitir_marcador_stats(text, STATS_INDICE_PREFIX):
                 return
+            if _marcador_errores(text):
+                return
             _scan_errors(text)
             if stats.on_line(text):
                 _emit_stats()
@@ -1085,6 +1144,7 @@ def run_task(
                     prev = _close_phase(idx - 1)
                 _t["phase_start"] = datetime.now()
                 _t["cur_errors"] = 0
+                _t["marcador"] = None
                 medidor.abrir_fase()
                 if idx - 1 < len(plan_names):
                     name = plan_names[idx - 1]
@@ -1103,6 +1163,8 @@ def run_task(
             if not _texto_de_log(s, "log"):
                 return
             text = str(s)
+            if _marcador_errores(text):
+                return
             if _emitir_marcador_stats(text, STATS_APPLY_PREFIX):
                 return
             # El pipeline original de Aerotools emite un "." por cada imagen como
@@ -1134,6 +1196,7 @@ def run_task(
         # GUI Qt (que hereda el mismo mixin y no pasa por aquí) sigue corriendo
         # el pipeline entero sin enterarse de que existe el reparto.
         host.etapa = etapa
+        host.solo_fallidas = bool(params.get("solo_fallidas"))
         host.shard_index = shard_index
         host.shard_count = shard_count
         pcb = _Signal(_on_log)
@@ -1173,7 +1236,12 @@ def run_task(
         # Cerrar la última fase y emitir el resumen final con estado agregado.
         last = _close_phase(phase_counter["i"]) if _t["phase_start"] else None
         elapsed = round((datetime.now() - _t["start"]).total_seconds(), 1)
-        if _t["total_errors"] > 0:
+        # Procesadas < origen: imágenes que no llegaron a 'hecho' (fallidas o
+        # sin tocar) son error aunque ningún contador de texto lo dijera.
+        _sin_procesar = max(0, _t["origen"] - _t["procesadas"])
+        if _sin_procesar > 0 and _t["total_errors"] == 0:
+            _t["total_errors"] = _sin_procesar
+        if _t["total_errors"] > 0 or _sin_procesar > 0:
             _status = "errors"
         elif _t["total_warnings"] > 0:
             _status = "warning"
@@ -1183,6 +1251,10 @@ def run_task(
             "status": _status,
             "errors": _t["total_errors"],
             "warnings": _t["total_warnings"],
+            "n_fallos": _t["total_errors"],
+            "n_total": _t["origen"],
+            "n_procesadas": _t["procesadas"],
+            "csvs": _t["csvs"],
             "elapsed": elapsed,
             "last": last,
             # Duración de CADA fase, en orden de ejecución -- el modal

@@ -285,6 +285,17 @@ def _contar_lineas_csv(ruta: str) -> int:
     return max(total - 1, 0)  # -1 por la cabecera (header=True al escribirlo)
 
 
+#: Prefijo de los problemas que son ERROR (imágenes fallidas), frente a los
+#: avisos (desajustes de verificación). Lo usa `separar_problemas`.
+PREFIJO_ERROR = "ERROR: "
+
+
+def separar_problemas(problemas) -> tuple[list[str], list[str]]:
+    """`(errores, avisos)`: las imágenes fallidas cuentan como ERROR."""
+    errores = [p for p in problemas if p.startswith(PREFIJO_ERROR)]
+    return errores, [p for p in problemas if not p.startswith(PREFIJO_ERROR)]
+
+
 def verificar(manifiesto, cfg) -> list[str]:
     """Compara el manifiesto contra lo que hay en disco.
 
@@ -313,7 +324,7 @@ def verificar(manifiesto, cfg) -> list[str]:
         ejemplo = fallidas[0]
         motivo = ejemplo["motivo_fallo"] if ejemplo["motivo_fallo"] else "sin motivo registrado"
         problemas.append(
-            f"{len(fallidas)} imagen(es) fallaron y NO se han procesado. "
+            f"{PREFIJO_ERROR}{len(fallidas)} imagen(es) fallaron y NO se han procesado. "
             f"Ejemplo: {ejemplo['ruta_origen']} ({motivo})"
         )
 

@@ -274,7 +274,7 @@ export const api = {
   analisisReset: () => call('analisis_reset'),
   // ¿La carpeta de salida está vacía? Feedback previo al arrancar (el backend
   // igualmente rechaza no-vacía). Devuelve {exists, empty, count}.
-  folderIsEmpty: (path) => call('folder_is_empty', path),
+  folderIsEmpty: (path, origen) => call('folder_is_empty', path, origen || ''),
   // Configuración persistente: ruta de ThermoViewer.exe + % de recorte RGB por
   // modelo de dron. read devuelve {ruta_thermoviewer, percentage_by_models};
   // write persiste y devuelve {ok, path} | {ok:false, error}.

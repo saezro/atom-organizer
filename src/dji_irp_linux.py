@@ -99,8 +99,8 @@ def _load(lib_dir):
 
 def measure(img_path, raw_out, humidity, emissivity, lib_dir):
     dll = _load(lib_dir)
-    with open(img_path, "rb") as fh:
-        raw = fh.read()
+    from atom_core import lectura_segura  # lectura verificada (DriveFS puede dar lecturas cortas)
+    raw = lectura_segura.leer_completo(img_path)
     buf = (ctypes.c_uint8 * len(raw)).from_buffer_copy(raw)
 
     # Contexto que se adjunta a cualquier fallo del SDK: el nombre de la API, su

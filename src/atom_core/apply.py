@@ -18,6 +18,8 @@ aforo adaptativo que usará el `ThreadPoolExecutor` de las térmicas.
 from __future__ import annotations
 
 import atexit
+import io
+import csv
 import json
 import os
 import queue
@@ -38,6 +40,7 @@ from exif import extraer_bloque_xmp_crudo
 from atom_core import almacen as almacen_mod
 from atom_core import cancelacion
 from atom_core import indice as indice_mod
+from atom_core import lectura_segura
 from atom_core import perfil_rgb
 from atom_core import rgb_gpu
 
@@ -54,6 +57,15 @@ _MB_POR_DEFECTO_SI_FALLA_STAT = 0.0
 #: una línea de texto reconocible por el mismo canal que ya usa `_PHASE_PREFIX`
 #: para las fases — no se inventa un cuarto canal.
 STATS_APPLY_PREFIX = "---> STATS_APPLY: "
+
+#: Marcador estructurado de errores de FASE (JSON), emitido por el canal de log
+#: al cerrar `aplicar_rgb`/`aplicar_termicas`. La fuente es el manifiesto
+#: (estado 'fallido'), no un texto: `organize.run_task` lo usa como fuente
+#: principal del estado rojo de la fase. Campos: fase, n_fallos, n_total,
+#: n_hechas, rutas (hasta `MAX_RUTAS_MARCADOR`), rutas_truncadas, csv.
+STATS_ERRORES_PREFIX = "---> STATS_ERRORES: "
+MAX_RUTAS_MARCADOR = 200
+NOMBRE_CARPETA_LOGS_APPLY = "LOGS"
 
 #: Cada cuántas filas completadas se re-emite la métrica de velocidad. Mismo
 #: criterio que `progress_stats.IMAGE_EMIT_EVERY`: un `emit` por imagen
@@ -325,6 +337,19 @@ def _guardar_atomico(img, destino: str, transpose, crop_box, calidad: int,
         os.replace(parcial, destino)
 
 
+def _bloque_xmp_de_bytes(datos: bytes) -> bytes | None:
+    """Mismo criterio que `exif.extraer_bloque_xmp_crudo` pero sobre bytes ya
+    verificados (sin releer el origen). `None` si no hay bloque o está incompleto."""
+    texto = datos.decode("latin-1")
+    inicio = texto.find("<x:xmpmeta")
+    if inicio == -1:
+        return None
+    fin = texto.find("</x:xmpmeta", inicio)
+    if fin == -1:
+        return None
+    return texto[inicio:fin + 12].encode("latin-1")
+
+
 def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str:
     """Escribe el original y su `_CROP` (si la fila lleva) desde UN solo
     decode. Devuelve la cadena de verificación (ruta:tamaño de cada fichero
@@ -376,8 +401,12 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
         calidad_crop = pipeline_mod._ROTATION_JPEG_QUALITY if angulo else _CROP_JPEG_QUALITY
 
         with perfil_rgb.medir("lectura"):
-            img = pipeline_mod.Image.open(fila["ruta_origen"])
-            bloque_xmp = extraer_bloque_xmp_crudo(fila["ruta_origen"])
+            # Lectura verificada (DriveFS puede dar lecturas cortas sin error del SO):
+            # PIL decodifica desde bytes completos, nunca desde el fichero a medias.
+            datos_origen = lectura_segura.leer_completo(
+                fila["ruta_origen"], bytes_origen=fila.get("bytes_origen") or bytes_origen)
+            img = pipeline_mod.Image.open(io.BytesIO(datos_origen))
+            bloque_xmp = _bloque_xmp_de_bytes(datos_origen)
         with perfil_rgb.medir("decode"):
             img.load()
 
@@ -562,7 +591,7 @@ def _emitir_resumen_perfil_rgb(progress_callback) -> None:
     )
 
 
-def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
+def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
                 progress_summarize, controlador=None,
                 contador_rotacion: "_ContadorRotacion | None" = None) -> dict:
     """Recorre el manifiesto y escribe las salidas RGB pendientes.
@@ -633,6 +662,11 @@ def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
         contador_rotacion.registrar(fila["angulo_giro"] or 0)
         if error is not None:
             manifiesto.marcar_fallida(fila["id"], str(error))
+            # Cada fallo RGB deja su línea en el log con el motivo real: antes
+            # solo constaba en el manifiesto y el log salía limpio.
+            progress_callback.emit(
+                "\nERROR procesando {0}: {1}: {2}\n".format(
+                    fila["ruta_origen"], type(error).__name__, error))
             with lock_resultado:
                 resultado["fallido"] += 1
         else:
@@ -1086,7 +1120,8 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
         os.makedirs(carpeta_in)
         os.makedirs(carpeta_out)
         rjpeg_local = os.path.join(carpeta_in, nombre_imagen)
-        shutil.copy2(fila["ruta_origen"], rjpeg_local)
+        lectura_segura.copiar_completo(
+            fila["ruta_origen"], rjpeg_local, bytes_origen=fila.get("bytes_origen"))
         resultado = pipeline_obj.convert_dji_image_to_tif(
             carpeta_in, carpeta_out, nombre_imagen, exiftool_exe, dji_utility,
             progress_callback, progress_bar,
@@ -1209,7 +1244,7 @@ def _reportar_colisiones_destino(manifiesto, progress_callback) -> None:
     )
 
 
-def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
+def _aplicar_termicas_impl(manifiesto, cfg, pipeline, progress_callback, progress_bar,
                      progress_summarize, controlador=None,
                      contador_rotacion: "_ContadorRotacion | None" = None) -> dict:
     """Recorre el manifiesto y escribe las salidas de térmica pendientes.
@@ -1390,3 +1425,90 @@ def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
         shutil.rmtree(staging_raiz, ignore_errors=True)
 
     return resultado
+
+
+def emitir_errores_fase(manifiesto, cfg, progress_callback, fase: str, slug: str,
+                        tipos, ejecucion_id: int | None = None, cierre: bool = False) -> dict:
+    """Cierre de fase: lee del manifiesto cuántas imágenes de `tipos` fallaron
+    (solo las de `ejecucion_id` si se da: nada de arrastrar tandas previas ni
+    otros shards), escribe `<destino>/LOGS/ERRORES_<slug>.csv` (ruta, motivo) si
+    hay fallos y emite el marcador `STATS_ERRORES_PREFIX`. Siempre emite (también
+    con 0 fallos), para que quien escucha tenga n_total/n_hechas de la fase.
+
+    `cierre=True` (marcador del cierre global, `tipos=None` = cualquier tipo): no
+    escribe CSV ni log, va con `"cierre": true` y n_total/n_hechas a 0, para que
+    el run fuerce 'errors' sin duplicar lo ya contado por RGB/TERMICA.
+
+    Un fallo al escribir el CSV NO se traga: va en `csv_error` del marcador y
+    en una línea de ERROR del log."""
+    conteo = manifiesto.conteo_por_tipos(tipos, ejecucion_id)
+    n_total = sum(conteo.values())
+    n_fallos = conteo.get("fallido", 0)
+    payload = {"fase": fase, "n_fallos": n_fallos,
+               "n_total": 0 if cierre else n_total,
+               "n_hechas": 0 if cierre else conteo.get("hecho", 0), "rutas": [],
+               "rutas_truncadas": False, "csv": None}
+    if cierre:
+        payload["cierre"] = True
+    if n_fallos > 0:
+        fallidas = manifiesto.fallidas_por_tipos(tipos, ejecucion_id)
+        payload["rutas"] = [ruta for ruta, _m in fallidas[:MAX_RUTAS_MARCADOR]]
+        payload["rutas_truncadas"] = len(fallidas) > MAX_RUTAS_MARCADOR
+        if not cierre:
+            try:
+                carpeta = os.path.join(cfg.output_folder, NOMBRE_CARPETA_LOGS_APPLY)
+                os.makedirs(carpeta, exist_ok=True)
+                ruta_csv = os.path.join(carpeta, f"ERRORES_{slug}.csv")
+                with open(ruta_csv, "w", newline="", encoding="utf-8-sig") as fh:
+                    escritor = csv.writer(fh)
+                    escritor.writerow(["ruta", "motivo"])
+                    escritor.writerows(fallidas)
+                payload["csv"] = ruta_csv
+            except Exception as exc:  # noqa: BLE001 — visible, no silencioso
+                payload["csv_error"] = f"{type(exc).__name__}: {exc}"
+                progress_callback.emit(
+                    f"\nERROR no se pudo escribir ERRORES_{slug}.csv: {exc}\n")
+            progress_callback.emit(
+                f"\nERROR {fase}: {n_fallos} de {n_total} imagen(es) fallaron."
+                + (f" Lista: {payload['csv']}" if payload["csv"] else "") + "\n")
+    progress_callback.emit(STATS_ERRORES_PREFIX + json.dumps(payload))
+    return payload
+
+
+def _con_marcador(impl, fase, slug, tipos, manifiesto, cfg, progress_callback, args, kwargs):
+    """Ejecuta `impl` y emite SIEMPRE el marcador + CSV en un `finally`, también
+    si revienta o se cancela. Un fallo al emitir no tapa la excepción original."""
+    ejecucion_id = kwargs.pop("ejecucion_id", None)
+    try:
+        return impl(*args, **kwargs)
+    finally:
+        try:
+            emitir_errores_fase(manifiesto, cfg, progress_callback, fase, slug, tipos,
+                                ejecucion_id=ejecucion_id)
+        except Exception as exc:  # noqa: BLE001 — visible, sin tapar la excepción original
+            try:
+                progress_callback.emit(
+                    f"\nERROR no se pudo emitir el marcador de errores de {fase}: {exc}\n")
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,
+                progress_summarize, *args, **kwargs) -> dict:
+    """`_aplicar_rgb_impl` + marcador de errores de fase (ver `emitir_errores_fase`).
+    Acepta `ejecucion_id=` para limitar el marcador a las filas de este run."""
+    return _con_marcador(
+        _aplicar_rgb_impl, "Imágenes RGB", "RGB", indice_mod.TIPOS_RGB, manifiesto, cfg,
+        progress_callback,
+        (manifiesto, cfg, pipeline_mod, progress_callback, progress_bar, progress_summarize)
+        + args, kwargs)
+
+
+def aplicar_termicas(manifiesto, cfg, pipeline, progress_callback, progress_bar,
+                     progress_summarize, *args, **kwargs) -> dict:
+    """`_aplicar_termicas_impl` + marcador de errores de fase."""
+    return _con_marcador(
+        _aplicar_termicas_impl, "Conversión térmica", "TERMICA", frozenset({"TERMICA"}),
+        manifiesto, cfg, progress_callback,
+        (manifiesto, cfg, pipeline, progress_callback, progress_bar, progress_summarize)
+        + args, kwargs)
