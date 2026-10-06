@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api, onAnalisis, onCloud } from '../bridge'
 import { formatBytes, formatDuracion } from '../formato'
 import cloudUploadConfirmando from './cloudUploadConfirmando'
+import useConfirmar from './useConfirmar'
 
 // « a las 17:42 » para la última comprobación de sesión. Devuelve cadena vacía
 // si no hay fecha, para poder concatenarla sin condicionales en el JSX.
@@ -31,6 +32,7 @@ export default function PanelSubida({
   onOcupadoChange,
   onLoginOk,
 }) {
+  const [confirmar, dialogoConfirmar] = useConfirmar()
   const [status, setStatus] = useState(null) // {configured, logged_in, email, bucket, help}
   const [sesion, setSesion] = useState(null)
   const [comprobando, setComprobando] = useState(false)
@@ -274,7 +276,7 @@ export default function PanelSubida({
     setDesde(Date.now())
     setAhora(0)
     setUploading(true)
-    const r = await cloudUploadConfirmando(carpeta, prefijo, inspeccionId)
+    const r = await cloudUploadConfirmando(carpeta, prefijo, inspeccionId, confirmar)
     if (r && r.started === false) {
       setUploading(false)
       setDesde(null)
@@ -321,6 +323,7 @@ export default function PanelSubida({
   // pasos dentro de una única card), igual que ya hace `PasoEstadillo`.
   return (
     <>
+      {dialogoConfirmar}
       <div className="field">
         <span className="field-label">Cuenta de Google</span>
         {logged ? (

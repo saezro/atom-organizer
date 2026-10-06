@@ -3,6 +3,7 @@ import { api, isServerMode, onCloud } from '../bridge'
 import { conPlazo } from '../plazo'
 import EstadilloField from '../EstadilloField'
 import EsperaEstadillo from './EsperaEstadillo'
+import useConfirmar from './useConfirmar'
 
 // Plazo de la autodetección del estadillo en la carpeta del vuelo
 // (`estadillosDetectar`, sincrónica en el backend: `os.walk` + parseo con
@@ -24,6 +25,7 @@ const ESPERA_CARPETA_MAX_MS = 120000
 // cambia la lista de ficheros, para no subir con un resumen que ya no
 // corresponde a la selección.
 export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, onEstado }) {
+  const [confirmar, dialogoConfirmar] = useConfirmar()
   const [estadRutas, setEstadRutas] = useState([])
   // Modo «Recibir del portátil»: sustituye la selección manual
   // (`EstadilloField`) por la pantalla de espera (`EsperaEstadillo`) mientras
@@ -487,6 +489,7 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
 
   return (
     <div className="field">
+      {dialogoConfirmar}
       <span className="field-label">Estadillo (ubicación canónica del bucket)</span>
       <EstadilloField
         value={estadRutas}
@@ -526,10 +529,10 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
           type="checkbox"
           checked={omitirEstadillo}
           disabled={disabled || estadSubiendo}
-          onChange={(e) => {
+          onChange={async (e) => {
             const marcar = e.target.checked
             if (marcar && estadPrevio?.existe !== true) {
-              const ok = window.confirm(
+              const ok = await confirmar(
                 'No hay ningún estadillo subido para esta inspección. Si continúas, las ' +
                   'imágenes se subirán sin estadillo. ¿Seguro?'
               )

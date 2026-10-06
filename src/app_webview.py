@@ -3530,6 +3530,7 @@ class Api:
         retoma al relanzar. No toca el origen."""
         if not self._running:
             return {"ok": False, "reason": "No hay ningún proceso en curso."}
+        logger.info("run_cancelar: solicitud de cancelación recibida; se para en el próximo punto seguro")
         cancelacion.solicitar()
         return {"ok": True}
 
