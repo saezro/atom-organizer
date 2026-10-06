@@ -1139,7 +1139,7 @@ class PipelinePhasesMixin:
                 aplicar_rgb(manifiesto, cfg, pipeline, progress_callback, progress_bar,
                            progress_summarize,
                            controlador=paralelismo_mod.ControladorAdaptativo(
-                               maximo=paralelismo_mod.maximo_cpu_bound(),
+                               maximo=paralelismo_mod.maximo_rgb(),
                                etiqueta="RGB", tope_hdd=paralelismo_mod.TOPE_WORKERS_HDD),
                            contador_rotacion=contador_rotacion,
                            ejecucion_id=ejecucion_id)

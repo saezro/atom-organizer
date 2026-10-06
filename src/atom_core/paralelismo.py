@@ -115,6 +115,15 @@ def maximo_cpu_bound() -> int:
     return utils.workers_para_lote(mb_por_worker=0)
 
 
+def maximo_rgb() -> int:
+    """Techo de procesos de la fase RGB: los núcleos utilizables (`maximo_cpu_bound`)
+    acotados además por la RAM disponible a razón de `utils.MB_POR_WORKER` por
+    worker, sin bajar de 1. Con `mb_por_worker=0` un portátil con poca RAM libre
+    abría un proceso por núcleo con JPG de 48 MP dentro y Windows mataba workers
+    (`BrokenProcessPool`). El `tope_hdd` del controlador se sigue aplicando aparte."""
+    return max(1, min(maximo_cpu_bound(), utils.workers_para_lote(utils.MB_POR_WORKER)))
+
+
 @dataclass(frozen=True)
 class Medicion:
     """Una ventana de trabajo ya cerrada: cuántos trabajadores había, cuánto se
