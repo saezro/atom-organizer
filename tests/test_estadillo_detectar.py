@@ -49,7 +49,7 @@ def test_carpeta_sin_estadillos_no_es_error(tmp_path):
 
     res = estadillo.detectar_estadillos(str(tmp_path))
 
-    assert res == {"rutas": [], "descartados": []}
+    assert res == {"rutas": [], "descartados": [], "motivos": {}}
 
 
 def test_ignora_temporal_de_office(tmp_path):
@@ -223,3 +223,37 @@ def test_carpeta_dji_notas_no_se_poda_pero_dji_con_fecha_si(tmp_path):
     assert estadillo._es_carpeta_de_vuelo("dji_202609301234_004")
     assert not estadillo._es_carpeta_de_vuelo("dji_notas")
     assert estadillo.detectar_estadillos(str(tmp_path))["rutas"] == [ok]
+
+
+def test_carpeta_inexistente_se_distingue_de_carpeta_vacia(tmp_path):
+    res = estadillo.detectar_estadillos(str(tmp_path / "no_esta"))
+
+    assert res["rutas"] == []
+    assert res["no_existe"] is True
+    assert res["motivos"]
+
+
+def test_descartado_lleva_su_causa(tmp_path):
+    no_estadillo = tmp_path / "notas.csv"
+    no_estadillo.write_text("Columna_A;Columna_B\nfoo;bar\n", encoding="utf-8")
+
+    res = estadillo.detectar_estadillos(str(tmp_path))
+
+    assert res["descartados"] == [str(no_estadillo)]
+    assert res["motivos"][str(no_estadillo)]
+    assert not res.get("no_existe")
+
+
+def test_oserror_al_listar_queda_en_motivos(tmp_path, monkeypatch):
+    import os
+    real = os.scandir
+
+    def falla(p):
+        raise PermissionError("denegado")
+
+    monkeypatch.setattr(estadillo.os, "scandir", falla)
+    res = estadillo.detectar_estadillos(str(tmp_path))
+    monkeypatch.setattr(estadillo.os, "scandir", real)
+
+    assert res["rutas"] == []
+    assert "PermissionError" in res["motivos"][os.path.normpath(str(tmp_path))]
