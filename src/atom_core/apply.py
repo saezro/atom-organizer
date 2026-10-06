@@ -31,11 +31,13 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, wait as _esperar_futuros
+from concurrent.futures.process import BrokenProcessPool
 from typing import Any, Mapping
 
 import external_tools
 import dji_worker_pool
 import pipeline
+import utils
 from exif import extraer_bloque_xmp_crudo
 from atom_core import almacen as almacen_mod
 from atom_core import cancelacion
@@ -451,6 +453,17 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
     return "; ".join(f"{ruta}:{os.path.getsize(ruta)}" for ruta in escritas)
 
 
+#: Recreaciones máximas del pool RGB tras un `BrokenProcessPool` antes de bajar
+#: a 1 worker (la última ronda multi-worker es siempre la de 1).
+_MAX_RECREACIONES_POOL_RGB = 3
+
+def _kwargs_pool_rgb(workers: int) -> dict:
+    """Argumentos del `ProcessPoolExecutor` RGB: contexto `spawn` (el de la app
+    de escritorio, ver `utils._contexto_multiproceso`). Sin `max_tasks_per_child`:
+    en 3.11 reciclar workers puede colgar el pool (gh-115634)."""
+    return {"max_workers": max(1, workers), "mp_context": utils._contexto_multiproceso()}
+
+
 def _trabajo_fila(fila: dict, cfg) -> str:
     """Función de MÓDULO, picklable: es la que se manda al
     `ProcessPoolExecutor`. No recibe el módulo `pipeline` como argumento —
@@ -539,6 +552,12 @@ class _AforoDinamico:
                 self._en_circulacion += crecimiento
                 for _ in range(crecimiento):
                     self._semaforo.release()
+            elif crecimiento < 0:
+                # Encoger YA con los permisos libres (si no, un aforo grande
+                # heredado de otra ronda seguiría dejando entrar a todos).
+                # La deuda que quede se salda en `liberar`.
+                while self._en_circulacion > self._objetivo and self._semaforo.acquire(blocking=False):
+                    self._en_circulacion -= 1
 
 
 def _formatear_duracion(segundos: float) -> str:
@@ -722,6 +741,15 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
         f"vuelo (máximo {controlador.maximo}), {total} imagen(es).\n"
     )
 
+    lock_rotas = threading.Lock()
+    # Filas cuya tarea se perdió porque el POOL murió (worker matado por el SO:
+    # RAM, antivirus...), no porque la imagen diera una excepción Python. No se
+    # cierran: se reencolan en un pool nuevo. `culpables` = las que tenían su
+    # futuro en vuelo cuando se rompió (con 1 worker y 1 permiso, solo la que
+    # mató al worker); `sin_enviar` = las que ni llegaron a enviarse.
+    rotas = {"culpables": [], "sin_enviar": []}
+    techo = {"workers": controlador.maximo}
+
     def _al_terminar(fila: dict, futuro) -> None:
         # TODO el cuerpo va en try/finally: `concurrent.futures` se TRAGA las
         # excepciones de un callback (solo las loguea), así que si
@@ -730,51 +758,118 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
         # aborta: el aforo va perdiendo capacidad en silencio hasta que
         # `aforo.adquirir()` se bloquea para siempre y el run queda colgado.
         # Es el mismo patrón que `_con_aforo` en las térmicas.
+        cerrada = True
         try:
             try:
                 verificacion = futuro.result()
+            except BrokenProcessPool:
+                cerrada = False
+                with lock_rotas:
+                    rotas["culpables"].append(fila)
             except Exception as exc:
                 _cerrar_fila(fila, error=exc)
             else:
                 _cerrar_fila(fila, verificacion=verificacion)
         finally:
             try:
-                aforo.ajustar(controlador.trabajadores)
+                aforo.ajustar(min(controlador.trabajadores, techo["workers"]))
             finally:
                 aforo.liberar()
-            with lock_progreso:
-                estado_progreso["completadas"] += 1
-                emisor.emit(int(estado_progreso["completadas"] / total * 100))
+            if cerrada:
+                with lock_progreso:
+                    estado_progreso["completadas"] += 1
+                    emisor.emit(int(estado_progreso["completadas"] / total * 100))
 
-    with ProcessPoolExecutor(max_workers=controlador.maximo) as executor:
-        futuros = []
-        cancelado = False
-        for fila in filas:
-            if cancelacion.cancelado():
-                cancelado = True
-                break
-            aforo.adquirir()
-            if cancelacion.cancelado():  # se canceló mientras esperaba aforo
-                aforo.liberar()
-                cancelado = True
-                break
-            try:
-                futuro = executor.submit(_trabajo_fila, fila, cfg)
-            except Exception as exc:
-                # Sin futuro no habrá callback: hay que cerrar la fila y
-                # devolver el permiso aquí mismo. Un `BrokenProcessPool` (un
-                # worker muerto por RAM) rompe TODOS los submit siguientes, y
-                # dejar que la excepción suba abortaría el lote entero con el
-                # aforo a medias.
-                _cerrar_fila(fila, error=exc)
-                aforo.liberar()
-                continue
-            futuro.add_done_callback(lambda futuro, fila=fila: _al_terminar(fila, futuro))
-            futuros.append(futuro)
+    def _ronda(pendientes: list, workers: int) -> bool:
+        """Una pasada con un pool nuevo de `workers` procesos. Devuelve True si
+        se canceló. Deja en `rotas` lo que el pool roto no llegó a hacer."""
+        techo["workers"] = workers
+        aforo.ajustar(min(controlador.trabajadores, workers))
+        with ProcessPoolExecutor(**_kwargs_pool_rgb(workers)) as executor:
+            futuros = []
+            for fila in pendientes:
+                if cancelacion.cancelado():
+                    return _cerrar_ronda(executor, futuros, True)
+                aforo.adquirir()
+                if cancelacion.cancelado():  # se canceló mientras esperaba aforo
+                    aforo.liberar()
+                    return _cerrar_ronda(executor, futuros, True)
+                try:
+                    futuro = executor.submit(_trabajo_fila, fila, cfg)
+                except BrokenProcessPool:
+                    # Pool roto: esta fila no llegó a enviarse, no es culpable.
+                    aforo.liberar()
+                    with lock_rotas:
+                        rotas["sin_enviar"].append(fila)
+                    continue
+                except Exception as exc:
+                    # Sin futuro no habrá callback: hay que cerrar la fila y
+                    # devolver el permiso aquí mismo.
+                    _cerrar_fila(fila, error=exc)
+                    aforo.liberar()
+                    continue
+                futuro.add_done_callback(
+                    lambda futuro, fila=fila: _al_terminar(fila, futuro))
+                futuros.append(futuro)
+            return _cerrar_ronda(executor, futuros, False)
 
+    def _cerrar_ronda(executor, futuros: list, cancelado_: bool) -> bool:
         # Las filas ya en vuelo terminan (escritura atómica) y se marcan solas
         # en `_al_terminar`; las no enviadas quedan 'pendiente'.
         _esperar_futuros(futuros)
+        return cancelado_
+
+    cancelado = False
+    pendientes = list(filas)
+    workers = max(1, controlador.maximo)
+    recreaciones = 0
+    rondas_sin_avance = 0
+    while pendientes:
+        rotas["culpables"].clear()
+        rotas["sin_enviar"].clear()
+        cancelado = _ronda(pendientes, workers)
+        # Orden estable: lo no enviado y los culpables vuelven en el orden original.
+        ids_rotos = {f["id"] for f in rotas["culpables"]} | {f["id"] for f in rotas["sin_enviar"]}
+        if cancelado or not ids_rotos:
+            break
+        restantes = [f for f in pendientes if f["id"] in ids_rotos]
+        avanzo = len(restantes) < len(pendientes)
+        rondas_sin_avance = 0 if avanzo else rondas_sin_avance + 1
+        error_pool = BrokenProcessPool(
+            "un proceso de la fase RGB murió de forma abrupta (posible falta de RAM)")
+        if workers == 1 and rotas["culpables"]:
+            # Sola en vuelo con 1 worker: es la imagen que mata al proceso.
+            # Se marca fallida y se sigue con el resto en un pool nuevo.
+            ids_culpables = {f["id"] for f in rotas["culpables"]}
+            for fila in rotas["culpables"]:
+                _cerrar_fila(fila, error=error_pool)
+                with lock_progreso:
+                    estado_progreso["completadas"] += 1
+                    emisor.emit(int(estado_progreso["completadas"] / total * 100))
+            restantes = [f for f in restantes if f["id"] not in ids_culpables]
+            progress_callback.emit(
+                f"\n[paralelismo] Imágenes RGB: {len(ids_culpables)} imagen(es) "
+                f"matan al proceso aun solas; marcadas como fallidas. Se sigue "
+                f"con {len(restantes)} en un pool nuevo (1 proceso).\n")
+            rondas_sin_avance = 0
+        if workers == 1 and not rotas["culpables"] and rondas_sin_avance >= _MAX_RECREACIONES_POOL_RGB:
+            # Pool de 1 que se rompe sin ni siquiera atribuir culpable (p. ej.
+            # no arranca): reintentar más no sirve. Se agotan las rondas.
+            for fila in restantes:
+                _cerrar_fila(fila, error=error_pool)
+                with lock_progreso:
+                    estado_progreso["completadas"] += 1
+                    emisor.emit(int(estado_progreso["completadas"] / total * 100))
+            restantes = []
+        if restantes and workers > 1:
+            recreaciones += 1
+            workers = 1 if recreaciones >= _MAX_RECREACIONES_POOL_RGB else max(1, workers // 2)
+        if restantes:
+            progress_callback.emit(
+                f"\n[paralelismo] Imágenes RGB: el pool de procesos murió; "
+                f"recreación {recreaciones}, {workers} proceso(s), "
+                f"{len(restantes)} imagen(es) reencoladas.\n")
+        pendientes = restantes
 
     if cancelado:
         raise cancelacion.RunCancelado()
