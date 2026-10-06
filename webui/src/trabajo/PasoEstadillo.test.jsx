@@ -61,9 +61,7 @@ describe('PasoEstadillo', () => {
   it('marca listo si se omite el estadillo', async () => {
     const onEstado = vi.fn()
     // Sin estadillo previo, marcar el checkbox pide confirmación
-    // (window.confirm, igual que el resto de confirmaciones de la pantalla
-    // en App.jsx): se acepta para poder seguir el flujo.
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    // (diálogo propio en React, «Sí»): se acepta para poder seguir el flujo.
     render(<PasoEstadillo prefijo="ACME--P--2026--T" onEstado={onEstado} />)
     // Espera a que se asiente el efecto de `estadilloExistente` (auto-marcado
     // de «omitir») antes de tocar el checkbox a mano: si el click llega antes
@@ -76,6 +74,7 @@ describe('PasoEstadillo', () => {
     // de esta inspección»); se localiza por ese texto real en vez de
     // inventar una etiqueta que cambiaría el UI replicado.
     fireEvent.click(await screen.findByLabelText(/subir sin estadillo/i))
+    fireEvent.click(await screen.findByRole('button', { name: 'Sí' }))
     await waitFor(() => {
       const ultimo = onEstado.mock.calls.at(-1)[0]
       expect(ultimo.listo).toBe(true)

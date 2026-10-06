@@ -21,6 +21,7 @@ import PantallaEntrada from './sesion/PantallaEntrada.jsx'
 import MenuCuenta from './MenuCuenta.jsx'
 import './App.css'
 import { conPlazo } from './plazo'
+import useConfirmar from './trabajo/useConfirmar'
 import { SPLIT_ADVANCED } from './schema'
 import { initialState, buildParams } from './TaskBlock'
 
@@ -161,6 +162,7 @@ function anexarLog(lineas, texto) {
 }
 
 function App() {
+  const [confirmar, dialogoConfirmar] = useConfirmar()
   const [ready, setReady] = useState(false)
   const [section, setSection] = useState('home')
   const [running, setRunning] = useState(false)
@@ -868,7 +870,7 @@ function App() {
     setKioskResultado(null)
     setKioskSubiendo(true)
     try {
-      const r = await cloudUploadConfirmando(carpeta, prefijo, inspeccion?.id)
+      const r = await cloudUploadConfirmando(carpeta, prefijo, inspeccion?.id, confirmar)
       // `started:false` no emite ningún evento `atom:cloud`: sin esto la
       // pantalla de subida se cerraría sola y en la Pi no quedaría rastro.
       if (r && r.started === false) {
@@ -932,6 +934,7 @@ function App() {
     // regla anti-seleccion de texto cubre tambien lo que se monta fuera de
     // `.kiosk` (AvisoSesion, SplashInicio) y lo que se anada en el futuro.
     <div className={kiosco ? 'app app-kiosco' : 'app'}>
+      {dialogoConfirmar}
       {controlRemotoVisible && (
         <div
           className={'kiosk-control-marco' + (controlRemotoDesvanecido ? ' kiosk-control-marco-desvanecido' : '')}

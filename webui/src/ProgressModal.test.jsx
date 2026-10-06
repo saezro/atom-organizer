@@ -161,14 +161,17 @@ describe('ProgressModal — veredicto EN VIVO', () => {
 })
 
 describe('ProgressModal — botón Cancelar', () => {
-  it('pide confirmación, llama a onCancel y muestra Cancelando…', async () => {
+  it('pide confirmación propia, llama a onCancel y muestra Cancelando…', async () => {
     const onCancel = vi.fn().mockResolvedValue({ ok: true })
-    const confirmar = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const confirmar = vi.spyOn(window, 'confirm')
     renderModal({ onCancel })
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }))
+    expect(screen.getByText(/¿Cancelar el run\?/)).toBeTruthy()
+    expect(onCancel).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Sí, cancelar' }))
 
-    expect(confirmar).toHaveBeenCalledOnce()
+    expect(confirmar).not.toHaveBeenCalled()
     await waitFor(() => expect(onCancel).toHaveBeenCalledOnce())
     expect(screen.getByRole('button', { name: 'Cancelando…' }).disabled).toBe(true)
     // El cierre en segundo plano sigue disponible.
@@ -176,15 +179,15 @@ describe('ProgressModal — botón Cancelar', () => {
     confirmar.mockRestore()
   })
 
-  it('si el usuario no confirma no cancela', () => {
+  it('«No» vuelve atrás sin cancelar', () => {
     const onCancel = vi.fn()
-    const confirmar = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderModal({ onCancel })
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }))
+    fireEvent.click(screen.getByRole('button', { name: 'No' }))
 
     expect(onCancel).not.toHaveBeenCalled()
-    confirmar.mockRestore()
+    expect(screen.getByRole('button', { name: 'Cancelar' })).toBeTruthy()
   })
 
   it('terminado como cancelado: sin botón y con estado propio', () => {

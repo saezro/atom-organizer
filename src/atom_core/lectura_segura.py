@@ -86,11 +86,14 @@ def leer_completo(ruta, intentos: int = 5, backoff: float = 0.5, backoff_max: fl
     """Devuelve TODOS los bytes de `ruta` o lanza `LecturaIncompleta`.
 
     Espera entre intentos 0.5, 1, 2, 4, 8 s (tope `backoff_max`); antes de cada
-    reintento hidrata el fichero leyéndolo entero en secuencial. El camino
+    reintento hidrata el fichero leyéndolo entero en secuencial. Fallo rápido: dos
+    lecturas consecutivas con los mismos bytes (< esperados) = EOF estable, sin
+    más reintentos. El camino
     normal (lectura completa a la primera) no espera nada."""
     espera = backoff
     leidos = 0
     esperados = 0
+    previo = None
     for n in range(1, max(1, intentos) + 1):
         esperados = _esperados(ruta, bytes_origen)
         with open(ruta, "rb") as f:
@@ -98,6 +101,11 @@ def leer_completo(ruta, intentos: int = 5, backoff: float = 0.5, backoff_max: fl
         leidos = len(datos)
         if leidos >= esperados:
             return datos
+        if n > 1 and leidos == previo:
+            # EOF estable: dos lecturas seguidas devuelven los mismos bytes,
+            # menos de los declarados. Reintentar no va a cambiarlo: falla ya.
+            raise LecturaIncompleta(ruta, leidos, esperados, n)
+        previo = leidos
         if n < intentos:
             time.sleep(espera)
             espera = min(espera * 2, backoff_max)

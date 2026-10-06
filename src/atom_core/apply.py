@@ -534,10 +534,15 @@ class _AforoDinamico:
             "potencial_pct": (media / maximo * 100) if maximo else 0.0,
         }
 
-    def adquirir(self) -> None:
-        self._semaforo.acquire()
+    def adquirir(self) -> bool:
+        """Toma un permiso. Espera en tramos de 1 s comprobando la cancelación:
+        devuelve False (sin permiso tomado) si se cancela el run mientras espera."""
+        while not self._semaforo.acquire(timeout=1):
+            if cancelacion.cancelado():
+                return False
         with self._lock:
             self._acumular(+1)
+        return True
 
     def liberar(self) -> None:
         with self._lock:
@@ -796,7 +801,8 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
             for fila in pendientes:
                 if cancelacion.cancelado():
                     return _cerrar_ronda(executor, futuros, True)
-                aforo.adquirir()
+                if not aforo.adquirir():  # cancelado esperando aforo (sin permiso)
+                    return _cerrar_ronda(executor, futuros, True)
                 if cancelacion.cancelado():  # se canceló mientras esperaba aforo
                     aforo.liberar()
                     return _cerrar_ronda(executor, futuros, True)
@@ -1339,6 +1345,10 @@ def _motivo_jpeg_truncado(ruta: str) -> "str | None":
     return None
 
 
+TIMEOUT_LECTURA_JPEG_S = 30.0
+MOTIVO_TIMEOUT_LECTURA = "timeout lectura"
+
+
 def _validar_jpeg_origen(manifiesto, filas: list[dict], progress_callback) -> list[dict]:
     """Validación previa (proceso padre, antes del pool) de los JPG/JPEG
     pendientes: los truncados en origen se marcan fallidos (los recoge
@@ -1349,8 +1359,18 @@ def _validar_jpeg_origen(manifiesto, filas: list[dict], progress_callback) -> li
                 and not almacen_mod.es_uri_gcs(f["ruta_origen"])]
     if not objetivo:
         return filas
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        motivos = list(ex.map(lambda f: _motivo_jpeg_truncado(f["ruta_origen"]), objetivo))
+    def _motivo_fila(f):
+        if cancelacion.cancelado():
+            return None  # se salta: tras la pasada se sale por cancelación
+        return _motivo_jpeg_truncado(f["ruta_origen"])
+
+    # `_ejecutar_con_limite` (indice.py) sale con RunCancelado si se cancela y
+    # marca _VENCIDO al fichero que no responde en `TIMEOUT_LECTURA_JPEG_S`.
+    motivos = indice_mod._ejecutar_con_limite(
+        objetivo, _motivo_fila, 8, TIMEOUT_LECTURA_JPEG_S, None, TIMEOUT_LECTURA_JPEG_S)
+    if cancelacion.cancelado():
+        raise cancelacion.RunCancelado()
+    motivos = [MOTIVO_TIMEOUT_LECTURA if m is indice_mod._VENCIDO else m for m in motivos]
     malas = {f["id"]: m for f, m in zip(objetivo, motivos) if m}
     if not malas:
         return filas
@@ -1534,7 +1554,8 @@ def _aplicar_termicas_impl(manifiesto, cfg, pipeline, progress_callback, progres
                 for fila in filas:
                     if cancelacion.cancelado():
                         break
-                    aforo.adquirir()
+                    if not aforo.adquirir():  # cancelado esperando aforo (sin permiso)
+                        break
                     if cancelacion.cancelado():
                         aforo.liberar()
                         break

@@ -208,6 +208,8 @@ export default function ProgressModal({
   const [showDetail, setShowDetail] = useState(false)
   // «Cancelando…» desde que se pulsa hasta que el backend confirma (`finished`).
   const [cancelando, setCancelando] = useState(false)
+  // Confirmación propia: `window.confirm` no se muestra en QtWebEngine (pywebview qt).
+  const [confirmando, setConfirmando] = useState(false)
   const [now, setNow] = useState(Date.now())
   const hasActive = phases.some((p) => p.status === 'active')
 
@@ -220,7 +222,7 @@ export default function ProgressModal({
   }, [hasActive, finished])
 
   async function pedirCancelar() {
-    if (!window.confirm('¿Cancelar el run? Lo ya organizado se conserva y se puede relanzar.')) return
+    setConfirmando(false)
     setCancelando(true)
     try {
       const res = await onCancel()
@@ -382,15 +384,26 @@ export default function ProgressModal({
         )}
 
         <div className="pm-actions">
-          {!finished && onCancel && (
+          {!finished && onCancel && !confirmando && (
             <button
               type="button"
               className="btn-ghost pm-cancel"
-              onClick={pedirCancelar}
+              onClick={() => setConfirmando(true)}
               disabled={cancelando}
             >
               {cancelando ? 'Cancelando…' : 'Cancelar'}
             </button>
+          )}
+          {!finished && onCancel && confirmando && (
+            <>
+              <span className="pm-stats">¿Cancelar el run? Lo ya organizado se conserva y se puede relanzar.</span>
+              <button type="button" className="btn-ghost pm-cancel" onClick={pedirCancelar}>
+                Sí, cancelar
+              </button>
+              <button type="button" className="btn-ghost" onClick={() => setConfirmando(false)}>
+                No
+              </button>
+            </>
           )}
           {/* El cierre NUNCA se bloquea. Antes estaba `disabled` hasta que
               llegara `done`/`error`, así que si el backend dejaba de emitir
