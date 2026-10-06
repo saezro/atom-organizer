@@ -1,3 +1,4 @@
+import pytest
 """Traducción de los marcadores de texto a `emit("stats", ...)` y duración
 por fase en `payload_done["fases"]` (`atom_core.organize.run_task`).
 
@@ -18,7 +19,7 @@ cada test necesita. Doble a mano, nunca `unittest.mock` — estilo de la casa.
 import json
 
 from atom_core import organize
-from atom_core.apply import STATS_APPLY_PREFIX
+from atom_core.apply import STATS_APPLY_PREFIX, STATS_ERRORES_PREFIX
 from atom_core.indice import STATS_INDICE_PREFIX
 from atom_core.manifiesto import NOMBRE_CARPETA_MANIFIESTO, Manifiesto
 from utils import RenameImagesConfig
@@ -477,3 +478,193 @@ class TestGuardCarpetaSalidaSplitImages:
 
         assert not any("no está vacía" in str(e) for e in _de_tipo(eventos, "error"))
         assert _de_tipo(eventos, "done")
+
+
+def _marcador(fase, n_fallos, n_total, n_hechas=None, csv=None):
+    return STATS_ERRORES_PREFIX + json.dumps({
+        "fase": fase, "n_fallos": n_fallos, "n_total": n_total,
+        "n_hechas": n_total - n_fallos if n_hechas is None else n_hechas,
+        "rutas": ["a.jpg"] * min(n_fallos, 1), "rutas_truncadas": False, "csv": csv})
+
+
+def test_marcador_de_errores_marca_la_fase_en_rojo_y_el_run_en_errors(monkeypatch):
+    """Sin ningún texto 'Ha habido N error', el marcador estructurado basta:
+    la fase sale con errors>0 (+ n_fallos/n_total/csv) y el run con 'errors'."""
+
+    def _emitir(pcb, pbar, psum):
+        psum.emit("---> SUBPROCESO: Imágenes RGB")
+        pcb.emit(_marcador("Imágenes RGB", 341, 1000, csv="X/LOGS/ERRORES_RGB.csv"))
+        psum.emit("---> SUBPROCESO: Cierre")
+
+    eventos = _run_con_acciones(monkeypatch, [_emitir])
+
+    fases = _de_tipo(eventos, "phase")
+    prev = fases[1]["prev"]
+    assert prev["errors"] == 341 and prev["n_fallos"] == 341 and prev["n_total"] == 1000
+    assert prev["csv"] == "X/LOGS/ERRORES_RGB.csv"
+    assert not any(STATS_ERRORES_PREFIX in str(p) for p in _de_tipo(eventos, "log"))
+    done = _de_tipo(eventos, "done")[0]
+    assert done["status"] == "errors" and done["errors"] == 341
+    assert done["csvs"] == ["X/LOGS/ERRORES_RGB.csv"]
+
+
+def test_marcador_sin_fallos_no_marca_error(monkeypatch):
+    def _emitir(pcb, pbar, psum):
+        psum.emit("---> SUBPROCESO: Imágenes RGB")
+        pcb.emit(_marcador("Imágenes RGB", 0, 10))
+
+    eventos = _run_con_acciones(monkeypatch, [_emitir])
+
+    assert _de_tipo(eventos, "done")[0]["status"] == "ok"
+
+
+def test_resumen_final_no_es_ok_si_procesadas_menos_que_origen(monkeypatch):
+    """0 fallos declarados pero solo 7 de 10 llegaron a 'hecho' (3 sin tocar):
+    el resumen final no puede ser ok."""
+
+    def _emitir(pcb, pbar, psum):
+        psum.emit("---> SUBPROCESO: Imágenes RGB")
+        pcb.emit(_marcador("Imágenes RGB", 0, 10, n_hechas=7))
+
+    eventos = _run_con_acciones(monkeypatch, [_emitir])
+
+    done = _de_tipo(eventos, "done")[0]
+    assert done["status"] == "errors" and done["errors"] == 3
+
+
+def test_marcador_corrupto_se_cuenta_como_error_visible(monkeypatch):
+    def _emitir(pcb, pbar, psum):
+        psum.emit("---> SUBPROCESO: Imágenes RGB")
+        pcb.emit(STATS_ERRORES_PREFIX + "{no json")
+
+    eventos = _run_con_acciones(monkeypatch, [_emitir])
+
+    assert _de_tipo(eventos, "done")[0]["status"] == "errors"
+    assert any("ilegible" in str(p) for p in _de_tipo(eventos, "log"))
+
+
+def test_regex_de_texto_sigue_de_respaldo_sin_marcador(monkeypatch):
+    def _emitir(pcb, pbar, psum):
+        psum.emit("---> SUBPROCESO: Fase A")
+        psum.emit("Ha habido 4 errores en la compresión.")
+
+    eventos = _run_con_acciones(monkeypatch, [_emitir])
+
+    assert _de_tipo(eventos, "done")[0]["errors"] == 4
+
+
+def test_emitir_errores_fase_escribe_csv_y_marcador(tmp_path):
+    from types import SimpleNamespace
+    from atom_core import apply
+
+    class _Man:
+        def conteo_por_tipos(self, tipos, ejecucion_id=None):
+            return {"pendiente": 0, "en_curso": 0, "hecho": 8, "fallido": 2}
+
+        def fallidas_por_tipos(self, tipos, ejecucion_id=None):
+            return [("a.jpg", "image file is truncated"), ("b.jpg", "otro")]
+
+    emitidos = []
+    cb = SimpleNamespace(emit=emitidos.append)
+    payload = apply.emitir_errores_fase(
+        _Man(), SimpleNamespace(output_folder=str(tmp_path)), cb, "Imágenes RGB", "RGB",
+        frozenset({"RGB"}))
+
+    assert payload["n_fallos"] == 2 and payload["n_total"] == 10
+    csv_txt = (tmp_path / "LOGS" / "ERRORES_RGB.csv").read_text(encoding="utf-8-sig")
+    assert "a.jpg,image file is truncated" in csv_txt
+    marcador = [e for e in emitidos if e.startswith(STATS_ERRORES_PREFIX)]
+    assert len(marcador) == 1
+    assert json.loads(marcador[0][len(STATS_ERRORES_PREFIX):])["csv"].endswith("ERRORES_RGB.csv")
+
+
+def test_marcador_cierre_fuerza_errors_con_fallidas_de_otro_tipo(monkeypatch):
+    """Fallidas no RGB/TERMICA: solo las ve el marcador del cierre."""
+    def _emitir(pcb, pbar, psum):
+        psum.emit("---> SUBPROCESO: Cierre")
+        pcb.emit(STATS_ERRORES_PREFIX + json.dumps({
+            "fase": "Cierre", "cierre": True, "n_fallos": 2, "n_total": 0, "n_hechas": 0,
+            "rutas": ["a", "b"], "rutas_truncadas": False, "csv": None}))
+
+    done = _de_tipo(_run_con_acciones(monkeypatch, [_emitir]), "done")[0]
+    assert done["status"] == "errors" and done["errors"] == 2 and done["n_fallos"] == 2
+
+
+def test_marcador_cierre_no_duplica_lo_ya_contado_por_la_fase(monkeypatch):
+    """RGB cuenta 3 fallos; el cierre ve los mismos 3: el total sigue siendo 3."""
+    def _emitir(pcb, pbar, psum):
+        psum.emit("---> SUBPROCESO: Imágenes RGB")
+        pcb.emit(_marcador("Imágenes RGB", 3, 10))
+        psum.emit("---> SUBPROCESO: Cierre")
+        pcb.emit(STATS_ERRORES_PREFIX + json.dumps({
+            "fase": "Cierre", "cierre": True, "n_fallos": 3, "n_total": 0, "n_hechas": 0,
+            "rutas": [], "rutas_truncadas": False, "csv": None}))
+
+    done = _de_tipo(_run_con_acciones(monkeypatch, [_emitir]), "done")[0]
+    assert done["errors"] == 3 and done["n_fallos"] == 3 and done["n_total"] == 10
+
+
+def test_emitir_errores_fase_cierre_sin_csv_y_filtra_por_run(tmp_path):
+    from types import SimpleNamespace
+    from atom_core import apply
+
+    visto = {}
+
+    class _Man:
+        def conteo_por_tipos(self, tipos, ejecucion_id=None):
+            visto["c"] = (tipos, ejecucion_id)
+            return {"pendiente": 0, "en_curso": 0, "hecho": 5, "fallido": 1}
+
+        def fallidas_por_tipos(self, tipos, ejecucion_id=None):
+            return [("x.jpg", "m")]
+
+    emitidos = []
+    cb = SimpleNamespace(emit=emitidos.append)
+    p = apply.emitir_errores_fase(_Man(), SimpleNamespace(output_folder=str(tmp_path)), cb,
+                                  "Cierre", "CIERRE", None, ejecucion_id=7, cierre=True)
+    assert visto["c"] == (None, 7)
+    assert p["cierre"] is True and p["n_fallos"] == 1 and p["n_total"] == 0 and p["csv"] is None
+    assert not (tmp_path / "LOGS").exists()
+
+
+def _man_falso():
+    class _Man:
+        def conteo_por_tipos(self, tipos, ejecucion_id=None):
+            return {"pendiente": 0, "en_curso": 0, "hecho": 1, "fallido": 1}
+
+        def fallidas_por_tipos(self, tipos, ejecucion_id=None):
+            return [("a.jpg", "m")]
+    return _Man()
+
+
+@pytest.mark.parametrize("nombre,excepcion", [
+    ("aplicar_rgb", RuntimeError("boom")),
+    ("aplicar_termicas", __import__("atom_core.cancelacion", fromlist=["x"]).RunCancelado()),
+])
+def test_marcador_y_csv_salen_en_finally_con_excepcion_o_cancelacion(
+        tmp_path, monkeypatch, nombre, excepcion):
+    from types import SimpleNamespace
+    from atom_core import apply
+
+    def _revienta(*a, **k):
+        raise excepcion
+
+    monkeypatch.setattr(apply, "_aplicar_rgb_impl", _revienta)
+    monkeypatch.setattr(apply, "_aplicar_termicas_impl", _revienta)
+    emitidos = []
+    cb = SimpleNamespace(emit=emitidos.append)
+    with pytest.raises(type(excepcion)):
+        getattr(apply, nombre)(_man_falso(), SimpleNamespace(output_folder=str(tmp_path)),
+                               None, cb, None, None, ejecucion_id=4)
+    assert any(e.startswith(STATS_ERRORES_PREFIX) for e in emitidos)
+    assert list((tmp_path / "LOGS").glob("ERRORES_*.csv"))
+
+
+def test_run_con_reintento_que_vuelve_a_fallar_cuenta_una_vez(monkeypatch):
+    """Tanda previa con 2 fallos + reintento que falla 1: el marcador de ESTE run dice 1."""
+    def _emitir(pcb, pbar, psum):
+        psum.emit("---> SUBPROCESO: Imágenes RGB")
+        pcb.emit(_marcador("Imágenes RGB", 1, 2))
+
+    done = _de_tipo(_run_con_acciones(monkeypatch, [_emitir]), "done")[0]
+    assert done["errors"] == 1 and done["n_fallos"] == 1

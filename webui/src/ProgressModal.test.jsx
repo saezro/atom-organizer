@@ -197,3 +197,29 @@ describe('ProgressModal — botón Cancelar', () => {
     expect(screen.getByText(/Cancelado por el usuario · 3\/10 imágenes organizadas/)).toBeTruthy()
   })
 })
+
+describe('ProgressModal — fallos por fase', () => {
+  it('fase con errors>0 se pinta en rojo con badge "N fallos" y la lista', () => {
+    const { container } = renderModal({
+      phases: [
+        { name: 'Imágenes RGB', status: 'error', duration: 3, errors: 341, nFallos: 341,
+          csv: 'D:/out/LOGS/ERRORES_RGB.csv', rutas: ['a.jpg'] },
+      ],
+    })
+
+    expect(screen.getByText('341 fallos')).toBeTruthy()
+    expect(container.querySelector('.pm-phase.pm-error')).not.toBeNull()
+    expect(container.querySelector('.pm-phase.pm-done')).toBeNull()
+    expect(screen.getByText(/ERRORES_RGB\.csv/)).toBeTruthy()
+  })
+
+  it('resumen final con status errors va en rojo, nunca check verde', () => {
+    const { container } = renderModal({
+      finished: { ok: true, warn: true, fail: true, kind: 'errors', errors: 689, elapsed: 5 },
+    })
+
+    expect(container.querySelector('.pm-status.err')).not.toBeNull()
+    expect(container.querySelector('.pm-status.ok')).toBeNull()
+    expect(screen.getByText(/689 fallos/)).toBeTruthy()
+  })
+})

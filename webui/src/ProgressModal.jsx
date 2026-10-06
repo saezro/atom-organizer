@@ -262,7 +262,21 @@ export default function ProgressModal({
                 <span className="pm-dur">{fmtDur(p.duration)}</span>
               )}
               {p.errors > 0 && (
-                <span className="pm-errbadge">{p.errors} err</span>
+                <span className="pm-errbadge">{p.nFallos ?? p.errors} fallos</span>
+              )}
+              {/* Lista de fallos: CSV con ruta+motivo y primeras rutas. */}
+              {p.errors > 0 && (p.csv || (p.rutas && p.rutas.length > 0)) && (
+                <div className="pm-stats pm-errmsg">
+                  {p.csv && <div>Lista completa: {p.csv}</div>}
+                  {p.rutas && p.rutas.length > 0 && (
+                    <details>
+                      <summary>Ver rutas fallidas</summary>
+                      {p.rutas.map((r) => (
+                        <div key={r}>{r}</div>
+                      ))}
+                    </details>
+                  )}
+                </div>
               )}
               {/* Métricas de disco/CPU de la fase ya cerrada (discreto). */}
               {p.recursos && recursosLine(p.recursos) && (
@@ -319,7 +333,7 @@ export default function ProgressModal({
           <p
             className={
               'pm-status ' +
-              (!finished.ok ? 'err' : finished.warn || finished.cancelled ? 'warn' : 'ok')
+              (!finished.ok || finished.fail ? 'err' : finished.warn || finished.cancelled ? 'warn' : 'ok')
             }
           >
             {finished.cancelled
@@ -329,7 +343,7 @@ export default function ProgressModal({
               : finished.warn
                 ? finished.kind === 'warning'
                   ? `⚠ Terminado con avisos: imágenes fuera del estadillo en SIN_ORDENAR${finished.elapsed != null ? ` · ${fmtDur(finished.elapsed)}` : ''}`
-                  : `⚠ Terminado con ${finished.errors} ${finished.errors === 1 ? 'error' : 'errores'}${finished.elapsed != null ? ` · ${fmtDur(finished.elapsed)}` : ''}`
+                  : `✗ Terminado con ${finished.errors} ${finished.errors === 1 ? 'fallo' : 'fallos'}${finished.elapsed != null ? ` · ${fmtDur(finished.elapsed)}` : ''}${finished.csvs && finished.csvs.length ? ` · Lista: ${finished.csvs.join(', ')}` : ''}`
                 : `✓ Proceso terminado${finished.elapsed != null ? ` · ${fmtDur(finished.elapsed)}` : ''}`}
           </p>
         )}

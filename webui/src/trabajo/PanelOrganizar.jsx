@@ -11,6 +11,8 @@ export default function PanelOrganizar({ origen, estadillos, inspeccion, ready, 
   const [destino, setDestino] = useState('')
   const [destinoFull, setDestinoFull] = useState(null) // {count} si la salida no está vacía NI es un destino organizado
   const [destinoOrganizado, setDestinoOrganizado] = useState(false) // destino con manifiesto válido: se añade otra tanda
+  const [fallidasError, setFallidasError] = useState('') // manifiesto ilegible: se muestra, no se oculta el botón
+  const [fallidas, setFallidas] = useState(0) // filas 'fallido' del manifiesto del destino (mismo origen): "Reintentar fallidas"
   const [rename, setRename] = useState(true)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [adv, setAdv] = useState(() => initialState(ADV_FIELDS))
@@ -65,7 +67,18 @@ export default function PanelOrganizar({ origen, estadillos, inspeccion, ready, 
 
   const canRun = ready && !running && origen && destino && !destinoFull
 
-  function handleRun() {
+  // Re-consulta las fallidas si cambia el origen con el destino ya elegido
+  // (solo cuentan las del MISMO origen).
+  useEffect(() => {
+    if (!destino || !origen) { setFallidas(0); setFallidasError(''); return }
+    let vivo = true
+    api.folderIsEmpty(destino, origen)
+      .then((r) => { if (vivo) { setFallidas(r?.organizado ? (r?.fallidas ?? 0) : 0); setFallidasError(r?.fallidas_error || '') } })
+      .catch((e) => { if (vivo) { setFallidas(0); setFallidasError(String(e?.message || e || 'error')) } })
+    return () => { vivo = false }
+  }, [destino, origen])
+
+  function handleRun(soloFallidas = false) {
     const advanced = buildParams(ADV_FIELDS, adv)
     // Nombre de la inspección ya elegida en el paso anterior, para que el
     // modal de progreso muestre eso (lo que el operador reconoce) en vez del
@@ -77,6 +90,7 @@ export default function PanelOrganizar({ origen, estadillos, inspeccion, ready, 
     // catálogo de la Suite no mande el campo (lib/organizer-catalogo.js).
     onRun('split_images', {
       origen, destino, estadillo: estadillos, rename,
+      ...(soloFallidas ? { solo_fallidas: true } : {}),
       inspeccion: nombreInspeccion, orientacion: inspeccion?.orientacion || '',
     }, advanced)
   }
@@ -89,13 +103,15 @@ export default function PanelOrganizar({ origen, estadillos, inspeccion, ready, 
         value={destino}
         onChange={(p) => {
           setDestino(p)
-          api.folderIsEmpty(p)
+          api.folderIsEmpty(p, origen)
             .then((r) => {
               const organizado = !!r?.organizado
               setDestinoOrganizado(organizado)
               setDestinoFull(r?.empty || organizado ? null : { count: r?.count ?? 0 })
+              setFallidas(organizado ? (r?.fallidas ?? 0) : 0)
+              setFallidasError(r?.fallidas_error || '')
             })
-            .catch(() => { setDestinoFull(null); setDestinoOrganizado(false) })
+            .catch((e) => { setDestinoFull(null); setDestinoOrganizado(false); setFallidas(0); setFallidasError(String(e?.message || e || 'error')) })
         }}
         avisoNoVacia
         destinoOrganizado={destinoOrganizado}
@@ -174,9 +190,26 @@ export default function PanelOrganizar({ origen, estadillos, inspeccion, ready, 
         </div>
       )}
 
-      <button className="btn-run" disabled={!canRun} onClick={handleRun}>
+      <button className="btn-run" disabled={!canRun} onClick={() => handleRun(false)}>
         {running ? 'Procesando…' : 'Ejecutar'}
       </button>
+      {fallidasError && (
+        <span className="field-hint hint-warn">
+          No se pudo comprobar si hay imágenes fallidas que reintentar: {fallidasError}
+        </span>
+      )}
+      {fallidas > 0 && (
+        <>
+          <span className="field-hint hint-warn">
+            Este destino tiene {fallidas} imágenes fallidas del mismo origen. Reintentarlas
+            no toca las ya hechas.
+          </span>
+          <button type="button" className="btn-ghost" disabled={!canRun}
+            onClick={() => handleRun(true)}>
+            Reintentar {fallidas} fallidas
+          </button>
+        </>
+      )}
     </div>
   )
 }

@@ -144,8 +144,8 @@ def measure(image_path: str, raw_out: str, humidity: float, emissivity: float, s
     (`restype = c_int32`, ctypes ya lo devuelve con signo: no hace falta
     convertirlo a mano como sí exige el returncode sin signo del .exe)."""
     dll = _load(sdk_dir)
-    with open(image_path, "rb") as fh:
-        raw = fh.read()
+    from atom_core import lectura_segura  # lectura verificada (DriveFS puede dar lecturas cortas)
+    raw = lectura_segura.leer_completo(image_path)
     buf = (ctypes.c_uint8 * len(raw)).from_buffer_copy(raw)
 
     _ctx = "img={0} bytes={1}".format(os.path.basename(image_path), len(raw))

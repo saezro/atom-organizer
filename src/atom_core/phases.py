@@ -50,7 +50,7 @@ from atom_core.almacen import (
     unir,
 )
 from atom_core.apply import (aplicar_rgb, aplicar_termicas, _formatear_duracion,
-                             _ContadorRotacion)
+                             _ContadorRotacion, emitir_errores_fase)
 from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO
 from external_tools import resource_path
 from version import __version__
@@ -1097,9 +1097,22 @@ class PipelinePhasesMixin:
                 cancelacion.comprobar()
                 _copiar_estadillos_a_salida(cfg, self.organizer_logger_obj.logger)
 
-                resumen_indice = indice_mod.construir_indice(
-                    cfg, adaptador, self.split_images_obj.exif_management_obj, manifiesto,
-                    progress_callback, progress_bar, progress_summarize, ejecucion_id=ejecucion_id)
+                if getattr(self, "solo_fallidas", False):
+                    # Reintento dirigido: sin reescanear el origen. Las filas
+                    # 'fallido' ya traen decisión y rutas; vuelven a 'pendiente'
+                    # y el apply/cierre de siempre las procesa. 'hecho' intacto.
+                    n_reint = manifiesto.reabrir_fallidas(ejecucion_id)
+                    conteo_previo = manifiesto.resumen()
+                    resumen_indice = {
+                        "nuevas": 0, "saltadas": conteo_previo.get("hecho", 0),
+                        "reintentadas": n_reint, "no_disponibles": []}
+                    progress_callback.emit(
+                        f"\nReintentando {n_reint} imagen(es) fallida(s); las "
+                        f"{conteo_previo.get('hecho', 0)} ya hechas no se tocan.\n")
+                else:
+                    resumen_indice = indice_mod.construir_indice(
+                        cfg, adaptador, self.split_images_obj.exif_management_obj, manifiesto,
+                        progress_callback, progress_bar, progress_summarize, ejecucion_id=ejecucion_id)
                 tiempos["Índice"] = time.monotonic() - marca
                 marca = time.monotonic()
                 cancelacion.comprobar()
@@ -1128,7 +1141,8 @@ class PipelinePhasesMixin:
                            controlador=paralelismo_mod.ControladorAdaptativo(
                                maximo=paralelismo_mod.maximo_cpu_bound(),
                                etiqueta="RGB", tope_hdd=paralelismo_mod.TOPE_WORKERS_HDD),
-                           contador_rotacion=contador_rotacion)
+                           contador_rotacion=contador_rotacion,
+                           ejecucion_id=ejecucion_id)
                 tiempos["RGB"] = time.monotonic() - marca
                 marca = time.monotonic()
                 cancelacion.comprobar()
@@ -1148,7 +1162,8 @@ class PipelinePhasesMixin:
                                     maximo=utils.max_io_workers(),
                                     arranque=utils.arranque_io(),
                                     etiqueta="Termicas"),
-                                contador_rotacion=contador_rotacion)
+                                contador_rotacion=contador_rotacion,
+                                ejecucion_id=ejecucion_id)
                 tiempos["Térmicas"] = time.monotonic() - marca
                 marca = time.monotonic()
                 cancelacion.comprobar()
@@ -1173,23 +1188,44 @@ class PipelinePhasesMixin:
                     f"\n[tiempos] Organizado completo: "
                     f"{_formatear_duracion(sum(tiempos.values()))} "
                     f"({desglose}).\n")
-                if problemas:
+                errores_cierre, avisos_cierre = cierre_mod.separar_problemas(problemas)
+                if errores_cierre:
+                    # Imágenes fallidas = ERROR, no aviso. "HA HABIDO ERRORES"
+                    # no casa con los regex de `organize._scan_errors`: el
+                    # estado 'errors' lo fuerza el marcador STATS_ERRORES.
                     progress_callback.emit(
-                        f"\nHA HABIDO AVISOS: el cierre encontró {len(problemas)} "
+                        "\nHA HABIDO ERRORES: el cierre encontró imágenes que "
+                        "NO se han procesado:\n")
+                    for problema in errores_cierre:
+                        progress_callback.emit(f"  - {problema[len(cierre_mod.PREFIJO_ERROR):]}\n")
+                    self.organizer_logger_obj.logger.error(
+                        "Cierre con %d error(es): %s", len(errores_cierre), errores_cierre)
+                if avisos_cierre:
+                    progress_callback.emit(
+                        f"\nHA HABIDO AVISOS: el cierre encontró {len(avisos_cierre)} "
                         "problema(s) al verificar el manifiesto contra disco:\n")
-                    for problema in problemas:
+                    for problema in avisos_cierre:
                         progress_callback.emit(f"  - {problema}\n")
                     self.organizer_logger_obj.logger.warning(
-                        "Cierre con %d problema(s): %s", len(problemas), problemas)
-                elif (resumen_indice or {}).get("no_disponibles"):
-                    no_disp = resumen_indice["no_disponibles"]
+                        "Cierre con %d problema(s): %s", len(avisos_cierre), avisos_cierre)
+                # Marcador propio del cierre: fallidas de CUALQUIER tipo de ESTE
+                # run, para que el estado final sea 'errors' aunque no sean RGB/TERMICA.
+                try:
+                    emitir_errores_fase(manifiesto, cfg, progress_callback, "Cierre",
+                                        "CIERRE", None, ejecucion_id=ejecucion_id, cierre=True)
+                except Exception as excepcion_marcador:  # noqa: BLE001
+                    progress_callback.emit(
+                        f"\nERROR no se pudo emitir el marcador de errores del cierre: "
+                        f"{excepcion_marcador}\n")
+                no_disp = (resumen_indice or {}).get("no_disponibles") or []
+                if no_disp:
                     progress_callback.emit(
                         f"\nHA HABIDO AVISOS: {len(no_disp)} fichero(s) no estaban "
                         "disponibles (sin respuesta del origen, p. ej. Drive sin "
                         "descargar) y NO se han organizado:\n")
                     for ruta in no_disp:
                         progress_callback.emit(f"  - {ruta}\n")
-                else:
+                elif not problemas:
                     progress_callback.emit("\nOrganizado completado sin problemas.\n")
             except cancelacion.RunCancelado as cancelada:
                 # Cancelado: se sale SIN cierre (CSVs/verificación darían las

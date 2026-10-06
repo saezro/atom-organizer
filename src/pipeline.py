@@ -22,6 +22,7 @@ import datetime as dt
 from datetime import timedelta
 from dataclasses import dataclass
 import gc
+import io
 import glob
 import logging
 import os
@@ -55,7 +56,7 @@ import sys
 import external_tools
 import dji_worker_pool
 import dji_irp_windows
-from atom_core import almacen, rjpeg, sharding
+from atom_core import almacen, rjpeg, sharding, lectura_segura
 
 
 def _is_windows() -> bool:
@@ -660,7 +661,8 @@ class CompressImage:
         destino_gcs = almacen.es_uri_gcs(output_folder)
         try:
             with _origen_local_split(almacen.unir(input_folder, image_name), ruta_local) as ruta_local_origen:
-                img = Image.open(ruta_local_origen)
+                # Lectura verificada y PIL sobre esos mismos bytes: nada de leer dos veces.
+                img = Image.open(io.BytesIO(lectura_segura.leer_completo(ruta_local_origen)))
                 # print("Datos EXIF sin modificar")
                 # print(exif_management.GeneralInformationFromImage().get_all_exif_data(os.path.join(input_folder, image_name)))
 
@@ -3582,7 +3584,7 @@ class SplitImages:
                 # el basename de la imagen, y el nombre aleatorio del temporal lo
                 # rompería.
                 with almacen.abrir_para_lectura(almacen.unir(input_folder, image_name)) as ruta_local:
-                    shutil.copy2(str(ruta_local), os.path.join(staging_dir, image_name))
+                    lectura_segura.copiar_completo(str(ruta_local), os.path.join(staging_dir, image_name))
             except BaseException:
                 shutil.rmtree(staging_dir, ignore_errors=True)
                 raise
@@ -3607,6 +3609,16 @@ class SplitImages:
             # comparar el fichero de salida contra el original de la tarjeta sin
             # pedirle nada al usuario. Es SOLO diagnóstico: no aborta la conversión,
             # el conversor sigue teniendo la última palabra.
+            # Lectura verificada ANTES del conversor: en un montaje DriveFS un fichero
+            # sin hidratar se lee corto sin error del SO y dirp responde -7. Si no se
+            # consigue el fichero entero se registra el fallo con el motivo claro.
+            try:
+                _datos_origen = lectura_segura.leer_completo(os.path.join(disk_input_folder, image_name))
+            except lectura_segura.LecturaIncompleta as _li:
+                self.organizer_logger.logger.error(str(_li))
+                progress_callback.emit("\nERROR: {0}: {1}\n".format(image_name, _li))
+                self._register_image_error(os.path.join(disk_input_folder, image_name))
+                return
             _rjpeg_info = rjpeg.inspect_rjpeg(os.path.join(disk_input_folder, image_name))
             _rjpeg_linea = rjpeg.describe(_rjpeg_info, image_name)
             progress_callback.emit("\n{0}\n".format(_rjpeg_linea))
@@ -3684,6 +3696,22 @@ class SplitImages:
                     return
                 # El rc va con signo: sin esto el -16 del SDK salía como 4294967280.
                 dji_rc = rjpeg.rc_con_signo(proc.returncode)
+                _tras_reintento_7 = False
+                if dji_rc == -7:
+                    # -7 = "create R-JPEG dirp handle failed". El fichero ya está verificado
+                    # completo arriba: se reintenta UNA vez antes de darlo por fallido.
+                    try:
+                        _datos_origen = lectura_segura.leer_completo(
+                            os.path.join(disk_input_folder, image_name))
+                        proc = subprocess.run(
+                            subproceso, capture_output=True, text=True, errors="replace",
+                            stdin=subprocess.DEVNULL, cwd=os.path.dirname(dji_utility) or None,
+                            creationflags=0x08000000)
+                        dji_rc = rjpeg.rc_con_signo(proc.returncode)
+                        _tras_reintento_7 = (dji_rc == -7)
+                    except lectura_segura.LecturaIncompleta as _li:
+                        proc = subprocess.CompletedProcess(subproceso, 1, "", str(_li))
+                        dji_rc = -7
                 dji_salida = rjpeg.resumir_salida_sdk(
                     (proc.stderr or proc.stdout or "").strip()[:300])
                 if dji_rc != 0:
@@ -3698,6 +3726,11 @@ class SplitImages:
                     progress_callback.emit(
                         "\nEl conversor DJI ha fallado con {0}: código {1}. Salida: {2}\n".format(
                             image_name, dji_rc, dji_salida or "(vacía)"))
+                    if _tras_reintento_7:
+                        _motivo_7 = ("dirp -7 tras reintento con fichero completo ({0} bytes)"
+                                     .format(len(_datos_origen)))
+                        self.organizer_logger.logger.error("{0}: {1}".format(image_name, _motivo_7))
+                        progress_callback.emit("  -> {0}.\n".format(_motivo_7))
                     # El -16 (0xFFFFFFF0) es `create R-JPEG dirp handle failed`: el SDK
                     # rechaza la imagen. Traducirlo a las dos únicas causas posibles
                     # ahorra la ronda de preguntas que costó el caso del 28/07.
@@ -3721,7 +3754,8 @@ class SplitImages:
                 self._dji_measure_to_raw_linux(
                     os.path.join(disk_input_folder, image_name), raw_path, humidity, emissivity, lib_dir)
             try:
-                img = Image.open(os.path.join(disk_input_folder, image_name))
+                # Mismos bytes verificados que se comprobaron antes del conversor.
+                img = Image.open(io.BytesIO(_datos_origen))
             except FileNotFoundError as f:
                 self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
                 self.organizer_logger.logger.error(f"ERROR: No se encuentra la imagen {os.path.join(disk_input_folder, image_name)} para que PIL la pueda abrir.")
@@ -3743,6 +3777,7 @@ class SplitImages:
         
             size = img.size
             img.close()
+            _datos_origen = None  # liberar: puede ser un R-JPEG de decenas de MB
             self.organizer_logger.logger.info(f"Procesando imagen {os.path.join(disk_input_folder, image_name)} con tamaño {size}")
 
             # El código de debajo sería para probar con imageio
@@ -3750,7 +3785,8 @@ class SplitImages:
             # exif_data = imageio.get_exif_data(input_path)
 
             try:
-                f = open(raw_path, "rb")
+                # Lectura verificada del .raw (tamaño del SO vs bytes leídos).
+                data = lectura_segura.leer_completo(raw_path)
             except FileNotFoundError as file_not_found:
                 # Un .raw ausente con rc == 0 es un fallo SILENCIOSO (el conversor se dio
                 # por bueno sin escribir nada) y apunta a un sitio muy distinto que un
@@ -3774,8 +3810,6 @@ class SplitImages:
                 # buscar un fichero inexistente en vez de a la térmica que falló.
                 self._register_image_error(os.path.join(disk_input_folder, image_name))
                 return
-
-            data = f.read()
 
             # self.organizer_logger.logger.info("The length of the data is {0}".format(len(data)))
 
@@ -3837,7 +3871,6 @@ class SplitImages:
             im = Image.fromarray(arr)
             # Buscar tiffinfo como parámetro para save.
             im.save(os.path.join(disk_output_folder, os.path.splitext(image_name)[0] + ".tiff"), format='TIFF')
-            f.close()
             im.close()
             # os.remove(raw_path)
             # Intentamos eliminar el .raw de forma segura. En Windows puede dar PermissionError si
@@ -4495,7 +4528,7 @@ class RGBProcessing:
                 self.organizer_logger.logger.debug("Copiando imagen RGB")
                 for image in images:
                     output_name = new_names[image] if new_names[image] != "" else image
-                    shutil.copy2(os.path.join(input_folder, image), os.path.join(output_folder, "RGB", output_name))
+                    lectura_segura.copiar_completo(os.path.join(input_folder, image), os.path.join(output_folder, "RGB", output_name))
                     _advance_progress()
 
 
@@ -4524,7 +4557,7 @@ class RGBProcessing:
             self.compress_image_obj.compress_image(image, input_folder,os.path.join(output_folder,"RGB"), quality, new_name, progress_callback=progress_callback, aerotools_devices=True)
         else:
             self.organizer_logger.logger.debug("Copiando imagen RGB")
-            shutil.copy2(os.path.join(input_folder, image),os.path.join(os.path.join(output_folder,"RGB"), new_name))                
+            lectura_segura.copiar_completo(os.path.join(input_folder, image), os.path.join(os.path.join(output_folder, "RGB"), new_name))                
     
     def rename_and_move_logs(self, input_folder: str, path_estadillo: str, output_folder: str, seconds_range: float, progress_callback, progress_bar):
         """
