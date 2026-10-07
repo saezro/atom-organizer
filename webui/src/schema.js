@@ -46,8 +46,8 @@ export const AEROTOOLS = [
       { name: 'aerotools_rgb', type: 'bool', label: 'RGB', default: true },
       { name: 'aerotools_termica', type: 'bool', label: 'Térmicas', default: true },
       { name: 'aerotools_max_error', type: 'number', label: 'Mín. imágenes que deben girar igual (%)', default: '50' },
-      { name: 'aerotools_add_to_angle', type: 'number', label: 'Margen Yaw + (grados)', default: '80' },
-      { name: 'aerotools_subs_to_angle', type: 'number', label: 'Margen Yaw − (grados)', default: '80' },
+      { name: 'aerotools_add_to_angle', type: 'number', label: 'Margen Yaw + (grados)', default: '45' },
+      { name: 'aerotools_subs_to_angle', type: 'number', label: 'Margen Yaw − (grados)', default: '45' },
     ],
   },
   {
@@ -113,8 +113,8 @@ export const OTROS = [
       { name: 'choose_mode_auto', type: 'bool', label: 'Modo automático', default: true },
       { name: 'rotate_90', type: 'bool', label: 'Rotar 90°', default: false },
       { name: 'max_error', type: 'number', label: 'Mín. imágenes que deben girar igual (%)', default: '50' },
-      { name: 'add_to_angle', type: 'number', label: 'Margen Yaw + (grados)', default: '80' },
-      { name: 'subs_to_angle', type: 'number', label: 'Margen Yaw − (grados)', default: '80' },
+      { name: 'add_to_angle', type: 'number', label: 'Margen Yaw + (grados)', default: '45' },
+      { name: 'subs_to_angle', type: 'number', label: 'Margen Yaw − (grados)', default: '45' },
     ],
   },
   {
@@ -234,8 +234,8 @@ export const SPLIT_ADVANCED = [
       { name: 'choose_mode_auto', type: 'bool', label: 'Modo automático', default: true },
       { name: 'gen_thumbnails_rotate_90', type: 'bool', label: 'Rotar 90° (modo manual)', default: false },
       { name: 'gen_thumbnails_max_error', type: 'number', label: 'Mín. imágenes que deben girar igual (%)', default: '50' },
-      { name: 'gen_thumbnails_add_to_angle', type: 'number', label: 'Margen Yaw + (grados)', default: '80' },
-      { name: 'gen_thumbnails_subs_to_angle', type: 'number', label: 'Margen Yaw − (grados)', default: '80' },
+      { name: 'gen_thumbnails_add_to_angle', type: 'number', label: 'Margen Yaw + (grados)', default: '45' },
+      { name: 'gen_thumbnails_subs_to_angle', type: 'number', label: 'Margen Yaw − (grados)', default: '45' },
     ],
   },
   {

@@ -6,7 +6,7 @@ yaw de siempre (`atom_core.indice._consenso_de_angulo_por_vuelo`).
 
 Yaws de este test: de una planta real (orientacion=
 'Horizontal'), leídos del índice real de la organización del 2026-09-28
-(`INDICE_<PLANTA>_ORGANIZADO_PRUEBA.xlsx`, hoja `Imagenes`): PB1_V1 (yaw~16.2,
+(`INDICE_<PLANTA>_ORGANIZADO_PRUEBA.xlsx`, hoja `Imagenes`): PB1_V1 (yaw~70.0,
 860 imágenes → 90º con la regla vieja), PB2_V1 (yaw~-52.5, 1120 imágenes →
 270º con la regla vieja) y GENERALES/<PLANTA> (yaw~18.4, 6 imágenes → 90º con la
 regla vieja). Con `orientacion='Horizontal'` las tres deben quedar en 0.
@@ -87,10 +87,10 @@ def _cfg(tmp_path, **overrides):
         cropping_rgb=False, cropping_mode_auto=True, crop_percentage="50",
         gen_meta_location=False, gen_thumbnails=False, seconds_range=5.0,
         include_v=True, calculate_proyected_distance=False, flight_height=0.0,
-        # Bandas de una planta Horizontal (`utils.ROTATION_YAW_MARGIN=80`, ver la
-        # task): yaw~16.2 y yaw~-52.5 caen dentro del margen de giro.
-        gen_thumbnails_rotate_90=False, gen_thumbnails_add_to_angle=80,
-        gen_thumbnails_max_error=50, gen_thumbnails_subs_to_angle=80,
+        # Bandas de una planta Horizontal (`utils.ROTATION_YAW_MARGIN=45`, ver la
+        # task): yaw~70.0 y yaw~-52.5 caen dentro del margen de giro (45: (45,135) y (-135,-45)).
+        gen_thumbnails_rotate_90=False, gen_thumbnails_add_to_angle=45,
+        gen_thumbnails_max_error=50, gen_thumbnails_subs_to_angle=45,
         choose_mode_auto=True, gen_thumbnails_rgb=True, gen_thumbnails_termica=True,
         convert_to_tif=False, convert_to_tif_dron_selector="",
         convert_to_tif_emissivity=0.95, convert_to_tif_humidity=70.0,
@@ -121,7 +121,7 @@ def _manifiesto(tmp_path, nombre="manifiesto.db"):
 
 
 def _preparar_dos_vuelos_planta_e(tmp_path, **overrides):
-    """PB1_V1 (yaw~16.2) y PB2_V1 (yaw~-52.5), los dos vuelos de una planta Horizontal
+    """PB1_V1 (yaw~70.0) y PB2_V1 (yaw~-52.5), los dos vuelos de una planta Horizontal
     que en el organizado del 2026-09-28 giraron por consenso de yaw (90º y
     270º respectivamente). Una imagen de cada uno basta: el consenso por
     mayoría con una sola imagen por vuelo ya decide la banda."""
@@ -145,7 +145,7 @@ def _preparar_dos_vuelos_planta_e(tmp_path, **overrides):
             ruta_pb1: dt.datetime(2026, 9, 11, 12, 51, 38),
             ruta_pb2: dt.datetime(2026, 9, 11, 13, 30, 0),
         },
-        yaws={ruta_pb1: 16.2, ruta_pb2: -52.5},
+        yaws={ruta_pb1: 70.0, ruta_pb2: -52.5},
     )
     manifiesto = _manifiesto(tmp_path)
     construir_indice(cfg, pipeline, exif, manifiesto, _Signal(), _Signal(), _Signal())
@@ -198,7 +198,7 @@ def test_orientacion_ausente_mantiene_comportamiento_actual_y_avisa(tmp_path):
             ruta_pb1: dt.datetime(2026, 9, 11, 12, 51, 38),
             ruta_pb2: dt.datetime(2026, 9, 11, 13, 30, 0),
         },
-        yaws={ruta_pb1: 16.2, ruta_pb2: -52.5},
+        yaws={ruta_pb1: 70.0, ruta_pb2: -52.5},
     )
     manifiesto = _manifiesto(tmp_path)
     progress_callback = _Signal()
