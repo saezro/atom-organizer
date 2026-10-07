@@ -127,7 +127,7 @@ function conectarEventos() {
   // acepta como alternativa para clientes no loopback.
   const url = tokenRemotoActual ? `/events?t=${encodeURIComponent(tokenRemotoActual)}` : '/events'
   fuenteEventos = new EventSource(url)
-  for (const canal of ['atom:progress', 'atom:update', 'atom:cloud', 'atom:analisis', 'atom:control_carpeta', 'atom:control_ui']) {
+  for (const canal of ['atom:progress', 'atom:update', 'atom:cloud', 'atom:resultado', 'atom:analisis', 'atom:control_carpeta', 'atom:control_ui']) {
     fuenteEventos.addEventListener(canal, (e) => {
       window.dispatchEvent(new CustomEvent(canal, { detail: JSON.parse(e.data) }))
     })
@@ -361,6 +361,11 @@ export const api = {
     call('cloud_upload', folder, force ?? false, prefix ?? null, inspeccionId ?? null,
         confirmarSubidaExtra ?? false),
   cloudCancel: () => call('cloud_cancel'),
+  // Subida del RESULTADO organizado a plantas_pv_nl (atom_core/subida_resultado.py).
+  // Progreso por el canal propio `atom:resultado` (onResultado), nunca por `atom:cloud`.
+  resultadoSubir: (folder, inspeccionId, modo, seguirEnNormal) =>
+    call('resultado_subir', folder, inspeccionId ?? null, modo ?? 'urgencia', seguirEnNormal ?? false),
+  resultadoCancelar: () => call('resultado_cancelar'),
   // Encadenada tras una subida al bucket completada con éxito, solo en el
   // destino «nube» (Task cablear PanelSubida): lanza la organización del lado
   // servidor. Fail-open: {ok:false, error} NO significa que la subida haya
@@ -516,6 +521,17 @@ export function onCloud(handler) {
   const wrapped = (e) => handler(e.detail)
   window.addEventListener('atom:cloud', wrapped)
   return () => window.removeEventListener('atom:cloud', wrapped)
+}
+
+// Eventos de la subida del resultado (Python → JS), canal propio `atom:resultado`:
+//   kind 'start'  -> modo
+//   kind 'estado' -> modo, fase ('urgentes'|'resto'), urgentes{hechos,total}, resto{hechos,total}, mbps, eta
+//   kind 'done'   -> ok, cancelled, modo, continua, urgentes, resto, conflictos[[ruta,motivo]], fallidas[[ruta,error]], avisos[], sin_clasificar
+//   kind 'aviso' / 'error' -> text
+export function onResultado(handler) {
+  const wrapped = (e) => handler(e.detail)
+  window.addEventListener('atom:resultado', wrapped)
+  return () => window.removeEventListener('atom:resultado', wrapped)
 }
 
 // Eventos del análisis en hilo (Python → JS), canal propio:

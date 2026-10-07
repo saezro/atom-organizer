@@ -9,7 +9,10 @@ vi.mock('../bridge', () => ({
     detectSuffixesStart: vi.fn().mockResolvedValue({ started: true }),
     analisisReset: vi.fn().mockResolvedValue({ ok: true }),
     analisisCancel: vi.fn().mockResolvedValue({ ok: true }),
+    resultadoSubir: vi.fn().mockResolvedValue({ started: true }),
+    resultadoCancelar: vi.fn().mockResolvedValue({ ok: true }),
   },
+  onResultado: () => () => {},
   onAnalisis: (h) => {
     const w = (e) => h(e.detail)
     window.addEventListener('atom:analisis', w)

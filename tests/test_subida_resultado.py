@@ -398,3 +398,28 @@ def test_proveedor_puede_sobrescribir_y_pide_ambito_resultado():
     assert p.bucket == sr.BUCKET_RESULTADO
     assert p.ambito == sr.AMBITO_RESULTADO and p.inspeccion_id == 7
     assert p.prefijo_destino() == PREFIJO
+
+
+# ---- decidir_automatica -----------------------------------------------------------
+def _params(**kw):
+    return {"destino": "/salida", "inspeccion_id": 7, **kw}
+
+
+def test_decidir_automatica_ok_y_warning_si_hay_inspeccion():
+    for status in ("ok", "warning"):
+        assert sr.decidir_automatica("split_images", _params(), {"status": status}) == (True, "")
+
+
+def test_decidir_automatica_no_aplica_en_silencio_si_no_es_el_caso():
+    assert sr.decidir_automatica("otra_task", _params(), {"status": "ok"}) == (False, "")
+    assert sr.decidir_automatica("split_images", _params(), {"status": "cancelled"}) == (False, "")
+    assert sr.decidir_automatica("split_images", _params(), {"status": "error"}) == (False, "")
+    assert sr.decidir_automatica("split_images", _params(), None) == (False, "")
+    assert sr.decidir_automatica("split_images", _params(subir_resultado=False), {"status": "ok"}) == (False, "")
+
+
+def test_decidir_automatica_sin_inspeccion_o_sin_salida_avisa():
+    ok, motivo = sr.decidir_automatica("split_images", _params(inspeccion_id=None), {"status": "ok"})
+    assert ok is False and "inspección" in motivo
+    ok, motivo = sr.decidir_automatica("split_images", {"inspeccion_id": 7}, {"status": "ok"})
+    assert ok is False and "carpeta de salida" in motivo

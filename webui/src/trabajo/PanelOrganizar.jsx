@@ -3,6 +3,7 @@ import { api, onAnalisis } from '../bridge'
 import { SPLIT_ADVANCED } from '../schema'
 import { Field, initialState, buildParams } from '../TaskBlock'
 import PasoCarpeta from './PasoCarpeta'
+import PanelResultado from './PanelResultado'
 
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
 const ADV_FIELDS = SPLIT_ADVANCED.flatMap((s) => s.fields)
@@ -92,6 +93,7 @@ export default function PanelOrganizar({ origen, estadillos, inspeccion, ready, 
       origen, destino, estadillo: estadillos, rename,
       ...(soloFallidas ? { solo_fallidas: true } : {}),
       inspeccion: nombreInspeccion, orientacion: inspeccion?.orientacion || '',
+      inspeccion_id: inspeccion?.id ?? null,
     }, advanced)
   }
 
@@ -210,6 +212,7 @@ export default function PanelOrganizar({ origen, estadillos, inspeccion, ready, 
           </button>
         </>
       )}
+      {destino && <PanelResultado carpeta={destino} inspeccionId={inspeccion?.id ?? null} ready={ready} />}
     </div>
   )
 }
