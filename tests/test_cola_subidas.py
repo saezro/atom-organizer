@@ -102,3 +102,22 @@ def test_encolar_concurrente_no_pierde_jobs(tmp_path, monkeypatch):
 
     assert not errores
     assert len(cola_subidas.pendientes(ruta=ruta)) == n_hilos
+
+
+def test_tipo_por_defecto_crudo_y_resultado_no_se_mezclan(tmp_path):
+    ruta = tmp_path / "cola.json"
+    a = cola_subidas.encolar("/datos/salida", "@resultado", 7, ruta=ruta)
+    b = cola_subidas.encolar("/datos/salida", "@resultado", 7, tipo=cola_subidas.TIPO_RESULTADO, ruta=ruta)
+    assert a["tipo"] == "crudo" and b["tipo"] == "resultado"
+    assert a["id"] != b["id"]
+    # Idempotente por tipo.
+    assert cola_subidas.encolar("/datos/salida", "@resultado", 7, tipo="resultado", ruta=ruta)["id"] == b["id"]
+    assert len(cola_subidas.pendientes(ruta=ruta)) == 2
+
+
+def test_jobs_antiguos_sin_tipo_se_leen_como_crudo(tmp_path):
+    import json
+    ruta = tmp_path / "cola.json"
+    ruta.write_text(json.dumps([{"id": "x", "folder": "/f", "prefix": "P", "inspeccion_id": 1,
+                                 "creado_en": 0, "intentos": 0, "ultimo_error": ""}]), encoding="utf-8")
+    assert cola_subidas.pendientes(ruta=ruta)[0]["tipo"] == "crudo"
