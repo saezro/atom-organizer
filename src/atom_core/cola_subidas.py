@@ -32,6 +32,9 @@ except ImportError:  # pragma: no cover - Windows
 
 NOMBRE_COLA = "cola_subidas.json"
 
+TIPO_CRUDO = "crudo"
+TIPO_RESULTADO = "resultado"
+
 # Serializa encolar/descartar/marcar_intento dentro de este proceso: son
 # read-modify-write completos sobre el JSON y dos hilos del kiosco
 # (ThreadingHTTPServer) pueden entrelazarse y pisarse el _escribir del otro
@@ -44,10 +47,13 @@ def _ruta_cola() -> Path:
     return user_data_dir() / NOMBRE_COLA
 
 
-def _id_job(folder: str, prefix: str) -> str:
+def _id_job(folder: str, prefix: str, tipo: str = TIPO_CRUDO) -> str:
     """Un trabajo se identifica por carpeta resuelta + destino: pulsar 'subir'
     dos veces sobre lo mismo es un trabajo, no dos."""
-    clave = f"{Path(folder).resolve()}|{prefix}"
+    if tipo == TIPO_CRUDO:
+        clave = f"{Path(folder).resolve()}|{prefix}"
+    else:
+        clave = f"{tipo}|{Path(folder).resolve()}|{prefix}"
     return hashlib.sha256(clave.encode("utf-8")).hexdigest()[:16]
 
 
@@ -64,7 +70,10 @@ def _leer(ruta: Path) -> list[dict]:
         return []
     if not isinstance(datos, list):
         return []
-    return [j for j in datos if isinstance(j, dict) and "id" in j]
+    jobs = [j for j in datos if isinstance(j, dict) and "id" in j]
+    for j in jobs:
+        j.setdefault("tipo", TIPO_CRUDO)
+    return jobs
 
 
 class _SeccionCritica:
@@ -132,11 +141,11 @@ def _escribir(ruta: Path, jobs: list[dict]) -> None:
 
 
 def encolar(folder: str, prefix: str, inspeccion_id: int | None = None,
-            *, ruta: Path | None = None) -> dict:
+            *, tipo: str = TIPO_CRUDO, ruta: Path | None = None) -> dict:
     ruta = ruta or _ruta_cola()
     with _SeccionCritica(ruta):
         jobs = _leer(ruta)
-        job_id = _id_job(folder, prefix)
+        job_id = _id_job(folder, prefix, tipo)
         for j in jobs:
             if j["id"] == job_id:
                 return j
@@ -145,6 +154,7 @@ def encolar(folder: str, prefix: str, inspeccion_id: int | None = None,
             "folder": str(folder),
             "prefix": str(prefix),
             "inspeccion_id": inspeccion_id,
+            "tipo": tipo,
             "creado_en": time.time(),
             "intentos": 0,
             "ultimo_error": "",

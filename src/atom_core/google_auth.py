@@ -97,6 +97,21 @@ SCOPES = ("openid", "email", "profile", SCOPE_STORAGE_RW)
 # puede empezar con 20 s de vida por delante y morir a mitad.
 EXPIRY_MARGIN = 120
 
+# El token del ámbito `resultado` dura 900 s (tope no-atom de la Suite) y una subida
+# de varios GB lo usa durante horas: se renueva con más margen que el genérico para
+# que no caduque a mitad de un trozo de 16 MiB en una línea lenta.
+RENOVAR_ANTES_RESULTADO_S = 300
+
+_MENSAJES_RESULTADO = {
+    "inspeccion-sin-planta-o-anio": ("La inspección no tiene planta o año asignados en ATOM Suite: "
+                                     "complétalos allí antes de subir el resultado."),
+    "inspeccion-sin-tipo": "La inspección no tiene tipo asignado en ATOM Suite.",
+    "planta-nombre-invalido": ("El nombre de la planta tiene caracteres no permitidos para una "
+                               "carpeta del bucket: corrígelo en ATOM Suite."),
+    "inspeccion-no-encontrada": "La inspección no existe en ATOM Suite.",
+    "solo-sesion": "Subir el resultado exige entrar con usuario y contraseña (no con Google ni QR).",
+}
+
 TIMEOUT = 30
 LOGIN_TIMEOUT = 300  # 5 min para completar el consentimiento en el navegador
 
@@ -870,6 +885,13 @@ class GoogleAuth:
                               ambito="estadillos")
             return self._gcs_prefijos[f"@estadillos:{planta_id}:{inspeccion_id}"]
 
+    def prefijo_resultado(self, inspeccion_id: int | None) -> str:
+        """Prefijo de destino del resultado (`<PLANTA>/INSPECCIONES/<TIPO>/<AÑO>/`),
+        decidido por la Suite (modo password). Pide el token si aún no se conoce."""
+        with self._lock:
+            self.access_token(inspeccion_id=inspeccion_id, ambito="resultado")
+            return self._gcs_prefijos[f"@resultado:{inspeccion_id}"]
+
     def _gcs_token_password(self, prefix, inspeccion_id, force_refresh, *,
                             planta_id=None, ambito=None) -> str:
         """Token de GCS por prefijo, pedido a la Suite con la `sesion` (Bearer).
@@ -878,19 +900,27 @@ class GoogleAuth:
         (sin prefijo): el prefijo lo decide el servidor y se guarda en
         `_gcs_prefijos`. La Suite exige una inspección visible y vigente."""
         if ambito:
-            if ambito != "estadillos":
+            if ambito == "resultado":
+                if inspeccion_id is None:
+                    raise AuthError(
+                        "Falta el id de la inspección para subir el resultado: "
+                        "elige la inspección en la lista.")
+                clave = f"@resultado:{inspeccion_id}"
+                cuerpo_req = {"inspeccion_id": inspeccion_id, "ambito": ambito}
+            elif ambito == "estadillos":
+                if planta_id is None:
+                    raise AuthError(
+                        "Falta el id de la planta para acceder a los estadillos: "
+                        "elige la inspección en la lista.")
+                if inspeccion_id is None:
+                    raise AuthError(
+                        "Falta el id de la inspección para acceder a los estadillos: "
+                        "elige la inspección en la lista.")
+                clave = f"@estadillos:{planta_id}:{inspeccion_id}"
+                cuerpo_req = {"planta_id": planta_id, "inspeccion_id": inspeccion_id,
+                              "ambito": ambito}
+            else:
                 raise AuthError(f"Ámbito de GCS no soportado: {ambito}")
-            if planta_id is None:
-                raise AuthError(
-                    "Falta el id de la planta para acceder a los estadillos: "
-                    "elige la inspección en la lista.")
-            if inspeccion_id is None:
-                raise AuthError(
-                    "Falta el id de la inspección para acceder a los estadillos: "
-                    "elige la inspección en la lista.")
-            clave = f"@estadillos:{planta_id}:{inspeccion_id}"
-            cuerpo_req = {"planta_id": planta_id, "inspeccion_id": inspeccion_id,
-                          "ambito": ambito}
         else:
             if not prefix:
                 raise AuthError("Falta el prefijo para pedir acceso a GCS")
@@ -899,9 +929,10 @@ class GoogleAuth:
         if self.sesion_token is None:
             self._olvidar_local()
             raise AuthError("Sesión caducada, vuelve a entrar con tu usuario")
+        margen = RENOVAR_ANTES_RESULTADO_S if ambito == "resultado" else EXPIRY_MARGIN
         en_cache = self._gcs_cache.get(clave)
         if (en_cache and not force_refresh
-                and time.time() < en_cache[1] - EXPIRY_MARGIN
+                and time.time() < en_cache[1] - margen
                 and (not ambito or clave in self._gcs_prefijos)):
             return en_cache[0]
         req = urllib.request.Request(
@@ -919,6 +950,12 @@ class GoogleAuth:
                 self._olvidar_local()
                 raise AuthError(
                     "Sesión caducada, vuelve a entrar con tu usuario") from exc
+            if ambito == "resultado":
+                if exc.code == 403:
+                    raise AuthError(f"Acceso denegado a GCS: {detalle}") from exc
+                if exc.code in (400, 404, 422):
+                    raise AuthError(_MENSAJES_RESULTADO.get(
+                        detalle, f"ATOM Suite rechazó la petición ({exc.code}): {detalle}")) from exc
             if exc.code == 403:
                 raise AuthError(f"Acceso denegado a GCS: {detalle}") from exc
             if exc.code == 404 and ambito:
@@ -945,7 +982,7 @@ class GoogleAuth:
             raise AuthError("ATOM Suite no pudo emitir un access_token.")
         if ambito:
             if not datos.get("prefix"):
-                raise AuthError("ATOM Suite no devolvió el prefijo de estadillos.")
+                raise AuthError("ATOM Suite no devolvió el prefijo de destino.")
             self._gcs_prefijos[clave] = datos["prefix"]
         caduca = time.time() + float(datos.get("expires_in", 3600))
         self._gcs_cache[clave] = (datos["access_token"], caduca)
