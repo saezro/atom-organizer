@@ -157,3 +157,189 @@ def seleccionar(destino, prefijo: str) -> Seleccion:
     if sel.sin_clasificar:
         sel.avisos.append(f"{sel.sin_clasificar} fichero(s) sin clasificar: no se suben (ver log).")
     return sel
+
+
+# ---------------------------------------------------------------------------
+# Parte 2: partición, proveedor y subida
+# ---------------------------------------------------------------------------
+
+class SubidaResultadoError(RuntimeError):
+    """Fallo de la subida del resultado que la UI debe enseñar tal cual."""
+
+
+@dataclass
+class Particion:
+    pendientes: list = field(default_factory=list)
+    hechos: list = field(default_factory=list)
+    conflictos: list = field(default_factory=list)  # [(remote, motivo)]
+
+
+def _mismo_contenido(item: cu.UploadItem, remoto: cu.RemoteObject, manifest: cu.Manifest) -> bool:
+    """¿El objeto del bucket ES este fichero? Tamaño primero (gratis), luego MD5.
+
+    Evita releer el disco: si el manifiesto recuerda el MD5 de cuando se subió y el
+    fichero no ha cambiado (tamaño+mtime), basta compararlo con el del bucket. Un
+    objeto sin `md5Hash` (compuesto) solo se puede comparar por tamaño."""
+    if remoto.size != item.size:
+        return False
+    if not remoto.md5:
+        return True
+    if manifest.is_done(item) and manifest.md5_de(item) == remoto.md5:
+        return True
+    return cu._file_md5_b64(item.local) == remoto.md5
+
+
+def particionar(items, remotos: dict, manifest: cu.Manifest, prefijo: str) -> Particion:
+    """Parte `items` en pendientes / hechos / conflictos cruzando local y bucket.
+
+    - No existe en el bucket → pendiente.
+    - Mismo contenido → hecho (no se resube nada).
+    - Contenido distinto: si es sobrescribible (`CSVs/`, `ESTADILLOS/`, `INDICE_*`) →
+      pendiente con `sobrescribir=True`; si no → CONFLICTO, nunca se pisa.
+    """
+    pref = prefijo.strip("/") + "/"
+    p = Particion()
+    for it in items:
+        remoto = remotos.get(it.remote)
+        if remoto is None:
+            p.pendientes.append(it)
+        elif _mismo_contenido(it, remoto, manifest):
+            p.hechos.append(it)
+        elif es_sobrescribible(it.remote[len(pref):]):
+            p.pendientes.append(replace(it, sobrescribir=True))
+        else:
+            p.conflictos.append((it.remote, "ya existe en el bucket con otro contenido (no se sobrescribe)"))
+    return p
+
+
+class ProveedorResultado(cu.GcsOAuthProvider):
+    """`GcsOAuthProvider` hacia `plantas_pv_nl` con el token `ambito:'resultado'`.
+
+    A diferencia del modo password «crudo», este token SÍ puede sobrescribir en las
+    carpetas permitidas (regla objectAdmin de la Suite), así que `solo_crear` es False:
+    `reconciliar` no rechazará los items con `sobrescribir=True`.
+    """
+
+    solo_crear = False
+
+    def __init__(self, auth, inspeccion_id: int):
+        if not getattr(auth, "es_password", False):
+            raise SubidaResultadoError(
+                "Subir el resultado al bucket exige entrar con usuario y contraseña de ATOM Suite.")
+        super().__init__(BUCKET_RESULTADO, auth, inspeccion_id=int(inspeccion_id), ambito=AMBITO_RESULTADO)
+
+    def prefijo_destino(self) -> str:
+        """Prefijo decidido por la Suite (pide el token si aún no lo hay)."""
+        return self.auth.prefijo_resultado(self.inspeccion_id)
+
+
+@dataclass
+class Contador:
+    total: int = 0
+    hechos: int = 0
+    pendientes: int = 0
+
+
+@dataclass
+class ResumenResultado:
+    modo: str
+    prefijo: str
+    urgentes: Contador = field(default_factory=Contador)
+    resto: Contador = field(default_factory=Contador)
+    conflictos: list = field(default_factory=list)
+    fallidas: list = field(default_factory=list)
+    avisos: list = field(default_factory=list)
+    sin_clasificar: int = 0
+    cancelado: bool = False
+    simulado: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return not (self.cancelado or self.fallidas or self.conflictos)
+
+    def a_dict(self) -> dict:
+        return {
+            "ok": self.ok, "cancelled": self.cancelado, "simulado": self.simulado,
+            "modo": self.modo, "prefix": self.prefijo,
+            "urgentes": {"hechos": self.urgentes.hechos, "total": self.urgentes.total},
+            "resto": {"hechos": self.resto.hechos, "total": self.resto.total},
+            "conflictos": [list(c) for c in self.conflictos],
+            "fallidas": [list(f) for f in self.fallidas],
+            "avisos": list(self.avisos), "sin_clasificar": self.sin_clasificar,
+        }
+
+
+def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=None,
+                    on_estado: Callable[[dict], None] | None = None,
+                    should_stop: Callable[[], bool] | None = None,
+                    concurrency: int = cu.DEFAULT_CONCURRENCY, simular: bool = False,
+                    subir=cu.upload_plan) -> ResumenResultado:
+    """Sube la salida organizada. Urgencia = solo urgentes; normal = urgentes y luego resto.
+
+    Una sola cola: urgentes primero. Lo que el bucket ya tiene (mismo contenido) se
+    salta, así que «normal» tras «urgencia» no resube nada. Si los urgentes tienen
+    fallidas el resto NO se intenta (mejor un fallo claro que horas de reintentos).
+    """
+    if modo not in MODOS:
+        raise ValueError(f"modo desconocido: {modo!r}")
+    destino = Path(destino)
+    if not destino.is_dir():
+        raise SubidaResultadoError("La carpeta de salida no existe.")
+    proveedor = proveedor or ProveedorResultado(auth, inspeccion_id)
+    prefijo = proveedor.prefijo_destino()
+    sel = seleccionar(destino, prefijo)
+    remotos = proveedor.listar_remotos(prefijo)
+    if remotos is None:
+        raise SubidaResultadoError("No se pudo consultar el contenido del bucket: no se sube nada.")
+    (destino / NOMBRE_CARPETA_MANIFIESTO).mkdir(parents=True, exist_ok=True)
+    manifest = cu.Manifest(destino / NOMBRE_CARPETA_MANIFIESTO / NOMBRE_MANIFIESTO_SUBIDA)
+
+    resumen = ResumenResultado(modo=modo, prefijo=prefijo, avisos=list(sel.avisos),
+                               sin_clasificar=sel.sin_clasificar, simulado=simular)
+    resumen.urgentes.total = len(sel.urgentes)
+    resumen.resto.total = len(sel.resto)
+
+    def emitir(fase: str, s: dict | None = None) -> None:
+        if on_estado is None:
+            return
+        on_estado({
+            "modo": modo, "fase": fase,
+            "urgentes": {"hechos": resumen.urgentes.hechos, "total": resumen.urgentes.total},
+            "resto": {"hechos": resumen.resto.hechos, "total": resumen.resto.total},
+            "mbps": (s or {}).get("mbps"), "eta": (s or {}).get("eta"),
+        })
+
+    grupos = [("urgentes", sel.urgentes)]
+    if modo == MODO_NORMAL:
+        grupos.append(("resto", sel.resto))
+    for nombre, items in grupos:
+        if should_stop is not None and should_stop():
+            resumen.cancelado = True
+            break
+        cont = getattr(resumen, nombre)
+        part = particionar(items, remotos, manifest, prefijo)
+        cont.hechos = len(part.hechos)
+        cont.pendientes = len(part.pendientes)
+        resumen.conflictos += part.conflictos
+        emitir(nombre)
+        if simular or not part.pendientes:
+            continue
+        base = cont.hechos
+        plan = cu.UploadPlan(root=destino, items=part.pendientes, prefix=prefijo.strip("/"))
+
+        def _stats(s: dict, cont=cont, base=base, nombre=nombre) -> None:
+            cont.hechos = base + int(s.get("files_done", 0))
+            emitir(nombre, s)
+
+        # `remotos={}`: la partición ya cruzó local y bucket. Con {} `reconciliar` deja los
+        # items tal cual (conserva `sobrescribir`) y no vuelve a listar.
+        res = subir(plan, proveedor, concurrency=concurrency, manifest=manifest,
+                    on_stats=_stats, should_stop=should_stop, remotos={})
+        cont.hechos = base + res.uploaded + res.skipped
+        resumen.fallidas += [f for f in res.failed if f[1] != "cancelado"]
+        if should_stop is not None and should_stop():
+            resumen.cancelado = True
+        emitir(nombre)
+        if resumen.cancelado or resumen.fallidas:
+            break
+    return resumen
