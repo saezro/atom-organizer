@@ -54,11 +54,20 @@ export function useSesion() {
   // hook, no solo al terminar la espera.
   const offLoginRef = useRef(null)
 
+  // true si el ultimo `refrescar` vigente fallo (bridge aun no listo, plazo...);
+  // habilita UN reintento por cada `pywebviewready`.
+  const errorPendienteRef = useRef(false)
+  // Generacion de `refrescar`: solo la llamada mas reciente puede escribir estado.
+  const generacionRef = useRef(0)
+
   const refrescar = useCallback(async () => {
+    const gen = ++generacionRef.current
     setCargando(true)
     setError(null)
+    errorPendienteRef.current = false
     try {
       const status = await conPlazo(api.cloudStatus(), ESPERA_ESTADO_MS)
+      if (gen !== generacionRef.current) return
       if (status && status.logged_in) {
         setCuenta({
           email: status.email ?? null,
@@ -76,9 +85,11 @@ export function useSesion() {
       // el invitado guardado localmente sigue siendo válido.
       setCuenta(null)
       setInvitado(leerInvitado())
+      if (gen !== generacionRef.current) return
+      errorPendienteRef.current = true
       setError(String(e?.message || e))
     } finally {
-      setCargando(false)
+      if (gen === generacionRef.current) setCargando(false)
     }
   }, [])
 
@@ -100,6 +111,17 @@ export function useSesion() {
     // Solo al montar: nada de polling en reposo.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Si el bridge no estaba listo al montar, reintentar cuando pywebview avise.
+  // Acotado: cada fallo de bridge permite un unico reintento por evento, y
+  // `refrescar` limpia `error` al empezar (y lo deja limpio si tiene exito).
+  useEffect(() => {
+    const alListo = () => {
+      if (errorPendienteRef.current) refrescar()
+    }
+    window.addEventListener('pywebviewready', alListo)
+    return () => window.removeEventListener('pywebviewready', alListo)
+  }, [refrescar])
 
   // Si el hook se desmonta con un login en curso (navegación fuera de la
   // pantalla de entrada), no dejar el listener de `atom:cloud` colgado.

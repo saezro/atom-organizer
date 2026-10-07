@@ -254,3 +254,46 @@ describe('bridge en el shell de escritorio con pywebview lento (Windows)', () =>
     expect(pick_folder).toHaveBeenCalled()
   })
 })
+
+// Regresion 3.4.117: pywebview crea `window.pywebview.api` antes de inyectarle
+// los metodos; `whenBridgeReady` daba por listo un api vacio y `call` lanzaba
+// «El bridge no expone «cloud_status»» de forma permanente.
+describe('bridge con api de pywebview aun sin metodos inyectados', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    delete window.__ATOM_SERVIDOR__
+    window.pywebview = { api: {} }
+    globalThis.fetch = vi.fn()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    delete window.pywebview
+  })
+
+  it('api vacia que luego recibe los metodos: la llamada resuelve', async () => {
+    const { api } = await import('./bridge.js')
+    const pedido = api.cloudStatus()
+    await vi.advanceTimersByTimeAsync(500)
+    window.pywebview.api.cloud_status = vi.fn(async () => ({ logged_in: false }))
+    await vi.advanceTimersByTimeAsync(200)
+    await expect(pedido).resolves.toEqual({ logged_in: false })
+  })
+
+  it('metodo que nunca aparece: error «no expone» tras el plazo', async () => {
+    const { api } = await import('./bridge.js')
+    window.pywebview.api.ping = vi.fn()
+    const pendiente = expect(api.cloudStatus()).rejects.toThrow(/no expone/i)
+    await vi.advanceTimersByTimeAsync(15100)
+    await pendiente
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('api ya inyectada sin ese metodo: falla inmediato, sin esperar', async () => {
+    window.pywebview.api.ping = vi.fn()
+    const { api } = await import('./bridge.js')
+    await expect(api.cloudStatus()).rejects.toThrow(/no expone/i)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})

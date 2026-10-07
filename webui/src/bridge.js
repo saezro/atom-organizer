@@ -80,11 +80,51 @@ export function esRemoto() {
 // respondiendo en 4 ms.
 let promesaBridge = null
 
+// pywebview crea `window.pywebview.api` ANTES de inyectarle los metodos (la
+// inyeccion es asincrona): un `api` vacio NO es un bridge listo. Exigimos al
+// menos un metodo funcion.
+function apiInyectada() {
+  const a = window.pywebview?.api
+  return !!a && Object.values(a).some((v) => typeof v === 'function')
+}
+
+// Espera a que un metodo concreto exista en `window.pywebview.api`. Si tras el
+// plazo no aparece, rechaza: error visible, sin fallback.
+const ESPERA_METODO_MS = 15000
+
+function esperarMetodo(method, timeoutMs) {
+  const existe = () => typeof window.pywebview?.api?.[method] === 'function'
+  if (existe()) return Promise.resolve()
+  // Api ya inyectada y falta SOLO este metodo: no hay carrera que esperar.
+  if (apiInyectada()) return Promise.reject(new Error(`El bridge no expone «${method}»`))
+  const espera = timeoutMs ? Math.min(ESPERA_METODO_MS, timeoutMs) : ESPERA_METODO_MS
+  return new Promise((resolve, rechazar) => {
+    let timer = null
+    let plazo = null
+    const limpiar = () => {
+      clearInterval(timer)
+      clearTimeout(plazo)
+      window.removeEventListener('pywebviewready', comprobar)
+    }
+    const comprobar = () => {
+      if (!existe()) return
+      limpiar()
+      resolve()
+    }
+    window.addEventListener('pywebviewready', comprobar)
+    timer = setInterval(comprobar, 100)
+    plazo = setTimeout(() => {
+      limpiar()
+      rechazar(new Error(`El bridge no expone «${method}»`))
+    }, espera)
+  })
+}
+
 export function whenBridgeReady() {
   if (modoServidor !== null) return Promise.resolve()
   if (promesaBridge) return promesaBridge
   promesaBridge = new Promise((resolve) => {
-    if (window.pywebview?.api) { modoServidor = false; return resolve() }
+    if (apiInyectada()) { modoServidor = false; return resolve() }
     // Con la marca del servidor no hay nada que esperar: el kiosco no va a
     // inyectar `window.pywebview` jamas, y antes pagaba el plazo entero en
     // cada arranque.
@@ -103,7 +143,7 @@ export function whenBridgeReady() {
     }
     const alListo = () => finish(false)
     window.addEventListener('pywebviewready', alListo, { once: true })
-    timer = setInterval(() => { if (window.pywebview?.api) finish(false) }, 100)
+    timer = setInterval(() => { if (apiInyectada()) finish(false) }, 100)
     // Si en este plazo no aparecio, no va a aparecer: es un navegador normal.
     // PERO solo si el servidor se declaro: sin marca es pywebview con la
     // inyeccion lenta (arranque en frio de PyInstaller, antivirus). Rendirse
@@ -197,9 +237,8 @@ async function call(method, ...args) {
       if (!r.ok) throw new Error(cuerpo.error || `Error llamando a «${method}»`)
       return cuerpo.result
     }
-    const fn = window.pywebview.api[method]
-    if (!fn) throw new Error(`El bridge no expone «${method}»`)
-    return fn(...args)
+    await esperarMetodo(method, timeoutMs)
+    return window.pywebview.api[method](...args)
   }
   // La rama pywebview no admite `AbortSignal` (no hay red real que cortar):
   // se acota con un `Promise.race`, igual que `conPlazo` (plazo.js), que sí
