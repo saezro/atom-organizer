@@ -343,3 +343,21 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
         if resumen.cancelado or resumen.fallidas:
             break
     return resumen
+
+
+def decidir_automatica(task: str, params: dict, done: dict | None) -> tuple[bool, str]:
+    """¿Hay que subir el resultado solo, al terminar un run? `(sube, motivo_de_aviso)`.
+
+    Solo tras un `split_images` que terminó en `ok`/`warning`. Si procedería pero falta la
+    inspección o la carpeta de salida, devuelve un motivo en español que la UI enseña:
+    no subir sin decir por qué sería un fallback silencioso.
+    """
+    if task != "split_images" or (done or {}).get("status") not in ("ok", "warning"):
+        return False, ""
+    if params.get("subir_resultado") is False:
+        return False, ""
+    if not params.get("inspeccion_id"):
+        return False, "No se sube el resultado al bucket: no hay inspección elegida."
+    if not (params.get("destino") or params.get("output_folder") or "").strip():
+        return False, "No se sube el resultado al bucket: falta la carpeta de salida."
+    return True, ""

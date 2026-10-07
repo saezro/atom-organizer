@@ -499,6 +499,11 @@ class Api:
         self._verifying = False
         self._uploading = False
         self._cancel_upload = False
+        # Subida del resultado al bucket (atom_core.subida_resultado). Flag y bandera
+        # propios: no compiten con `_uploading` (subida «en crudo» a datos_para_organizar).
+        self._subiendo_resultado = False
+        self._cancel_resultado = False
+        self._resultado_lock = threading.Lock()
         # `estadillo_subir` no tenía mutex propio (a diferencia de
         # `cloud_upload`/`self._uploading`): dos clicks seguidos (doble-tap
         # del tactil resistivo, o un `call()` del bridge que reintenta tras
@@ -3464,6 +3469,13 @@ class Api:
             return {"lanzados": 0, "reason": "Sin credencial válida."}
         lanzados = 0
         for job in cola_subidas.pendientes():
+            if job.get("tipo") == cola_subidas.TIPO_RESULTADO:
+                r = self.resultado_subir(job["folder"], job.get("inspeccion_id"), "urgencia", True)
+                if r.get("started"):
+                    lanzados += 1
+                    break
+                cola_subidas.marcar_intento(job["id"], str(r.get("reason", "")))
+                continue
             r = self.cloud_upload(job["folder"], prefix=job["prefix"],
                                   inspeccion_id=job.get("inspeccion_id"))
             if r.get("started"):
@@ -3483,6 +3495,84 @@ class Api:
         if not self._sink:
             return
         self._sink.dispatch("atom:cloud", detail)
+
+    def _push_resultado(self, detail: dict) -> None:
+        if not self._sink:
+            return
+        self._sink.dispatch("atom:resultado", detail)
+
+    def resultado_cancelar(self) -> dict:
+        """Para la subida del resultado. Lo ya subido queda; la siguiente pasada continúa."""
+        self._cancel_resultado = True
+        return {"ok": True}
+
+    def resultado_subir(self, folder: str, inspeccion_id: int | None, modo: str = "urgencia",
+                        seguir_en_normal: bool = False) -> dict:
+        """Sube la salida organizada a `plantas_pv_nl`. Progreso por `atom:resultado`.
+
+        `modo='urgencia'` sube solo lo imprescindible para el análisis; con
+        `seguir_en_normal` encadena después el modo normal (completa el resto sin resubir
+        nada). Un fallo de red/credencial deja el trabajo en `cola_subidas` (tipo
+        `resultado`) para reintentarlo; un error de modo o de datos NO se reintenta solo.
+        """
+        from atom_core import cola_subidas as cola, subida_resultado as sr
+        from atom_core.google_auth import AuthError
+
+        if modo not in sr.MODOS:
+            return {"started": False, "reason": f"Modo de subida desconocido: {modo}."}
+        if not inspeccion_id:
+            return {"started": False, "reason": "Elige una inspección: sin ella no hay destino en el bucket."}
+        if not Path(folder or "").is_dir():
+            return {"started": False, "reason": "La carpeta de salida no existe."}
+        with self._resultado_lock:
+            if self._subiendo_resultado:
+                return {"started": False, "reason": "Ya hay una subida del resultado en curso."}
+            self._subiendo_resultado = True
+        self._cancel_resultado = False
+        auth = self._get_auth()
+
+        def worker() -> None:
+            modos = [sr.MODO_URGENCIA, sr.MODO_NORMAL] if (modo == sr.MODO_URGENCIA and seguir_en_normal) else [modo]
+            try:
+                self._push_resultado({"kind": "start", "modo": modo})
+                for i, m in enumerate(modos):
+                    resumen = sr.subir_resultado(
+                        folder, int(inspeccion_id), m, auth, on_estado=lambda e: self._push_resultado({"kind": "estado", **e}),
+                        should_stop=lambda: self._cancel_resultado)
+                    sigue = resumen.ok and i < len(modos) - 1
+                    self._push_resultado({"kind": "done", "continua": sigue, **resumen.a_dict()})
+                    if not sigue:
+                        break
+                for j in cola.pendientes():
+                    if j.get("tipo") == cola.TIPO_RESULTADO and j["folder"] == str(folder) and j.get("inspeccion_id") == inspeccion_id:
+                        if resumen.ok:
+                            cola.descartar(j["id"])
+            except sr.SubidaResultadoError as exc:
+                self._push_resultado({"kind": "error", "text": str(exc)})
+            except (AuthError, OSError) as exc:
+                cola.encolar(str(folder), "@resultado", inspeccion_id, tipo=cola.TIPO_RESULTADO)
+                self._push_resultado({"kind": "error", "text": f"{exc} La subida queda pendiente y se reintentará."})
+            except Exception as exc:  # noqa: BLE001 - la UI tiene que enterarse SIEMPRE
+                logger.exception("resultado_subir falló")
+                self._push_resultado({"kind": "error", "text": f"{type(exc).__name__}: {exc}"})
+            finally:
+                self._subiendo_resultado = False
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"started": True}
+
+    def _auto_subir_resultado(self, params: dict, done: dict | None) -> None:
+        """Disparo automático al terminar un `split_images`: urgencia primero y, sin parar,
+        normal en segundo plano. Si procedería pero falta algo, lo dice (evento `aviso`)."""
+        from atom_core import subida_resultado as sr
+
+        sube, motivo = sr.decidir_automatica("split_images", params, done)
+        if not sube:
+            if motivo:
+                self._push_resultado({"kind": "aviso", "text": motivo})
+            return
+        destino = (params.get("destino") or params.get("output_folder") or "").strip()
+        self.resultado_subir(destino, params.get("inspeccion_id"), sr.MODO_URGENCIA, True)
 
     def _push_analisis(self, detail: dict) -> None:
         if not self._sink:
@@ -3542,7 +3632,11 @@ class Api:
             logger.warning("cloud_asegurar_estado en segundo plano falló: %s", exc)
 
     def _run_task_worker(self, task: str, params: dict, advanced: dict | None) -> None:
+        ultimo_done: dict = {}
+
         def emit(kind: str, payload) -> None:
+            if kind == "done" and isinstance(payload, dict):
+                ultimo_done.update(payload)
             detail = {"kind": kind}
             if kind == "progress":
                 detail["value"] = int(payload)
@@ -3567,6 +3661,11 @@ class Api:
             if task == "split_images":
                 params = self._mover_estadillo_espera_si_toca(params)
             run_task(task, params, emit, advanced or None)
+            if task == "split_images":
+                try:
+                    self._auto_subir_resultado(params, ultimo_done or None)
+                except Exception:  # noqa: BLE001 - subir no puede tumbar el cierre del run
+                    logger.exception("disparo automático de la subida del resultado")
         except Exception as exc:  # noqa: BLE001 — el front tiene que enterarse SIEMPRE
             logger.exception("El task %s murió antes de poder informar", task)
             emit("error", f"{type(exc).__name__}: {exc}")
