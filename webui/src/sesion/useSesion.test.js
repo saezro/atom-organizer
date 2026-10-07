@@ -242,3 +242,36 @@ describe('useSesion', () => {
     espia.mockRestore()
   })
 })
+
+describe('useSesion reintenta al llegar pywebviewready', () => {
+  it('error de bridge no listo se limpia al reintentar con exito', async () => {
+    cloudStatusMock.mockRejectedValueOnce(new Error('El bridge no expone «cloud_status»'))
+    cloudStatusMock.mockResolvedValue({ ok: true, configured: true, logged_in: true, email: 'a@b.c' })
+    const { result } = renderHook(() => useSesion())
+    await waitFor(() => expect(result.current.error).toMatch(/no expone/))
+    act(() => { window.dispatchEvent(new Event('pywebviewready')) })
+    await waitFor(() => expect(result.current.cuenta?.email).toBe('a@b.c'))
+    expect(result.current.error).toBeNull()
+    expect(cloudStatusMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('cualquier error pendiente se reintenta una vez por evento', async () => {
+    cloudStatusMock.mockRejectedValue(new Error('boom'))
+    const { result } = renderHook(() => useSesion())
+    await waitFor(() => expect(result.current.error).toBe('boom'))
+    act(() => { window.dispatchEvent(new Event('pywebviewready')) })
+    await waitFor(() => expect(cloudStatusMock).toHaveBeenCalledTimes(2))
+  })
+
+  it('un refrescar viejo y lento no pisa el estado del nuevo', async () => {
+    let resolverViejo
+    cloudStatusMock.mockReturnValueOnce(new Promise((r) => { resolverViejo = r }))
+    cloudStatusMock.mockResolvedValue({ ok: true, logged_in: true, email: 'nuevo@x.y' })
+    const { result } = renderHook(() => useSesion())
+    await act(async () => { await result.current.refrescar() })
+    await waitFor(() => expect(result.current.cuenta?.email).toBe('nuevo@x.y'))
+    await act(async () => { resolverViejo({ ok: true, logged_in: false }) })
+    expect(result.current.cuenta?.email).toBe('nuevo@x.y')
+    expect(result.current.cargando).toBe(false)
+  })
+})
