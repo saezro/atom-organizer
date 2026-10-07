@@ -82,8 +82,11 @@ def clasificar(rel: str) -> str | None:
 
 
 def sin_ordenar_ultima_ejecucion(destino: Path) -> tuple[set[str], list[str]]:
-    """Rutas relativas (bajo `SIN_ORDENAR/`) de las imágenes que la ÚLTIMA ejecución
-    del manifiesto dejó sin asignar (original, `_CROP` y TIFF) y se escribieron bien.
+    """Rutas relativas (bajo `SIN_ORDENAR/`) de las imágenes que, según el estado
+    ACTUAL del manifiesto (de cualquier ejecución), siguen sin asignar (original,
+    `_CROP` y TIFF) y se escribieron bien. Una fila `hecho` conserva su
+    `ejecucion_id` antiguo aunque siga sin asignar, por eso no se filtra por ejecución.
+    El nombre se mantiene por compatibilidad con los consumidores (Task 4).
 
     Sin manifiesto o ilegible NO se inventa nada: se devuelve vacío + un aviso que
     la UI enseña (sin fallbacks silenciosos).
@@ -96,12 +99,9 @@ def sin_ordenar_ultima_ejecucion(destino: Path) -> tuple[set[str], list[str]]:
     try:
         con = sqlite3.connect(f"{ruta.as_uri()}?mode=ro", uri=True, timeout=5.0)
         try:
-            ultima = con.execute("SELECT MAX(id) FROM ejecuciones").fetchone()[0]
-            if ultima is None:
-                return set(), ["El manifiesto no tiene ejecuciones: no se pueden subir las imágenes sin asignar."]
             filas = con.execute(
                 "SELECT ruta_salida_original, ruta_salida_crop, ruta_salida_tiff FROM imagenes "
-                "WHERE unassigned = 1 AND estado = 'hecho' AND ejecucion_id = ?", (ultima,)).fetchall()
+                "WHERE unassigned = 1 AND estado = 'hecho'").fetchall()
         finally:
             con.close()
     except sqlite3.Error as exc:
@@ -118,6 +118,9 @@ def sin_ordenar_ultima_ejecucion(destino: Path) -> tuple[set[str], list[str]]:
                 continue  # fuera de la salida (gs://, otro disco): no es de esta carpeta
             if rel.split("/")[0] == NOMBRE_SIN_ORDENAR and (base / rel).is_file():
                 rels.add(rel)
+    if filas and not rels:
+        return rels, ["El manifiesto tiene imágenes sin asignar pero ninguna está bajo esta carpeta "
+                      "(¿se movió el destino o cambió de unidad?): no se suben."]
     return rels, []
 
 
