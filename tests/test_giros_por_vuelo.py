@@ -206,3 +206,37 @@ def test_get_giros_por_vuelo_devuelve_lista_ordenada_por_vuelo(tmp_path, logger,
     assert [entrada["vuelo"] for entrada in resultado] == ["PB1_V01", "PB3_V02"]
     assert resultado[0]["grados"] == 90
     assert resultado[1]["grados"] == 270
+
+
+# ---------------------------------------------------------------- margen por defecto 45
+
+import pytest
+
+
+def _bandas_por_defecto():
+    add, subs, _ = utils.sane_rotation_criteria(0, 0, 0)
+    return dict(lim_max_90=90 + add, lim_min_90=90 - subs,
+                lim_max_270=-90 + add, lim_min_270=-90 - subs)
+
+
+def test_margen_por_defecto_es_45_y_se_clampa():
+    assert utils.ROTATION_YAW_MARGIN == 45
+    assert utils.sane_rotation_criteria(80, 180, 50) == (45, 45, 50)
+    assert utils.sane_rotation_criteria(30, 45, 50) == (30, 45, 50)
+
+
+@pytest.mark.parametrize("yaw,esperado", [
+    (-18.0, 0), (0.5, 0), (-88.0, 270), (92.0, 90),
+    (179.0, 0), (-179.0, 0), (180.0, 0),
+])
+def test_cuadrante_mas_cercano_con_defaults(tmp_path, logger, make_dji_jpeg, yaw, esperado):
+    planta_folder, flight_folder = _flight_folder(tmp_path, "PB1_V01", make_dji_jpeg, [yaw, yaw])
+    obj = _obj(logger, planta_folder)
+    progress, _ = _recording_progress()
+
+    obj.gen_thumbnails_and_rotate(
+        str(flight_folder), rgb_processing=False, max_error=50,
+        progress_callback=progress, progress_bar=progress, **_bandas_por_defecto(),
+    )
+
+    assert obj.giros_por_vuelo["PB1_V01"]["grados"] == esperado

@@ -960,9 +960,16 @@ se ejecuta en el hilo GUI, antes de arrancar el `Worker`.
 #   - PLANTA_B (vuelo suelto): hay tomas con yaw -1.4, que NO se deben rotar. Un
 #     margen de 90 -> (-180, 0) las rotaría por error; con 80 caen en la zona
 #     muerta de ±10 alrededor de 0 y 180 y se clasifican bien.
-# O sea: 80 es el mayor margen que sigue distinguiendo "cámara perpendicular a
-# la línea de vuelo" de "cámara alineada con ella".
-ROTATION_YAW_MARGIN = 80
+# O sea: 80 era el mayor margen que distinguía "cámara perpendicular a la línea
+# de vuelo" de "cámara alineada con ella".
+# 2026-10-07 (decisión de Rodrigo): el default pasa a 45 -> cuadrante más cercano.
+# Con 80, un yaw -18 (KL91, casi norte) caía en (-170, -10) y se giraba 270 por
+# error. Con 45: 90 -> (45, 135), 270 -> (-135, -45), el resto = 0 (incluido 180,
+# no existe banda 180: un vuelo mirando al sur no se gira).
+ROTATION_YAW_MARGIN = 45
+# Máximo admitido: con más de 45 las bandas de 90 y 270 se solapan con las de
+# 0/180 y un mismo yaw cae en dos cuadrantes.
+ROTATION_YAW_MARGIN_MAX = 45
 # Porcentaje MÍNIMO de imágenes del vuelo que deben coincidir para aplicar la
 # decisión a todo el vuelo (pipeline.py:1177). 50 = mayoría simple. El 95 del
 # comentario original es frágil: un vuelo con un 6% de tomas raras se quedaría
@@ -1004,14 +1011,18 @@ def sane_rotation_criteria(add_to_angle, subs_to_angle, max_error):
     (formulario webview, `advanced`, y los spinbox de la GUI Qt) y basta con que
     uno de ellos traiga un 0 para que el vuelo entero se quede sin rotar.
     """
-    def _sano(valor, defecto):
+    def _sano(valor, defecto, maximo=None):
         try:
-            return valor if float(valor) > 0 else defecto
+            if float(valor) <= 0:
+                return defecto
+            if maximo is not None and float(valor) > maximo:
+                return maximo
+            return valor
         except (TypeError, ValueError):
             return defecto
 
-    return (_sano(add_to_angle, ROTATION_YAW_MARGIN),
-            _sano(subs_to_angle, ROTATION_YAW_MARGIN),
+    return (_sano(add_to_angle, ROTATION_YAW_MARGIN, ROTATION_YAW_MARGIN_MAX),
+            _sano(subs_to_angle, ROTATION_YAW_MARGIN, ROTATION_YAW_MARGIN_MAX),
             _sano(max_error, ROTATION_MIN_AGREEMENT_PCT))
 
 

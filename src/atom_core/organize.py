@@ -76,6 +76,7 @@ from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO, destino_
 from utils import (
     ROTATION_MIN_AGREEMENT_PCT,
     ROTATION_YAW_MARGIN,
+    ROTATION_YAW_MARGIN_MAX,
     TIF_ROTATION_INTENT_KEY,
     CompressRgbsConfig,
     ConvertToTifConfig,
@@ -706,6 +707,9 @@ def run_task(
                 if _actual <= 0:
                     emit("summary", f"AVISO: {_que} venía a {getattr(cfg, _campo)}, que impediría rotar ninguna imagen; se usa {_sano}.")
                     cfg = replace(cfg, **{_campo: _sano})
+                elif "yaw" in _que and _actual > ROTATION_YAW_MARGIN_MAX:
+                    emit("summary", f"AVISO: {_que} venía a {getattr(cfg, _campo)}, que solapa cuadrantes; se usa {ROTATION_YAW_MARGIN_MAX}.")
+                    cfg = replace(cfg, **{_campo: ROTATION_YAW_MARGIN_MAX})
 
         # Guarda: en separación por sufijo, si NO hay sufijo térmico NI RGB, la
         # clasificación no asigna ninguna imagen y se copiarían 0 fotos en
