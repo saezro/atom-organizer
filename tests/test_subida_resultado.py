@@ -81,7 +81,8 @@ def test_es_sobrescribible(rel, esperado):
 
 
 def _manifiesto_con_sin_ordenar(raiz: Path) -> None:
-    """Dos ejecuciones: la 1ª dejó A.JPG sin asignar, la 2ª (última) B.JPG y su crop."""
+    """Dos ejecuciones. Sin asignar y hechas (se suben): A (1ª, sigue igual) y B+crop (2ª).
+    No se suben: C (asignada), D (fallida), E (reasignada, unassigned=0) y F (pendiente)."""
     (raiz / NOMBRE_CARPETA_MANIFIESTO).mkdir(parents=True, exist_ok=True)
     m = Manifiesto(raiz / NOMBRE_CARPETA_MANIFIESTO / NOMBRE_FICHERO_MANIFIESTO)
     m.crear_esquema()
@@ -93,6 +94,8 @@ def _manifiesto_con_sin_ordenar(raiz: Path) -> None:
         ("b", e2, "SIN_ORDENAR/RGB/B_W.JPG", "SIN_ORDENAR/RGB/B_W_CROP.JPG", 1, "hecho"),
         ("c", e2, "RGB/PB1/V1/C_W.JPG", None, 0, "hecho"),
         ("d", e2, "SIN_ORDENAR/RGB/D_W.JPG", None, 1, "fallido"),
+        ("e", e1, "SIN_ORDENAR/RGB/E_W.JPG", None, 0, "hecho"),
+        ("f", e1, "SIN_ORDENAR/RGB/F_W.JPG", None, 1, "pendiente"),
     ]
     with con:
         for clave, ej, orig, crop, unas, estado in filas:
@@ -104,13 +107,27 @@ def _manifiesto_con_sin_ordenar(raiz: Path) -> None:
     m.cerrar()
 
 
-def test_sin_ordenar_ultima_ejecucion_solo_hechas_sin_asignar_de_la_ultima(tmp_path):
-    _arbol(tmp_path, {"SIN_ORDENAR/RGB/A_W.JPG": b"a", "SIN_ORDENAR/RGB/B_W.JPG": b"b",
-                      "SIN_ORDENAR/RGB/B_W_CROP.JPG": b"bc", "SIN_ORDENAR/RGB/D_W.JPG": b"d"})
-    _manifiesto_con_sin_ordenar(tmp_path)
-    rels, avisos = sr.sin_ordenar_ultima_ejecucion(tmp_path)
-    assert rels == {"SIN_ORDENAR/RGB/B_W.JPG", "SIN_ORDENAR/RGB/B_W_CROP.JPG"}
+def test_sin_ordenar_de_cualquier_ejecucion_si_siguen_sin_asignar(tmp_path):
+    salida = tmp_path / "salida"
+    _arbol(salida, {f"SIN_ORDENAR/RGB/{n}": b"x" for n in (
+        "A_W.JPG", "B_W.JPG", "B_W_CROP.JPG", "D_W.JPG", "E_W.JPG", "F_W.JPG")})
+    _manifiesto_con_sin_ordenar(salida)
+    rels, avisos = sr.sin_ordenar_ultima_ejecucion(salida)
+    # A (1ª ejecución, sigue sin asignar) SÍ; E reasignada, F pendiente y D fallida NO.
+    assert rels == {"SIN_ORDENAR/RGB/A_W.JPG", "SIN_ORDENAR/RGB/B_W.JPG",
+                    "SIN_ORDENAR/RGB/B_W_CROP.JPG"}
     assert avisos == []
+
+
+def test_sin_ordenar_con_filas_fuera_del_destino_avisa(tmp_path):
+    origen = tmp_path / "antes"
+    _arbol(origen, {"SIN_ORDENAR/RGB/A_W.JPG": b"a"})
+    _manifiesto_con_sin_ordenar(origen)
+    movido = tmp_path / "despues"
+    origen.rename(movido)  # el manifiesto sigue apuntando a `antes/`
+    rels, avisos = sr.sin_ordenar_ultima_ejecucion(movido)
+    assert rels == set()
+    assert len(avisos) == 1 and "destino" in avisos[0].lower()
 
 
 def test_sin_manifiesto_avisa_y_no_selecciona_nada(tmp_path):
@@ -121,36 +138,39 @@ def test_sin_manifiesto_avisa_y_no_selecciona_nada(tmp_path):
 
 def test_seleccionar_reparte_urgentes_y_resto_y_cuenta_sin_clasificar(tmp_path):
     # El conftest crea `tmp_path/Logs-subidas/subidas.log`: la salida va en una subcarpeta.
-    tmp_path = tmp_path / "salida"
-    _arbol(tmp_path, {**SALIDA_TIPICA, "SIN_ORDENAR/RGB/A_W.JPG": b"a",
-                      "SIN_ORDENAR/RGB/B_W.JPG": b"b", "SIN_ORDENAR/RGB/B_W_CROP.JPG": b"bc"})
-    _manifiesto_con_sin_ordenar(tmp_path)
-    sel = sr.seleccionar(tmp_path, PREFIJO)
+    salida = tmp_path / "salida"
+    _arbol(salida, {**SALIDA_TIPICA, "SIN_ORDENAR/RGB/A_W.JPG": b"a",
+                    "SIN_ORDENAR/RGB/B_W.JPG": b"b", "SIN_ORDENAR/RGB/B_W_CROP.JPG": b"bc",
+                    "SIN_ORDENAR/RGB/E_W.JPG": b"e"})
+    _manifiesto_con_sin_ordenar(salida)
+    sel = sr.seleccionar(salida, PREFIJO)
     rem = lambda items: sorted(i.remote.removeprefix(PREFIJO) for i in items)  # noqa: E731
     assert rem(sel.urgentes) == [
         "CSVs/V1_location.csv", "CSVs/V1_meta.csv", "ESTADILLOS/estadillo.xlsx",
         "RGB/PB1/V1/A_W_CROP.JPG", "TERMICA/PB1/V1/A_T.tiff"]
     assert rem(sel.resto) == [
         "CSVs/_criterio/V1_criterio.csv", "INDICE_KL05.xlsx", "RGB/PB1/V1/A_W.JPG",
-        "SIN_ORDENAR/RGB/B_W.JPG", "SIN_ORDENAR/RGB/B_W_CROP.JPG", "TERMICA/PB1/V1/A_T.JPG"]
+        "SIN_ORDENAR/RGB/A_W.JPG", "SIN_ORDENAR/RGB/B_W.JPG", "SIN_ORDENAR/RGB/B_W_CROP.JPG", "TERMICA/PB1/V1/A_T.JPG"]
     # CSVs/otro.csv y RGB_Extra/...: ni urgentes ni resto, pero contados.
     assert sel.sin_clasificar == 2
     assert any("sin clasificar" in a.lower() for a in sel.avisos)
     # Nunca .organizado, LOGS ni basura del sistema.
     todos = {i.remote for i in sel.urgentes + sel.resto}
     assert not any(".organizado" in r or "/LOGS/" in r or "Thumbs" in r for r in todos)
-    # SIN_ORDENAR/RGB/A_W.JPG (1ª ejecución) NO se sube.
-    assert PREFIJO + "SIN_ORDENAR/RGB/A_W.JPG" not in todos
+    # SIN_ORDENAR/RGB/E_W.JPG (reasignada en el manifiesto) NO se sube.
+    assert PREFIJO + "SIN_ORDENAR/RGB/E_W.JPG" not in todos
 
 
 def test_seleccionar_prefijo_sin_barra_final_y_tamanos(tmp_path):
-    _arbol(tmp_path, {"TERMICA/PB1/V1/A_T.tiff": b"12345"})
-    sel = sr.seleccionar(tmp_path, PREFIJO.rstrip("/"))
+    salida = tmp_path / "salida"
+    _arbol(salida, {"TERMICA/PB1/V1/A_T.tiff": b"12345"})
+    sel = sr.seleccionar(salida, PREFIJO.rstrip("/"))
     assert [(i.remote, i.size) for i in sel.urgentes] == [(PREFIJO + "TERMICA/PB1/V1/A_T.tiff", 5)]
 
 
 def test_seleccionar_sin_manifiesto_avisa_pero_selecciona_lo_demas(tmp_path):
-    _arbol(tmp_path, SALIDA_TIPICA)
-    sel = sr.seleccionar(tmp_path, PREFIJO)
+    salida = tmp_path / "salida"
+    _arbol(salida, SALIDA_TIPICA)
+    sel = sr.seleccionar(salida, PREFIJO)
     assert len(sel.urgentes) == 5
     assert any("manifiesto" in a.lower() for a in sel.avisos)
