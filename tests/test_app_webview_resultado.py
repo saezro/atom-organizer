@@ -141,3 +141,33 @@ def test_cloud_drenar_ignora_jobs_de_resultado_y_los_lanza_aparte(api, monkeypat
     monkeypatch.setattr(api, "resultado_subir", lambda *a, **k: llamadas["resultado"].append(a) or {"started": True})
     assert api.cloud_drenar() == {"lanzados": 1}
     assert llamadas["crudo"] == 0 and llamadas["resultado"] == [(str(tmp_path), 7, "urgencia", True)]
+
+
+def test_get_auth_que_lanza_libera_la_bandera_y_es_visible(api, monkeypatch, tmp_path):
+    def boom(**k):
+        raise RuntimeError("sin credencial")
+    monkeypatch.setattr(api, "_get_auth", boom)
+    api.resultado_subir(str(tmp_path), 7)
+    assert any(e["kind"] == "error" and "sin credencial" in e["text"] for e in api.eventos)
+    assert api._subiendo_resultado is False
+    r = api.resultado_subir(str(tmp_path), 7)
+    assert "en curso" not in (r.get("reason") or "")
+
+
+def test_oserror_local_no_se_encola_y_es_visible(api, monkeypatch, tmp_path):
+    def falla(*a, **k):
+        raise FileNotFoundError("falta.tif")
+    monkeypatch.setattr(sr, "subir_resultado", falla)
+    api.resultado_subir(str(tmp_path), 7)
+    assert any(e["kind"] == "error" and "FileNotFoundError" in e["text"] for e in api.eventos)
+    assert cola_subidas.pendientes() == []
+    assert api._subiendo_resultado is False
+
+
+def test_error_de_red_se_encola_para_reintento(api, monkeypatch, tmp_path):
+    def falla(*a, **k):
+        raise ConnectionError("sin red")
+    monkeypatch.setattr(sr, "subir_resultado", falla)
+    api.resultado_subir(str(tmp_path), 7)
+    assert any(e["kind"] == "error" and "reintentará" in e["text"] for e in api.eventos)
+    assert len(cola_subidas.pendientes()) == 1

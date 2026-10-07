@@ -454,6 +454,16 @@ def precalentar_dialogo_carpeta() -> None:
     threading.Thread(target=_dll_carpeta_moderna, daemon=True).start()
 
 
+def _es_error_de_red(exc: BaseException) -> bool:
+    """Fallo de transporte (reintentable). Un OSError de disco local NO lo es."""
+    import socket
+    import urllib.error
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code >= 500 or exc.code in (408, 429)
+    return isinstance(exc, (ConnectionError, TimeoutError, socket.timeout, socket.gaierror,
+                            urllib.error.URLError))
+
+
 class Api:
     """Objeto puente expuesto a JS como `window.pywebview.api`."""
 
@@ -3529,11 +3539,12 @@ class Api:
                 return {"started": False, "reason": "Ya hay una subida del resultado en curso."}
             self._subiendo_resultado = True
         self._cancel_resultado = False
-        auth = self._get_auth()
 
         def worker() -> None:
+            resumen = None
             modos = [sr.MODO_URGENCIA, sr.MODO_NORMAL] if (modo == sr.MODO_URGENCIA and seguir_en_normal) else [modo]
             try:
+                auth = self._get_auth()
                 self._push_resultado({"kind": "start", "modo": modo})
                 for i, m in enumerate(modos):
                     resumen = sr.subir_resultado(
@@ -3545,20 +3556,28 @@ class Api:
                         break
                 for j in cola.pendientes():
                     if j.get("tipo") == cola.TIPO_RESULTADO and j["folder"] == str(folder) and j.get("inspeccion_id") == inspeccion_id:
-                        if resumen.ok:
+                        if resumen is not None and resumen.ok:
                             cola.descartar(j["id"])
             except sr.SubidaResultadoError as exc:
                 self._push_resultado({"kind": "error", "text": str(exc)})
-            except (AuthError, OSError) as exc:
+            except Exception as exc:  # noqa: BLE001 - se reclasifica: solo auth/red se reintenta
+                if not (isinstance(exc, AuthError) or _es_error_de_red(exc)):
+                    logger.exception("resultado_subir falló")
+                    self._push_resultado({"kind": "error", "text": f"{type(exc).__name__}: {exc}"})
+                    return
                 cola.encolar(str(folder), "@resultado", inspeccion_id, tipo=cola.TIPO_RESULTADO)
                 self._push_resultado({"kind": "error", "text": f"{exc} La subida queda pendiente y se reintentará."})
-            except Exception as exc:  # noqa: BLE001 - la UI tiene que enterarse SIEMPRE
-                logger.exception("resultado_subir falló")
-                self._push_resultado({"kind": "error", "text": f"{type(exc).__name__}: {exc}"})
             finally:
                 self._subiendo_resultado = False
 
-        threading.Thread(target=worker, daemon=True).start()
+        try:
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception as exc:  # noqa: BLE001 - la flag no puede quedar colgada
+            self._subiendo_resultado = False
+            logger.exception("resultado_subir: no pudo arrancar el hilo")
+            msg = f"{type(exc).__name__}: {exc}"
+            self._push_resultado({"kind": "error", "text": msg})
+            return {"started": False, "reason": msg}
         return {"started": True}
 
     def _auto_subir_resultado(self, params: dict, done: dict | None) -> None:
