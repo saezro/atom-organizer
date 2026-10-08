@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 
 vi.mock('../bridge', () => ({
@@ -13,6 +13,7 @@ vi.mock('../bridge', () => ({
     cloudPrepareStart: vi.fn().mockResolvedValue({ started: true }),
     analisisReset: vi.fn().mockResolvedValue({ ok: true }),
     analisisCancel: vi.fn().mockResolvedValue({ ok: true }),
+    estadillosDetectar: vi.fn().mockResolvedValue({ rutas: [] }),
   },
   onCloud: (h) => {
     const w = (e) => h(e.detail)
@@ -20,6 +21,7 @@ vi.mock('../bridge', () => ({
     return () => window.removeEventListener('atom:cloud', w)
   },
   onAnalisis: () => () => {},
+  onResultado: () => () => {},
   isServerMode: () => false,
 }))
 import { act } from '@testing-library/react'
@@ -136,5 +138,145 @@ describe('TrabajoScreen', () => {
     render(<TrabajoScreen ready running={false} onRun={() => {}} acceso={{ organizer: true, estadillos: false }} />)
     expect(screen.queryByText(/Subir sin estadillo/i)).toBeNull()
     expect(screen.getByText(/Organizar aquí/i)).toBeTruthy()
+  })
+
+  describe('sin módulo estadillos (acceso.estadillos === false)', () => {
+    const acceso = { organizer: true, estadillos: false }
+    // Elige origen y destino (ambos con pickFolder) y deja listo «Organizar aquí».
+    async function prepararOrganizar(onRun) {
+      const { api } = await import('../bridge')
+      api.pickFolder.mockResolvedValue('/datos/vuelo')
+      render(<TrabajoScreen ready running={false} onRun={onRun} acceso={acceso} />)
+      fireEvent.click(screen.getAllByText(/Elegir/i)[0])
+      await screen.findByDisplayValue('/datos/vuelo')
+      fireEvent.click(screen.getByText(/Organizar aquí/i))
+      api.pickFolder.mockResolvedValue('/datos/final')
+      await waitFor(() => expect(screen.getAllByText(/Elegir/i).length).toBeGreaterThan(1))
+      fireEvent.click(screen.getAllByText(/Elegir/i)[1])
+      await screen.findByDisplayValue('/datos/final')
+      return api
+    }
+
+    it('autodetecta el estadillo del origen y lo pasa a onRun', async () => {
+      const { api } = await import('../bridge')
+      api.estadillosDetectar.mockResolvedValue({ rutas: ['/o/e.csv'] })
+      const onRun = vi.fn()
+      await prepararOrganizar(onRun)
+      expect(await screen.findByText(/Estadillo: e\.csv/)).toBeTruthy()
+      expect(api.estadillosDetectar).toHaveBeenCalledWith('/datos/vuelo', true)
+      const btn = screen.getByText(/Ejecutar/i)
+      await waitFor(() => expect(btn.disabled).toBe(false))
+      fireEvent.click(btn)
+      expect(onRun).toHaveBeenCalledWith(
+        'split_images',
+        expect.objectContaining({ estadillo: ['/o/e.csv'] }),
+        expect.anything(),
+      )
+    })
+
+    it('sin estadillo en la carpeta: error visible y botón deshabilitado', async () => {
+      const { api } = await import('../bridge')
+      api.estadillosDetectar.mockResolvedValue({ rutas: [] })
+      await prepararOrganizar(vi.fn())
+      expect(await screen.findByText(/No hay estadillo en la carpeta de origen/)).toBeTruthy()
+      expect(screen.getByText(/Ejecutar/i).disabled).toBe(true)
+    })
+
+    // Origen elegido, sin elegir destino: basta para ver el estado de la detección.
+    async function soloOrigen() {
+      const { api } = await import('../bridge')
+      api.pickFolder.mockResolvedValue('/datos/vuelo')
+      return api
+    }
+    const elegirOrigen = async () => {
+      fireEvent.click(screen.getAllByText(/Elegir/i)[0])
+      await screen.findByDisplayValue('/datos/vuelo')
+    }
+
+    // Con temporizadores falsos desde el principio (los del hook y de conPlazo
+    // se crean tras elegir el origen).
+    async function origenConTimersFalsos() {
+      vi.useFakeTimers()
+      fireEvent.click(screen.getAllByText(/Elegir/i)[0])
+      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+    }
+    const avanzar = (ms) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+    afterEach(() => vi.useRealTimers())
+
+    it('muestra «Buscando estadillo…» mientras la detección está en vuelo', async () => {
+      const api = await soloOrigen()
+      api.estadillosDetectar.mockReturnValue(new Promise(() => {}))
+      render(<TrabajoScreen ready running={false} onRun={() => {}} acceso={acceso} />)
+      await elegirOrigen()
+      expect(await screen.findByText(/Buscando estadillo…/)).toBeTruthy()
+    })
+
+    it('respuesta {error}: se ve el mensaje', async () => {
+      const api = await soloOrigen()
+      api.estadillosDetectar.mockResolvedValue({ error: 'OSError: sin permisos' })
+      render(<TrabajoScreen ready running={false} onRun={() => {}} acceso={acceso} />)
+      await elegirOrigen()
+      expect(await screen.findByText(/OSError: sin permisos/)).toBeTruthy()
+    })
+
+    it('promesa rechazada: se ve el mensaje', async () => {
+      const api = await soloOrigen()
+      api.estadillosDetectar.mockRejectedValue(new Error('puente caído'))
+      render(<TrabajoScreen ready running={false} onRun={() => {}} acceso={acceso} />)
+      await elegirOrigen()
+      expect(await screen.findByText(/puente caído/)).toBeTruthy()
+    })
+
+    it('no_existe se recupera al reintentar', async () => {
+      const api = await soloOrigen()
+      api.estadillosDetectar
+        .mockResolvedValueOnce({ no_existe: true })
+        .mockResolvedValue({ rutas: ['/o/e.csv'] })
+      render(<TrabajoScreen ready running={false} onRun={() => {}} acceso={acceso} />)
+      await origenConTimersFalsos()
+      expect(screen.getByText(/aún no está disponible, reintentando/)).toBeTruthy()
+      await avanzar(3100)
+      expect(screen.getByText(/Estadillo: e\.csv/)).toBeTruthy()
+    })
+
+    it('no_existe agota los reintentos y pasa a error', async () => {
+      const api = await soloOrigen()
+      api.estadillosDetectar.mockResolvedValue({ no_existe: true })
+      render(<TrabajoScreen ready running={false} onRun={() => {}} acceso={acceso} />)
+      await origenConTimersFalsos()
+      expect(screen.getByText(/reintentando/)).toBeTruthy()
+      await avanzar(125000)
+      expect(screen.getByText(/sigue sin estar disponible/)).toBeTruthy()
+    })
+
+    it('plazo vencido: error visible', async () => {
+      const api = await soloOrigen()
+      api.estadillosDetectar.mockReturnValue(new Promise(() => {}))
+      render(<TrabajoScreen ready running={false} onRun={() => {}} acceso={acceso} />)
+      await origenConTimersFalsos()
+      expect(screen.getByText(/Buscando estadillo…/)).toBeTruthy()
+      await avanzar(15500)
+      expect(screen.getByText(/ha tardado demasiado/)).toBeTruthy()
+    })
+
+    it('descarta la respuesta obsoleta si cambia el origen', async () => {
+      const { api } = await import('../bridge')
+      let resolverViejo
+      api.estadillosDetectar.mockImplementation((c) =>
+        c === '/datos/vuelo'
+          ? new Promise((res) => { resolverViejo = res })
+          : Promise.resolve({ rutas: ['/n/nuevo.csv'] }))
+      api.pickFolder.mockResolvedValue('/datos/vuelo')
+      render(<TrabajoScreen ready running={false} onRun={() => {}} acceso={acceso} />)
+      fireEvent.click(screen.getAllByText(/Elegir/i)[0])
+      await screen.findByDisplayValue('/datos/vuelo')
+      api.pickFolder.mockResolvedValue('/datos/otro')
+      fireEvent.click(screen.getAllByText(/Elegir/i)[0])
+      await screen.findByDisplayValue('/datos/otro')
+      expect(await screen.findByText(/Estadillo: nuevo\.csv/)).toBeTruthy()
+      await act(async () => { resolverViejo({ rutas: ['/o/viejo.csv'] }) })
+      expect(screen.queryByText(/viejo\.csv/)).toBeNull()
+      expect(screen.getByText(/Estadillo: nuevo\.csv/)).toBeTruthy()
+    })
   })
 })

@@ -4,6 +4,7 @@ import PasoInspeccion from './PasoInspeccion'
 import PasoEstadillo from './PasoEstadillo'
 import PanelOrganizar from './PanelOrganizar'
 import PanelSubida from './PanelSubida'
+import useEstadilloAuto from './useEstadilloAuto'
 
 const ESTADILLO_OMITIDO = { rutas: [], listo: true, subiendo: false, subir: async () => {} }
 
@@ -39,7 +40,10 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
   const ocupado = running || subidaOcupada
   // Sin módulo estadillos no hay paso de estadillo: se trata como «subir sin
   // estadillo» (listo, sin ficheros).
-  const est = verEstadillos ? estadillo : ESTADILLO_OMITIDO
+  // Para organizar el backend SÍ exige estadillo: sin `PasoEstadillo` se
+  // autodetecta en el origen y se muestra el resultado (sin fallback mudo).
+  const auto = useEstadilloAuto(carpeta, !verEstadillos)
+  const est = verEstadillos ? estadillo : { ...ESTADILLO_OMITIDO, rutas: auto.rutas }
 
   return (
     <div className="card">
@@ -64,6 +68,19 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
           disabled={ocupado}
           onEstado={setEstadillo}
         />
+      )}
+
+      {!verEstadillos && carpeta && auto.estado === 'ok' && (
+        <span className="field-hint hint-ok">Estadillo: {auto.rutas.map((r) => r.split(/[\\/]/).pop()).join(', ')}</span>
+      )}
+      {!verEstadillos && carpeta && auto.estado === 'buscando' && (
+        <span className="field-hint">{auto.mensaje || 'Buscando estadillo…'}</span>
+      )}
+      {!verEstadillos && carpeta && auto.estado === 'nada' && (
+        <span className="field-hint hint-warn">No hay estadillo en la carpeta de origen</span>
+      )}
+      {!verEstadillos && carpeta && auto.estado === 'error' && (
+        <span className="field-hint hint-warn">{auto.mensaje}</span>
       )}
 
       {/* Los destinos se ven SIEMPRE, deshabilitados hasta que haya carpeta:

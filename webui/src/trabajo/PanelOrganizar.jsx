@@ -8,7 +8,7 @@ import PanelResultado from './PanelResultado'
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
 const ADV_FIELDS = SPLIT_ADVANCED.flatMap((s) => s.fields)
 
-export default function PanelOrganizar({ origen, estadillos, inspeccion, ready, running, onRun }) {
+export default function PanelOrganizar({ origen, estadillos = [], inspeccion, ready, running, onRun }) {
   const [destino, setDestino] = useState('')
   const [destinoFull, setDestinoFull] = useState(null) // {count} si la salida no está vacía NI es un destino organizado
   const [destinoOrganizado, setDestinoOrganizado] = useState(false) // destino con manifiesto válido: se añade otra tanda
@@ -66,7 +66,8 @@ export default function PanelOrganizar({ origen, estadillos, inspeccion, ready, 
     return () => { vivo = false; off() }
   }, [origen])
 
-  const canRun = ready && !running && origen && destino && !destinoFull
+  // El backend exige estadillo para organizar (`estadillo.py`): sin él, no se lanza.
+  const canRun = ready && !running && origen && destino && !destinoFull && estadillos.length > 0
 
   // Re-consulta las fallidas si cambia el origen con el destino ya elegido
   // (solo cuentan las del MISMO origen).
