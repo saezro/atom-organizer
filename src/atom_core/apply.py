@@ -23,12 +23,14 @@ import csv
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, wait as _esperar_futuros
 from concurrent.futures.process import BrokenProcessPool
@@ -251,18 +253,70 @@ def _caja_recorte_termico(ancho: int, alto: int, pct: float) -> tuple[int, int, 
 
 
 SUFIJO_PARCIAL = ".parcial"
+_RE_PARCIAL_UNICO = re.compile(r"\.parcial\.\d+-[0-9a-f]{8}$")
+
+_NS_XMP_APP1 = b"http://ns.adobe.com/xap/1.0/\x00"
+# Longitud de segmento = 2 bytes (campo longitud) + payload, máx. 65535.
+_MAX_XMP_APP1 = 65535 - 2 - len(_NS_XMP_APP1)
+
+
+class XmpDemasiadoGrandeError(ValueError):
+    """El bloque XMP no cabe en un segmento APP1 (~64 KB). Error visible, nunca
+    se descarta el XMP en silencio."""
+
+
+def validar_bloque_xmp(bloque_xmp: bytes) -> bytes:
+    if len(bloque_xmp) > _MAX_XMP_APP1:
+        raise XmpDemasiadoGrandeError(
+            f"El bloque XMP ({len(bloque_xmp)} B) supera el máximo de un segmento "
+            f"APP1 ({_MAX_XMP_APP1} B)")
+    return bloque_xmp
+
+
+def verificar_parcial(parcial: str) -> None:
+    """Decodifica el `.parcial` entero y exige tamaño > 0 antes del `os.replace`.
+    Lanza si está vacío o no decodifica."""
+    from PIL import Image
+    if os.path.getsize(parcial) <= 0:
+        raise OSError(f"El temporal {parcial} está vacío")
+    with Image.open(parcial) as im:
+        im.load()
+
+
+def insertar_xmp_app1(parcial: str, destino_tmp: str, bloque_xmp: bytes) -> None:
+    """Escribe en `destino_tmp` (una sola apertura `wb`) el JPEG de `parcial` con
+    el XMP como segmento APP1 justo tras SOI/APP0/APP1-Exif iniciales. Nunca
+    reabre un fichero en `ab`."""
+    validar_bloque_xmp(bloque_xmp)
+    with open(parcial, "rb") as fh:
+        datos = fh.read()
+    if datos[:2] != b"\xff\xd8":
+        raise ValueError("El temporal no es un JPEG (falta SOI)")
+    pos = 2
+    while pos + 4 <= len(datos) and datos[pos] == 0xFF and datos[pos + 1] in (0xE0, 0xE1):
+        pos += 2 + int.from_bytes(datos[pos + 2:pos + 4], "big")
+    carga = _NS_XMP_APP1 + bloque_xmp
+    segmento = b"\xff\xe1" + (len(carga) + 2).to_bytes(2, "big") + carga
+    with open(destino_tmp, "wb") as fh:
+        fh.write(datos[:pos] + segmento + datos[pos:])
 
 
 def ruta_parcial(destino: str) -> str:
-    """Nombre del temporal atómico de `destino`: `<raíz>.parcial<ext>`."""
+    """Nombre del temporal atómico de `destino`: `<raíz>.parcial.<pid>-<uuid><ext>`.
+    Único por intento (pid + uuid corto): en el montaje de Drive un `.parcial`
+    reutilizado entre intentos acababa corrupto. `es_nombre_parcial` sigue
+    reconociéndolo (la raíz acaba en `.parcial.<sufijo>`)."""
     raiz, extension = os.path.splitext(destino)
-    return f"{raiz}{SUFIJO_PARCIAL}{extension}"
+    return f"{raiz}{SUFIJO_PARCIAL}.{os.getpid()}-{uuid.uuid4().hex[:8]}{extension}"
 
 
 def es_nombre_parcial(nombre: str) -> bool:
     """True si `nombre` es el resultado de `ruta_parcial` (`X.parcial.JPG`)."""
     raiz, _ext = os.path.splitext(nombre)
-    return raiz.endswith(SUFIJO_PARCIAL) and len(raiz) > len(SUFIJO_PARCIAL)
+    if raiz.endswith(SUFIJO_PARCIAL) and len(raiz) > len(SUFIJO_PARCIAL):
+        return True
+    # Formato único por intento: `X.parcial.<pid>-<uuid8>`.
+    return _RE_PARCIAL_UNICO.search(raiz) is not None
 
 
 def limpiar_parciales_huerfanos(carpeta: str, excluir: tuple = (), log=None) -> int:
@@ -322,18 +376,26 @@ def _guardar_atomico(img, destino: str, transpose, crop_box, calidad: int,
         crop_box=crop_box,
         rotate_degrees=transpose,
     )
+    parcial_xmp = None
     try:
+        if bloque_xmp:
+            validar_bloque_xmp(bloque_xmp)
         with perfil_rgb.medir(etapa_encode):
             pipeline_mod._procesar_y_guardar_imagen(img, cfg_escritura)
         if bloque_xmp:
             # `PIL.Image.save` no re-adjunta el XMP de DJI (gimbal, altitud
             # relativa): sin esto el location.csv sale con esas columnas a 0.
-            # Mismo esquema que `_copiar_jpg_destino`: texto crudo tras el JPEG.
-            with open(parcial, "ab") as fh:
-                fh.write(bloque_xmp)
-    except Exception:
-        if os.path.exists(parcial):
+            # Se inserta como APP1 en cabecera con UNA escritura `wb` a otro
+            # temporal: reabrir en `ab` corrompía el JPG en el montaje de Drive.
+            parcial_xmp = ruta_parcial(destino)
+            insertar_xmp_app1(parcial, parcial_xmp, bloque_xmp)
             os.remove(parcial)
+            parcial, parcial_xmp = parcial_xmp, None
+        verificar_parcial(parcial)
+    except Exception:
+        for ruta in (parcial, parcial_xmp):
+            if ruta and os.path.exists(ruta):
+                os.remove(ruta)
         raise
     with perfil_rgb.medir("escritura"):
         os.replace(parcial, destino)
@@ -948,25 +1010,29 @@ def _copiar_jpg_destino(origen: str, destino: str, angulo: int = 0) -> None:
                     # (solo conoce el EXIF de `img.info`), así que sin esto la
                     # copia girada perdía el XMP aunque conservase el EXIF.
                     bloque_xmp = extraer_bloque_xmp_crudo(origen)
+                    if bloque_xmp:
+                        validar_bloque_xmp(bloque_xmp)
                     girada = img.transpose(transpose)
                     try:
-                        if exif:
-                            girada.save(parcial, format="JPEG",
-                                        quality=_CALIDAD_GIRO_JPG_TERMICO, exif=exif)
-                        else:
-                            girada.save(parcial, format="JPEG",
-                                        quality=_CALIDAD_GIRO_JPG_TERMICO)
+                        kw = {"exif": exif} if exif else {}
+                        girada.save(parcial, format="JPEG",
+                                    quality=_CALIDAD_GIRO_JPG_TERMICO, **kw)
                     finally:
                         girada.close()
                     if bloque_xmp:
-                        # Mismo esquema que `make_dji_jpeg` en tests/conftest.py:
-                        # el XMP va pegado tras el JPEG, como texto crudo, no
-                        # como segmento estructurado — así lo escriben y así lo
-                        # leen `leer_bloque_xmp`/`get_gimbal_yaw_pitch`/
-                        # `get_xmp_data`, que buscan el texto en el fichero
-                        # entero sin mirar los segmentos.
-                        with open(parcial, "ab") as fh:
-                            fh.write(bloque_xmp)
+                        # XMP como APP1 en cabecera con una sola escritura `wb`
+                        # a otro temporal (no `save(xmp=)`: no existe en todas
+                        # las versiones de Pillow; ni `ab`: corrompe en Drive).
+                        parcial_xmp = ruta_parcial(destino)
+                        try:
+                            insertar_xmp_app1(parcial, parcial_xmp, bloque_xmp)
+                        except Exception:
+                            if os.path.exists(parcial_xmp):
+                                os.remove(parcial_xmp)
+                            raise
+                        os.remove(parcial)
+                        parcial = parcial_xmp
+                    verificar_parcial(parcial)
             finally:
                 img.close()
     except Exception:

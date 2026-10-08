@@ -15,7 +15,8 @@ def _touch(p):
 
 def test_nombre_coincide_con_ruta_parcial():
     n = os.path.basename(apply.ruta_parcial("/a/DJI_0001.JPG"))
-    assert n == "DJI_0001.parcial.JPG" and apply.es_nombre_parcial(n)
+    assert n.startswith("DJI_0001.parcial.") and n.endswith(".JPG")
+    assert apply.es_nombre_parcial(n)
 
 
 def test_borra_huerfanos_en_subcarpetas(tmp_path):

@@ -542,10 +542,17 @@ def test_el_crop_recorta_en_coordenadas_del_original_y_luego_gira(tmp_path, make
             crop_box=caja, rotate_degrees=PILImage.ROTATE_270))
 
     obtenida = tmp_path / "salida" / "DJI_0011_CROP.JPG"
-    # La salida lleva además el XMP DJI pegado tras el JPEG: se compara el JPEG.
+    # La salida lleva además el XMP DJI como segmento APP1 en cabecera (nada
+    # tras el EOI): quitado ese segmento, el JPEG es idéntico al esperado.
     datos, esperados = obtenida.read_bytes(), esperada.read_bytes()
-    assert datos[:len(esperados)] == esperados
-    assert datos[len(esperados):].startswith(b"<x:xmpmeta")
+    assert datos.endswith(b"\xff\xd9")
+    i = datos.find(b"\xff\xe1", 2)
+    while i != -1 and not datos[i + 4:i + 33].startswith(b"http://ns.adobe.com/xap/1.0/"):
+        i = datos.find(b"\xff\xe1", i + 2)
+    assert i != -1
+    largo = int.from_bytes(datos[i + 2:i + 4], "big")
+    assert b"<x:xmpmeta" in datos[i:i + 2 + largo]
+    assert datos[:i] + datos[i + 2 + largo:] == esperados
 
 
 def test_caja_recorte_termico_caso_de_referencia():
