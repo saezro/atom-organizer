@@ -42,6 +42,8 @@ export default function PanelSubida({
   // 'plan'`, `kind: 'scan'`). Se resetea a 0 en cuanto llega cualquier evento
   // terminal (cancelled/error/done).
   const [escaneados, setEscaneados] = useState(0)
+  // El análisis se canceló a mano: no hay plan pero tampoco se está calculando.
+  const [planCancelado, setPlanCancelado] = useState(false)
   const [uploading, setUploading] = useState(false)
   // Última foto del progreso que mandó el backend (kind 'stats'), con bytes,
   // ficheros, velocidad y ETA.
@@ -145,12 +147,13 @@ export default function PanelSubida({
   useEffect(() => {
     if (!carpeta || !prefijo) return
     setPlan(null)
+    setPlanCancelado(false)
     setEscaneados(0)
     let vivo = true
     const off = onAnalisis((d) => {
       if (d.scope !== 'plan') return
       if (d.kind === 'scan') setEscaneados(d.done)
-      if (d.kind === 'cancelled') { setEscaneados(0); setPlan(null) }
+      if (d.kind === 'cancelled') { setEscaneados(0); setPlan(null); setPlanCancelado(true) }
       if (d.kind === 'error') { setEscaneados(0); setPlan({ ok: false, error: d.text }) }
       if (d.kind === 'done') { setEscaneados(0); setPlan(d.data) }
     })
@@ -254,6 +257,8 @@ export default function PanelSubida({
   }
 
   async function logout() {
+    const ok = await confirmar('¿Cerrar la sesión de Google? Para volver a subir tendrás que iniciarla de nuevo.')
+    if (!ok) return
     await api.cloudLogout()
     setPlan(null)
     setSesion(null)
@@ -295,6 +300,14 @@ export default function PanelSubida({
   const logged = !!status?.logged_in
   const ocupado = Boolean(busy || uploading || estadilloSubiendo || organizando)
   const puedeSubir = ready && logged && !!prefijo && plan?.ok && !ocupado && estadilloListo
+  // Por qué el botón está deshabilitado: mismas condiciones que `puedeSubir`.
+  const falta = []
+  if (!ready) falta.push('conexión con ATOM')
+  if (!logged) falta.push('iniciar sesión de Google')
+  if (!prefijo) falta.push('inspección')
+  else if (!plan?.ok) falta.push(plan === null ? 'análisis de la carpeta' : 'carpeta válida')
+  if (!estadilloListo) falta.push('estadillo')
+  const calculandoPlan = !!prefijo && plan === null && !planCancelado
 
   // El original (`BucketScreen`) usaba este mismo `ocupado` para deshabilitar
   // TODO el formulario (carpeta, inspección, estadillo), no solo los
@@ -392,6 +405,8 @@ export default function PanelSubida({
           {' '}<button type="button" className="btn-ghost" onClick={() => api.analisisCancel()}>Cancelar</button>
         </span>
       )}
+
+      {calculandoPlan && escaneados === 0 && <span className="field-hint">Calculando…</span>}
 
       {plan && plan.ok && (
         <span className="field-hint hint-ok">
@@ -503,6 +518,10 @@ export default function PanelSubida({
         <span className="field-hint hint-warn">
           La subida terminó bien, pero no se pudo lanzar la organización: {organizarResult.error}
         </span>
+      )}
+
+      {!uploading && !puedeSubir && !ocupado && falta.length > 0 && (
+        <span className="field-hint" data-testid="falta-subir">Falta: {falta.join(' / ')}</span>
       )}
 
       {uploading ? (

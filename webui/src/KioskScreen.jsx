@@ -772,6 +772,11 @@ export default function KioskScreen({
           >
             Subir en crudo
           </BotonToque>
+          {!credencialOk && (
+            <span className="kiosk-menu-motivo" data-testid="kiosk-subir-motivo">
+              Subir en crudo no disponible: este dispositivo no tiene sesión. Vuelve a emparejarlo con el QR.
+            </span>
+          )}
         </div>
       </div>
     )

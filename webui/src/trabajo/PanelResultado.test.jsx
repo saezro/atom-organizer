@@ -31,20 +31,20 @@ describe('PanelResultado', () => {
   it('con Urgencia por defecto, el botón lanza resultadoSubir(carpeta, id, urgencia, false)', async () => {
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     expect(screen.getByRole('radio', { name: 'Urgencia' })).toBeChecked()
-    fireEvent.click(screen.getByRole('button', { name: 'Subir al bucket' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Publicar resultado' }))
     await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalledWith('/salida', 7, 'urgencia', false))
   })
 
   it('modo Normal manda «normal»', async () => {
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     fireEvent.click(screen.getByRole('radio', { name: 'Normal' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Subir al bucket' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Publicar resultado' }))
     await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalledWith('/salida', 7, 'normal', false))
   })
 
   it('sin carpeta o sin inspección el botón está deshabilitado y lo explica', () => {
     render(<PanelResultado carpeta="" inspeccionId={null} ready />)
-    expect(screen.getByRole('button', { name: 'Subir al bucket' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Publicar resultado' })).toBeDisabled()
     expect(screen.getByText(/Elige la inspección/)).toBeInTheDocument()
   })
 
@@ -53,7 +53,7 @@ describe('PanelResultado', () => {
     emitir({ kind: 'start', modo: 'urgencia' })
     emitir({ kind: 'estado', fase: 'urgentes', urgentes: { hechos: 3, total: 10 }, resto: { hechos: 0, total: 25 } })
     expect(await screen.findByText('urgentes 3/10 · resto 0/25')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Subir al bucket' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Publicar resultado' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Cancelar' })).toBeInTheDocument()
   })
 
@@ -66,7 +66,7 @@ describe('PanelResultado', () => {
     expect(await screen.findByText(/1 en conflicto/)).toBeInTheDocument()
     expect(screen.getByText(/1 fallida/)).toBeInTheDocument()
     expect(screen.getByText(/sin clasificar/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Reintentar fallidas' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Resubir fallidas' }))
     await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalledWith('/salida', 7, 'urgencia', false))
   })
 
@@ -75,10 +75,10 @@ describe('PanelResultado', () => {
     emitir({ kind: 'start', modo: 'urgencia' })
     emitir({ kind: 'done', ok: true, modo: 'urgencia', continua: true,
       urgentes: { hechos: 5, total: 5 }, resto: { hechos: 0, total: 3 }, conflictos: [], fallidas: [], avisos: [] })
-    expect(screen.getByRole('button', { name: 'Subir al bucket' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Publicar resultado' })).toBeDisabled()
     emitir({ kind: 'done', ok: true, modo: 'normal', continua: false,
       urgentes: { hechos: 5, total: 5 }, resto: { hechos: 3, total: 3 }, conflictos: [], fallidas: [], avisos: [] })
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Subir al bucket' })).not.toBeDisabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Publicar resultado' })).not.toBeDisabled())
     expect(screen.getByText('Subida completa')).toBeInTheDocument()
   })
 
@@ -99,7 +99,7 @@ describe('PanelResultado', () => {
   it('si resultadoSubir rechaza (kiosco sin el método) el error se ve', async () => {
     api.resultadoSubir.mockRejectedValueOnce(new Error('método no expuesto'))
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
-    fireEvent.click(screen.getByRole('button', { name: 'Subir al bucket' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Publicar resultado' }))
     expect(await screen.findByText(/método no expuesto/)).toBeInTheDocument()
   })
 })

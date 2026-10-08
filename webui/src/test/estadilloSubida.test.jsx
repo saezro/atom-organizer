@@ -113,7 +113,7 @@ async function irAEstadilloConFichero(user, ruta = '/home/saez/Descargas/estadil
   api.estadillosDetectar.mockResolvedValue({ rutas: [ruta] })
   render(<App />)
 
-  // La app arranca en «Inicio»: hay que entrar a «Trabajo» antes de que
+  // La app arranca en «Trabajo»; se pulsa la pestaña por si acaso antes de que
   // aparezca «Carpeta del vuelo».
   await user.click(await screen.findByRole('tab', { name: 'Trabajo' }))
 
@@ -126,7 +126,7 @@ async function irAEstadilloConFichero(user, ruta = '/home/saez/Descargas/estadil
   // Destino «Subir al bucket»: monta PanelSubida (y, con él, el único botón
   // «Subir al bucket» de envío) sin el cual el estadillo no llega a validarse
   // contra un plan real.
-  await user.click(await screen.findByText('Subir al bucket'))
+  await user.click(await screen.findByText('Subir sin organizar'))
 
   // Sin selector de fichero ni input tecleable (pedido de Rodrigo,
   // 2026-09-22): el estadillo llega solo por autodetección en la carpeta del

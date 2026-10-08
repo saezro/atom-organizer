@@ -145,9 +145,18 @@ describe('PanelSubida', () => {
       expect(onCloudStatusChange).toHaveBeenCalledWith(
         expect.objectContaining({ logged_in: true })))
     fireEvent.click(await screen.findByText(/Cerrar sesión/i))
+    fireEvent.click(await screen.findByRole('button', { name: 'Sí' }))
     await waitFor(() => expect(api.cloudLogout).toHaveBeenCalled())
     await waitFor(() =>
       expect(onCloudStatusChange).toHaveBeenCalledWith(
         expect.objectContaining({ logged_in: false })))
+  })
+
+  it('pide confirmación al cerrar sesión y no cierra si se responde No', async () => {
+    api.cloudStatus.mockResolvedValue({ configured: true, logged_in: true, email: 'a@b.c' })
+    render(<PanelSubida {...props} />)
+    fireEvent.click(await screen.findByText(/Cerrar sesión/i))
+    fireEvent.click(await screen.findByRole('button', { name: 'No' }))
+    expect(api.cloudLogout).not.toHaveBeenCalled()
   })
 })

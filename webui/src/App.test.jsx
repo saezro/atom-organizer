@@ -71,7 +71,7 @@ describe('SUBIR AL BUCKET · elegir la carpeta del vuelo', () => {
     const user = userEvent.setup()
     render(<App />)
 
-    // La app arranca en «Inicio»: hay que entrar a «Trabajo» antes de que
+    // La app arranca en «Trabajo»; se pulsa la pestaña por si acaso antes de que
     // aparezca «Carpeta del vuelo», su primer paso.
     await user.click(await screen.findByRole('tab', { name: 'Trabajo' }))
 
@@ -87,7 +87,7 @@ describe('SUBIR AL BUCKET · elegir la carpeta del vuelo', () => {
     await user.click(await screen.findByRole('button', { name: 'ANTOLIN' }))
 
     // Destino «Subir al bucket»: monta PanelSubida, que pide el plan en hilo.
-    await user.click(await screen.findByText('Subir al bucket'))
+    await user.click(await screen.findByText('Subir sin organizar'))
 
     // Lo que el bug rompía: la carpeta se seleccionaba pero el plan no se pedía
     // nunca, así que «2.518 ya subidos» no llegaba a calcularse.

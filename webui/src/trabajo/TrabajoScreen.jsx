@@ -9,14 +9,13 @@ import useEstadilloAuto from './useEstadilloAuto'
 const ESTADILLO_OMITIDO = { rutas: [], listo: true, subiendo: false, subir: async () => {} }
 
 const DESTINOS = [
-  { id: 'local', titulo: 'Organizar aquí', detalle: 'Se organiza en este ordenador, en la carpeta que elijas.' },
-  { id: 'bucket', titulo: 'Subir al bucket', detalle: 'Las imágenes van a la nube tal cual; se organizan después.' },
-  { id: 'nube', titulo: 'Subir y organizar en la nube', detalle: 'Se suben y ATOM las organiza sin ocupar este ordenador.' },
+  { id: 'local', titulo: 'Organizar en este ordenador', detalle: 'Se organiza aquí, en la carpeta que elijas.' },
+  { id: 'bucket', titulo: 'Subir sin organizar', detalle: 'Las imágenes van a la nube tal cual.' },
 ]
 
-// `destinoInicial` llega desde las cards de «Inicio» (organizar → 'local',
-// subir en crudo → 'bucket'). App.jsx remonta el componente con `key`, así que
-// basta con usarlo como valor inicial del state.
+// `destinoInicial` ('local' | 'bucket' | 'nube') solo preselecciona el destino.
+// 'nube' (subir y organizar en la nube) ya no es un destino propio: equivale a
+// «Subir sin organizar» con la casilla «Organizar después en la nube» marcada.
 export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChange, destinoInicial = null, acceso = null }) {
   // `acceso` = `{organizer, estadillos}` (login usuario+contraseña); null = todo.
   const verOrganizer = acceso?.organizer !== false
@@ -25,7 +24,10 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
   const [prefijo, setPrefijo] = useState('')
   const [elegida, setElegida] = useState(null)
   const [estadillo, setEstadillo] = useState({ rutas: [], listo: false, subiendo: false, subir: async () => {} })
-  const [destino, setDestino] = useState(destinoInicial)
+  const [destino, setDestino] = useState(destinoInicial === 'nube' ? 'bucket' : destinoInicial)
+  // Casilla de «Subir sin organizar»: encadena la organización en la nube al
+  // terminar la subida (antes era el tercer destino, 'nube').
+  const [organizarNube, setOrganizarNube] = useState(destinoInicial === 'nube')
   // Subida en curso dentro de `PanelSubida` (login/preparación/subida en
   // hilo). El original (`BucketScreen`) tenía `busy`/`uploading` en el mismo
   // componente que carpeta/inspección/estadillo y los sumaba todos a un único
@@ -113,12 +115,24 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
         <PanelOrganizar origen={carpeta} estadillos={est.rutas} inspeccion={elegida} ready={ready} running={running} onRun={onRun} />
       )}
 
-      {carpeta && (destino === 'bucket' || destino === 'nube') && (
+      {carpeta && destino === 'bucket' && (
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={organizarNube}
+            disabled={ocupado}
+            onChange={(e) => setOrganizarNube(e.target.checked)}
+          />
+          <span>Organizar después en la nube</span>
+        </label>
+      )}
+
+      {carpeta && destino === 'bucket' && (
         <PanelSubida
           carpeta={carpeta}
           prefijo={prefijo}
           inspeccionId={elegida?.id}
-          destino={destino}
+          destino={organizarNube ? 'nube' : 'bucket'}
           estadilloListo={est.listo}
           estadilloSubiendo={est.subiendo}
           subirEstadillo={est.subir}
