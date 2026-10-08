@@ -130,4 +130,13 @@ describe('PanelOrganizar', () => {
     await waitFor(() => expect(screen.getByDisplayValue('/datos/final')).toBeTruthy())
     expect(screen.queryByText(/Reintentar/)).toBeNull()
   })
+
+  it('sin estadillo el botón Ejecutar queda desactivado aunque haya carpeta final', async () => {
+    api.pickFolder.mockResolvedValue('/datos/final')
+    api.folderIsEmpty.mockResolvedValue({ empty: true })
+    render(<PanelOrganizar origen="/datos/vuelo" estadillos={[]} ready running={false} onRun={() => {}} />)
+    fireEvent.click(screen.getAllByText(/Elegir/i)[0])
+    await waitFor(() => expect(screen.getByDisplayValue('/datos/final')).toBeTruthy())
+    expect(screen.getByText(/Ejecutar/i).disabled).toBe(true)
+  })
 })
