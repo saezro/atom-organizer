@@ -158,6 +158,9 @@ class _MetadatosImagen:
     # True si la propia lectura de cabecera detectó que el fichero está a
     # medio copiar (ver `_leer_cabecera`): el índice lo deja fuera.
     a_medias: bool = False
+    # GimbalPitchDegree (XMP) en grados; None si no se pudo leer. Sirve para
+    # normalizar el yaw en el consenso de giro (`_yaw_normalizado`).
+    pitch: float | None = None
 
 
 def _sin_utils_helper() -> "utils.Utils":
@@ -926,6 +929,11 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
         yaw = float(gimbal[0])
     except Exception:  # noqa: BLE001
         yaw = None
+    pitch = None
+    try:
+        pitch = float(gimbal[1])
+    except Exception:  # noqa: BLE001 — sin pitch el yaw se usa tal cual
+        pitch = None
 
     gps = None
     if buf is not None:
@@ -953,7 +961,8 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
 
     return _MetadatosImagen(ruta=ruta, nombre=nombre, timestamp=timestamp,
                             modelo=modelo, yaw=yaw, gps=gps,
-                            posicion=posicion, meta_leida=meta_leida, make=make)
+                            posicion=posicion, meta_leida=meta_leida, make=make,
+                            pitch=pitch)
 
 
 def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
@@ -1075,6 +1084,21 @@ def _orientacion_normalizada(valor) -> str:
     return str(valor or "").strip().lower()
 
 
+def _yaw_normalizado(yaw: float, pitch: float | None) -> float:
+    """Yaw comparable entre RGB y térmica. En DJI M30T la térmica puede tener
+    GimbalPitch < -90 (cámara pasada del nadir) y su GimbalYaw sale invertido
+    ~180º respecto al RGB con la misma orientación física: se suma 180 y se
+    reduce a (-180, 180]. Sin pitch (None) el yaw se deja tal cual."""
+    if pitch is None or pitch >= -90:
+        return yaw
+    yaw = yaw + 180.0
+    while yaw > 180.0:
+        yaw -= 360.0
+    while yaw <= -180.0:
+        yaw += 360.0
+    return yaw
+
+
 def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dict | None]],
                                   pipeline, cfg, output_folder: str,
                                   progress_callback) -> dict[tuple[str, str], int]:
@@ -1118,7 +1142,8 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
         if ventana is None or dato.yaw is None or _es_pb_generales(ventana["pb"]):
             continue
         clave = (ventana["pb"], ventana["vuelo"], ventana.get("sufijo"))
-        yaws_por_vuelo.setdefault(clave, []).append(dato.yaw)
+        yaws_por_vuelo.setdefault(clave, []).append(
+            _yaw_normalizado(dato.yaw, getattr(dato, "pitch", None)))
 
     orientacion = _orientacion_normalizada(getattr(cfg, "orientacion", ""))
     if orientacion == "horizontal":
