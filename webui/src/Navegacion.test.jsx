@@ -28,23 +28,22 @@ vi.mock('./bridge', () => ({
 const App = (await import('./App')).default
 
 describe('Navegación', () => {
-  it('tiene exactamente cuatro pestañas', async () => {
+  it('tiene exactamente tres pestañas', async () => {
     render(<App />)
     const tabs = await screen.findAllByRole('tab')
-    expect(tabs).toHaveLength(4)
+    expect(tabs).toHaveLength(3)
   })
 
-  it('arranca en Inicio', async () => {
+  it('arranca en Trabajo', async () => {
     render(<App />)
-    expect(await screen.findByText('Organizar')).toBeTruthy()
-    expect(screen.getByText('Subir en crudo')).toBeTruthy()
-    expect(screen.getByText('Herramientas extra')).toBeTruthy()
-    expect(screen.getByRole('tab', { name: 'Inicio' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByText('¿Qué hacemos con este trabajo?')).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Trabajo' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('tab', { name: 'Inicio' })).toBeNull()
   })
 
-  it('Herramientas agrupa las dos pantallas de herramientas', async () => {
+  it('Avanzado agrupa las dos pantallas de herramientas', async () => {
     render(<App />)
-    fireEvent.click(await screen.findByText('Herramientas'))
+    fireEvent.click(await screen.findByRole('tab', { name: 'Avanzado' }))
     expect(await screen.findByText(SECTIONS.aerotools.label)).toBeTruthy()
     expect(screen.getByText(SECTIONS.otros.label)).toBeTruthy()
   })

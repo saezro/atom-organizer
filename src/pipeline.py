@@ -3249,6 +3249,7 @@ class SplitImages:
             return 0
 
         giradas = 0
+        self.termicas_giradas_sin_xmp = 0
         for ruta in self._recorrer_arbol_termica(input_folder):
             if self.stop:
                 break
@@ -3287,6 +3288,10 @@ class SplitImages:
         if giradas:
             self.organizer_logger.logger.info(
                 f"Imágenes térmicas giradas en su sitio: {giradas}.")
+        if self.termicas_giradas_sin_xmp:
+            progress_callback.emit(
+                "AVISO: {0} térmicas giradas sin XMP (el origen no lo traía).\n".format(
+                    self.termicas_giradas_sin_xmp))
         return giradas
 
     def _girar_termica_local(self, ruta_local: Path, transpose: int) -> str:
@@ -3300,33 +3305,48 @@ class SplitImages:
         `.rot.tmp` si llegó a crearse) y se relanza SIN capturar, para que
         quien tenga a `ruta_local` dentro de un `with editar_en_sitio(...)`
         (backend `gs://…`) vea la excepción y NO publique nada."""
-        temporal = Path(str(ruta_local) + ".rot.tmp")
+        # Import diferido: `atom_core.apply` importa `pipeline` (ciclo a nivel módulo).
+        from atom_core.apply import insertar_xmp_app1, ruta_parcial, verificar_parcial
+        ruta_str = str(ruta_local)
+        parcial = ruta_parcial(ruta_str)
+        parcial_xmp = None
         try:
             with Image.open(ruta_local) as image_open:
                 if image_open.height > image_open.width:
-                    # Las térmicas DJI son apaisadas de fábrica (640x512): si esta ya
-                    # viene vertical, es que se giró en una pasada anterior sobre la
-                    # misma carpeta. Volver a girarla la dejaría a 180º.
+                    # Señal de "ya girada": las térmicas DJI son apaisadas de fábrica
+                    # (640x512), así que vertical == giro previo (apply.py o una pasada
+                    # anterior). Se sale ANTES de recodificar: ni segundo giro ni segunda
+                    # pérdida. Misma guarda que `apply._copiar_jpg_destino`.
                     return "ya_girada"
                 # El EXIF se arrastra: lleva la geolocalización y la fecha, que es
                 # justo lo que se consulta luego sobre estas fotos.
                 exif = image_open.info.get("exif")
+                # PIL.save NO conserva el XMP (yaw/gimbal): se extrae del origen y se
+                # reinserta como APP1 tras guardar.
+                bloque_xmp = em.extraer_bloque_xmp_crudo(ruta_str)
                 girada = image_open.transpose(transpose)
                 # quality=95: el re-encodado es inevitable (PIL no gira sin
                 # descomprimir), así que al menos que no añada artefactos visibles
                 # sobre la única copia que va a quedar.
                 if exif:
-                    girada.save(temporal, format="JPEG", quality=95, exif=exif)
+                    girada.save(parcial, format="JPEG", quality=95, exif=exif)
                 else:
-                    girada.save(temporal, format="JPEG", quality=95)
-            os.replace(temporal, ruta_local)
-            return "girada"
+                    girada.save(parcial, format="JPEG", quality=95)
+            if bloque_xmp:
+                parcial_xmp = ruta_parcial(ruta_str)
+                insertar_xmp_app1(parcial, parcial_xmp, bloque_xmp)
+                os.remove(parcial)
+                parcial, parcial_xmp = parcial_xmp, None
+            verificar_parcial(parcial)
+            os.replace(parcial, ruta_local)
+            return "girada" if bloque_xmp else "girada_sin_xmp"
         except Exception:
-            if temporal.exists():
-                try:
-                    temporal.unlink()
-                except OSError:
-                    pass
+            for ruta in (parcial, parcial_xmp):
+                if ruta and os.path.exists(ruta):
+                    try:
+                        os.remove(ruta)
+                    except OSError:
+                        pass
             raise
 
     def _rotate_one_thermal_jpg_in_place(self, folder: str, image_name: str, transpose: int,
@@ -3363,6 +3383,13 @@ class SplitImages:
             self.organizer_logger.logger.info(
                 f"Ya estaba girada, se deja como está: {origen}")
             return 0
+        if resultado == "girada_sin_xmp":
+            # Visible y contado: sin XMP no hay yaw/gimbal en la térmica girada.
+            self.termicas_giradas_sin_xmp = getattr(self, "termicas_giradas_sin_xmp", 0) + 1
+            self.organizer_logger.logger.warning(
+                f"Térmica girada SIN XMP (el origen no lo traía): {origen}")
+            progress_callback.emit(
+                "AVISO: la térmica {0} no traía XMP en el origen; girada sin él.\n".format(origen))
         return 1
 
     def read_auto_rotate_degree(self, input_folder: str, progress_callback) -> int:

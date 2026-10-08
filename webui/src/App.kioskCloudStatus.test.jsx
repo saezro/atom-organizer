@@ -78,14 +78,14 @@ describe('App: sincroniza kioskCloudStatus tras logout en PanelSubida (R2)', () 
     const user = userEvent.setup()
     const { rerender } = render(<App />)
 
-    // La app arranca en «Inicio»: hay que entrar a «Trabajo» antes de que
+    // La app arranca en «Trabajo»; se pulsa la pestaña por si acaso antes de que
     // aparezcan «Carpeta del vuelo» y los destinos.
     await user.click(await screen.findByRole('tab', { name: 'Trabajo' }))
 
     // Carpeta del vuelo → destino «Subir al bucket» → PanelSubida montado.
     const elegirBotones = await screen.findAllByRole('button', { name: /elegir/i })
     await user.click(elegirBotones[0])
-    await user.click(await screen.findByText('Subir al bucket'))
+    await user.click(await screen.findByText('Subir sin organizar'))
 
     // Sesión iniciada: PanelSubida ya llamó a onCloudStatusChange una vez al
     // montarse (con logged_in: true) — confirma que el handler SÍ es una
@@ -105,6 +105,7 @@ describe('App: sincroniza kioskCloudStatus tras logout en PanelSubida (R2)', () 
     // `setKioskCloudStatus`, el kiosco (más abajo) seguiría leyendo el
     // `kioskCloudStatus` inicial (`null`, sin estado).
     await user.click(await screen.findByText(/Cerrar sesión/i))
+    await user.click(await screen.findByRole('button', { name: 'Sí' }))
     await waitFor(() => expect(api.cloudLogout).toHaveBeenCalled())
     await waitFor(() =>
       expect(api.cloudStatus).toHaveBeenCalledTimes(llamadasAntesDeLogout + 1)

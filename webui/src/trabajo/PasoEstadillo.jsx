@@ -370,6 +370,14 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
   // Baja el/los estadillo(s) ya subidos al bucket para esta inspección y los
   // añade a la selección (sin duplicar rutas ya presentes), reusando el mismo
   // camino de validación que una selección manual.
+  // Selector nativo CSV/XLSX (antes «Elegir…» dentro de `EstadilloField`).
+  // Añade el fichero a la lista sin duplicarlo.
+  async function elegirEstadillo() {
+    const path = await api.pickFile('csv_xlsx')
+    if (!path || estadRutas.includes(path)) return
+    cambiarEstadRutas([...estadRutas, path])
+  }
+
   async function bajarEstadilloNube() {
     setEstadBajarError(null)
     setEstadBajando(true)
@@ -495,30 +503,40 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
         value={estadRutas}
         onChange={cambiarEstadRutas}
         disabled={disabled || estadSubiendo || omitirEstadillo}
-        // Solo en escritorio (este es el único caller que lo pasa): recupera
-        // el botón «Elegir…» para volver a elegir el estadillo a mano cuando
-        // la autodetección no acierta. El kiosco (`KioskScreen`) nunca lo
-        // pasa, así que el botón no puede aparecer ahí.
-        permitirElegir
+        // «Elegir…» vive ahora en el menú «Otras opciones» (abajo): la
+        // autodetección es el camino por defecto.
       />
-      <button
-        type="button"
-        className="btn-ghost btn-recibir-estadillo"
-        disabled={disabled || estadSubiendo || omitirEstadillo}
-        onClick={() => setEsperando(true)}
-      >
-        Recibir del portátil
-      </button>
-      {!isServerMode() && prefijo && estadPrevio?.existe === true && (
-        <button
-          type="button"
-          className="btn-ghost btn-bajar-estadillo"
-          disabled={disabled || estadSubiendo || estadBajando}
-          onClick={bajarEstadilloNube}
-        >
-          {estadBajando ? 'Bajando de la nube…' : 'Bajar de la nube'}
-        </button>
-      )}
+      <details className="estad-otras">
+        <summary>Otras opciones</summary>
+        <div className="estad-otras-lista">
+          <button
+            type="button"
+            className="btn-ghost"
+            disabled={disabled || estadSubiendo || omitirEstadillo}
+            onClick={elegirEstadillo}
+          >
+            Elegir…
+          </button>
+          <button
+            type="button"
+            className="btn-ghost btn-recibir-estadillo"
+            disabled={disabled || estadSubiendo || omitirEstadillo}
+            onClick={() => setEsperando(true)}
+          >
+            Recibir del portátil
+          </button>
+          {!isServerMode() && prefijo && estadPrevio?.existe === true && (
+            <button
+              type="button"
+              className="btn-ghost btn-bajar-estadillo"
+              disabled={disabled || estadSubiendo || estadBajando}
+              onClick={bajarEstadilloNube}
+            >
+              {estadBajando ? 'Bajando de la nube…' : 'Bajar de la nube'}
+            </button>
+          )}
+        </div>
+      </details>
       {estadBajarError && (
         <span className="field-hint hint-warn" role="alert">
           {estadBajarError}

@@ -43,10 +43,10 @@ describe('Puerta de entrada', () => {
     expect(screen.queryByRole('tab', { name: 'Trabajo' })).toBeNull()
   })
 
-  it('«Entrar sin cuenta» abre Inicio con el avatar de cuenta', async () => {
+  it('«Entrar sin cuenta» abre Trabajo con el avatar de cuenta', async () => {
     render(<App />)
     fireEvent.click(await screen.findByText('Entrar sin cuenta'))
-    expect(await screen.findByText('Subir en crudo')).toBeTruthy()
+    expect(await screen.findByText('¿Qué hacemos con este trabajo?')).toBeTruthy()
     expect(screen.getByTestId('cuenta-avatar')).toBeTruthy()
   })
 

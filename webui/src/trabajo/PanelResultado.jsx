@@ -74,10 +74,11 @@ export default function PanelResultado({ carpeta, inspeccionId, ready }) {
         Urgencia sube lo necesario para el análisis. Normal sube además el resto, sin repetir lo ya subido.
       </span>
       <div className="field-row">
-        <button type="button" className="btn-ghost" onClick={lanzar} disabled={!puede}>Subir al bucket</button>
+        <button type="button" className="btn-ghost" onClick={lanzar} disabled={!puede}>Publicar resultado</button>
         {subiendo && <button type="button" className="btn-ghost" onClick={() => api.resultadoCancelar()}>Cancelar</button>}
       </div>
-      {!(carpeta && inspeccionId) && <span className="field-hint">Elige la inspección y la carpeta de salida para poder subir.</span>}
+      {!(carpeta && inspeccionId) && <span className="field-hint">Elige la inspección y la carpeta de salida para poder publicar.</span>}
+      {subiendo && !estado && <span className="field-hint" aria-live="polite">Calculando…</span>}
       {estado && <span className="field-hint" aria-live="polite">{textoProgreso(estado)}</span>}
       {completa && <span className="field-hint hint-ok">Subida completa</span>}
       {resumen?.cancelled && <span className="field-hint hint-warn">Subida cancelada. Lo ya subido se conserva.</span>}
@@ -85,7 +86,7 @@ export default function PanelResultado({ carpeta, inspeccionId, ready }) {
       {nFall > 0 && (
         <span className="field-hint hint-warn">
           {nFall} fallida{nFall === 1 ? '' : 's'}{' '}
-          <button type="button" className="btn-ghost" onClick={lanzar} disabled={!puede}>Reintentar fallidas</button>
+          <button type="button" className="btn-ghost" onClick={lanzar} disabled={!puede}>Resubir fallidas</button>
         </span>
       )}
       {(resumen?.avisos || []).map((a) => <span key={a} className="field-hint hint-warn">{a}</span>)}

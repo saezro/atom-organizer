@@ -13,7 +13,7 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
   const [destinoFull, setDestinoFull] = useState(null) // {count} si la salida no está vacía NI es un destino organizado
   const [destinoOrganizado, setDestinoOrganizado] = useState(false) // destino con manifiesto válido: se añade otra tanda
   const [fallidasError, setFallidasError] = useState('') // manifiesto ilegible: se muestra, no se oculta el botón
-  const [fallidas, setFallidas] = useState(0) // filas 'fallido' del manifiesto del destino (mismo origen): "Reintentar fallidas"
+  const [fallidas, setFallidas] = useState(0) // filas 'fallido' del manifiesto del destino (mismo origen): "Reorganizar fallidas"
   const [rename, setRename] = useState(true)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [adv, setAdv] = useState(() => initialState(ADV_FIELDS))
@@ -36,11 +36,12 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
   useEffect(() => {
     if (!origen) return
     setEscaneados(0)
+    setDetected(null)
     let vivo = true
     const off = onAnalisis((d) => {
       if (d.scope !== 'suffixes') return
       if (d.kind === 'scan') setEscaneados(d.done)
-      if (d.kind === 'cancelled') { setEscaneados(0); setDetected(null) }
+      if (d.kind === 'cancelled') { setEscaneados(0); setDetected({ ok: false, error: 'análisis cancelado' }) }
       if (d.kind === 'error') { setEscaneados(0); setDetected({ ok: false, error: d.text }) }
       if (d.kind === 'done') {
         setEscaneados(0)
@@ -68,6 +69,13 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
 
   // El backend exige estadillo para organizar (`estadillo.py`): sin él, no se lanza.
   const canRun = ready && !running && origen && destino && !destinoFull && estadillos.length > 0
+  // Por qué «Ejecutar» está deshabilitado: mismas condiciones que `canRun`.
+  const falta = []
+  if (!ready) falta.push('conexión con ATOM')
+  if (!origen) falta.push('carpeta del vuelo')
+  if (!destino) falta.push('carpeta final')
+  else if (destinoFull) falta.push('carpeta final vacía (la elegida tiene archivos)')
+  if (estadillos.length === 0) falta.push('estadillo')
 
   // Re-consulta las fallidas si cambia el origen con el destino ya elegido
   // (solo cuentan las del MISMO origen).
@@ -100,7 +108,6 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
 
   return (
     <div className="card">
-      <h2 className="card-title">Organizar completo</h2>
       <PasoCarpeta
         label="Carpeta final"
         value={destino}
@@ -149,6 +156,9 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
             {' '}<button type="button" className="btn-ghost" onClick={() => api.analisisCancel()}>Cancelar</button>
           </span>
         )}
+        {escaneados === 0 && !detected && origen && (
+          <span className="field-hint">Calculando…</span>
+        )}
         {detected && (
           <span className={`field-hint ${detected.ok ? 'hint-ok' : 'hint-warn'}`}>
             {detected.ok
@@ -196,20 +206,23 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
       <button className="btn-run" disabled={!canRun} onClick={() => handleRun(false)}>
         {running ? 'Procesando…' : 'Ejecutar'}
       </button>
+      {!canRun && !running && falta.length > 0 && (
+        <span className="field-hint" data-testid="falta-ejecutar">Falta: {falta.join(' / ')}</span>
+      )}
       {fallidasError && (
         <span className="field-hint hint-warn">
-          No se pudo comprobar si hay imágenes fallidas que reintentar: {fallidasError}
+          No se pudo comprobar si hay imágenes fallidas que reorganizar: {fallidasError}
         </span>
       )}
       {fallidas > 0 && (
         <>
           <span className="field-hint hint-warn">
-            Este destino tiene {fallidas} imágenes fallidas del mismo origen. Reintentarlas
+            Este destino tiene {fallidas} imágenes fallidas del mismo origen. Reorganizarlas
             no toca las ya hechas.
           </span>
           <button type="button" className="btn-ghost" disabled={!canRun}
             onClick={() => handleRun(true)}>
-            Reintentar {fallidas} fallidas
+            Reorganizar {fallidas} fallidas
           </button>
         </>
       )}

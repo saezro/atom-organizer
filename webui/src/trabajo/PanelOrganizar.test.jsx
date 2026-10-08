@@ -107,13 +107,13 @@ describe('PanelOrganizar', () => {
     )
   })
 
-  it('con fallidas del mismo origen ofrece Reintentar N fallidas y lanza solo_fallidas', async () => {
+  it('con fallidas del mismo origen ofrece Reorganizar N fallidas y lanza solo_fallidas', async () => {
     api.pickFolder.mockResolvedValue('/datos/final')
     api.folderIsEmpty.mockResolvedValue({ empty: false, count: 9, organizado: true, fallidas: 689 })
     const onRun = vi.fn()
     render(<PanelOrganizar origen="/datos/vuelo" estadillos={['/e.xlsx']} ready running={false} onRun={onRun} />)
     fireEvent.click(screen.getAllByText(/Elegir/i)[0])
-    const boton = await screen.findByText(/Reintentar 689 fallidas/)
+    const boton = await screen.findByText(/Reorganizar 689 fallidas/)
     fireEvent.click(boton)
     expect(onRun).toHaveBeenCalledWith(
       'split_images',
@@ -128,7 +128,7 @@ describe('PanelOrganizar', () => {
     render(<PanelOrganizar origen="/datos/vuelo" estadillos={[]} ready running={false} onRun={() => {}} />)
     fireEvent.click(screen.getAllByText(/Elegir/i)[0])
     await waitFor(() => expect(screen.getByDisplayValue('/datos/final')).toBeTruthy())
-    expect(screen.queryByText(/Reintentar/)).toBeNull()
+    expect(screen.queryByText(/Reorganizar/)).toBeNull()
   })
 
   it('sin estadillo el botón Ejecutar queda desactivado aunque haya carpeta final', async () => {
@@ -138,5 +138,10 @@ describe('PanelOrganizar', () => {
     fireEvent.click(screen.getAllByText(/Elegir/i)[0])
     await waitFor(() => expect(screen.getByDisplayValue('/datos/final')).toBeTruthy())
     expect(screen.getByText(/Ejecutar/i).disabled).toBe(true)
+  })
+
+  it('explica por qué Ejecutar está deshabilitado (Falta: ...)', () => {
+    render(<PanelOrganizar origen="/datos/vuelo" estadillos={[]} ready running={false} onRun={() => {}} />)
+    expect(screen.getByTestId('falta-ejecutar').textContent).toBe('Falta: carpeta final / estadillo')
   })
 })

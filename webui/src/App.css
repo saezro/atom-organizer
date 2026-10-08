@@ -4208,3 +4208,30 @@ html.kiosk-modo body * {
 .hist-log {
   max-height: 28rem;
 }
+
+/* --- «Otras opciones» del estadillo (PasoEstadillo.jsx) --- */
+.estad-otras {
+  align-self: flex-start;
+}
+.estad-otras > summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: var(--muted);
+  padding: 0.35rem 0;
+}
+.estad-otras > summary:hover,
+.estad-otras[open] > summary {
+  color: var(--text);
+}
+.estad-otras-lista {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-top: 0.35rem;
+}
+
+.kiosk-menu-motivo {
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-align: center;
+}

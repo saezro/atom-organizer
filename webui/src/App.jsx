@@ -14,7 +14,6 @@ import FileField from './FileField'
 import cloudUploadConfirmando from './trabajo/cloudUploadConfirmando'
 import TrabajoScreen from './trabajo/TrabajoScreen'
 import HerramientasScreen from './HerramientasScreen'
-import HomeScreen from './HomeScreen.jsx'
 import HistorialRuns from './logs/HistorialRuns.jsx'
 import { useSesion } from './sesion/useSesion.js'
 import PantallaEntrada from './sesion/PantallaEntrada.jsx'
@@ -42,12 +41,11 @@ const ESPERA_ESTADILLO_MS = 60000
 // «Trabajo» (TrabajoScreen elige el destino) y «AEROTOOLS»/«OTROS EQUIPOS» en
 // «Herramientas» (HerramientasScreen las apila). El icono de ajustes es un
 // SVG inline (NavIcon ya trae el trazo 'config'), nunca un carácter/emoji.
-// «Inicio» va primera: es la puerta de entrada (HomeScreen) antes de elegir
-// destino en Trabajo.
+// «Trabajo» es la pantalla de entrada (ya no hay pestaña «Inicio»). La pestaña
+// de herramientas se muestra como «Avanzado».
 export const NAV = [
-  { id: 'home', label: 'Inicio', corto: 'Inicio' },
   { id: 'trabajo', label: 'Trabajo', corto: 'Trabajo' },
-  { id: 'herramientas', label: 'Herramientas', corto: 'Herramientas' },
+  { id: 'herramientas', label: 'Avanzado', corto: 'Avanzado' },
   { id: 'config', label: 'Ajustes', corto: 'Ajustes' },
 ]
 
@@ -164,7 +162,7 @@ function anexarLog(lineas, texto) {
 function App() {
   const [confirmar, dialogoConfirmar] = useConfirmar()
   const [ready, setReady] = useState(false)
-  const [section, setSection] = useState('home')
+  const [section, setSection] = useState('trabajo')
   const [running, setRunning] = useState(false)
 
   // Sesión remota (SSH/benchmark) usando la máquina. Se poll-ea cada 5 s; si
@@ -196,11 +194,6 @@ function App() {
   // y tras entrar/salir.
   const { cargando: sesionCargando, entrado, cuenta, invitado, error: sesionError, entrarConGoogle, loginPassword, entrarSinCuenta, salir, refrescar: refrescarSesion } = useSesion()
 
-  // Destino preseleccionado al llegar a «Trabajo» desde una card de
-  // `HomeScreen` (organizar → local, subir en crudo → bucket). `null` cuando
-  // se entra por la pestaña «Trabajo» del nav directamente: mismo
-  // comportamiento de hoy, sin card elegida.
-  const [destinoInicial, setDestinoInicial] = useState(null)
   // `{organizer, estadillos}` del login usuario+contraseña; `null` = todo
   // visible (Google, broker o sesión sin dato). Sale de `cloudStatus`.
   const [accesoModulos, setAccesoModulos] = useState(null)
@@ -969,10 +962,9 @@ function App() {
             invitado={invitado}
             onAjustes={() => setSection('config')}
             onSalir={() => {
-              // Volver a entrar debe aterrizar en «Inicio», no en la pantalla
+              // Volver a entrar debe aterrizar en «Trabajo», no en la pantalla
               // en la que se cerró sesión.
-              setSection('home')
-              setDestinoInicial(null)
+              setSection('trabajo')
               salir()
             }}
           />
@@ -999,12 +991,7 @@ function App() {
             <button
               key={n.id}
               className={'seg-btn' + (section === n.id ? ' active' : '')}
-              onClick={() => {
-                setSection(n.id)
-                // Pulsar «Trabajo» directamente (no una card de Inicio) vuelve
-                // al comportamiento de siempre: sin destino preelegido.
-                if (n.id === 'trabajo') setDestinoInicial(null)
-              }}
+              onClick={() => setSection(n.id)}
               title={n.label}
               aria-label={n.label}
               role="tab"
@@ -1048,32 +1035,12 @@ function App() {
               onRunTask={(task, params) => run(task, params, null)}
             />
           </KioskGuard>
-        ) : section === 'home' ? (
-          <HomeScreen
-            acceso={accesoModulos}
-            onElegir={(id) => {
-              if (id === 'organizar') {
-                setDestinoInicial('local')
-                setSection('trabajo')
-              } else if (id === 'subir') {
-                setDestinoInicial('bucket')
-                setSection('trabajo')
-              } else if (id === 'estadillos') {
-                setDestinoInicial(null)
-                setSection('trabajo')
-              } else if (id === 'herramientas') {
-                setSection('herramientas')
-              }
-            }}
-          />
         ) : section === 'trabajo' ? (
           <TrabajoScreen
-            key={destinoInicial || 'sin-destino'}
             ready={ready}
             running={running}
             onRun={run}
             onCloudStatusChange={setKioskCloudStatus}
-            destinoInicial={destinoInicial}
             acceso={accesoModulos}
           />
         ) : section === 'herramientas' ? (
