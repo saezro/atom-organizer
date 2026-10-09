@@ -59,7 +59,6 @@ def test_a_vuelo_solo_rgb_escribe_location_sin_error(tmp_path, make_dji_jpeg, lo
     m = _montar(raiz, make_dji_jpeg, logger,
                 [("RGB", f"20260115_10000{i}_DJI_000{i}_W.JPG") for i in range(1, 4)])
     cb = _Cb()
-    (raiz / "TERMICA").mkdir()  # el guard de nivel run exige ambas raíces (como antes)
     cierre._emitir_meta_location(m, _cfg(raiz), cb, {})
     loc = raiz / "RGB" / "PB1" / "PB1_V1" / "PB1_V1_location.csv"
     assert loc.exists() and len(_lineas(loc)) == 3
