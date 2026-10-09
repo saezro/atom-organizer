@@ -279,12 +279,13 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
         if not imgs_t and not imgs_w:
             return
         pares, sin_pareja, sin_patron = meta_location_obj.emparejar_por_idx(imgs_t, imgs_w)
-        if not pares and sin_patron and not sin_pareja:
+        if (not imgs_t or not imgs_w) or (not pares and sin_patron and not sin_pareja):
+            # Vuelo solo RGB (o solo T) o sin patrón DJI: independientes, como antes del emparejado.
             _independiente(pn_w, "location.csv")
             _independiente(pn_t, "meta.csv")
             return
-        for n in sin_pareja:
-            meta_location_obj._aviso(progress_callback, f"ERROR: {n} sin pareja T/W en el vuelo; excluida de meta y location.")
+        meta_location_obj._aviso_sin_pareja(progress_callback, sin_pareja, _carpeta_de(
+            (pn_t.get(imgs_t[0]) or pn_w[imgs_w[0]])["ruta_salida_original"]))
         for n in sin_patron:
             meta_location_obj._aviso(progress_callback, f"ERROR: {n} sin patrón DJI '_<idx>_T|W'; excluida de meta y location.")
         if not pares:
