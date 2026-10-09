@@ -209,7 +209,8 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
     meta_location_obj = exif.MetaLocation(organizer_logger)
     csv_folder = unir(cfg.output_folder, "CSVs")
 
-    if not (existe_ruta(unir(cfg.output_folder, "TERMICA")) and existe_ruta(unir(cfg.output_folder, "RGB"))):
+    # Basta con una de las dos carpetas (run solo RGB o solo TERMICA).
+    if not (existe_ruta(unir(cfg.output_folder, "TERMICA")) or existe_ruta(unir(cfg.output_folder, "RGB"))):
         progress_callback.emit("\nNo se han podido generar los archivos meta y location.\n")
         return {}
 

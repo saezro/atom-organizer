@@ -1270,9 +1270,9 @@ class MetaLocation:
         else:
             list_dir = os.listdir(input_folder)
 
-        if "TERMICA" not in list_dir or "RGB" not in list_dir:  # Comprobamos que existen las carpetas TEMICA y RGB para poder generar los archivos.
-            self.organizer_logger.logger.info("No se encuentran los directorios TERMICA y RGB")
-            progress_callback.emit("\nNo se encuentran los directorios TERMICA y RGB\n")
+        if "TERMICA" not in list_dir and "RGB" not in list_dir:  # Basta con una de las dos (run solo RGB o solo TERMICA).
+            self.organizer_logger.logger.info("No se encuentran los directorios TERMICA ni RGB")
+            progress_callback.emit("\nNo se encuentran los directorios TERMICA ni RGB\n")
             return False
         else:
             def _raices(sub: str) -> list[str]:
@@ -1286,6 +1286,8 @@ class MetaLocation:
 
             # RGB y TERMICA se procesan EMPAREJADOS por vuelo (mismo idx DJI = misma fila).
             def _mapa(sub: str) -> dict:
+                if sub not in list_dir:
+                    return {}
                 base = unir(input_folder, sub)
                 if only_pb is None:
                     return self._carpetas_relativas(base)

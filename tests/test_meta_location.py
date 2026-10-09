@@ -33,9 +33,8 @@ def test_check_input_folder_and_iterate_con_rgb_extra_no_revienta(tmp_path):
     assert resultado is True
 
 
-def test_check_input_folder_and_iterate_detecta_termica_ausente(tmp_path):
-    # Solo existe RGB, falta TERMICA: el condicional roto ("TERMICA" and "RGB" not in list_dir)
-    # nunca evalúa la presencia real de TERMICA, así que hay que comprobar que SÍ lo detecta tras el fix.
+def test_check_input_folder_and_iterate_solo_rgb_es_valido(tmp_path):
+    # Solo existe RGB, falta TERMICA: run 100% RGB, valido (location.csv desde las W).
     input_folder = tmp_path / "PLANTA_SIN_TERMICA"
     (input_folder / "RGB").mkdir(parents=True)
     csv_folder = tmp_path / "csvs2"
@@ -49,7 +48,7 @@ def test_check_input_folder_and_iterate_detecta_termica_ausente(tmp_path):
         str(input_folder), cb, cb, str(csv_folder), flight_height=50.0, calculate_proyected_distance=True
     )
 
-    assert resultado is False
+    assert resultado is True
 
 
 def test_check_gimbal_yaw_pitch_values_corrige_string_cero(tmp_path):
