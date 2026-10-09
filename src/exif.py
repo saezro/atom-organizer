@@ -1271,8 +1271,8 @@ class MetaLocation:
             list_dir = os.listdir(input_folder)
 
         if "TERMICA" not in list_dir and "RGB" not in list_dir:  # Basta con una de las dos (run solo RGB o solo TERMICA).
-            self.organizer_logger.logger.info("No se encuentran los directorios TERMICA ni RGB")
-            progress_callback.emit("\nNo se encuentran los directorios TERMICA ni RGB\n")
+            self.organizer_logger.logger.error("ERROR: No se encuentran los directorios TERMICA ni RGB")
+            progress_callback.emit("\nERROR: No se encuentran los directorios TERMICA ni RGB\n")
             return False
         else:
             def _raices(sub: str) -> list[str]:

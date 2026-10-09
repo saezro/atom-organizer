@@ -211,7 +211,8 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
 
     # Basta con una de las dos carpetas (run solo RGB o solo TERMICA).
     if not (existe_ruta(unir(cfg.output_folder, "TERMICA")) or existe_ruta(unir(cfg.output_folder, "RGB"))):
-        progress_callback.emit("\nNo se han podido generar los archivos meta y location.\n")
+        organizer_logger.logger.error("ERROR: No existen los directorios TERMICA ni RGB; no se pueden generar los archivos meta y location.")
+        progress_callback.emit("\nERROR: No se han podido generar los archivos meta y location (no existen TERMICA ni RGB).\n")
         return {}
 
     grupos: "dict[tuple[str, str, str], list]" = {}

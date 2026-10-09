@@ -55,12 +55,12 @@ def test_iterate_solo_termica_escribe_meta(tmp_path, make_dji_jpeg):
     assert not _errores(cb)
 
 
-def test_iterate_ninguna_no_escribe_ni_error(tmp_path):
+def test_iterate_ninguna_da_error_y_no_escribe(tmp_path):
     raiz = tmp_path / "d"
     (raiz / "CSVs").mkdir(parents=True)
     cb = _Cb()
     assert _ml(tmp_path).check_input_folder_and_iterate(str(raiz), cb, cb, str(raiz / "CSVs"), 50.0, False) is False
-    assert not _errores(cb) and not list((raiz / "CSVs").iterdir())
+    assert _errores(cb) and not list((raiz / "CSVs").iterdir())
 
 
 def _manifiesto(raiz, tipo, sufijo):
@@ -96,7 +96,7 @@ def test_cierre_solo_rgb_y_solo_termica(tmp_path, make_dji_jpeg):
         assert not _errores(cb)
 
 
-def test_cierre_ninguna_no_escribe(tmp_path):
+def test_cierre_ninguna_da_error_y_no_escribe(tmp_path):
     raiz = tmp_path / "d"
     (raiz / "CSVs").mkdir(parents=True)
     m = Manifiesto(raiz / ".organizado" / "m.db")
@@ -104,4 +104,4 @@ def test_cierre_ninguna_no_escribe(tmp_path):
     m.crear_esquema()
     cb = _Cb()
     assert cierre._emitir_meta_location(m, _cfg(raiz), cb, {}) == {}
-    assert not _errores(cb) and not list((raiz / "CSVs").iterdir())
+    assert _errores(cb) and not list((raiz / "CSVs").iterdir())
