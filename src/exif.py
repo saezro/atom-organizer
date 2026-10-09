@@ -1026,15 +1026,17 @@ class MetaLocation:
         return df
 
     def publicar_csv(self, df: pd.DataFrame, input_folder: str, filename: str,
-                     csv_folder: str, progress_callback) -> str | None:
+                     csv_folder: str, progress_callback, reordenar: bool = True) -> str | None:
         """Ordena por fecha y escribe `<carpeta>_<filename>` en la carpeta y en
-        `csv_folder`, sin cabecera. `None` si no hay filas."""
+        `csv_folder`, sin cabecera. `None` si no hay filas. Con `reordenar=False`
+        se respeta el orden del df (lo usa la generación emparejada meta/location)."""
         if df.empty:
             return None
         progress_callback.emit("\nGenerando csv: " + filename + "\n")
         self.organizer_logger.logger.info("Generating csv: " + filename)
         # df = self.shuffle_csv(df)
-        df = self.reorder_csv_from_date(df)
+        if reordenar:
+            df = self.reorder_csv_from_date(df)
         # self.organizer_logger.logger.info(df)
         nombre_csv = os.path.basename(input_folder) + "_" + filename
         csv_generado = unir(input_folder, nombre_csv)
@@ -1137,6 +1139,105 @@ class MetaLocation:
             if not self.stop:
                 self.iterate_folders(unir(input_folder, dir), filename, progress_callback, progress_bar,csv_folder, flight_height, calculate_proyected_distance)
 
+    @staticmethod
+    def _clave_idx_dji(nombre: str, sufijo: str) -> int | None:
+        """Índice DJI `<idx>` de `..._<idx>_<T|W>.ext` (None si el nombre no sigue el patrón
+        o el sufijo no es el esperado). Valen `DJI_<ts>_<idx>_T` y `<fecha>_<hora>_DJI_<idx>_W`."""
+        m = re.search(r'(\d+)_([TW])$', os.path.splitext(os.path.basename(nombre))[0])
+        if not m or m.group(2) != sufijo:
+            return None
+        return int(m.group(1))
+
+    def emparejar_por_idx(self, imagenes_t: list[str], imagenes_w: list[str]):
+        """Empareja térmicas y RGB por índice DJI. Devuelve `(pares, sin_pareja, sin_patron)`:
+        `pares` = [(t, w)] ordenados por idx ascendente; `sin_pareja` = nombres con patrón
+        cuyo par falta (o idx duplicado en su lado); `sin_patron` = nombres sin patrón DJI."""
+        def indexar(imgs, suf):
+            por_idx, sin_patron = {}, []
+            for im in imgs:
+                k = self._clave_idx_dji(im, suf)
+                if k is None:
+                    sin_patron.append(im)
+                else:
+                    por_idx.setdefault(k, []).append(im)
+            return por_idx, sin_patron
+        t_idx, t_np = indexar(imagenes_t, "T")
+        w_idx, w_np = indexar(imagenes_w, "W")
+        pares, sin_pareja = [], []
+        for k in sorted(set(t_idx) | set(w_idx)):
+            ts, ws = t_idx.get(k, []), w_idx.get(k, [])
+            if len(ts) == 1 and len(ws) == 1:
+                pares.append((ts[0], ws[0]))
+            else:
+                sin_pareja.extend(ts + ws)
+        return pares, sin_pareja, t_np + w_np
+
+    def _aviso(self, progress_callback, texto: str, error: bool = True) -> None:
+        self.organizer_logger.logger.info(texto)
+        progress_callback.emit("\n" + texto + "\n")
+        if error:
+            self.error_meta_location += 1
+            self.images_error_meta_location.append(texto)
+
+    def gen_meta_location_emparejado(self, carpeta_t: str, carpeta_w: str, progress_callback, progress_bar,
+                                     csv_folder: str, flight_height: float, calculate_proyected_distance: bool) -> None:
+        """Genera `meta.csv` (térmicas) y `location.csv` (RGB) de UN vuelo desde UNA lista de
+        pares por índice DJI: misma longitud, misma fila = mismo idx, orden idx ascendente.
+        Una imagen entra solo si su pareja existe y se pudo leer su EXIF; lo demás se
+        reporta por nombre y no entra en ninguno de los dos CSV. Sin patrón DJI en ningún
+        nombre se conserva el comportamiento antiguo (independientes) con WARN."""
+        imgs_t = self.utils_obj.get_images_from_dir(carpeta_t, ["_CROP"], solo_fuente=True) if carpeta_t else []
+        imgs_w = self.utils_obj.get_images_from_dir(carpeta_w, ["_CROP"], solo_fuente=True) if carpeta_w else []
+        if not imgs_t and not imgs_w:
+            return
+        pares, sin_pareja, sin_patron = self.emparejar_por_idx(imgs_t, imgs_w)
+        if not pares and sin_patron and not sin_pareja:
+            self._aviso(progress_callback,
+                        f"WARN: {carpeta_t or carpeta_w}: sin patrón DJI '_<idx>_' en los nombres; "
+                        "meta/location se generan sin emparejar (comportamiento antiguo).", error=False)
+            self.gen_meta_location(carpeta_t, "meta.csv", progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance) if imgs_t else None
+            self.gen_meta_location(carpeta_w, "location.csv", progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance) if imgs_w else None
+            return
+        for n in sin_pareja:
+            self._aviso(progress_callback, f"ERROR: {n} sin pareja T/W en el vuelo; excluida de meta y location.")
+        for n in sin_patron:
+            self._aviso(progress_callback, f"ERROR: {n} sin patrón DJI '_<idx>_T|W'; excluida de meta y location.")
+        if not pares:
+            return
+        rutas = [(unir(carpeta_t, t), unir(carpeta_w, w)) for t, w in pares]
+        flat = [r for par in rutas for r in par]
+        if not self.stop:
+            with ThreadPoolExecutor(max_workers=utils.max_io_workers()) as executor:
+                lecturas = list(executor.map(lambda r: self.leer_exif_imagen(r, progress_callback), flat))
+        else:
+            lecturas = [(None, None, None)] * len(flat)
+        ok_t, ok_w, lect_t, lect_w = [], [], [], []
+        for i, (t, w) in enumerate(pares):
+            lt, lw = lecturas[2 * i], lecturas[2 * i + 1]
+            if lt[0] is None or lw[0] is None:
+                malas = [n for n, l in ((t, lt), (w, lw)) if l[0] is None]
+                self._aviso(progress_callback,
+                            f"ERROR: par {t} / {w} excluido de meta y location: sin datos EXIF en {', '.join(malas)}.")
+                continue
+            ok_t.append(t); ok_w.append(w); lect_t.append(lt); lect_w.append(lw)
+        if not ok_t:
+            return
+        df_t = self.df_desde_lecturas(ok_t, lect_t, progress_callback, progress_bar, flight_height, calculate_proyected_distance)
+        df_w = self.df_desde_lecturas(ok_w, lect_w, progress_callback, progress_bar, flight_height, calculate_proyected_distance)
+        if len(df_t) != len(df_w):
+            self._aviso(progress_callback, f"ERROR: {carpeta_t}: meta y location con distinta longitud ({len(df_t)} vs {len(df_w)}); no se escriben.")
+            return
+        self.publicar_csv(df_t, carpeta_t, "meta.csv", csv_folder, progress_callback, reordenar=False)
+        self.publicar_csv(df_w, carpeta_w, "location.csv", csv_folder, progress_callback, reordenar=False)
+
+    def _carpetas_relativas(self, raiz: str, prefijo: str = "") -> dict:
+        """{ruta relativa: ruta absoluta} de `raiz` y todas sus subcarpetas."""
+        res = {prefijo: raiz}
+        subs = listar_subcarpetas(raiz) if es_uri_gcs(raiz) else next(os.walk(raiz))[1]
+        for d in subs:
+            res.update(self._carpetas_relativas(unir(raiz, d), (prefijo + "/" + d) if prefijo else d))
+        return res
+
     def check_input_folder_and_iterate(self, input_folder: str, progress_callback, progress_bar, csv_folder: str, flight_height: float, calculate_proyected_distance: bool, only_pb: list[str] | None = None) -> bool:
         """
         Función que comprueba que los directorios TERMICA y RGB se encuentran en input folder, y acto seguido recorre todas las carpetas y todas las imágenes
@@ -1172,10 +1273,23 @@ class MetaLocation:
                 return [sharding.ruta_de_relativo(base, rel) for rel in only_pb
                         if es_carpeta(sharding.ruta_de_relativo(base, rel))]
 
-            for raiz in _raices("RGB"):
-                self.iterate_folders(raiz, "location.csv", progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance)
-            for raiz in _raices("TERMICA"):
-                self.iterate_folders(raiz, "meta.csv", progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance)
+            # RGB y TERMICA se procesan EMPAREJADOS por vuelo (mismo idx DJI = misma fila).
+            def _mapa(sub: str) -> dict:
+                base = unir(input_folder, sub)
+                if only_pb is None:
+                    return self._carpetas_relativas(base)
+                m = {}
+                for rel in only_pb:
+                    raiz = sharding.ruta_de_relativo(base, rel)
+                    if es_carpeta(raiz):
+                        m.update(self._carpetas_relativas(raiz, rel))
+                return m
+            mapa_w, mapa_t = _mapa("RGB"), _mapa("TERMICA")
+            for rel in sorted(set(mapa_w) | set(mapa_t)):
+                if self.stop:
+                    break
+                self.gen_meta_location_emparejado(mapa_t.get(rel), mapa_w.get(rel), progress_callback, progress_bar,
+                                                  csv_folder, flight_height, calculate_proyected_distance)
             if "RGB_Extra" in list_dir:  # Si se ha creado la carpeta RGB_Extra, creamos el location.csv dentro de cada carpeta PBX_VX
                 for raiz in _raices("RGB_Extra"):
                     self.iterate_folders(raiz, "location.csv", progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance)

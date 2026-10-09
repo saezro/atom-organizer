@@ -46,27 +46,22 @@ def _split(logger):
 
 # --- el invariante: se gira EN SU SITIO, sin dejar copias ---------------------
 
-@pytest.mark.parametrize("flags,transpose", [
-    ({"rotate_90": True}, Image.ROTATE_270),        # 90º horario
-    ({"rotate_minus_90": True}, Image.ROTATE_90),   # 90º antihorario
-])
-def test_gira_el_jpg_en_su_sitio_sin_crear_copias(organizer_logger_stub, vuelo,
-                                                  flags, transpose):
+@pytest.mark.parametrize("flags", [{"rotate_90": True}, {"rotate_minus_90": True}])
+def test_no_gira_ni_crea_copias(organizer_logger_stub, vuelo, flags):
+    """3.4.123 (decisión de Rodrigo): `rotate_thermal_jpgs_in_place` es NO-OP; la
+    T JPG se deja byte a byte. Ni se gira ni aparecen copias con otro nombre."""
     raiz, carpeta = vuelo
     original = carpeta / "DJI_0001_T.JPG"
-    esperada = Image.open(original).transpose(transpose)
+    antes = original.read_bytes()
 
     giradas = _split(organizer_logger_stub).rotate_thermal_jpgs_in_place(
         str(raiz), _noop(), _noop(), **flags)
 
-    assert giradas == 2
-    assert not list(carpeta.glob("*" + ROTATED_JPG_SUFFIX + "*")), (
-        "la salida no puede llevar copias con otro nombre: se gira el original")
+    assert giradas == 0
+    assert not list(carpeta.glob("*" + ROTATED_JPG_SUFFIX + "*"))
     assert sorted(p.name for p in carpeta.glob("*.JPG")) == [
         "DJI_0001_T.JPG", "DJI_0002_T.JPG"], "un solo fichero por imagen"
-    with Image.open(original) as img:
-        assert img.size == esperada.size
-        assert img.size[0] != img.size[1], "el giro debe cambiar la orientación"
+    assert original.read_bytes() == antes
 
 
 def test_no_deja_temporales_en_la_carpeta_del_cliente(organizer_logger_stub, vuelo):
@@ -80,13 +75,15 @@ def test_no_deja_temporales_en_la_carpeta_del_cliente(organizer_logger_stub, vue
 
 
 def test_conserva_el_exif(organizer_logger_stub, vuelo):
-    """Sobre estas fotos se consulta luego geolocalización y fecha."""
+    """Sobre estas fotos se consulta luego geolocalización y fecha: al no tocarlas, intactas."""
     raiz, carpeta = vuelo
+    antes = (carpeta / "DJI_0001_T.JPG").read_bytes()
     _split(organizer_logger_stub).rotate_thermal_jpgs_in_place(
         str(raiz), _noop(), _noop(), rotate_90=True)
 
+    assert (carpeta / "DJI_0001_T.JPG").read_bytes() == antes
     with Image.open(carpeta / "DJI_0001_T.JPG") as img:
-        assert img.info.get("exif"), "la imagen girada perdió el EXIF del original"
+        assert img.info.get("exif"), "el original perdió el EXIF"
 
 
 def test_sin_rotacion_no_se_toca_nada(organizer_logger_stub, vuelo):
@@ -102,24 +99,22 @@ def test_sin_rotacion_no_se_toca_nada(organizer_logger_stub, vuelo):
 
 # --- criterio AUTO: el JPG gira lo mismo que el TIFF --------------------------
 
-@pytest.mark.parametrize("degree,transpose", [(90, Image.ROTATE_270), (270, Image.ROTATE_90)])
-def test_auto_usa_el_mismo_criterio_que_el_tiff(organizer_logger_stub, tmp_path, vuelo,
-                                                degree, transpose):
+@pytest.mark.parametrize("degree", [90, 270])
+def test_auto_con_criterio_no_toca_el_jpg(organizer_logger_stub, tmp_path, vuelo, degree):
+    """El criterio auto sigue sirviendo al TIFF (`read_auto_rotate_degree`), pero la
+    T JPG ya no se gira (3.4.123): queda byte a byte."""
     raiz, carpeta = vuelo
     criterio = tmp_path / "CSVs"
     criterio.mkdir(parents=True)
     (criterio / "PB1_V1_Videofiles.csv").write_text(
         f"New Name,Original Name,Degree\na,b,{degree}\n", encoding="utf-8")
 
-    esperada = Image.open(carpeta / "DJI_0001_T.JPG").transpose(transpose)
+    antes = (carpeta / "DJI_0001_T.JPG").read_bytes()
     obj = _split(organizer_logger_stub)
-    # Mismo lector que consume la conversión a TIFF: si divergieran, el JPG
-    # saldría del revés respecto a su TIFF.
     assert obj.read_auto_rotate_degree(str(carpeta), _noop()) == degree
 
-    obj.rotate_thermal_jpgs_in_place(str(raiz), _noop(), _noop(), auto_rotate=True)
-    with Image.open(carpeta / "DJI_0001_T.JPG") as img:
-        assert img.size == esperada.size
+    assert obj.rotate_thermal_jpgs_in_place(str(raiz), _noop(), _noop(), auto_rotate=True) == 0
+    assert (carpeta / "DJI_0001_T.JPG").read_bytes() == antes
 
 
 def test_auto_sin_criterio_no_gira(organizer_logger_stub, vuelo):
@@ -182,9 +177,8 @@ def test_segunda_pasada_no_la_deja_a_180(organizer_logger_stub, vuelo):
         assert img.size == tras_la_primera
 
 
-def test_una_imagen_corrupta_no_tumba_el_resto(organizer_logger_stub, vuelo):
-    """El paso corre DESPUÉS de que el TIFF ya esté en disco: un fallo aquí no
-    puede llevarse por delante el vuelo entero."""
+def test_una_imagen_corrupta_no_se_toca(organizer_logger_stub, vuelo):
+    """No-op en 3.4.123: ni las buenas ni la corrupta se modifican."""
     raiz, carpeta = vuelo
     rota = carpeta / "DJI_0003_T.JPG"
     rota.write_bytes(b"esto no es un JPEG")
@@ -192,9 +186,8 @@ def test_una_imagen_corrupta_no_tumba_el_resto(organizer_logger_stub, vuelo):
     giradas = _split(organizer_logger_stub).rotate_thermal_jpgs_in_place(
         str(raiz), _noop(), _noop(), rotate_90=True)
 
-    assert giradas == 2  # las dos buenas sí se giraron
-    assert rota.read_bytes() == b"esto no es un JPEG", (
-        "un fallo a mitad no puede dejar el fichero original truncado")
+    assert giradas == 0
+    assert rota.read_bytes() == b"esto no es un JPEG"
 
 
 def test_stop_cooperativo_corta_el_giro(organizer_logger_stub, vuelo):

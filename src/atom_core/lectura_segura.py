@@ -32,11 +32,87 @@ class LecturaIncompleta(OSError):
         return (type(self), (self.ruta, self.leidos, self.esperados, self.intentos))
 
 
-VENTANA_COLA_JPEG = 4096
+# 64 KiB: los DJI dejan ~4097 B de relleno tras el EOI (con 4096 B el FFD9
+# quedaba fuera de la ventana y se descartaban JPG buenos).
+VENTANA_COLA_JPEG = 64 * 1024
+
+
+def jpeg_eoi_en_cola_util(datos: bytes) -> bool:
+    """Barato (sin decode): hay EOI (FFD9) en los últimos 64 KiB sin ceros finales."""
+    return b"\xff\xd9" in datos.rstrip(b"\x00")[-VENTANA_COLA_JPEG:]
+
+
+_RE_MARCADOR_EN_SCAN = None
+
+
+def jpeg_eoi_por_segmentos(datos: bytes) -> bool:
+    """Recorre los segmentos JPEG desde SOI hasta el EOI (FFD9) del scan principal.
+    Sin decode ni escritura. Los datos tras ese EOI (payload R-JPEG de DJI, miniaturas,
+    relleno) se ignoran, sea cual sea su tamaño. Falso si el fichero se corta antes
+    del EOI (truncado a mitad de scan) o si el scan está relleno de ceros hasta el final.
+    Un FFD9 dentro de una miniatura APP/EXIF NO cuenta: los segmentos se saltan por longitud."""
+    import re
+    global _RE_MARCADOR_EN_SCAN
+    if _RE_MARCADOR_EN_SCAN is None:
+        # Marcador real dentro del scan: FF (xFF)* seguido de byte que no es 00 (stuffing),
+        # ni RSTn (D0-D7), ni otro FF.
+        _RE_MARCADOR_EN_SCAN = re.compile(rb"\xff+[\x01-\xcf\xd8-\xfe]")
+    n = len(datos)
+    if n < 4 or datos[:2] != b"\xff\xd8":
+        return False
+    pos = 2
+    while pos < n:
+        if datos[pos] != 0xFF:
+            return False  # basura entre segmentos: no es un JPEG íntegro
+        while pos < n and datos[pos] == 0xFF:
+            pos += 1
+        if pos >= n:
+            return False
+        marcador = datos[pos]
+        pos += 1
+        if marcador == 0xD9:
+            return True
+        if marcador == 0x00:
+            return False
+        if marcador == 0x01 or 0xD0 <= marcador <= 0xD8:
+            continue  # sin longitud
+        if pos + 2 > n:
+            return False
+        longitud = (datos[pos] << 8) | datos[pos + 1]
+        if longitud < 2 or pos + longitud > n:
+            return False
+        pos += longitud
+        if marcador == 0xDA:  # tras la cabecera del SOS vienen los datos entrópicos
+            m = _RE_MARCADOR_EN_SCAN.search(datos, pos)
+            if m is None:
+                return False  # el scan no termina: truncado / ceros hasta el final
+            pos = m.end() - 1
+            # `pos` apunta al byte de marcador; retrocede a su FF para el bucle
+            pos -= 1
+    return False
+
+
+def jpeg_valido(datos: bytes) -> bool:
+    """Criterio de validez DEFINITIVO. La cola de 64 KiB es solo la vía rápida:
+    si no muestra EOI útil NO se concluye truncado (los R-JPEG DJI llevan payload
+    > 64 KiB tras el EOI): se recorren los segmentos hasta el EOI del scan
+    principal. En ambos casos se exige además decode completo con PIL, sin
+    `LOAD_TRUNCATED_IMAGES` (un JPEG cortado y rellenado con ceros decodifica
+    sin error, por eso el EOI es obligatorio). No gira ni recomprime nada."""
+    import io
+    if not (jpeg_eoi_en_cola_util(datos) or jpeg_eoi_por_segmentos(datos)):
+        return False
+    from PIL import Image
+    try:
+        with Image.open(io.BytesIO(datos)) as img:
+            img.load()
+        return True
+    except Exception:  # noqa: BLE001 — truncado/corrupto = no válido
+        return False
 
 
 def jpeg_cola_valida(bytes_cola: bytes) -> bool:
-    """Función pura: la cola (últimos <=4096 B) de un JPEG es plausible.
+    """Atajo rápido: la cola (últimos <=64 KiB) de un JPEG es plausible.
     Falso si está vacía, toda a ceros o no contiene el marcador FFD9 en
     ninguna posición (no se exige al final: los R-JPEG de DJI llevan datos
     tras EOI)."""
