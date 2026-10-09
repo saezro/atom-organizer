@@ -34,6 +34,7 @@ import pipeline
 import utils
 from atom_core import cancelacion
 from atom_core import cierre as cierre_mod
+from atom_core import esperado as esperado_mod
 from atom_core import estadillo as estadillo_mod
 from atom_core import indice as indice_mod
 from atom_core import indice_excel
@@ -295,6 +296,91 @@ class PipelinePhasesMixin:
             f"etapas 'split' y 'struct' sobre este mismo destino, o usa "
             f"'--etapa todo'.")
 
+    def _exigir_sin_vuelo_asignado_en_raiz(self, cfg, progress_callback) -> None:
+        """Guard del barrido: nada con vuelo asignado puede apartarse a
+        `SIN_ORDENAR` ni quedar sin colocar (incidente WILLKA 2026-10-07: 2.015 T
+        sin girar en SIN_ORDENAR). Dos fuentes, cruzadas por RUTA (`TERMICA/x`),
+        nunca por basename:
+          - `esperado_shardN.json` (etapas Cloud Run, sin manifiesto): cada foto
+            esperada debe estar en su destino y no en la raíz.
+          - `manifiesto.db` (GUI/local): filas con vuelo no `hecho` aún en raíz.
+        Sin ninguna de las dos no hay nada que cruzar: ERROR explícito y
+        `FileNotFoundError` (nunca en silencio)."""
+        problemas: list[str] = []
+        hay_fuente = False
+
+        fotos = esperado_mod.leer_esperados(cfg.output_folder)
+        if fotos is not None:
+            hay_fuente = True
+            malas = esperado_mod.faltantes(cfg.output_folder, fotos)
+            if malas:
+                problemas.append(
+                    f"{len(malas)} de {len(fotos)} imagen(es) esperadas por las tareas de "
+                    f"struct no aparecen en su destino o siguen en la raíz. "
+                    f"Primeras: {'; '.join(malas[:10])}")
+
+        ruta_db = os.path.join(cfg.output_folder, NOMBRE_CARPETA_MANIFIESTO, "manifiesto.db")
+        if os.path.isfile(ruta_db):
+            hay_fuente = True
+            manifiesto = Manifiesto(ruta_db)
+            try:
+                filas = manifiesto.todas()
+            finally:
+                manifiesto.cerrar()
+            # clave = "SUB/nombre": la raíz de RGB/TERMICA es plana, así que el
+            # nombre solo es único dentro de su subcarpeta.
+            asignados: dict[str, tuple[str, str]] = {}
+            for fila in filas:
+                if fila["unassigned"] or not fila["pb"] or not fila["vuelo"]:
+                    continue
+                # Una fila "hecho" ya tiene su salida colocada: un homónimo en la
+                # raíz es de una corrida anterior sobre el mismo destino.
+                if fila["estado"] == "hecho":
+                    continue
+                tipo = str(fila["tipo"] or "").upper()
+                subs = (tipo,) if tipo in ("TERMICA", "RGB") else ("TERMICA", "RGB")
+                nombres = {os.path.basename(str(r).replace("\\", "/"))
+                           for r in (fila["ruta_origen"], fila["ruta_salida_original"]) if r}
+                if fila["nombre_nuevo"]:
+                    nombres.add(fila["nombre_nuevo"])
+                for sub in subs:
+                    for nombre in nombres:
+                        asignados[f"{sub}/{nombre}"] = (f"{fila['pb']}/{fila['vuelo']}", fila["estado"])
+            con_vuelo, fallidas = [], []
+            for sub in ("TERMICA", "RGB"):
+                for nombre in self.utils_obj.get_images_from_dir(os.path.join(cfg.output_folder, sub)):
+                    clave = f"{sub}/{nombre}"
+                    if clave in asignados:
+                        vuelo, estado = asignados[clave]
+                        (fallidas if estado == "fallido" else con_vuelo).append(
+                            f"{clave} (vuelo {vuelo})")
+            if con_vuelo:
+                problemas.append(
+                    f"{len(con_vuelo)} imagen(es) con vuelo asignado en el manifiesto siguen "
+                    f"sin colocar en la raíz de RGB/TERMICA: NO se apartan a SIN_ORDENAR "
+                    f"(su fase no las procesó). Primeras: {'; '.join(con_vuelo[:10])}")
+            if fallidas:
+                problemas.append(
+                    f"{len(fallidas)} imagen(es) con vuelo asignado tienen su fila FALLIDA en "
+                    f"el manifiesto (su fase falló; revisa el error de esa fila) y siguen en "
+                    f"la raíz de RGB/TERMICA. Primeras: {'; '.join(fallidas[:10])}")
+
+        if not hay_fuente:
+            msg = ("Guard de imágenes sin colocar NO verificable: no hay manifiesto.db ni "
+                   "esperado_shardN.json en el destino. Nada impide apartar a SIN_ORDENAR "
+                   "imágenes que sí tenían vuelo. Causa probable: la etapa struct se hizo con una "
+                   "versión anterior (que no escribía esperado_shardN.json) o este destino no "
+                   "tiene la carpeta .organizado/. Solución: relanza la etapa struct sobre este "
+                   "mismo destino (o la etapa 'todo') para regenerarlo.")
+            progress_callback.emit("ERROR: " + msg + "\n")
+            self.organizer_logger_obj.logger.error(msg)
+            raise FileNotFoundError(msg)
+        if problemas:
+            msg = " | ".join(problemas)
+            progress_callback.emit("ERROR: " + msg + "\n")
+            self.organizer_logger_obj.logger.error(msg)
+            raise ValueError(msg)
+
     def _barrido_sin_ordenar(self, cfg, progress_callback) -> None:
         """Aparta a `SIN_ORDENAR` lo que quedó suelto en la raíz de RGB/TERMICA y
         aborta si NO sobrevivió nada.
@@ -315,6 +401,7 @@ class PipelinePhasesMixin:
         harían el mismo trabajo pisándose, y las otras siete trabajan sobre
         `PBx/PBx_Vy`, que el barrido no toca.
         """
+        self._exigir_sin_vuelo_asignado_en_raiz(cfg, progress_callback)
         apartadas_termica, apartadas_rgb = self.gen_struct_folder_obj.checking_results_gen_struct_folder(
             cfg.output_folder, progress_callback)
 
@@ -339,6 +426,21 @@ class PipelinePhasesMixin:
                    f"{os.path.join(cfg.output_folder, 'SIN_ORDENAR')}.")
             progress_callback.emit("ERROR: " + msg + "\n")
             self.organizer_logger_obj.logger.info(msg)
+            raise ValueError(msg)
+
+        # Decisión 2026-10-09: una foto en SIN_ORDENAR (p. ej. sin timestamp) ya no
+        # es un AVISO ámbar sino un ERROR que hace fallar la tanda. Las fotos NO se
+        # pierden: quedan en SIN_ORDENAR para revisarlas.
+        if apartadas > 0:
+            ejemplos = list(getattr(self.gen_struct_folder_obj, "ejemplos_sin_ordenar", []) or [])
+            msg = (f"{apartadas} foto(s) han acabado en SIN_ORDENAR "
+                   f"({apartadas_termica} térmicas, {apartadas_rgb} RGB) sin encajar en ningún "
+                   f"vuelo del estadillo (p. ej. sin timestamp EXIF o fuera de toda franja "
+                   f"horaria). Revisa y relanza. Están en "
+                   f"{os.path.join(cfg.output_folder, 'SIN_ORDENAR')}. "
+                   f"Ejemplos: {'; '.join(ejemplos[:10])}")
+            progress_callback.emit("ERROR: " + msg + "\n")
+            self.organizer_logger_obj.logger.error(msg)
             raise ValueError(msg)
 
     def _rutas_del_shard(self, output_folder: str, subcarpetas: list[str],

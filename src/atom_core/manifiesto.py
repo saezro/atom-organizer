@@ -209,7 +209,10 @@ _SENTENCIAS_ESQUEMA = (
         -- Cola del JPG vista por el índice: 1 = sin EOI útil (posible truncado en
         -- origen), 0 = con EOI, NULL = no comprobada (no JPG, gs://, manifiesto
         -- antiguo). Solo marca: el descarte lo decide el decode del apply.
-        jpeg_sin_eoi INTEGER
+        jpeg_sin_eoi INTEGER,
+        -- Voto de giro de ESTA imagen según su yaw (90 / 270 / 0). Es el voto
+        -- individual; el ángulo aplicado es el del consenso del vuelo (`vuelos`).
+        giro_voto INTEGER
     )
     """,
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_clave ON imagenes(clave)",
@@ -225,6 +228,29 @@ _SENTENCIAS_ESQUEMA = (
         n_nuevas INTEGER NOT NULL DEFAULT 0,
         n_saltadas INTEGER NOT NULL DEFAULT 0,
         n_reintentadas INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    # Consenso de giro por vuelo (reparto de votos). Fuente de verdad del criterio:
+    # el CSV `_criterio/*_Videofiles.csv` es solo artefacto de compatibilidad.
+    # `sufijo` = '' cuando el vuelo no colisiona.
+    """
+    CREATE TABLE IF NOT EXISTS vuelos (
+        pb TEXT NOT NULL,
+        vuelo TEXT NOT NULL,
+        sufijo TEXT NOT NULL DEFAULT '',
+        angulo INTEGER NOT NULL DEFAULT 0,
+        n_total INTEGER NOT NULL DEFAULT 0,
+        n_90 INTEGER NOT NULL DEFAULT 0,
+        n_270 INTEGER NOT NULL DEFAULT 0,
+        n_0 INTEGER NOT NULL DEFAULT 0,
+        pct_90 REAL,
+        pct_270 REAL,
+        pct_0 REAL,
+        pct_ganadora REAL,
+        estado TEXT NOT NULL DEFAULT 'ok',
+        motivo TEXT,
+        version_algoritmo TEXT,
+        PRIMARY KEY (pb, vuelo, sufijo)
     )
     """,
 )
@@ -264,6 +290,11 @@ def _sumar_verificacion(verificacion: str | None) -> int:
         except ValueError:
             continue
     return total
+
+
+_COLUMNAS_VUELOS = ("pb", "vuelo", "sufijo", "angulo", "n_total", "n_90", "n_270", "n_0",
+                    "pct_90", "pct_270", "pct_0", "pct_ganadora", "estado", "motivo",
+                    "version_algoritmo")
 
 
 @dataclass(frozen=True)
@@ -310,6 +341,9 @@ class FilaManifiesto:
     # El índice vio la cola del JPG sin EOI útil (ver `indice._leer_cabecera`).
     # True = sin EOI útil, False = con EOI, None = no comprobada.
     jpeg_sin_eoi: bool | None = None
+    # Voto de giro individual de la imagen (90 / 270 / 0); None = sin voto (sin yaw,
+    # planta Horizontal, modo manual, fotos generales o sin asignar).
+    giro_voto: int | None = None
 
 
 @dataclass
@@ -404,7 +438,8 @@ class Manifiesto:
         for nombre, definicion in (("bytes_origen", "INTEGER NOT NULL DEFAULT 0"),
                                   ("previas_sin_ordenar", "TEXT"),
                                   ("angulo_version", "TEXT"),
-                                  ("jpeg_sin_eoi", "INTEGER")):
+                                  ("jpeg_sin_eoi", "INTEGER"),
+                                  ("giro_voto", "INTEGER")):
             if nombre not in existentes:
                 conexion.execute(f"ALTER TABLE imagenes ADD COLUMN {nombre} {definicion}")
 
@@ -435,7 +470,8 @@ class Manifiesto:
             raise
 
     def insertar_o_reabrir(self, filas: Iterable[FilaManifiesto],
-                           ejecucion_id: int | None = None) -> ResultadoInsercion:
+                           ejecucion_id: int | None = None,
+                           vuelos: Iterable[dict] | None = None) -> ResultadoInsercion:
         """Inserta lo nuevo y decide qué hacer con lo que ya estaba.
 
         - clave nueva -> fila nueva.
@@ -445,6 +481,9 @@ class Manifiesto:
           viejas para borrarlas cuando la escritura nueva vaya bien.
         - clave `fallido`/`pendiente`/`en_curso` -> se reescribe con la decisión
           y la ruta de ESTE run y vuelve a `pendiente`.
+
+        `vuelos` (reparto de giro, ver `guardar_vuelos`) se escribe en la MISMA
+        transacción que las filas.
         """
         nombres = [campo.name for campo in fields(FilaManifiesto)]
         columnas = nombres + ["nombre_original", "clave", "ejecucion_id"]
@@ -495,6 +534,7 @@ class Manifiesto:
                         f"motivo_fallo = NULL WHERE id = :id_previa",
                         dict(datos, id_previa=previa["id"]))
                     reintentadas += 1
+            self._escribir_vuelos(conexion, vuelos or ())
         return ResultadoInsercion(nuevas, saltadas, reintentadas, vuelos_saltados,
                                   reasignadas, siguen_sin_asignar)
 
@@ -690,16 +730,46 @@ class Manifiesto:
                 "AND unassigned = 0 GROUP BY pb, vuelo)")
         }
 
-    def angulos_versionados_por_vuelo(self) -> dict[tuple[str, str], tuple[int, str | None]]:
-        """`{(pb, vuelo): (angulo_giro, angulo_version)}` del destino. La versión es
-        la del algoritmo que calculó el ángulo (None = manifiesto antiguo)."""
+    @staticmethod
+    def _escribir_vuelos(conexion: sqlite3.Connection, vuelos: Iterable[dict]) -> None:
+        for v in vuelos:
+            datos = {c: v.get(c) for c in _COLUMNAS_VUELOS}
+            datos["sufijo"] = datos["sufijo"] or ""
+            conexion.execute(
+                f"INSERT OR REPLACE INTO vuelos ({', '.join(_COLUMNAS_VUELOS)}) "
+                f"VALUES ({', '.join(':' + c for c in _COLUMNAS_VUELOS)})", datos)
+
+    def guardar_vuelos(self, vuelos: Iterable[dict]) -> None:
+        """Escribe/reemplaza filas de `vuelos` (clave `pb, vuelo, sufijo`)."""
+        conexion = self._conexion()
+        with conexion:
+            self._escribir_vuelos(conexion, vuelos)
+
+    def vuelos(self) -> dict[tuple[str, str, str | None], dict]:
+        """`{(pb, vuelo, sufijo|None): fila}` del consenso de giro por vuelo."""
         return {
+            (f["pb"], f["vuelo"], f["sufijo"] or None): dict(f)
+            for f in self._conexion().execute("SELECT * FROM vuelos ORDER BY pb, vuelo, sufijo")
+        }
+
+    def angulos_versionados_por_vuelo(self) -> dict[tuple[str, str], tuple[int, str | None]]:
+        """`{(pb, vuelo): (angulo, version_algoritmo)}` del destino. Sale de `vuelos`
+        (sufijo vacío); los vuelos sin fila ahí (manifiesto antiguo, planta Horizontal,
+        modo manual) caen a `imagenes.angulo_giro/angulo_version` (None = antiguo)."""
+        conexion = self._conexion()
+        resultado = {
             (fila["pb"], fila["vuelo"]): (fila["angulo_giro"], fila["angulo_version"])
-            for fila in self._conexion().execute(
+            for fila in conexion.execute(
                 "SELECT pb, vuelo, angulo_giro, angulo_version FROM imagenes WHERE id IN ("
                 "SELECT MIN(id) FROM imagenes WHERE pb IS NOT NULL AND vuelo IS NOT NULL "
                 "AND unassigned = 0 GROUP BY pb, vuelo)")
         }
+        for fila in conexion.execute(
+                "SELECT pb, vuelo, angulo, version_algoritmo FROM vuelos WHERE sufijo = ''"):
+            clave = (fila["pb"], fila["vuelo"])
+            if clave in resultado:
+                resultado[clave] = (fila["angulo"], fila["version_algoritmo"])
+        return resultado
 
     def unificar_angulo_vuelo(self, pb: str, vuelo: str, angulo: int, version: str,
                               reabrir: bool) -> int:

@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime
 import io
 import json
+import logging
 import os
 import queue
 import re
@@ -1061,6 +1062,84 @@ def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
     return ventanas
 
 
+_SEGUNDOS_MAX_PAREJA_TW = 5.0
+
+
+def _heredar_vuelo_por_pareja(asignaciones: list[tuple[_MetadatosImagen, dict | None]],
+                              progress_callback=None) -> list[tuple[_MetadatosImagen, dict | None]]:
+    """La W hereda el vuelo de su T por idx DJI (`pares.clave_pareja`), dentro de
+    la misma carpeta de origen. T y W de un disparo pueden diferir ~1 s: con la
+    ventana horaria estricta aplicada por separado, en el borde del vuelo una cae
+    dentro y la otra fuera y el par se parte (auditoria ALTO 8). Solo se corrige
+    la W (la T es la referencia).
+
+    Solo hereda si la clave `(carpeta, idx)` de la T no está duplicada con
+    ventanas distintas (el idx DJI puede repetirse en una carpeta) y T/W están a
+    <= 5 s por timestamp; si no, NO hereda y se avisa (ambiguas). Una T sin vuelo
+    con W con vuelo no cambia nada y se avisa. Una T sin su W se organiza igual
+    y se avisa con recuento por vuelo."""
+    termicas: dict[tuple[str, int], list[tuple[_MetadatosImagen, dict | None]]] = {}
+    con_w: set[tuple[str, int]] = set()
+    for dato, ventana in asignaciones:
+        clave = pares_mod.clave_pareja(dato.nombre)
+        if not clave:
+            continue
+        k = (os.path.dirname(dato.ruta), clave[0])
+        if clave[1] == "T":
+            termicas.setdefault(k, []).append((dato, ventana))
+        else:
+            con_w.add(k)
+    resultado = []
+    heredadas = ambiguas = t_sin_vuelo_w_con = 0
+    for dato, ventana in asignaciones:
+        clave = pares_mod.clave_pareja(dato.nombre)
+        if clave and clave[1] == "W":
+            candidatas = termicas.get((os.path.dirname(dato.ruta), clave[0]))
+            if candidatas:
+                ventanas_t = [v for _, v in candidatas]
+                distintas = any(v is not ventanas_t[0] and v != ventanas_t[0] for v in ventanas_t)
+                de_t = ventanas_t[0]
+                if distintas:
+                    if ventana is not None or any(v is not None for v in ventanas_t):
+                        ambiguas += 1
+                elif de_t is None:
+                    if ventana is not None:
+                        t_sin_vuelo_w_con += 1
+                elif ventana is not de_t and ventana != de_t:
+                    ts_t = candidatas[0][0].timestamp
+                    if (ts_t is not None and dato.timestamp is not None
+                            and abs((dato.timestamp - ts_t).total_seconds()) <= _SEGUNDOS_MAX_PAREJA_TW):
+                        ventana = de_t
+                        heredadas += 1
+                    else:
+                        ambiguas += 1
+        resultado.append((dato, ventana))
+    t_sin_w: dict[str, int] = {}
+    for k, lista in termicas.items():
+        if k not in con_w:
+            for _, v in lista:
+                etiqueta = f"PB{v['pb']}/V{v['vuelo']}" if v else "sin vuelo"
+                t_sin_w[etiqueta] = t_sin_w.get(etiqueta, 0) + 1
+    if progress_callback is not None:
+        if heredadas:
+            progress_callback.emit(
+                f"\nÍndice · {heredadas} RGB (W) asignadas al vuelo de su térmica (T) por índice DJI.\n")
+        if ambiguas:
+            progress_callback.emit(
+                f"\nAVISO: Índice · {ambiguas} RGB (W) NO heredan el vuelo de su térmica (T): "
+                f"idx DJI repetido con vuelos distintos o T/W a más de "
+                f"{int(_SEGUNDOS_MAX_PAREJA_TW)} s.\n")
+        if t_sin_vuelo_w_con:
+            progress_callback.emit(
+                f"\nAVISO: Índice · {t_sin_vuelo_w_con} RGB (W) con vuelo cuya térmica (T) no tiene vuelo.\n")
+        if t_sin_w:
+            detalle = ", ".join(f"{k}: {n}" for k, n in sorted(t_sin_w.items()))
+            progress_callback.emit(
+                f"\nAVISO: Índice · {sum(t_sin_w.values())} térmicas (T) sin su RGB (W) pareja "
+                f"(se organizan igual). Por vuelo: {detalle}.\n")
+    return resultado
+
+
 def _asignar_vuelo(dato: _MetadatosImagen, ventanas: list[dict]) -> dict | None:
     """Primera ventana (en orden del estadillo) cuyo `(inicio, fin)` contiene
     ESTRICTAMENTE el timestamp de la imagen, igual que
@@ -1139,52 +1218,41 @@ def _yaw_normalizado(yaw: float, pitch: float | None) -> float:
 
 
 # Versión del algoritmo de giro (consenso por yaw). Súbela cada vez que cambie
-# el criterio (yaw normalizado, FlightYaw, orden de bandas...): un criterio
-# `_criterio/<vuelo>_Videofiles.csv` sin sidecar `.giro.json` con esta versión
+# el criterio (yaw normalizado, FlightYaw, orden de bandas...): un
+# vuelo de la tabla `vuelos` del manifiesto con otra versión
 # se recalcula en vez de reutilizarse, para no perpetuar ángulos mal calculados.
-VERSION_ALGORITMO_GIRO = "2026-10-09.1"
+VERSION_ALGORITMO_GIRO = "2026-10-09.2"
 # Por debajo de este % de imágenes en la banda elegida el consenso se avisa.
 _UMBRAL_CONFIANZA_GIRO = 80.0
+# Regla por vuelo (Rodrigo 2026-10-09): un sentido (90 / 270 / sin girar) con
+# >= 80% de los votos manda sobre TODAS las imágenes del vuelo; si ninguno
+# llega, el vuelo es ERROR visible y no se gira ninguna imagen.
+UMBRAL_SENTIDO_GIRO_VUELO = 0.80
 
 
-def _ruta_sidecar_giro(candidato_csv: str) -> str:
-    return candidato_csv[: -len(".csv")] + ".giro.json"
-
-
-def _version_giro_guardada(candidato_csv: str) -> str | None:
-    """Versión del algoritmo con que se calculó el criterio; None si no hay
-    sidecar o es ilegible (=> se recalcula)."""
-    ruta = _ruta_sidecar_giro(candidato_csv)
-    try:
-        if not almacen.existe_ruta(ruta):
-            return None
-        with almacen.abrir_para_lectura(ruta) as local:
-            with open(local, encoding="utf-8") as f:
-                return json.load(f).get("version_algoritmo")
-    except (OSError, ValueError, AttributeError):
-        return None
-
-
-def _guardar_sidecar_giro(candidato_csv: str, datos: dict, progress_callback) -> None:
-    import tempfile
-    ruta = _ruta_sidecar_giro(candidato_csv)
-    try:
-        if not almacen.es_uri_gcs(ruta):
-            os.makedirs(os.path.dirname(ruta), exist_ok=True)
-        with tempfile.TemporaryDirectory() as tmp:
-            local = os.path.join(tmp, os.path.basename(ruta))
-            with open(local, "w", encoding="utf-8") as f:
-                json.dump(datos, f, ensure_ascii=False, indent=1)
-            almacen.publicar_en(local, ruta)
-    except Exception as exc:  # noqa: BLE001
-        progress_callback.emit(
-            f"\nAVISO: no se pudo guardar el reparto de giro ({ruta}): {exc}\n")
+def _registrar_vuelo_sin_consenso_giro(pipeline, carpeta_vuelo, nombre_carpeta,
+                                      n_90, n_270, n_0, total, progress_callback):
+    """Vuelo sin sentido de giro con >= UMBRAL_SENTIDO_GIRO_VUELO: error visible
+    (log ERROR + mensaje + `_register_image_error`); el vuelo no se gira."""
+    p90, p270, p0 = (round(100.0 * n / total, 1) for n in (n_90, n_270, n_0))
+    msg = (f"ERROR: vuelo {nombre_carpeta} sin sentido de giro con "
+           f">={int(UMBRAL_SENTIDO_GIRO_VUELO * 100)}% de acuerdo: 90º={p90}%, "
+           f"270º={p270}%, sin girar={p0}% de {total} imágenes. "
+           f"No se gira ninguna imagen de este vuelo.")
+    logger = getattr(getattr(pipeline, "organizer_logger", None), "logger", None)
+    (logger or logging.getLogger(__name__)).error(msg)
+    progress_callback.emit("\n" + msg + "\n")
+    registrar = getattr(pipeline, "_register_image_error", None)
+    if registrar is not None:
+        registrar(carpeta_vuelo)
 
 
 def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dict | None]],
                                   pipeline, cfg, output_folder: str,
                                   progress_callback,
-                                  reparto_out: dict | None = None) -> dict[tuple[str, str], int]:
+                                  reparto_out: dict | None = None,
+                                  votos_out: dict | None = None,
+                                  vuelos_previos: dict | None = None) -> dict[tuple[str, str], int]:
     """Un único ángulo por `(pb, vuelo)`, calculado UNA vez y compartido por
     todas las filas de ese vuelo (RGB y térmica): este reparto por vuelo, no
     por carpeta, es lo que corrige el bug que motiva el proyecto entero (hoy
@@ -1202,11 +1270,11 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
     girando por yaw como hasta ahora, pero se avisa (ver abajo): es un giro
     decidido a ciegas, sin saber si la planta es Horizontal.
 
-    Si ya existe el CSV de criterio de un re-proceso anterior, se reutiliza
-    con `pipeline.read_auto_rotate_degree` (nunca reinventa lo que ya se
-    decidió). Si no existe -el caso normal en una corrida nueva, porque ese
-    CSV lo escribe el cierre A PARTIR de este mismo consenso- se calcula a
-    partir de los yaw ya leídos en la pasada de metadatos, con el mismo
+    El criterio vive en el manifiesto (tabla `vuelos`, voto por imagen en
+    `imagenes.giro_voto`); el CSV `_criterio` ya no se lee. `vuelos_previos`
+    (`Manifiesto.vuelos()`) permite reutilizar un cálculo previo del vuelo si su
+    `version_algoritmo == VERSION_ALGORITMO_GIRO`. Si no hay cálculo vigente se
+    calcula a partir de los yaw ya leídos en la pasada de metadatos, con el mismo
     criterio de mayoría por umbral que `gen_thumbnails_and_rotate`
     (pipeline.py:2004): tres bandas (90º / 270º / sin girar) delimitadas por
     `gen_thumbnails_add_to_angle` / `gen_thumbnails_subs_to_angle`, y se
@@ -1221,6 +1289,7 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
     fundirlas en una sola clave mezclaría los yaw de dos vuelos que ni
     siquiera comparten fecha."""
     yaws_por_vuelo: dict[tuple[str, str, str | None], list[float]] = {}
+    datos_por_vuelo: dict[tuple[str, str, str | None], list] = {}
     for dato, ventana in asignaciones:
         if ventana is None or dato.yaw is None or _es_pb_generales(ventana["pb"]):
             continue
@@ -1229,6 +1298,7 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
         yaws_por_vuelo.setdefault(clave, []).append(
             flight_yaw if flight_yaw is not None
             else _yaw_normalizado(dato.yaw, getattr(dato, "pitch", None)))
+        datos_por_vuelo.setdefault(clave, []).append(dato)
 
     orientacion = _orientacion_normalizada(getattr(cfg, "orientacion", ""))
     if orientacion == "horizontal":
@@ -1258,34 +1328,66 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
     for (pb, vuelo, sufijo), yaws in yaws_por_vuelo.items():
         nombre_carpeta = _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v, sufijo)
         carpeta_vuelo = almacen.unir(output_folder, "TERMICA", f"PB{pb}", nombre_carpeta)
-        candidato_csv = almacen.unir(
-            output_folder, "CSVs", utils.CRITERIO_DIRNAME, f"{nombre_carpeta}_Videofiles.csv")
         clave = (pb, vuelo, sufijo)
-        if (almacen.existe_ruta(candidato_csv)
-                and _version_giro_guardada(candidato_csv) == VERSION_ALGORITMO_GIRO):
-            angulos[clave] = pipeline.read_auto_rotate_degree(
-                carpeta_vuelo, progress_callback)
+        # Votos individuales (siempre, aunque el ángulo se reutilice).
+        if votos_out is not None:
+            for dato, yaw in zip(datos_por_vuelo[clave], yaws):
+                votos_out[id(dato)] = (90 if lim_min_90 < yaw < lim_max_90
+                                       else 270 if lim_min_270 < yaw < lim_max_270 else 0)
+        previo = (vuelos_previos or {}).get(clave)
+        if previo is not None and previo.get("version_algoritmo") == VERSION_ALGORITMO_GIRO:
+            angulos[clave] = previo["angulo"]
+            if previo.get("estado") == "sin_consenso":
+                # Reproceso: el ERROR no se pierde por reutilizar el cálculo.
+                _registrar_vuelo_sin_consenso_giro(
+                    pipeline, carpeta_vuelo, nombre_carpeta, previo["n_90"],
+                    previo["n_270"], previo["n_0"], previo["n_total"],
+                    progress_callback)
             continue
 
         rotate_90 = sum(1 for yaw in yaws if lim_min_90 < yaw < lim_max_90)
         rotate_270 = sum(1 for yaw in yaws if lim_min_270 < yaw < lim_max_270)
         total = len(yaws)
-        if total and rotate_270 and (rotate_270 / total) > (max_error / 100):
+        n_0_votos = max(total - rotate_90 - rotate_270, 0)
+        sin_consenso = False
+        if total and rotate_270 / total >= UMBRAL_SENTIDO_GIRO_VUELO:
             angulos[clave] = 270
-        elif total and rotate_90 and (rotate_90 / total) > (max_error / 100):
+        elif total and rotate_90 / total >= UMBRAL_SENTIDO_GIRO_VUELO:
             angulos[clave] = 90
+        elif total and n_0_votos / total >= UMBRAL_SENTIDO_GIRO_VUELO:
+            angulos[clave] = 0
         else:
             angulos[clave] = 0
+            sin_consenso = bool(total)
+            if sin_consenso:
+                _registrar_vuelo_sin_consenso_giro(
+                    pipeline, carpeta_vuelo, nombre_carpeta, rotate_90,
+                    rotate_270, n_0_votos, total, progress_callback)
 
         # Confianza: % de imágenes en la banda elegida (0 = fuera de ambas).
         n_0 = max(total - rotate_90 - rotate_270, 0)
         n_elegida = {90: rotate_90, 270: rotate_270}.get(angulos[clave], n_0)
         pct = round(100.0 * n_elegida / total, 1) if total else 0.0
+        empate = rotate_90 == rotate_270 and rotate_90 > 0
+        pcts = {n: (round(100.0 * v / total, 1) if total else 0.0)
+                for n, v in (("90", rotate_90), ("270", rotate_270), ("0", n_0))}
+        if sin_consenso:
+            estado = "sin_consenso"
+            motivo = (f"ningún sentido llega al {int(UMBRAL_SENTIDO_GIRO_VUELO * 100)}%: "
+                      f"90º={pcts['90']}%, 270º={pcts['270']}%, sin girar={pcts['0']}%")
+        elif total and (pct < _UMBRAL_CONFIANZA_GIRO or empate):
+            estado, motivo = "dudoso", "empate 90/270" if empate else f"{pct}% en la banda elegida"
+        else:
+            estado, motivo = "ok", None
         reparto = {"angulo": angulos[clave], "total": total, "n_90": rotate_90,
                    "n_270": rotate_270, "n_0": n_0, "pct_ganadora": pct,
-                   "version_algoritmo": VERSION_ALGORITMO_GIRO}
-        empate = rotate_90 == rotate_270 and rotate_90 > 0
-        if total and (pct < _UMBRAL_CONFIANZA_GIRO or empate):
+                   "version_algoritmo": VERSION_ALGORITMO_GIRO,
+                   "error_sin_consenso": sin_consenso,
+                   # Fila de la tabla `vuelos` del manifiesto.
+                   "pb": pb, "vuelo": vuelo, "sufijo": sufijo or "",
+                   "n_total": total, "pct_90": pcts["90"], "pct_270": pcts["270"],
+                   "pct_0": pcts["0"], "estado": estado, "motivo": motivo}
+        if total and not sin_consenso and (pct < _UMBRAL_CONFIANZA_GIRO or empate):
             progress_callback.emit(
                 f"\nAVISO: consenso de giro dudoso en PB{pb} {nombre_carpeta}: "
                 f"ángulo {angulos[clave]} con {pct}% de imágenes en su banda"
@@ -1474,7 +1576,8 @@ def _avisar_jpeg_sin_eoi(filas: list[FilaManifiesto], progress_callback) -> int:
 
 
 def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
-                    angulos: dict[tuple[str, str, str | None], int], cfg, pipeline) -> FilaManifiesto:
+                    angulos: dict[tuple[str, str, str | None], int], cfg, pipeline,
+                    votos: dict | None = None) -> FilaManifiesto:
     tipo = _clasificar_tipo(dato.nombre, cfg)
     unassigned = ventana is None
 
@@ -1561,6 +1664,7 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
         equipo_estadillo=None if unassigned else ventana.get("equipo"),
         angulo_version=angulo_version,
         jpeg_sin_eoi=getattr(dato, "jpeg_sin_eoi", None),
+        giro_voto=None if unassigned or votos is None else votos.get(id(dato)),
     )
 
 
@@ -1863,9 +1967,14 @@ def construir_indice(
             dato.ruta, ventanas_por_carpeta, ventanas_sin_carpeta))))
         emisor.progreso(n_asignadas, len(metadatos))
     emisor.progreso(len(metadatos), len(metadatos), forzar=True)
+    asignaciones = _heredar_vuelo_por_pareja(asignaciones, progress_callback)
     vuelos_equipo_discrepa = _avisar_equipo(asignaciones, progress_callback)
-    angulos = _consenso_de_angulo_por_vuelo(asignaciones, pipeline, cfg,
-                                            cfg.output_folder, progress_callback)
+    reparto_vuelos: dict = {}
+    votos_giro: dict = {}
+    angulos = _consenso_de_angulo_por_vuelo(
+        asignaciones, pipeline, cfg, cfg.output_folder, progress_callback,
+        reparto_out=reparto_vuelos, votos_out=votos_giro,
+        vuelos_previos=manifiesto.vuelos())
     # Cachito posterior del mismo destino: el ángulo ya decidido para un vuelo
     # manda sobre el recalculado, para que JPG y TIFF del vuelo no discrepen,
     # SOLO si se calculó con la VERSION_ALGORITMO_GIRO actual. Si el manifiesto es
@@ -1881,6 +1990,8 @@ def construir_indice(
         clave_cache = (pb_cache, vuelo_cache, None)
         if version_cache == VERSION_ALGORITMO_GIRO:
             angulos[clave_cache] = angulo_cache
+            if clave_cache in reparto_vuelos:
+                reparto_vuelos[clave_cache]["angulo"] = angulo_cache
         elif clave_cache in angulos:
             vuelos_a_unificar.append((pb_cache, vuelo_cache, angulo_cache,
                                       angulos[clave_cache], True))
@@ -1889,7 +2000,7 @@ def construir_indice(
     emisor.iniciar("Construir filas", len(asignaciones), barra=(90, 8))
     for n_filas, (dato, ventana) in enumerate(asignaciones, 1):
         cancelacion.comprobar()
-        filas.append(_construir_fila(dato, ventana, angulos, cfg, pipeline))
+        filas.append(_construir_fila(dato, ventana, angulos, cfg, pipeline, votos_giro))
         emisor.progreso(n_filas, len(asignaciones))
     emisor.progreso(len(asignaciones), len(asignaciones), forzar=True)
     filas = _desambiguar_colisiones_generales(filas, manifiesto.rutas_salida_por_clave())
@@ -1897,7 +2008,9 @@ def construir_indice(
     _avisar_jpeg_sin_eoi(filas, progress_callback)
     # Último punto seguro: tras insertar, las filas ya existen en el manifiesto.
     cancelacion.comprobar()
-    resultado = manifiesto.insertar_o_reabrir(filas, ejecucion_id=ejecucion_id)
+    resultado = manifiesto.insertar_o_reabrir(
+        filas, ejecucion_id=ejecucion_id,
+        vuelos=[r for r in reparto_vuelos.values() if "n_total" in r])
     for pb_u, vuelo_u, viejo, nuevo, _ in vuelos_a_unificar:
         cambia = viejo != nuevo
         n_reabiertas = manifiesto.unificar_angulo_vuelo(

@@ -345,6 +345,24 @@ def safe_move(src: str, dest: str, modo: str = MODO_UNICO,
     if modo == MODO_OBVIAR:
         if os.path.exists(dest):
             if descartar_origen_si_existe and os.path.abspath(src) != os.path.abspath(dest):
+                # Solo es una copia sobrante si el contenido es IDENTICO. Mismo
+                # nombre con bytes distintos son dos fotos: borrar el origen
+                # perderia una. Se conserva con nombre unico junto al destino.
+                import filecmp
+
+                try:
+                    # Si dest no es fichero regular (p. ej. directorio) no hay
+                    # nada que comparar: cuenta como distinto.
+                    iguales = os.path.isfile(dest) and filecmp.cmp(src, dest, shallow=False)
+                except FileNotFoundError:
+                    return None
+                if not iguales:
+                    distinto = unique_dest(dest)
+                    try:
+                        shutil.move(src, distinto)
+                    except OSError as e:
+                        raise OSError(f"Error moviendo '{src}' a '{distinto}': {e}") from e
+                    return distinto
                 try:
                     os.remove(src)
                 except FileNotFoundError:
@@ -430,6 +448,40 @@ def _borrar_en_almacen(ruta: str) -> None:
         pass
 
 
+def _contenido_identico_almacen(a: str, b: str) -> bool:
+    """True si `a` y `b` (locales o `gs://`) tienen el mismo contenido: primero
+    tamano (metadatos), luego md5. Si ambos son `gs://` y los dos blobs traen
+    `md5_hash` en sus metadatos se comparan esos (sin descargar); si falta en
+    alguno, o alguno es local, se calcula el md5 sobre copias locales (mismo
+    cálculo exacto). Cualquier duda (fichero ausente) cuenta como distinto."""
+    import hashlib
+
+    from atom_core.almacen import abrir_almacen, abrir_para_lectura, es_uri_gcs, tamano_de
+
+    try:
+        if tamano_de(a) != tamano_de(b):
+            return False
+
+        if es_uri_gcs(a) and es_uri_gcs(b):
+            alm_a, pref_a = abrir_almacen(a)
+            alm_b, pref_b = abrir_almacen(b)
+            md5_a = alm_a.md5_base64(pref_a) if hasattr(alm_a, "md5_base64") else None
+            md5_b = alm_b.md5_base64(pref_b) if hasattr(alm_b, "md5_base64") else None
+            if md5_a and md5_b:
+                return md5_a == md5_b
+
+        def _md5(ruta: str) -> str:
+            h = hashlib.md5()
+            with abrir_para_lectura(ruta) as ruta_local, open(ruta_local, "rb") as f:
+                for trozo in iter(lambda: f.read(1 << 20), b""):
+                    h.update(trozo)
+            return h.hexdigest()
+
+        return _md5(a) == _md5(b)
+    except FileNotFoundError:
+        return False
+
+
 def _safe_move_almacen(src: str, dest: str, modo: str, descartar_origen_si_existe: bool) -> str | None:
     """Camino `gs://…` de `safe_move`: mismos modos y misma resolución de
     colisión que el POSIX, pero por debajo de `atom_core.almacen`.
@@ -453,8 +505,21 @@ def _safe_move_almacen(src: str, dest: str, modo: str, descartar_origen_si_exist
             if descartar_origen_si_existe:
                 almacen_src, prefijo_src = abrir_almacen(src)
                 almacen_dest, prefijo_dest = abrir_almacen(dest)
-                if not (almacen_src is almacen_dest and prefijo_src == prefijo_dest):
+                if almacen_src is almacen_dest and prefijo_src == prefijo_dest:
+                    return None  # misma clave: nada que descartar
+                if _contenido_identico_almacen(src, dest):
                     _borrar_en_almacen(src)
+                    return None
+                # Mismo nombre con bytes distintos: son dos fotos. Se conserva
+                # el origen con nombre unico junto al destino (como la rama POSIX).
+                distinto = _unique_dest_almacen(dest)
+                try:
+                    with abrir_para_lectura(src) as ruta_local:
+                        publicar_en(ruta_local, distinto)
+                except OSError as e:
+                    raise OSError(f"Error moviendo '{src}' a '{distinto}': {e}") from e
+                _borrar_en_almacen(src)
+                return distinto
             return None
         destino_final = dest
     elif modo == MODO_SOBRESCRIBIR:

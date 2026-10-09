@@ -194,3 +194,98 @@ def test_paridad_semantica_listar_existe_local_vs_gcs(tmp_path):
     assert almacen_local.listar("sub") == almacen_gcs.listar("sub")
     for relativo in list(contenido) + ["no_existe.txt"]:
         assert almacen_local.existe(relativo) == almacen_gcs.existe(relativo)
+
+
+def test_publicar_subida_truncada_lanza_error(tmp_path):
+    """Auditoria ALTO 7: una subida que deja menos bytes no pasa en silencio."""
+    almacen, bucket = _almacen(prefijo_raiz="raiz")
+    original = BlobFalso.upload_from_filename
+
+    def truncada(self, ruta_local):
+        self.bucket.objetos[self.name] = Path(ruta_local).read_bytes()[:-1]
+
+    origen = tmp_path / "o.txt"
+    origen.write_text("contenido")
+    BlobFalso.upload_from_filename = truncada
+    try:
+        with pytest.raises(OSError, match="corrupta"):
+            almacen.publicar(origen, "d.txt")
+    finally:
+        BlobFalso.upload_from_filename = original
+
+
+def test_mover_no_borra_origen_si_la_copia_no_cuadra():
+    almacen, bucket = _almacen(prefijo_raiz="raiz")
+    bucket.objetos["raiz/o.txt"] = b"contenido"
+    original = BucketFalso.copy_blob
+
+    def mala(self, blob_origen, bucket_destino, nombre_destino):
+        bucket_destino.objetos[nombre_destino] = b"cont"
+        return BlobFalso(bucket_destino, nombre_destino)
+
+    BucketFalso.copy_blob = mala
+    try:
+        with pytest.raises(OSError, match="origen conservado"):
+            almacen.mover("o.txt", "d.txt")
+    finally:
+        BucketFalso.copy_blob = original
+    assert bucket.objetos["raiz/o.txt"] == b"contenido"
+
+
+def test_publicar_subida_truncada_borra_el_blob(tmp_path):
+    """Una subida corrupta no deja el objeto en el bucket."""
+    almacen, bucket = _almacen(prefijo_raiz="raiz")
+    original = BlobFalso.upload_from_filename
+
+    def truncada(self, ruta_local):
+        self.bucket.objetos[self.name] = Path(ruta_local).read_bytes()[:-1]
+
+    origen = tmp_path / "o.txt"
+    origen.write_text("contenido")
+    BlobFalso.upload_from_filename = truncada
+    try:
+        with pytest.raises(OSError, match="corrupta"):
+            almacen.publicar(origen, "d.txt")
+    finally:
+        BlobFalso.upload_from_filename = original
+    assert bucket.objetos == {}
+
+
+def test_contenido_identico_gcs_compara_md5_de_metadatos_sin_descargar(monkeypatch):
+    import base64
+    import hashlib
+
+    import utils
+    from atom_core import almacen as almacen_mod
+
+    class BlobMd5(BlobFalso):
+        def reload(self):
+            super().reload()
+            if not self.bucket.sin_md5:
+                self.md5_hash = base64.b64encode(
+                    hashlib.md5(self.bucket.objetos[self.name]).digest()).decode()
+
+    class BucketMd5(BucketFalso):
+        sin_md5 = False
+
+        def blob(self, nombre):
+            return BlobMd5(self, nombre)
+
+    bucket = BucketMd5()
+    almacen_mod._ALMACENES["gs://b-md5"] = AlmacenGCS("b-md5", cliente=ClienteFalso(bucket))
+    descargas = []
+    original = BlobFalso.download_to_filename
+    monkeypatch.setattr(BlobFalso, "download_to_filename",
+                        lambda self, r: (descargas.append(self.name), original(self, r))[1])
+    try:
+        bucket.objetos.update({"a": b"1234", "b": b"1234", "c": b"1235"})
+        assert utils._contenido_identico_almacen("gs://b-md5/a", "gs://b-md5/b") is True
+        assert utils._contenido_identico_almacen("gs://b-md5/a", "gs://b-md5/c") is False
+        assert descargas == []
+        # Sin md5 en metadatos: mismo cálculo exacto descargando.
+        bucket.sin_md5 = True
+        assert utils._contenido_identico_almacen("gs://b-md5/a", "gs://b-md5/b") is True
+        assert utils._contenido_identico_almacen("gs://b-md5/a", "gs://b-md5/c") is False
+        assert descargas
+    finally:
+        almacen_mod._limpiar_cache_almacenes()

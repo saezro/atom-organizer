@@ -1616,6 +1616,20 @@ def _aplicar_termicas_impl(manifiesto, cfg, pipeline, progress_callback, progres
             raise ExiftoolNoDisponible(
                 "Fase térmica abortada: {0} Las filas no procesadas siguen pendientes; "
                 "revisa la instalación de exiftool y reintenta.".format(pool_exif.fatal))
+        # Guard: ninguna térmica con vuelo asignado puede salir de la fase sin
+        # procesar (sin girar). Un `return` temprano en `_procesar_una` o una
+        # fase cortada dejaban estas filas 'pendiente' y acababan en SIN_ORDENAR
+        # (incidente WILLKA 2026-10-07). Es ERROR bloqueante, no aviso.
+        sin_procesar = [
+            fila for fila in manifiesto.todas()
+            if fila["tipo"] == "TERMICA" and fila["estado"] in ("pendiente", "en_curso")
+            and not fila["unassigned"] and fila["pb"] and fila["vuelo"]]
+        if sin_procesar:
+            msg = (f"Fase térmica incompleta: {len(sin_procesar)} térmica(s) con vuelo "
+                   f"asignado NO se han procesado (ni giradas ni convertidas). "
+                   f"Ejemplo: {sin_procesar[0]['ruta_origen']}")
+            progress_callback.emit("ERROR: " + msg + "\n")
+            raise RuntimeError(msg)
     finally:
         # Fin de la fase térmica: cierra los workers persistentes del SDK DJI si se
         # usaron (no-op en Windows/x86 o con ATOM_DJI_PERSISTENT=0).

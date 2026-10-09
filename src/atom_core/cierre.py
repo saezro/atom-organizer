@@ -24,7 +24,6 @@ import pandas as pd
 
 import utils
 from atom_core.almacen import abrir_para_lectura, es_uri_gcs, existe_ruta, publicar_en, tamano_de, unir
-from atom_core import indice as indice_mod
 from atom_core.indice import NOMBRE_CARPETA_RGB_EXTRA, TIPOS_RGB
 
 # Columnas exactas del CSV de criterio de giro que hoy escribe
@@ -140,23 +139,6 @@ def _emitir_csv_criterio(manifiesto, cfg, progress_callback) -> dict[str, str]:
         destino = unir(criterio_folder, nombre_csv)
         _escribir_csv(df, destino)
         progress_callback.emit(f"\nGenerado CSV de criterio: {destino}\n")
-        # Sidecar con la versión del algoritmo de giro que calculó el ángulo (la
-        # guarda el índice en el manifiesto): un reproceso lo reutiliza solo si
-        # coincide con la versión actual (ver `indice._consenso_de_angulo_por_vuelo`).
-        # Solo si TODAS las filas térmicas comparten ángulo y versión (invariante: un
-        # ángulo por vuelo); si no, un reproceso reutilizaría un valor falso.
-        pares_giro = {(fila["angulo_giro"], fila["angulo_version"]) for fila in termicas}
-        if len(pares_giro) == 1:
-            angulo_vuelo, version = next(iter(pares_giro))
-            if version:
-                indice_mod._guardar_sidecar_giro(
-                    destino, {"angulo": angulo_vuelo, "version_algoritmo": version},
-                    progress_callback)
-        else:
-            progress_callback.emit(
-                f"\nAVISO: {clave}: las imágenes térmicas del vuelo tienen ángulos/versiones "
-                f"de giro mezclados ({len(pares_giro)} combinaciones); no se escribe el "
-                "sidecar .giro.json. Reprocesa el vuelo para unificarlo.\n")
         rutas_emitidas[clave] = destino
 
     return rutas_emitidas
@@ -396,6 +378,17 @@ def verificar(manifiesto, cfg) -> list[str]:
     # Un run interrumpido a mitad no puede darse por bueno solo porque las
     # filas que sí se procesaron salieron bien.
     sin_terminar = [fila for fila in filas if fila["estado"] in ("pendiente", "en_curso")]
+    termicas_sin_procesar = [
+        fila for fila in sin_terminar
+        if fila["tipo"] == "TERMICA" and not fila["unassigned"] and fila["pb"] and fila["vuelo"]]
+    if termicas_sin_procesar:
+        # ERROR (no aviso): térmicas con vuelo asignado sin pasar por la fase T
+        # acaban sin girar (incidente WILLKA 2026-10-07).
+        problemas.append(
+            f"{PREFIJO_ERROR}{len(termicas_sin_procesar)} térmica(s) con vuelo asignado "
+            f"siguen 'pendiente'/'en_curso': la fase T no las procesó (sin girar). "
+            f"Ejemplo: {termicas_sin_procesar[0]['ruta_origen']}"
+        )
     if sin_terminar:
         problemas.append(
             f"{len(sin_terminar)} imagen(es) siguen 'pendiente'/'en_curso': el run "

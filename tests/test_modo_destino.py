@@ -5,11 +5,14 @@ olvide deja el flag silenciosamente sin efecto: el usuario pide `obviar`, la
 UI lo muestra, y el pipeline sigue duplicando. Por eso se testea la cadena, no
 solo los extremos."""
 import os
+from pathlib import Path
 
 import pytest
 
 import utils
 from atom_core import organize
+# Siembra `esperado_shard0.json` (el que escribiría el struct mockeado) para el guard.
+from tests.test_etapas_pipeline import destino_con_esperado  # noqa: F401
 
 
 def test_split_config_por_defecto_sobrescribe():
@@ -115,7 +118,7 @@ def test_gen_struct_folder_nace_sobrescribiendo():
 # parcial: justo el caso de uso de `obviar`) sobrescribiria en silencio.
 
 @pytest.mark.parametrize("etapa", ["todo", "split", "struct", "post"])
-def test_el_modo_destino_llega_al_gen_struct_en_cualquier_etapa(etapa, monkeypatch):
+def test_el_modo_destino_llega_al_gen_struct_en_cualquier_etapa(etapa, monkeypatch, destino_con_esperado):
     from tests.test_etapas_pipeline import _HostDePrueba, _SignalFalsa, _cfg
 
     host = _HostDePrueba(etapa=etapa)
@@ -127,7 +130,7 @@ def test_el_modo_destino_llega_al_gen_struct_en_cualquier_etapa(etapa, monkeypat
         f"etapa={etapa}: el flag --modo-destino se ha ignorado en silencio")
 
 
-def test_sin_modo_en_la_config_la_etapa_post_sobrescribe(monkeypatch):
+def test_sin_modo_en_la_config_la_etapa_post_sobrescribe(monkeypatch, destino_con_esperado):
     """El default explicito: sin flag, `post` se comporta como siempre."""
     from tests.test_etapas_pipeline import _HostDePrueba, _SignalFalsa, _cfg
 
@@ -292,3 +295,80 @@ def test_el_barrido_a_sin_ordenar_no_deja_la_imagen_en_dos_sitios(tmp_path):
             f"{sub}: el origen se quedo varado en la raiz -> imagen duplicada"
         assert (tmp_path / "SIN_ORDENAR" / sub / "huerfana.JPG").read_bytes() == b"ya aparcada", \
             f"{sub}: la copia ya aparcada NO se pisa"
+
+
+def test_obviar_descartar_no_borra_origen_si_el_contenido_difiere(tmp_path):
+    """Auditoria ALTO 14: mismo nombre + bytes distintos = dos fotos; no se pierde ninguna."""
+    src = tmp_path / "a" / "x.JPG"
+    dst = tmp_path / "b" / "x.JPG"
+    src.parent.mkdir()
+    dst.parent.mkdir()
+    src.write_bytes(b"foto uno")
+    dst.write_bytes(b"foto dos")
+    res = utils.safe_move(str(src), str(dst), utils.MODO_OBVIAR, descartar_origen_si_existe=True)
+    assert dst.read_bytes() == b"foto dos"
+    assert not src.exists()
+    assert res and os.path.exists(res) and open(res, "rb").read() == b"foto uno"
+
+
+def test_obviar_descartar_borra_origen_si_es_copia_identica(tmp_path):
+    src = tmp_path / "x.JPG"
+    dst = tmp_path / "d" / "x.JPG"
+    dst.parent.mkdir()
+    src.write_bytes(b"igual")
+    dst.write_bytes(b"igual")
+    assert utils.safe_move(str(src), str(dst), utils.MODO_OBVIAR, descartar_origen_si_existe=True) is None
+    assert not src.exists() and dst.exists()
+
+
+def _bucket_falso_para_safe_move(monkeypatch, objetos):
+    """`gs://b/...` respaldado por un dict en memoria (sin red)."""
+    import atom_core.almacen as alm
+    from tests.test_almacen_gcs import BucketFalso, ClienteFalso
+    from atom_core.almacen_gcs import AlmacenGCS
+
+    bucket = BucketFalso()
+    bucket.objetos.update(objetos)
+    almacen = AlmacenGCS("b", cliente=ClienteFalso(bucket))
+    monkeypatch.setattr(alm, "abrir_almacen", lambda ruta: (
+        (almacen, ruta[len("gs://b/"):]) if ruta.startswith("gs://b/")
+        else (alm.AlmacenLocal(Path("/")), ruta.lstrip("/"))))
+    monkeypatch.setattr(alm, "es_uri_gcs", lambda r: str(r).startswith("gs://"))
+    monkeypatch.setattr(alm, "existe_ruta", lambda r: almacen.existe(r[len("gs://b/"):]) if r.startswith("gs://b/") else os.path.exists(r))
+    monkeypatch.setattr(alm, "tamano_de", lambda r: almacen.tamano(r[len("gs://b/"):]) if r.startswith("gs://b/") else os.path.getsize(r))
+    return bucket
+
+
+def test_safe_move_almacen_obviar_distinto_conserva_origen_con_nombre_unico(tmp_path, monkeypatch):
+    src = tmp_path / "a.jpg"
+    src.write_bytes(b"nuevo!")
+    bucket = _bucket_falso_para_safe_move(monkeypatch, {"x/a.jpg": b"viejo"})
+    res = utils._safe_move_almacen(str(src), "gs://b/x/a.jpg", utils.MODO_OBVIAR, True)
+    assert res == "gs://b/x/a_1.jpg"
+    assert bucket.objetos["x/a.jpg"] == b"viejo"
+    assert bucket.objetos["x/a_1.jpg"] == b"nuevo!"
+    assert not src.exists()
+
+
+def test_safe_move_almacen_obviar_identico_borra_origen(tmp_path, monkeypatch):
+    src = tmp_path / "a.jpg"
+    src.write_bytes(b"igual")
+    bucket = _bucket_falso_para_safe_move(monkeypatch, {"x/a.jpg": b"igual"})
+    assert utils._safe_move_almacen(str(src), "gs://b/x/a.jpg", utils.MODO_OBVIAR, True) is None
+    assert not src.exists()
+    assert list(bucket.objetos) == ["x/a.jpg"]
+
+
+def test_safe_move_almacen_obviar_mismo_bucket_claves_distintas_contenido_distinto_conserva(monkeypatch):
+    bucket = _bucket_falso_para_safe_move(monkeypatch, {"in/a.jpg": b"nuevo!", "x/a.jpg": b"viejo"})
+    res = utils._safe_move_almacen("gs://b/in/a.jpg", "gs://b/x/a.jpg", utils.MODO_OBVIAR, True)
+    assert res == "gs://b/x/a_1.jpg"
+    assert bucket.objetos["x/a.jpg"] == b"viejo"
+    assert bucket.objetos["x/a_1.jpg"] == b"nuevo!"
+    assert "in/a.jpg" not in bucket.objetos
+
+
+def test_safe_move_almacen_obviar_mismo_bucket_claves_distintas_identico_borra_origen(monkeypatch):
+    bucket = _bucket_falso_para_safe_move(monkeypatch, {"in/a.jpg": b"igual", "x/a.jpg": b"igual"})
+    assert utils._safe_move_almacen("gs://b/in/a.jpg", "gs://b/x/a.jpg", utils.MODO_OBVIAR, True) is None
+    assert list(bucket.objetos) == ["x/a.jpg"]
