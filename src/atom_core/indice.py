@@ -323,6 +323,9 @@ def _leer_cabecera(ruta: str) -> "tuple[bytes | None, bool]":
     return cabecera, a_medias
 
 
+_BYTES_COLA_CORTA = 16
+
+
 def _leer_cabecera_y_cola(ruta: str) -> "tuple[bytes | None, bool, bool]":
     """UNA sola apertura de `ruta` (local): devuelve `(cabecera, a_medias, sin_eoi)` (`sin_eoi` None = no comprobada).
 
@@ -365,13 +368,21 @@ def _leer_cabecera_y_cola(ruta: str) -> "tuple[bytes | None, bool, bool]":
             if len(cabecera) < min(_BYTES_CABECERA, tamano):
                 return cabecera, True, None
             if os.path.splitext(ruta)[1].lower() in (".jpg", ".jpeg"):
+                ventana = lectura_segura.VENTANA_COLA_JPEG
                 try:
-                    ventana = lectura_segura.VENTANA_COLA_JPEG
                     if tamano <= len(cabecera):
                         cola = cabecera[-ventana:]
                     else:
-                        fichero.seek(max(0, tamano - ventana))
-                        cola = fichero.read(ventana)
+                        # Lectura escalonada (DriveFS cobra cada byte): cola corta de 16 B;
+                        # si ya acaba en EOI no hace falta la ventana de 64 KiB.
+                        fichero.seek(max(0, tamano - _BYTES_COLA_CORTA))
+                        cola = fichero.read(_BYTES_COLA_CORTA)
+                        if (len(cola) >= _BYTES_COLA_CORTA and any(cola)
+                                and cola.endswith(b"\xff\xd9")):
+                            return cabecera, False, False
+                        if len(cola) >= _BYTES_COLA_CORTA and any(cola) and tamano > _BYTES_COLA_CORTA:
+                            fichero.seek(max(0, tamano - ventana))
+                            cola = fichero.read(ventana)
                 except OSError:
                     return cabecera, True, None  # cola ilegible: NO entra como buena
                 if len(cola) < min(ventana, tamano):

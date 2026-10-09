@@ -1141,12 +1141,13 @@ class MetaLocation:
 
     @staticmethod
     def _clave_idx_dji(nombre: str, sufijo: str) -> int | None:
-        """Índice DJI `<idx>` de `..._<idx>_<T|W>.ext` (None si el nombre no sigue el patrón
-        o el sufijo no es el esperado). Valen `DJI_<ts>_<idx>_T` y `<fecha>_<hora>_DJI_<idx>_W`."""
-        m = re.search(r'(\d+)_([TW])$', os.path.splitext(os.path.basename(nombre))[0])
-        if not m or m.group(2) != sufijo:
+        """Índice DJI del nombre si sigue el patrón y su sufijo es `sufijo` (None si no).
+        Usa la clave ÚNICA `atom_core.pares.clave_pareja` (la misma que la paridad del índice)."""
+        from atom_core.pares import clave_pareja  # noqa: PLC0415
+        c = clave_pareja(nombre)
+        if c is None or c[1] != sufijo:
             return None
-        return int(m.group(1))
+        return c[0]
 
     def emparejar_por_idx(self, imagenes_t: list[str], imagenes_w: list[str]):
         """Empareja térmicas y RGB por índice DJI. Devuelve `(pares, sin_pareja, sin_patron)`:
@@ -1179,6 +1180,15 @@ class MetaLocation:
             self.error_meta_location += 1
             self.images_error_meta_location.append(texto)
 
+    def _aviso_sin_pareja(self, progress_callback, sin_pareja: list[str], vuelo: str = "", max_ejemplos: int = 5) -> None:
+        """Un único AVISO (no bloquea, no cuenta como error) con conteo y primeros ejemplos."""
+        if not sin_pareja:
+            return
+        ej = ", ".join(sin_pareja[:max_ejemplos]) + ("…" if len(sin_pareja) > max_ejemplos else "")
+        self._aviso(progress_callback,
+                    f"AVISO: {vuelo}: {len(sin_pareja)} fotos sin pareja T/W por índice DJI; "
+                    f"excluidas de meta y location: {ej}.", error=False)
+
     def gen_meta_location_emparejado(self, carpeta_t: str, carpeta_w: str, progress_callback, progress_bar,
                                      csv_folder: str, flight_height: float, calculate_proyected_distance: bool) -> None:
         """Genera `meta.csv` (térmicas) y `location.csv` (RGB) de UN vuelo desde UNA lista de
@@ -1191,15 +1201,16 @@ class MetaLocation:
         if not imgs_t and not imgs_w:
             return
         pares, sin_pareja, sin_patron = self.emparejar_por_idx(imgs_t, imgs_w)
-        if not pares and sin_patron and not sin_pareja:
-            self._aviso(progress_callback,
-                        f"WARN: {carpeta_t or carpeta_w}: sin patrón DJI '_<idx>_' en los nombres; "
-                        "meta/location se generan sin emparejar (comportamiento antiguo).", error=False)
+        if (not imgs_t or not imgs_w) or (not pares and sin_patron and not sin_pareja):
+            # Vuelo solo RGB (o solo T) o sin patrón DJI: independientes, como siempre.
+            if imgs_t and imgs_w:
+                self._aviso(progress_callback,
+                            f"WARN: {carpeta_t or carpeta_w}: sin patrón DJI '_<idx>_' en los nombres; "
+                            "meta/location se generan sin emparejar (comportamiento antiguo).", error=False)
             self.gen_meta_location(carpeta_t, "meta.csv", progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance) if imgs_t else None
             self.gen_meta_location(carpeta_w, "location.csv", progress_callback, progress_bar, csv_folder, flight_height, calculate_proyected_distance) if imgs_w else None
             return
-        for n in sin_pareja:
-            self._aviso(progress_callback, f"ERROR: {n} sin pareja T/W en el vuelo; excluida de meta y location.")
+        self._aviso_sin_pareja(progress_callback, sin_pareja, carpeta_t or carpeta_w)
         for n in sin_patron:
             self._aviso(progress_callback, f"ERROR: {n} sin patrón DJI '_<idx>_T|W'; excluida de meta y location.")
         if not pares:

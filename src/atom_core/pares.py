@@ -4,19 +4,28 @@ from __future__ import annotations
 import os
 import re
 
-# `DJI_<ts>_<idx>_T|W` (tarjeta SD) y `<fecha>_<hora>_DJI_<idx>_T|W` (ya renombrada).
-_RE_PAREJA_DJI = re.compile(
-    r"^(?:DJI_(\d{8,})_(\d+)|(\d{8}_\d{6})_DJI_(\d+))_([TW])(?:_point\d+)?\.", re.IGNORECASE)
+# Clave única de pareja T/W: idx DJI (contador `_NNNN_`) + sufijo T|W, con `_pointN`
+# opcional (H30T). Vale `DJI_<ts>_<idx>_T`, `<fecha>_<hora>_DJI_<idx>_W` y `..._T_point1`.
+# El timestamp NO entra: T y W de un mismo disparo pueden diferir 1 s en el nombre.
+_RE_CLAVE_PAREJA = re.compile(r"_(\d+)_([TW])(?:_point\d+)?$", re.IGNORECASE)
+
+
+def clave_pareja(nombre: str) -> "tuple[int, str] | None":
+    """`(idx, 'T'|'W')` del nombre (sin carpeta ni extensión) o None si no sigue el
+    patrón. Función ÚNICA de clave: la usan la paridad del índice y el cierre
+    (`exif.MetaLocation.emparejar_por_idx`). El idx se reinicia entre vuelos, así que
+    solo tiene sentido dentro de la lista de UN vuelo."""
+    m = _RE_CLAVE_PAREJA.search(os.path.splitext(os.path.basename(str(nombre)))[0])
+    return (int(m.group(1)), m.group(2).upper()) if m else None
 
 
 def paridad_tw(rutas) -> "tuple[list[str], list[str]]":
-    """Devuelve (idx con T sin W, idx con W sin T) por (timestamp, idx) DJI.
-    Ignora nombres que no sean `DJI_<ts>_<idx>_T|W` (p. ej. `_Z`). Se llama por
-    vuelo: la pareja se busca dentro de la lista recibida."""
+    """Devuelve (idx con T sin W, idx con W sin T) por idx DJI (`clave_pareja`).
+    Ignora nombres sin patrón (p. ej. `_Z`). Se llama por vuelo: la pareja se busca
+    dentro de la lista recibida. Los idx se devuelven con 4 dígitos mínimo."""
     t, w = set(), set()
     for ruta in rutas:
-        m = _RE_PAREJA_DJI.match(os.path.basename(str(ruta)))
-        if m:
-            clave = (m.group(1) or m.group(3), m.group(2) or m.group(4))
-            (t if m.group(5).upper() == "T" else w).add(clave)
-    return ([i for _, i in sorted(t - w)], [i for _, i in sorted(w - t)])
+        c = clave_pareja(ruta)
+        if c:
+            (t if c[1] == "T" else w).add(c[0])
+    return ([f"{i:04d}" for i in sorted(t - w)], [f"{i:04d}" for i in sorted(w - t)])

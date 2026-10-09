@@ -1387,11 +1387,16 @@ def _validar_jpeg_origen(manifiesto, filas: list[dict], progress_callback) -> li
         if cancelacion.cancelado():
             return None  # se salta: tras la pasada se sale por cancelación
         if f.get("jpeg_sin_eoi") == 0:
-            # El índice (única fase que lee y decide) ya vio EOI útil en la cola:
-            # sin relectura. Si la marca es 1 (sin EOI) o None (no comprobada,
-            # manifiesto antiguo, gs://) se confirma aquí; el decode de abajo
-            # sigue siendo el criterio definitivo.
-            return None
+            # El índice (única fase que lee y decide) ya vio EOI útil en la cola: se
+            # salta SOLO la relectura de cola. La comprobación de tamaño (stat actual vs
+            # indexado) se mantiene siempre: si difiere o no hay tamaño indexado, se
+            # revalida como antes.
+            try:
+                tamano_actual = os.stat(f["ruta_origen"]).st_size
+            except OSError as exc:
+                return f"No se pudo leer la cola del JPEG de origen ({type(exc).__name__}: {exc})"
+            if tamano_actual > 0 and tamano_actual == (f.get("bytes_origen") or 0):
+                return None
         return _motivo_jpeg_truncado(f["ruta_origen"])
 
     # `_ejecutar_con_limite` (indice.py) sale con RunCancelado si se cancela y
