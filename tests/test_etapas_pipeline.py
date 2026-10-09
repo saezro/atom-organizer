@@ -121,9 +121,35 @@ class _HostDePrueba(PipelinePhasesMixin):
         self.llamadas.append("_resolve_dron_selector")
 
 
+# Destino de los tests. Por defecto ficticio; la fixture `destino_con_esperado`
+# lo cambia a un tmp_path con `esperado_shard0.json` sembrado. `gen_folder_struct`
+# está mockeado y en real escribe ese fichero; sin él el guard del barrido
+# (`_exigir_sin_vuelo_asignado_en_raiz`) lanza FileNotFoundError a propósito.
+_DESTINO = {"ruta": "/destino"}
+
+
+@pytest.fixture
+def destino_con_esperado(tmp_path):
+    from atom_core import esperado
+    esperado.escribir_esperado(str(tmp_path), 0, [])
+    _DESTINO["ruta"] = str(tmp_path)
+    yield str(tmp_path)
+    _DESTINO["ruta"] = "/destino"
+
+
+@pytest.fixture(autouse=True)
+def _destino_sembrado(request):
+    # Los tests que prueban la ausencia de destino/esperado no lo siembran.
+    if "sin_destino" in request.node.name or "aborta" in request.node.name \
+            or "no_afecta" in request.node.name:
+        yield
+        return
+    yield request.getfixturevalue("destino_con_esperado")
+
+
 def _cfg(**overrides):
     base = dict(
-        input_folder="/origen", output_folder="/destino",
+        input_folder="/origen", output_folder=_DESTINO["ruta"],
         end_rgb_extra_files="", end_thermo_files="_T", end_rgb_files="",
         estad="/estadillo.csv", choose_mode_size=False, max_size="0",
         compress_rgb=True, compress_level=40, rename_images=True,
@@ -342,7 +368,7 @@ def test_el_post_repartido_solo_convierte_sus_vuelos(monkeypatch):
     rutas = [args[0] for metodo, args, _kw in detalle
              if metodo == "iterate_folders_for_DJI"]
     assert len(rutas) == 2, "la tarea debería convertir 2 de los 4 vuelos"
-    assert all(r.startswith(os.path.join("/destino", "TERMICA", "PB")) for r in rutas)
+    assert all(r.startswith(os.path.join(_DESTINO["ruta"], "TERMICA", "PB")) for r in rutas)
     assert all(os.path.basename(r).startswith("PB") and "_V" in os.path.basename(r)
                for r in rutas), f"no se arrancó en la carpeta del vuelo: {rutas}"
 
@@ -400,8 +426,8 @@ def _con_sobrantes(host, nombres):
     """Deja `nombres` sueltos en la raíz de RGB/TERMICA del destino: son las
     imágenes que no encajan en la franja horaria de ningún vuelo."""
     host.utils_obj.imagenes_por_carpeta = {
-        os.path.join("/destino", "TERMICA"): list(nombres),
-        os.path.join("/destino", "RGB"): list(nombres),
+        os.path.join(_DESTINO["ruta"], "TERMICA"): list(nombres),
+        os.path.join(_DESTINO["ruta"], "RGB"): list(nombres),
     }
 
 

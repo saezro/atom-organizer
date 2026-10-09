@@ -9,6 +9,7 @@ y mismo contenido byte a byte (sha256). Mismo estilo de doble que
 """
 import datetime as _dt
 import hashlib
+import json
 import os
 from pathlib import Path
 
@@ -233,6 +234,8 @@ def test_reparto_en_shards_gcs_da_lo_mismo_que_sin_repartir(tmp_path, logger, ma
     # destino lógico (bucket distinto para no mezclarse con el baseline) ---
     bucket_rep = _sembrar_almacen_gcs(f"bucket-shard-rep-{shard_count}")
     rep = _semilla_gcs(bucket_rep, f"bucket-shard-rep-{shard_count}", "dest", tmp_path, make_dji_jpeg)
+    # Resto de una corrida previa con más shards: no debe sobrevivir ni leerse.
+    bucket_rep.objetos[".organizado/esperado_shard9.json".join(["dest/", ""])] = b'{"shard": 9, "fotos": []}'
     for i in range(shard_count):
         gsf_i = GenStructFolder(logger)
         gsf_i.total_images_number = 4
@@ -240,7 +243,23 @@ def test_reparto_en_shards_gcs_da_lo_mismo_que_sin_repartir(tmp_path, logger, ma
                                 shard_index=i, shard_count=shard_count)
     arbol_rep = _arbol_gcs(bucket_rep, "dest")
 
-    assert arbol_rep == arbol_base
+    # `.organizado/esperado_shardN.json` es el contrato por shard (uno por tarea,
+    # y cada uno solo lista lo SUYO): no es parte del árbol organizado. Se
+    # compara aparte: la unión de los N da exactamente lo que anotó la única tarea.
+    def _sin_meta(arbol):
+        return {k: v for k, v in arbol.items() if not k.startswith(".organizado/")}
+
+    def _esperado(arbol):
+        fotos = []
+        for k, v in arbol.items():
+            if k.startswith(".organizado/esperado_shard"):
+                fotos.extend(json.loads(v)["fotos"])
+        return sorted(fotos, key=lambda f: f["origen"])
+
+    assert _sin_meta(arbol_rep) == _sin_meta(arbol_base)
+    assert len([k for k in arbol_rep if k.startswith(".organizado/esperado_shard")]) == shard_count
+    assert ".organizado/esperado_shard9.json" not in arbol_rep
+    assert _esperado(arbol_rep) == _esperado(arbol_base) != []
 
 
 # --- checking_results_gen_struct_folder: barrido a SIN_ORDENAR ------------

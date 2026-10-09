@@ -43,6 +43,7 @@ def _forzar_angulo(manifiesto, angulo, version):
     con = manifiesto._conexion()
     with con:
         con.execute("UPDATE imagenes SET angulo_giro = ?, angulo_version = ?", (angulo, version))
+        con.execute("UPDATE vuelos SET angulo = ?, version_algoritmo = ?", (angulo, version))
 
 
 def test_la_fila_guarda_la_version_del_algoritmo(tmp_path):
@@ -171,22 +172,6 @@ def test_apply_no_relee_si_el_indice_vio_eoi(monkeypatch):
     assert sorted(llamadas) == ["/x/2.jpg", "/x/3.jpg"]
 
 
-def test_cierre_escribe_el_sidecar_con_la_version(tmp_path):
-    manifiesto = _manifiesto(tmp_path)
-    fila = _fila("DJI_0001_T.JPG", "TERMICA")
-    manifiesto.insertar_o_reabrir([FilaManifiesto(**{**fila.__dict__, "angulo_giro": 90,
-                                                      "angulo_version": VERSION_ALGORITMO_GIRO})])
-    for f in manifiesto.todas():
-        manifiesto.marcar_hecha(f["id"], "")
-    (tmp_path / "out").mkdir()
-    cfg = types.SimpleNamespace(output_folder=str(tmp_path / "out"))
-    cierre._emitir_csv_criterio(manifiesto, cfg, types.SimpleNamespace(emit=lambda *a, **k: None))
-    sidecars = list((tmp_path / "out" / "CSVs" / "_criterio").glob("*.giro.json"))
-    assert len(sidecars) == 1
-    assert json.loads(sidecars[0].read_text()) == {"angulo": 90, "version_algoritmo": VERSION_ALGORITMO_GIRO}
-    manifiesto.cerrar()
-
-
 # --- Vuelo entero reabierto cuando cambia el ángulo (un solo ángulo por vuelo) ---
 
 def _indexar_varias(manifiesto, cfg, rutas):
@@ -248,21 +233,4 @@ def test_mismo_angulo_con_version_vieja_no_reabre_solo_actualiza_version(tmp_pat
     assert _estado(manifiesto) == [("hecho", 0, VERSION_ALGORITMO_GIRO),
                                    ("pendiente", 0, VERSION_ALGORITMO_GIRO)]
     assert not [m for m in msgs if isinstance(m, str) and "ángulo de giro cambia" in m]
-    manifiesto.cerrar()
-
-
-def test_cierre_no_escribe_sidecar_con_angulos_mezclados(tmp_path):
-    manifiesto = _manifiesto(tmp_path)
-    filas = []
-    for nombre, angulo in (("DJI_0001_T.JPG", 90), ("DJI_0002_T.JPG", 0)):
-        base = _fila(nombre, "TERMICA")
-        filas.append(FilaManifiesto(**{**base.__dict__, "angulo_giro": angulo,
-                                       "angulo_version": VERSION_ALGORITMO_GIRO}))
-    manifiesto.insertar_o_reabrir(filas)
-    (tmp_path / "out").mkdir()
-    cfg = types.SimpleNamespace(output_folder=str(tmp_path / "out"))
-    msgs, cb = _emisor()
-    cierre._emitir_csv_criterio(manifiesto, cfg, cb)
-    assert not list((tmp_path / "out" / "CSVs" / "_criterio").glob("*.giro.json"))
-    assert any(isinstance(m, str) and "mezclados" in m for m in msgs)
     manifiesto.cerrar()

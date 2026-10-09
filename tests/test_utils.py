@@ -255,7 +255,9 @@ def test_safe_move_obviar_descarta_el_origen_si_el_destino_ya_existe(tmp_path):
     caso = tmp_path / "caso"
     caso.mkdir()
     origen = caso / "origen.jpg"
-    origen.write_bytes(b"copia de la raiz")
+    # Solo se descarta si el contenido es IDENTICO (copia sobrante); con bytes
+    # distintos se conserva el origen (auditoria ALTO 14, test_modo_destino.py).
+    origen.write_bytes(b"la que ya estaba colocada")
     destino = caso / "destino.jpg"
     destino.write_bytes(b"la que ya estaba colocada")
 

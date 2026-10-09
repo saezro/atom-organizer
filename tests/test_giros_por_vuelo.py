@@ -140,6 +140,38 @@ def test_vuelo_disperso_registra_error(tmp_path, logger, make_dji_jpeg):
     assert entrada["detalle"], "modo error debe traer detalle."
 
 
+def _gira(tmp_path, logger, make_dji_jpeg, nombre, yaws):
+    planta_folder, flight_folder = _flight_folder(tmp_path, nombre, make_dji_jpeg, yaws)
+    obj = _obj(logger, planta_folder)
+    obj.rotados = []
+    obj._rotate_images_batch = lambda images, *a, **k: obj.rotados.append(list(images))
+    progress, mensajes = _recording_progress()
+    obj.gen_thumbnails_and_rotate(
+        str(flight_folder), rgb_processing=False, max_error=0,
+        lim_max_270=-10, lim_min_270=-170, lim_max_90=170, lim_min_90=10,
+        progress_callback=progress, progress_bar=progress,
+    )
+    return obj, mensajes, str(flight_folder)
+
+
+def test_80_por_ciento_un_sentido_gira_todas(tmp_path, logger, make_dji_jpeg):
+    """9 de 10 (90%) a 270: se giran las 10, incluida la discrepante."""
+    obj, _, _ = _gira(tmp_path, logger, make_dji_jpeg, "PB1_V05", [-90.0] * 9 + [90.0])
+    entrada = obj.giros_por_vuelo["PB1_V05"]
+    assert entrada["grados"] == 270 and entrada["imagenes"] == 10
+    assert len(obj.rotados) == 1 and len(obj.rotados[0]) == 10
+
+
+def test_60_40_no_gira_y_registra_error(tmp_path, logger, make_dji_jpeg):
+    """6 a 270 y 4 a 90 (60/40): ninguna gira, error visible y registrado."""
+    obj, mensajes, carpeta = _gira(tmp_path, logger, make_dji_jpeg, "PB1_V06", [-90.0] * 6 + [90.0] * 4)
+    assert obj.rotados == []
+    assert obj.giros_por_vuelo["PB1_V06"]["modo"] == "error"
+    assert obj.error_gen_struct_folder == 1
+    assert carpeta in obj.errors_type_gen_struct_folder
+    assert any("ERROR" in str(m) and "PB1_V06" in str(m) and "60.0%" in str(m) for m in mensajes)
+
+
 # ------------------------------------------------------------------- modo manual
 
 def test_manual_90_registra_90(tmp_path, logger, make_dji_jpeg):

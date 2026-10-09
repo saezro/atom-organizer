@@ -120,9 +120,39 @@ class AlmacenGCS:
         finally:
             ruta_temporal.unlink(missing_ok=True)
 
+    @staticmethod
+    def _borrar_subida_corrupta(blob) -> None:
+        # No dejar un objeto corrupto que otro paso daria por bueno (existe_ruta).
+        try:
+            blob.delete()
+        except Exception:
+            pass
+
     def publicar(self, ruta_local: Path, destino: str) -> None:
         blob = self.bucket.blob(self._clave(destino))
         blob.upload_from_filename(str(ruta_local))
+        # Una subida "sin excepcion" no garantiza el objeto integro: se
+        # comprueba tamano (y md5 si el SDK lo da) contra el fichero local.
+        blob.reload()
+        esperado = Path(ruta_local).stat().st_size
+        if blob.size != esperado:
+            self._borrar_subida_corrupta(blob)
+            raise OSError(
+                f"Subida corrupta de '{ruta_local}' a '{destino}': "
+                f"{blob.size} bytes en el bucket, {esperado} en local"
+            )
+        md5_remoto = getattr(blob, "md5_hash", None)
+        if md5_remoto:
+            import base64
+            import hashlib
+
+            h = hashlib.md5()
+            with open(ruta_local, "rb") as f:
+                for trozo in iter(lambda: f.read(1 << 20), b""):
+                    h.update(trozo)
+            if base64.b64encode(h.digest()).decode() != md5_remoto:
+                self._borrar_subida_corrupta(blob)
+                raise OSError(f"Subida corrupta de '{ruta_local}' a '{destino}': md5 distinto")
 
     def mover(self, origen: str, destino: str) -> None:
         clave_origen = self._clave(origen)
@@ -135,7 +165,20 @@ class AlmacenGCS:
             # en el camino local y no tiene este problema).
             return
         blob_origen = self.bucket.blob(clave_origen)
-        self.bucket.copy_blob(blob_origen, self.bucket, clave_destino)
+        blob_destino = self.bucket.copy_blob(blob_origen, self.bucket, clave_destino)
+        # El origen solo se borra DESPUES de verificar la copia: si no cuadra,
+        # se conserva y se avisa en vez de perder el objeto.
+        blob_origen.reload()
+        blob_destino.reload()
+        if blob_destino.size != blob_origen.size:
+            raise OSError(
+                f"Copia inconsistente al mover '{origen}' a '{destino}': "
+                f"{blob_destino.size} != {blob_origen.size} bytes; origen conservado"
+            )
+        md5_o = getattr(blob_origen, "md5_hash", None)
+        md5_d = getattr(blob_destino, "md5_hash", None)
+        if md5_o and md5_d and md5_o != md5_d:
+            raise OSError(f"Copia inconsistente al mover '{origen}' a '{destino}': md5 distinto; origen conservado")
         blob_origen.delete()
 
     def borrar(self, ruta: str) -> None:
@@ -157,3 +200,10 @@ class AlmacenGCS:
         blob = self.bucket.blob(self._clave(ruta))
         blob.reload()
         return blob.size
+
+    def md5_base64(self, ruta: str) -> "str | None":
+        """`md5_hash` (base64) de los METADATOS del blob (`reload()`), sin
+        descargarlo. `None` si el objeto no lo trae (p. ej. objetos compuestos)."""
+        blob = self.bucket.blob(self._clave(ruta))
+        blob.reload()
+        return getattr(blob, "md5_hash", None) or None

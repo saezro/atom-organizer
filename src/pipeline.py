@@ -56,7 +56,7 @@ import sys
 import external_tools
 import dji_worker_pool
 import dji_irp_windows
-from atom_core import almacen, rjpeg, sharding, lectura_segura
+from atom_core import almacen, esperado, rjpeg, sharding, lectura_segura
 
 
 def _is_windows() -> bool:
@@ -1042,6 +1042,12 @@ class GenStructFolder:
         """
         self.stop = stop
 
+    def _register_image_error(self, path):
+        """Registra un error de la ruta legacy (p. ej. vuelo sin consenso de giro) de forma thread-safe."""
+        with self._stats_lock:
+            self.error_gen_struct_folder += 1
+            self.errors_type_gen_struct_folder.append(path)
+
     def get_giros_por_vuelo(self) -> list:
         """
         Devuelve el registro de giros aplicados por carpeta de vuelo (PBx_Vy),
@@ -1142,6 +1148,12 @@ class GenStructFolder:
         rgb_folder = self.utils_obj.get_images_from_dir(os.path.join(output_folder, "RGB"))
         thermal_folder_list_length = len(thermal_folder)
         rgb_folder_list_length = len(rgb_folder)
+        # Ejemplos de rutas apartadas: el llamador (fase `struct`/`post`) los usa
+        # para el mensaje del ERROR (decisión de Cas 2026-10-09: SIN_ORDENAR hace
+        # fallar la tanda; sustituye al AVISO de 2026-07-22).
+        self.ejemplos_sin_ordenar = (
+            [os.path.join(output_folder, "TERMICA", i) for i in thermal_folder[:5]]
+            + [os.path.join(output_folder, "RGB", i) for i in rgb_folder[:5]])
         if thermal_folder_list_length > 0 or rgb_folder_list_length > 0:
             self.utils_obj.prepare_output_folder(output_folder, ["SIN_ORDENAR"])
         if thermal_folder_list_length > 0:
@@ -1212,6 +1224,12 @@ class GenStructFolder:
         # -> utils`, a medio inicializar). Importarlo dentro de la función lo
         # rompe sin tocar `utils.py`.
         from atom_core import estadillo as estadillo_mod
+        from atom_core.indice import NOMBRE_CARPETA_GENERALES, _es_pb_generales
+
+        # Antes de CUALQUIER trabajo: quita el `esperado_shard<N>.json` propio de la
+        # corrida previa. Si esta tarea muere antes de escribir el suyo, no debe
+        # quedar el viejo (la etapa post lo leería como si fuera de esta corrida).
+        esperado.borrar_propio(input_folder, shard_index)
 
         self.organizer_logger.logger.debug("---------------------------------------------------------------------")
         self.organizer_logger.logger.debug("Estadillo: " + path_estadillo)
@@ -1331,6 +1349,24 @@ class GenStructFolder:
 
                 self.organizer_logger.logger.info(f'Analizando el PB:{pb}, vuelo:{vuelo_pb}. Hora inicio vuelo:{horaInicio}. Hora fin vuelo:{horaFinal}')
                 progress_callback.emit(f'\nAnalizando el PB:{pb}, vuelo:{vuelo_pb}. Hora inicio vuelo:{horaInicio}. Hora fin vuelo:{horaFinal}')
+
+                # PB "GENERALES" = fotos de contexto, NO un vuelo: van planas a
+                # FOTOS_GENERALES (hermana de TERMICA/RGB), sin PBGENERALES/
+                # PBGENERALES_V1 (auditoria CRITICO 3: antes se trataba como un
+                # vuelo mas y las fotos acababan en SIN_ORDENAR).
+                if _es_pb_generales(str(pb)):
+                    if organize_images:
+                        carpeta_generales = almacen.unir(output_folder, NOMBRE_CARPETA_GENERALES)
+                        destinos = {"TERMICA": carpeta_generales, "RGB": carpeta_generales}
+                        if extra_suffix:
+                            destinos["RGB_extra"] = carpeta_generales
+                        inicio, fin = self.ventana_horaria_vuelo(
+                            fecha_estadillo, horaInicio, horaFinal, seconds_range,
+                            desfase_horas, desfase_minutos)
+                        ventanas.append({"inicio": inicio, "fin": fin, "destinos": destinos})
+                        if not almacen.es_uri_gcs(output_folder):
+                            os.makedirs(carpeta_generales, exist_ok=True)
+                    continue
 
                 # Creamos el nombre para la carpeta del PB
                 nombreCarpeta_PB = 'PB'+str(pb)
@@ -1493,6 +1529,13 @@ class GenStructFolder:
                     self.errors_type_gen_struct_folder.append(origen)
                     continue
                 if fecha_hora_imagen is None:
+                    # Sin timestamp no hay forma de asignarle vuelo: antes se
+                    # saltaba en silencio y acababa barrida a SIN_ORDENAR como
+                    # un simple AVISO (auditoria CRITICO 2). Ahora es ERROR.
+                    self.organizer_logger.logger.error("Imagen sin fecha/hora legible: %s", origen)
+                    progress_callback.emit(f"ERROR: imagen sin fecha/hora legible, no se puede asignar a un vuelo: {origen}\n")
+                    self.error_gen_struct_folder += 1
+                    self.errors_type_gen_struct_folder.append(f"Sin fecha/hora legible: {origen}")
                     continue
                 # El primer vuelo del estadillo que la reclama se la queda. Las que
                 # no caen en ninguna ventana se quedan donde están: se las lleva
@@ -1511,6 +1554,12 @@ class GenStructFolder:
                 self.organizer_logger.logger.info(mensaje)
                 progress_callback.emit(mensaje)
 
+        # Contrato con la etapa final (atom_core/esperado): lo que esta tarea se
+        # compromete a colocar, anotado ANTES de mover.
+        # Antes, quita los de una corrida previa con más shards (índice >= este
+        # shard_count): ningún shard concurrente escribe esos índices.
+        esperado.limpiar_sobrantes(input_folder, shard_count)
+        esperado.escribir_esperado(input_folder, shard_index, movimientos)
         self._mover_pares(movimientos, progress_callback, progress_bar)
 
 
@@ -1761,6 +1810,16 @@ class GenStructFolder:
         # corridas del 2026-08-04. Aquí se reconstruyen los márgenes, se sanean y se
         # recalculan los límites, para que un 0 llegado por CUALQUIER camino no pueda dejar
         # el proceso sin rotar.
+        if rotation_mode_auto:
+            from atom_core.indice import UMBRAL_SENTIDO_GIRO_VUELO as _umbral_giro
+            _pct_umbral_giro = int(_umbral_giro * 100)
+            if max_error != _pct_umbral_giro:
+                msg_max_error = (
+                    f"\nAVISO: el parámetro de usuario max_error ({max_error}%) NO decide el giro: "
+                    f"la regla por vuelo usa un umbral fijo del {_pct_umbral_giro}% "
+                    "(un sentido con ese acuerdo gira todo el vuelo; si no, ERROR y no se gira).\n")
+                self.organizer_logger.logger.warning(msg_max_error.strip())
+                progress_callback.emit(msg_max_error)
         if rotation_mode_auto and (lim_min_90 >= lim_max_90 or lim_min_270 >= lim_max_270):
             add_to_angle, subs_to_angle, max_error = utils.sane_rotation_criteria(
                 lim_max_90 - 90, 90 - lim_min_90, max_error)
@@ -1768,7 +1827,7 @@ class GenStructFolder:
             lim_max_270, lim_min_270 = -90 + add_to_angle, -90 - subs_to_angle
             aviso = ("\nAVISO: el margen de yaw venía a 0, con lo que ninguna imagen podría "
                      f"cumplir el criterio de giro. Se usa un margen de ±{add_to_angle}° y un "
-                     f"{max_error}% mínimo de imágenes que deben girar igual.\n")
+                     f"{_pct_umbral_giro}% mínimo de imágenes que deben girar igual.\n")
             self.organizer_logger.logger.warning(
                 f"Margen de yaw vacío; se corrige a 90 in ({lim_min_90}, {lim_max_90}) y "
                 f"-90 in ({lim_min_270}, {lim_max_270}), max_error={max_error}.")
@@ -2087,10 +2146,14 @@ class GenStructFolder:
                     progress_callback.emit("\nCarpeta panorámica: se procesa tal cual, sin rotar.\n")
                 # Comprobamos que no ha habido un porcentaje mayor del 95% entre las diferentes cantidades. Lo que hacemos es comprobar que una de las cantidades de imágenes ya sobrepasa el 95%,
                 # con lo que el resto de cantidades estaría en el 5%.
-                if (not es_panorama and rotate_270 != 0 and (rotate_270/len(images)) > (max_error/100)):
-                    self.organizer_logger.logger.info(f"OK: Más de un {max_error}% de las imágenes del vuelo tienen que rotar 270")
-                    # logging.info(f"OK: More than {max_error}% of flight images need to be rotated 270")
-                    progress_callback.emit(f"\nOK: Más de un {max_error}% de las imágenes del vuelo tienen que rotar 270\n")
+                # Regla por vuelo (misma que atom_core.indice): un sentido con >= UMBRAL_SENTIDO_GIRO_VUELO
+                # (80%) manda sobre TODAS las imágenes; si ninguno llega, error y no se gira nada.
+                # Import diferido: atom_core.indice importa utils, que importa pipeline.
+                from atom_core.indice import UMBRAL_SENTIDO_GIRO_VUELO as _UMBRAL, _registrar_vuelo_sin_consenso_giro
+                _pct_umbral = int(_UMBRAL * 100)
+                if (not es_panorama and rotate_270 != 0 and (rotate_270/len(images)) >= _UMBRAL):
+                    self.organizer_logger.logger.info(f"OK: Al menos un {_pct_umbral}% de las imágenes del vuelo tienen que rotar 270")
+                    progress_callback.emit(f"\nOK: Al menos un {_pct_umbral}% de las imágenes del vuelo tienen que rotar 270\n")
                     # Cuando se rota con PIL se rota en sentido antihorario. De ahí que pongamos ROTATE_90, ya que rotará los -90 si fuera en sentido horario
                     self._rotate_images_batch(images, input_folder, Image.ROTATE_90, rgb_processing, progress_callback, progress_bar)
                     for index, image in enumerate(images):
@@ -2102,10 +2165,9 @@ class GenStructFolder:
                         "vuelo": os.path.basename(input_folder), "grados": 270,
                         "imagenes": len(images), "modo": "auto", "detalle": None,
                     }
-                elif (not es_panorama and rotate_90 != 0 and (rotate_90/len(images)) > (max_error/100)):
-                    self.organizer_logger.logger.info(f"OK: Más de un {max_error}% de las imágenes del vuelo tienen que rotar 90")
-                    # logging.info(f"OK: More than {max_error}% of flight images need to be rotated 90")
-                    progress_callback.emit(f"\nOK: Más de un {max_error}% de las imágenes del vuelo tienen que rotar 90\n")
+                elif (not es_panorama and rotate_90 != 0 and (rotate_90/len(images)) >= _UMBRAL):
+                    self.organizer_logger.logger.info(f"OK: Al menos un {_pct_umbral}% de las imágenes del vuelo tienen que rotar 90")
+                    progress_callback.emit(f"\nOK: Al menos un {_pct_umbral}% de las imágenes del vuelo tienen que rotar 90\n")
                     # Cuando se rota con PIL se rota en sentido antihorario. De ahí que pongamos ROTATE_270, ya que rotará los 90 si fuera en sentido horario
                     self._rotate_images_batch(images, input_folder, Image.ROTATE_270, rgb_processing, progress_callback, progress_bar)
                     for index, image in enumerate(images):
@@ -2116,11 +2178,10 @@ class GenStructFolder:
                         "vuelo": os.path.basename(input_folder), "grados": 90,
                         "imagenes": len(images), "modo": "auto", "detalle": None,
                     }
-                elif (es_panorama or (images_no_rotated != 0 and (images_no_rotated/len(images)) > (max_error/100))):
+                elif (es_panorama or (images_no_rotated != 0 and (images_no_rotated/len(images)) >= _UMBRAL)):
                     if not es_panorama:
-                        self.organizer_logger.logger.info(f"OK: Más de un {max_error}% de las imágenes del vuelo NO se deben rotar")
-                        # logging.info(f"OK: More than {max_error}% of flight images must not be rotated")
-                        progress_callback.emit(f"\nOK: Más de un {max_error}% de las imágenes del vuelo NO se deben rotar\n")
+                        self.organizer_logger.logger.info(f"OK: Al menos un {_pct_umbral}% de las imágenes del vuelo NO se deben rotar")
+                        progress_callback.emit(f"\nOK: Al menos un {_pct_umbral}% de las imágenes del vuelo NO se deben rotar\n")
                     self.giros_por_vuelo[os.path.basename(input_folder)] = {
                         "vuelo": os.path.basename(input_folder), "grados": 0,
                         "imagenes": len(images), "modo": "panoramica" if es_panorama else "auto",
@@ -2139,9 +2200,9 @@ class GenStructFolder:
                     self.organizer_logger.logger.info("Imágenes no rotadas")
                 else:
                     images_to_rotate = False
-                    self.organizer_logger.logger.info("ERROR: Hay demasiadas imágenes que no rotan igual")
-                    self.organizer_logger.logger.info("ERROR: No se han rotado imágenes")
-                    progress_callback.emit("\nERROR: Hay demasiadas imágenes que no rotan igual - No se han rotado imágenes\n")
+                    _registrar_vuelo_sin_consenso_giro(
+                        self, input_folder, os.path.basename(input_folder), rotate_90,
+                        rotate_270, images_no_rotated, len(images), progress_callback)
                     self.giros_por_vuelo[os.path.basename(input_folder)] = {
                         "vuelo": os.path.basename(input_folder), "grados": 0,
                         "imagenes": len(images), "modo": "error",
@@ -2399,6 +2460,7 @@ class SplitImages:
         # pero read_auto_rotate_degree se llamaba una vez POR IMAGEN: hasta 4
         # os.path.exists + un pd.read_csv completo por cada térmica del vuelo.
         self._criterio_giro_cache = {}
+        self._criterio_giro_fallo = threading.local()
         self._criterio_giro_lock = threading.Lock()
 
     def set_stop(self, stop: bool):
@@ -3416,8 +3478,14 @@ class SplitImages:
         with self._criterio_giro_lock:
             if input_folder in self._criterio_giro_cache:
                 return self._criterio_giro_cache[input_folder]
+            self._criterio_giro_fallo.valor = False
             degree = self._leer_criterio_giro(input_folder, progress_callback)
-            self._criterio_giro_cache[input_folder] = degree
+            # Un fallo de lectura (CSV ausente/ilegible, o aun sin escribir por
+            # una carrera con el paso de rotacion) NO se memoiza: cachear ese 0
+            # dejaria todo el vuelo sin girar aunque el CSV aparezca despues
+            # (auditoria CRITICO 5).
+            if not getattr(self._criterio_giro_fallo, "valor", False):
+                self._criterio_giro_cache[input_folder] = degree
             return degree
 
     def _leer_criterio_giro(self, input_folder: str, progress_callback) -> int:
@@ -3484,17 +3552,21 @@ class SplitImages:
                         pb_v_name + "_Videofiles.csv"))
                 self.organizer_logger.logger.warning(
                     f"{pb_v_name}_Videofiles.csv sin filas: no hay Degree que aplicar, TIFF sin rotar.")
+                # Sin fila/columna no se memoiza: el paso de rotacion puede
+                # escribirla despues (igual que CSV ausente).
+                self._criterio_giro_fallo.valor = True
                 return 0
             return int(df_pb_csv["Degree"][0])
         # EmptyDataError = el CSV existe pero tiene 0 bytes (ni cabecera). Mismo
         # desenlace que si faltara: no hay criterio, no se rota, y se avisa.
-        except (FileNotFoundError, pd.errors.EmptyDataError) as file_not_found:
+        except (FileNotFoundError, pd.errors.EmptyDataError, pd.errors.ParserError, KeyError) as file_not_found:
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
             self.organizer_logger.logger.error(file_not_found.__str__)
             self.organizer_logger.logger.exception(file_not_found)
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
             progress_callback.emit("\nNo se pudo leer el criterio de giro {0}. No se rota la imagen.\n".format(csv_name))
             self._register_image_error(criterio_path)
+            self._criterio_giro_fallo.valor = True
             return 0
 
     def degree_de_giro(self, rotate_90: bool, rotate_minus_90: bool, auto_rotate: bool, input_folder: str, progress_callback) -> int:

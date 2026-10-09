@@ -19,9 +19,18 @@ COLUMNAS = (
     "AnchoPx", "AltoPx", "BytesOrigen",
     "Lat", "Lon", "AltitudAbs", "AlturaRelativa", "GimbalYaw", "GimbalPitch", "GimbalRoll",
     "FlightYaw", "AlturaVuelo", "CalculatedDistance", "LatitudFoto", "LongitudFoto",
-    "AnguloGiro", "PctRecorte", "Comprime", "RutaOriginal", "RutaCrop", "RutaTIFF",
+    "AnguloGiro", "GiroVoto", "PctRecorte", "Comprime", "RutaOriginal", "RutaCrop", "RutaTIFF",
     "Estado", "MotivoFallo", "Ejecucion", "FechaEjecucion", "RutaOrigen",
 )
+
+
+COLUMNAS_VUELOS = (
+    "PB", "Vuelo", "Sufijo", "Angulo", "NTotal", "N90", "N270", "N0",
+    "Pct90", "Pct270", "Pct0", "PctGanadora", "Estado", "Motivo", "VersionAlgoritmo",
+)
+_CLAVES_VUELOS = ("pb", "vuelo", "sufijo", "angulo", "n_total", "n_90", "n_270", "n_0",
+                  "pct_90", "pct_270", "pct_0", "pct_ganadora", "estado", "motivo",
+                  "version_algoritmo")
 
 
 def nombre_planta(output_folder: str) -> str:
@@ -81,7 +90,7 @@ def _filas(manifiesto, cfg, proyecciones):
             _numero(fila["flight_yaw"]),
             cfg.flight_height if cfg.calculate_proyected_distance else None,
             _numero(distancia), _numero(lat_foto), _numero(lon_foto),
-            fila["angulo_giro"], round(pct * 100, 2) if pct is not None else None, _si_no(fila["comprime"]),
+            fila["angulo_giro"], fila["giro_voto"], round(pct * 100, 2) if pct is not None else None, _si_no(fila["comprime"]),
             _relativa(fila["ruta_salida_original"], base), _relativa(fila["ruta_salida_crop"], base),
             _relativa(fila["ruta_salida_tiff"], base),
             fila["estado"], fila["motivo_fallo"], fila["ejecucion_id"],
@@ -104,6 +113,15 @@ def escribir_indice(manifiesto, cfg, proyecciones: dict, progress_callback) -> s
     for fila in _filas(manifiesto, cfg, proyecciones):
         hoja.append(list(fila))
         n_filas += 1
+
+    hoja_vuelos = libro.create_sheet("Vuelos")
+    hoja_vuelos.freeze_panes = "A2"
+    hoja_vuelos.append(list(COLUMNAS_VUELOS))
+    n_vuelos = 1
+    for v in manifiesto.vuelos().values():
+        hoja_vuelos.append([v[c] if c != "sufijo" else (v[c] or None) for c in _CLAVES_VUELOS])
+        n_vuelos += 1
+    hoja_vuelos.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNAS_VUELOS))}{n_vuelos}"
 
     # Cabecera congelada + autofiltro (spec). `write_only=True` sí soporta
     # `auto_filter.ref` (openpyxl 3.1.5) mientras se fije antes de `save`.

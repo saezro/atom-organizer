@@ -122,7 +122,7 @@ def _consenso(tmp_path, grupos, pipeline=None, reparto=None):
 def test_reparto_60_40_avisa_con_bandas(tmp_path):
     reparto = {}
     angulo, msgs = _consenso(tmp_path, [(60, 89.0, -66.0), (40, -89.0, -66.0)], reparto=reparto)
-    assert any("AVISO" in m and "consenso" in m.lower() for m in msgs)
+    assert angulo == 0 and any("ERROR" in m and "sin sentido de giro" in m for m in msgs)
     r = reparto[("1", "2", None)]
     assert r["angulo"] == angulo
     assert r["n_90"] == 60 and r["n_270"] == 40 and r["total"] == 100
@@ -138,49 +138,112 @@ def test_reparto_95_5_sin_aviso(tmp_path):
 
 
 def test_empate_avisa(tmp_path):
-    _, msgs = _consenso(tmp_path, [(50, 89.0, -66.0), (50, -89.0, -66.0)])
-    assert any("AVISO" in m and "consenso" in m.lower() for m in msgs)
+    angulo, msgs = _consenso(tmp_path, [(50, 89.0, -66.0), (50, -89.0, -66.0)])
+    assert angulo == 0 and any("ERROR" in m and "sin sentido de giro" in m for m in msgs)
 
 
-class _PipeCriterio:
-    def __init__(self):
-        self.llamadas = 0
-
-    def read_auto_rotate_degree(self, carpeta, cb):
-        self.llamadas += 1
-        return 0
+def _consenso_prev(tmp_path, grupos, previos):
+    msgs, cb = _emisor()
+    res = _consenso_de_angulo_por_vuelo(
+        _asignaciones(grupos), None, _cfg(), str(tmp_path), cb, vuelos_previos=previos)
+    return res[("1", "2", None)]
 
 
-def _crear_criterio(tmp_path, version):
-    d = tmp_path / "CSVs" / "_criterio"
-    d.mkdir(parents=True)
-    (d / "PB1_V2_Videofiles.csv").write_text("New Name,Original Name,Degree\n")
-    if version is not None:
-        (d / "PB1_V2_Videofiles.giro.json").write_text(json.dumps({"version_algoritmo": version}))
+def test_vuelo_previo_version_vieja_o_ausente_se_recalcula(tmp_path):
+    for version in ("0-vieja", None):
+        previos = {("1", "2", None): {"angulo": 0, "version_algoritmo": version}}
+        assert _consenso_prev(tmp_path, [(10, 89.0, -66.0)], previos) == 90
 
 
-def test_criterio_version_vieja_se_recalcula(tmp_path):
-    _crear_criterio(tmp_path, "0-vieja")
-    pipe = _PipeCriterio()
-    angulo, _ = _consenso(tmp_path, [(10, 89.0, -66.0)], pipeline=pipe)
-    assert angulo == 90 and pipe.llamadas == 0
+def test_vuelo_previo_version_actual_se_reutiliza_sin_csv(tmp_path):
+    previos = {("1", "2", None): {"angulo": 270,
+                                  "version_algoritmo": indice_mod.VERSION_ALGORITMO_GIRO}}
+    assert _consenso_prev(tmp_path, [(10, 89.0, -66.0)], previos) == 270
+    assert not (tmp_path / "CSVs").exists()
 
 
-def test_criterio_sin_version_se_recalcula(tmp_path):
-    _crear_criterio(tmp_path, None)
-    pipe = _PipeCriterio()
-    angulo, _ = _consenso(tmp_path, [(10, 89.0, -66.0)], pipeline=pipe)
-    assert angulo == 90 and pipe.llamadas == 0
+def test_vuelo_90_pct_rellena_votos_y_fila_vuelos(tmp_path):
+    msgs, cb = _emisor()
+    reparto, votos = {}, {}
+    asig = _asignaciones([(90, 89.0, -66.0), (10, -89.0, -66.0)])
+    res = _consenso_de_angulo_por_vuelo(asig, None, _cfg(), str(tmp_path), cb,
+                                        reparto_out=reparto, votos_out=votos)
+    assert res[("1", "2", None)] == 90
+    r = reparto[("1", "2", None)]
+    assert (r["estado"], r["n_total"], r["pct_90"], r["pct_270"], r["sufijo"]) == ("ok", 100, 90.0, 10.0, "")
+    assert sorted(votos.values()).count(90) == 90 and sorted(votos.values()).count(270) == 10
 
 
-def test_criterio_version_actual_se_reutiliza(tmp_path):
-    _crear_criterio(tmp_path, indice_mod.VERSION_ALGORITMO_GIRO)
-    pipe = _PipeCriterio()
-    angulo, _ = _consenso(tmp_path, [(10, 89.0, -66.0)], pipeline=pipe)
-    assert angulo == 0 and pipe.llamadas == 1
+def test_vuelo_60_40_sin_consenso_en_fila_vuelos(tmp_path):
+    msgs, cb = _emisor()
+    reparto = {}
+    res = _consenso_de_angulo_por_vuelo(_asignaciones([(60, 89.0, -66.0), (40, -89.0, -66.0)]),
+                                        None, _cfg(), str(tmp_path), cb, reparto_out=reparto)
+    assert res[("1", "2", None)] == 0
+    r = reparto[("1", "2", None)]
+    assert r["estado"] == "sin_consenso" and r["angulo"] == 0 and r["motivo"]
 
 
 def test_el_indice_no_escribe_sidecar_en_el_destino(tmp_path):
     # El índice solo decide: el sidecar `.giro.json` lo escribe el cierre junto al CSV.
     _consenso(tmp_path, [(95, 89.0, -66.0), (5, -89.0, -66.0)])
     assert not (tmp_path / "CSVs").exists()
+
+
+# --- Regla por vuelo: >=80% un sentido manda, si no ERROR sin girar (2026-10-09) ---
+class _PipeFake:
+    def __init__(self):
+        self.errores = []
+        self.organizer_logger = types.SimpleNamespace(
+            logger=types.SimpleNamespace(error=lambda m: self.errores.append(("log", m))))
+
+    def _register_image_error(self, path):
+        self.errores.append(("reg", path))
+
+
+def test_vuelo_90_pct_mismo_sentido_gira_todo(tmp_path):
+    pipe = _PipeFake()
+    angulo, _ = _consenso(tmp_path, [(90, 89.0, -66.0), (10, -89.0, -66.0)], pipeline=pipe)
+    assert angulo == 90 and pipe.errores == []
+
+
+def test_vuelo_60_40_no_gira_y_registra_error(tmp_path):
+    pipe = _PipeFake()
+    reparto = {}
+    angulo, msgs = _consenso(tmp_path, [(60, 89.0, -66.0), (40, -89.0, -66.0)],
+                             pipeline=pipe, reparto=reparto)
+    assert angulo == 0
+    assert {t for t, _ in pipe.errores} == {"log", "reg"}
+    assert any(m.startswith("\nERROR") and "60.0%" in m and "40.0%" in m for m in msgs)
+    assert reparto[("1", "2", None)]["error_sin_consenso"] is True
+
+
+def test_vuelo_100_pct_normal(tmp_path):
+    pipe = _PipeFake()
+    angulo, _ = _consenso(tmp_path, [(20, -89.0, -66.0)], pipeline=pipe)
+    assert angulo == 270 and pipe.errores == []
+
+
+def test_reproceso_con_vuelo_previo_sin_consenso_reemite_el_error(tmp_path):
+    pipe = _PipeFake()
+    msgs, cb = _emisor()
+    previos = {("1", "2", None): {
+        "angulo": 0, "version_algoritmo": indice_mod.VERSION_ALGORITMO_GIRO,
+        "estado": "sin_consenso", "n_total": 100, "n_90": 60, "n_270": 40, "n_0": 0}}
+    res = _consenso_de_angulo_por_vuelo(
+        _asignaciones([(10, 89.0, -66.0)]), pipe, _cfg(), str(tmp_path), cb,
+        vuelos_previos=previos)
+    assert res[("1", "2", None)] == 0
+    assert {t for t, _ in pipe.errores} == {"log", "reg"}
+    assert any(m.startswith("\nERROR") and "60.0%" in m and "40.0%" in m for m in msgs)
+
+
+def test_reproceso_con_vuelo_previo_ok_no_emite_error(tmp_path):
+    pipe = _PipeFake()
+    _msgs, cb = _emisor()
+    previos = {("1", "2", None): {
+        "angulo": 90, "version_algoritmo": indice_mod.VERSION_ALGORITMO_GIRO,
+        "estado": "ok", "n_total": 100, "n_90": 95, "n_270": 5, "n_0": 0}}
+    _consenso_de_angulo_por_vuelo(_asignaciones([(10, 89.0, -66.0)]), pipe, _cfg(),
+                                  str(tmp_path), cb, vuelos_previos=previos)
+    assert pipe.errores == []
