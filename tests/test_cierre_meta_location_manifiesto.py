@@ -24,12 +24,12 @@ class _Cb:
 
 # (tipo, nombre, lat, lon, yaw, pitch, rel_alt)
 _IMAGENES = [
-    ("RGB", "20260115_100005_DJI_0002_D.JPG", 37.10001, -5.60001, 12.5, -90.0, 50.0),
-    ("RGB", "20260115_100000_DJI_0001_D.JPG", 37.10000, -5.60000, 0.0, -45.0, 50.0),
-    ("RGB", "20260115_100010_DJI_0003_D.JPG", 37.10002, -5.60002, 30.0, -60.0, 51.5),
+    ("RGB", "20260115_100005_DJI_0002_W.JPG", 37.10001, -5.60001, 12.5, -90.0, 50.0),
+    ("RGB", "20260115_100000_DJI_0001_W.JPG", 37.10000, -5.60000, 0.0, -45.0, 50.0),
+    ("RGB", "20260115_100010_DJI_0003_W.JPG", 37.10002, -5.60002, 30.0, -60.0, 51.5),
     ("TERMICA", "20260115_100000_DJI_0001_T.JPG", 37.10000, -5.60000, -88.1, -90.0, 50.0),
     ("TERMICA", "20260115_100005_DJI_0002_T.JPG", 37.10001, -5.60001, 91.3, -30.0, 49.0),
-    ("RGB_Extra", "20260115_100000_DJI_0001_W.JPG", 37.10000, -5.60000, 5.0, -90.0, 50.0),
+    ("RGB_Extra", "20260115_100000_DJI_0004_W.JPG", 37.10000, -5.60000, 5.0, -90.0, 50.0),
 ]
 
 
@@ -93,7 +93,8 @@ def test_csv_desde_manifiesto_identico_al_actual(tmp_path, make_dji_jpeg, logger
     assert esperado, "el camino de referencia no generó CSV: test mal montado"
     assert _csvs(nuevo) == esperado
     if calcular:
-        assert len(proyecciones) == len(_IMAGENES)
+        # 0003_W no tiene térmica pareja y queda fuera de meta/location (3.4.123).
+        assert len(proyecciones) == len(_IMAGENES) - 1
 
 
 def test_cierre_no_relee_imagenes_con_metadatos(tmp_path, make_dji_jpeg, logger, monkeypatch):

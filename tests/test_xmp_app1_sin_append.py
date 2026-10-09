@@ -65,14 +65,12 @@ def test_ruta_parcial_unica_y_reconocida(tmp_path):
     assert ap.limpiar_parciales_huerfanos(str(tmp_path)) == 1
 
 
-def test_copiar_jpg_con_giro_conserva_xmp_en_cabecera(tmp_path, make_dji_jpeg):
-    import pipeline
+def test_copiar_jpg_termico_con_angulo_es_byte_a_byte_y_conserva_xmp(tmp_path, make_dji_jpeg):
+    # 3.4.123: la T JPG nunca se gira/recomprime; el XMP original viaja intacto.
     origen = make_dji_jpeg(str(tmp_path / "o.jpg"), gimbal_yaw=33.0)
     destino = str(tmp_path / "d.jpg")
     ap._copiar_jpg_destino(origen, destino, 90)
-    datos = open(destino, "rb").read()
-    assert datos.endswith(b"\xff\xd9")
-    ap.verificar_parcial(destino)
+    assert open(destino, "rb").read() == open(origen, "rb").read()
     assert exif_mod.extraer_bloque_xmp_crudo(destino) is not None
     assert not [f for f in os.listdir(tmp_path) if ap.es_nombre_parcial(f)]
 

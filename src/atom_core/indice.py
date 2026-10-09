@@ -36,6 +36,8 @@ from atom_core import almacen
 from atom_core import cancelacion
 from atom_core import equipo as equipo_mod
 from atom_core import estadillo as estadillo_mod
+from atom_core import lectura_segura
+from atom_core import pares as pares_mod
 from atom_core.manifiesto import FilaManifiesto, Manifiesto, clave_imagen
 from rjpeg_a_tiff import EXTS_FUENTE
 
@@ -161,6 +163,12 @@ class _MetadatosImagen:
     # GimbalPitchDegree (XMP) en grados; None si no se pudo leer. Sirve para
     # normalizar el yaw en el consenso de giro (`_yaw_normalizado`).
     pitch: float | None = None
+    # FlightYawDegree (XMP, rumbo del dron); None si el XMP no lo trae. Manda
+    # sobre el GimbalYaw en el consenso de giro (inestable cerca del nadir).
+    flight_yaw: float | None = None
+    # La cola de 64 KiB del JPG no trae EOI útil (posible truncado en origen).
+    # Solo marca; el descarte lo confirma el decode del apply.
+    jpeg_sin_eoi: bool | None = None
 
 
 def _sin_utils_helper() -> "utils.Utils":
@@ -310,7 +318,17 @@ def _abrir_compartido_windows(ruta: str):
 
 
 def _leer_cabecera(ruta: str) -> "tuple[bytes | None, bool]":
-    """UNA sola apertura de `ruta` (local): devuelve `(cabecera, a_medias)`.
+    """`(cabecera, a_medias)` de `_leer_cabecera_y_cola` (API histórica de 2 valores)."""
+    cabecera, a_medias, _sin_eoi = _leer_cabecera_y_cola(ruta)
+    return cabecera, a_medias
+
+
+def _leer_cabecera_y_cola(ruta: str) -> "tuple[bytes | None, bool, bool]":
+    """UNA sola apertura de `ruta` (local): devuelve `(cabecera, a_medias, sin_eoi)` (`sin_eoi` None = no comprobada).
+
+    `sin_eoi` (solo .jpg/.jpeg): la cola de 64 KiB no trae EOI (FFD9) útil, posible
+    truncado en origen. Solo se MARCA: el descarte definitivo lo confirma el decode
+    de la fase de proceso (un DJI bueno puede llevar relleno tras el EOI).
 
     `cabecera` son los primeros `_BYTES_CABECERA` bytes (`None` si no se pudo
     abrir/leer: cada campo cae entonces a su función original por ruta).
@@ -329,39 +347,41 @@ def _leer_cabecera(ruta: str) -> "tuple[bytes | None, bool]":
             except Exception:  # noqa: BLE001 — como `_en_uso_windows`: ante la duda, no excluir
                 fichero, error = None, 0
             if fichero is None and error == _ERROR_SHARING_VIOLATION:
-                return None, True
+                return None, True, None
         if fichero is None:
             fichero = open(ruta, 'rb')
         with fichero:
             cabecera = fichero.read(_BYTES_CABECERA)
             if not filtro:
-                return cabecera, False
+                return cabecera, False, None
             try:
                 tamano = os.fstat(fichero.fileno()).st_size
             except OSError:
-                return cabecera, False  # un fallo de stat NO la omite
+                return cabecera, False, None  # un fallo de stat NO la omite
             if tamano == 0:
-                return cabecera, True
+                return cabecera, True, None
             # Lectura corta (DriveFS declara un st_size que luego no sirve):
             # menos bytes de los esperados = incompleto, se excluye y se avisa.
             if len(cabecera) < min(_BYTES_CABECERA, tamano):
-                return cabecera, True
+                return cabecera, True, None
             if os.path.splitext(ruta)[1].lower() in (".jpg", ".jpeg"):
                 try:
+                    ventana = lectura_segura.VENTANA_COLA_JPEG
                     if tamano <= len(cabecera):
-                        cola = cabecera[-16:]
+                        cola = cabecera[-ventana:]
                     else:
-                        fichero.seek(max(0, tamano - 16))
-                        cola = fichero.read(16)
+                        fichero.seek(max(0, tamano - ventana))
+                        cola = fichero.read(ventana)
                 except OSError:
-                    return cabecera, True  # cola ilegible: NO entra como buena
-                if len(cola) < min(16, tamano):
-                    return cabecera, True
-                if len(cola) > 0 and not any(cola):
-                    return cabecera, True
-            return cabecera, False
+                    return cabecera, True, None  # cola ilegible: NO entra como buena
+                if len(cola) < min(ventana, tamano):
+                    return cabecera, True, None
+                if len(cola) > 0 and not any(cola[-16:]):
+                    return cabecera, True, None
+                return cabecera, False, not lectura_segura.jpeg_eoi_en_cola_util(cola)
+            return cabecera, False, None
     except Exception:  # noqa: BLE001 — lectura fallida: se excluye (aviso de omitidas)
-        return None, True
+        return None, True, None
 
 
 # --- Progreso y límite de espera por fichero ---------------------------------
@@ -875,8 +895,9 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
     nombre = os.path.basename(ruta)
 
     buf = None
+    jpeg_sin_eoi = None
     if not almacen.es_uri_gcs(ruta):
-        buf, a_medias = _leer_cabecera(ruta)
+        buf, a_medias, jpeg_sin_eoi = _leer_cabecera_y_cola(ruta)
         if a_medias:
             return _MetadatosImagen(ruta=ruta, nombre=nombre, timestamp=None,
                                     modelo=None, yaw=None, gps=None, a_medias=True)
@@ -916,6 +937,7 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
     yaw = None
     gimbal = None
     xmp = None
+    flight_yaw = None
     try:
         if buf is not None:
             bloque_xmp = _bloque_xmp_desde_buffer(buf, ruta)
@@ -929,6 +951,12 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
         yaw = float(gimbal[0])
     except Exception:  # noqa: BLE001
         yaw = None
+    # `get_xmp_data` rellena "0" si falta la etiqueta: solo vale si está en el XMP.
+    try:
+        if xmp is not None and 'FlightYawDegree' in bloque_xmp:
+            flight_yaw = float(xmp[4])
+    except Exception:  # noqa: BLE001
+        flight_yaw = None
     pitch = None
     try:
         pitch = float(gimbal[1])
@@ -962,7 +990,7 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
     return _MetadatosImagen(ruta=ruta, nombre=nombre, timestamp=timestamp,
                             modelo=modelo, yaw=yaw, gps=gps,
                             posicion=posicion, meta_leida=meta_leida, make=make,
-                            pitch=pitch)
+                            pitch=pitch, flight_yaw=flight_yaw, jpeg_sin_eoi=jpeg_sin_eoi)
 
 
 def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
@@ -1099,9 +1127,53 @@ def _yaw_normalizado(yaw: float, pitch: float | None) -> float:
     return yaw
 
 
+# Versión del algoritmo de giro (consenso por yaw). Súbela cada vez que cambie
+# el criterio (yaw normalizado, FlightYaw, orden de bandas...): un criterio
+# `_criterio/<vuelo>_Videofiles.csv` sin sidecar `.giro.json` con esta versión
+# se recalcula en vez de reutilizarse, para no perpetuar ángulos mal calculados.
+VERSION_ALGORITMO_GIRO = "2026-10-09.1"
+# Por debajo de este % de imágenes en la banda elegida el consenso se avisa.
+_UMBRAL_CONFIANZA_GIRO = 80.0
+
+
+def _ruta_sidecar_giro(candidato_csv: str) -> str:
+    return candidato_csv[: -len(".csv")] + ".giro.json"
+
+
+def _version_giro_guardada(candidato_csv: str) -> str | None:
+    """Versión del algoritmo con que se calculó el criterio; None si no hay
+    sidecar o es ilegible (=> se recalcula)."""
+    ruta = _ruta_sidecar_giro(candidato_csv)
+    try:
+        if not almacen.existe_ruta(ruta):
+            return None
+        with almacen.abrir_para_lectura(ruta) as local:
+            with open(local, encoding="utf-8") as f:
+                return json.load(f).get("version_algoritmo")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _guardar_sidecar_giro(candidato_csv: str, datos: dict, progress_callback) -> None:
+    import tempfile
+    ruta = _ruta_sidecar_giro(candidato_csv)
+    try:
+        if not almacen.es_uri_gcs(ruta):
+            os.makedirs(os.path.dirname(ruta), exist_ok=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = os.path.join(tmp, os.path.basename(ruta))
+            with open(local, "w", encoding="utf-8") as f:
+                json.dump(datos, f, ensure_ascii=False, indent=1)
+            almacen.publicar_en(local, ruta)
+    except Exception as exc:  # noqa: BLE001
+        progress_callback.emit(
+            f"\nAVISO: no se pudo guardar el reparto de giro ({ruta}): {exc}\n")
+
+
 def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dict | None]],
                                   pipeline, cfg, output_folder: str,
-                                  progress_callback) -> dict[tuple[str, str], int]:
+                                  progress_callback,
+                                  reparto_out: dict | None = None) -> dict[tuple[str, str], int]:
     """Un único ángulo por `(pb, vuelo)`, calculado UNA vez y compartido por
     todas las filas de ese vuelo (RGB y térmica): este reparto por vuelo, no
     por carpeta, es lo que corrige el bug que motiva el proyecto entero (hoy
@@ -1142,8 +1214,10 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
         if ventana is None or dato.yaw is None or _es_pb_generales(ventana["pb"]):
             continue
         clave = (ventana["pb"], ventana["vuelo"], ventana.get("sufijo"))
+        flight_yaw = getattr(dato, "flight_yaw", None)
         yaws_por_vuelo.setdefault(clave, []).append(
-            _yaw_normalizado(dato.yaw, getattr(dato, "pitch", None)))
+            flight_yaw if flight_yaw is not None
+            else _yaw_normalizado(dato.yaw, getattr(dato, "pitch", None)))
 
     orientacion = _orientacion_normalizada(getattr(cfg, "orientacion", ""))
     if orientacion == "horizontal":
@@ -1176,7 +1250,8 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
         candidato_csv = almacen.unir(
             output_folder, "CSVs", utils.CRITERIO_DIRNAME, f"{nombre_carpeta}_Videofiles.csv")
         clave = (pb, vuelo, sufijo)
-        if almacen.existe_ruta(candidato_csv):
+        if (almacen.existe_ruta(candidato_csv)
+                and _version_giro_guardada(candidato_csv) == VERSION_ALGORITMO_GIRO):
             angulos[clave] = pipeline.read_auto_rotate_degree(
                 carpeta_vuelo, progress_callback)
             continue
@@ -1190,6 +1265,24 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
             angulos[clave] = 90
         else:
             angulos[clave] = 0
+
+        # Confianza: % de imágenes en la banda elegida (0 = fuera de ambas).
+        n_0 = max(total - rotate_90 - rotate_270, 0)
+        n_elegida = {90: rotate_90, 270: rotate_270}.get(angulos[clave], n_0)
+        pct = round(100.0 * n_elegida / total, 1) if total else 0.0
+        reparto = {"angulo": angulos[clave], "total": total, "n_90": rotate_90,
+                   "n_270": rotate_270, "n_0": n_0, "pct_ganadora": pct,
+                   "version_algoritmo": VERSION_ALGORITMO_GIRO}
+        empate = rotate_90 == rotate_270 and rotate_90 > 0
+        if total and (pct < _UMBRAL_CONFIANZA_GIRO or empate):
+            progress_callback.emit(
+                f"\nAVISO: consenso de giro dudoso en PB{pb} {nombre_carpeta}: "
+                f"ángulo {angulos[clave]} con {pct}% de imágenes en su banda"
+                f"{' (empate 90/270)' if empate else ''}. Reparto: "
+                f"90º={rotate_90}, 270º={rotate_270}, sin girar={n_0} "
+                f"de {total}. Revisa el vuelo.\n")
+        if reparto_out is not None:
+            reparto_out[clave] = reparto
 
     if not orientacion and any(a in (90, 270) for a in angulos.values()):
         # Orientación desconocida (sin inspección elegida, o la API de la
@@ -1331,6 +1424,44 @@ def _avisar_equipo(asignaciones, progress_callback) -> int:
     return len(discrepancias)
 
 
+def _avisar_paridad_tw(filas: list[FilaManifiesto], progress_callback) -> list[tuple[str, str, list[str], list[str]]]:
+    """AVISO por vuelo con los idx T sin W y W sin T (`pares.paridad_tw`). Se llama
+    con las filas T y W de TODOS los vuelos, antes de insertar en el manifiesto.
+    Devuelve `[(pb, vuelo, t_sin_w, w_sin_t)]` de los vuelos con huérfanas."""
+    por_vuelo: dict[tuple[str, str], list[str]] = {}
+    for fila in filas:
+        if fila.unassigned or not fila.pb or not fila.vuelo:
+            continue
+        if fila.tipo != "TERMICA" and fila.tipo not in TIPOS_RGB:
+            continue
+        por_vuelo.setdefault((fila.pb, fila.vuelo), []).append(fila.ruta_origen)
+    huerfanas = []
+    for (pb, vuelo), rutas in sorted(por_vuelo.items()):
+        t_sin_w, w_sin_t = pares_mod.paridad_tw(rutas)
+        if not t_sin_w and not w_sin_t:
+            continue
+        huerfanas.append((pb, vuelo, t_sin_w, w_sin_t))
+        progress_callback.emit(
+            f"\nAVISO: PB{pb} {vuelo}: fotos sin pareja T/W por índice DJI. "
+            f"Térmicas sin RGB: {', '.join(t_sin_w) or 'ninguna'}. "
+            f"RGB sin térmica: {', '.join(w_sin_t) or 'ninguna'}. "
+            "No entrarán en meta/location.\n")
+    return huerfanas
+
+
+def _avisar_jpeg_sin_eoi(filas: list[FilaManifiesto], progress_callback) -> int:
+    """AVISO con las JPG cuya cola no trae EOI útil (posible truncado en origen).
+    Solo avisa: el descarte lo decide el decode de la fase de proceso."""
+    marcadas = [os.path.basename(f.ruta_origen) for f in filas if f.jpeg_sin_eoi is True]
+    if marcadas:
+        ejemplos = ", ".join(marcadas[:_MAX_EJEMPLOS_OMITIDAS])
+        progress_callback.emit(
+            f"\nAVISO: {len(marcadas)} JPG sin EOI útil en la cola (posible truncado en "
+            f"origen): {ejemplos}{'…' if len(marcadas) > _MAX_EJEMPLOS_OMITIDAS else ''}. "
+            "El decode de la fase de proceso confirma si se descartan.\n")
+    return len(marcadas)
+
+
 def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
                     angulos: dict[tuple[str, str, str | None], int], cfg, pipeline) -> FilaManifiesto:
     tipo = _clasificar_tipo(dato.nombre, cfg)
@@ -1350,8 +1481,10 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
     if unassigned:
         pb = vuelo = None
         angulo_giro = 0
+        angulo_version = None
         carpeta_destino = almacen.unir(cfg.output_folder, NOMBRE_CARPETA_SIN_ORDENAR, tipo)
     else:
+        angulo_version = None
         pb, vuelo = ventana["pb"], ventana["vuelo"]
         if _es_pb_generales(pb):
             # Fotos de contexto, no de un vuelo: carpeta HERMANA de
@@ -1364,6 +1497,7 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
         else:
             sufijo = ventana.get("sufijo")
             angulo_giro = angulos.get((pb, vuelo, sufijo), 0)
+            angulo_version = VERSION_ALGORITMO_GIRO
             carpeta_destino = almacen.unir(
                 cfg.output_folder, tipo, f"PB{pb}",
                 _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v, sufijo))
@@ -1414,6 +1548,8 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
         **campos_posicion(dato),
         make=dato.make,
         equipo_estadillo=None if unassigned else ventana.get("equipo"),
+        angulo_version=angulo_version,
+        jpeg_sin_eoi=getattr(dato, "jpeg_sin_eoi", None),
     )
 
 
@@ -1720,13 +1856,23 @@ def construir_indice(
     angulos = _consenso_de_angulo_por_vuelo(asignaciones, pipeline, cfg,
                                             cfg.output_folder, progress_callback)
     # Cachito posterior del mismo destino: el ángulo ya decidido para un vuelo
-    # manda sobre el recalculado, para que JPG y TIFF del vuelo no discrepen.
-    # El manifiesto solo guarda (pb, vuelo) -no sufijo, columnas que no tiene
-    # ni falta le hace-, así que el cache solo pisa la clave sin colisión
-    # (`sufijo=None`); un (pb, vuelo) colisionado con sufijo siempre se
-    # recalcula, que es justo la situación nueva que antes abortaba.
-    for (pb_cache, vuelo_cache), angulo_cache in manifiesto.angulos_por_vuelo().items():
-        angulos[(pb_cache, vuelo_cache, None)] = angulo_cache
+    # manda sobre el recalculado, para que JPG y TIFF del vuelo no discrepen,
+    # SOLO si se calculó con la VERSION_ALGORITMO_GIRO actual. Si el manifiesto es
+    # de un algoritmo anterior (o no guarda versión), el ángulo recalculado manda y,
+    # si difiere del previo, el vuelo ENTERO se reabre tras insertar las filas (ver
+    # `vuelos_a_unificar` abajo) para que no queden ángulos mezclados (invariante:
+    # un solo ángulo por vuelo). El manifiesto solo guarda (pb, vuelo) -no sufijo-,
+    # así que el cache solo pisa la clave sin colisión (`sufijo=None`); un (pb, vuelo)
+    # colisionado con sufijo siempre se recalcula.
+    vuelos_a_unificar: list[tuple[str, str, int, int, bool]] = []
+    for (pb_cache, vuelo_cache), (angulo_cache, version_cache) in (
+            manifiesto.angulos_versionados_por_vuelo().items()):
+        clave_cache = (pb_cache, vuelo_cache, None)
+        if version_cache == VERSION_ALGORITMO_GIRO:
+            angulos[clave_cache] = angulo_cache
+        elif clave_cache in angulos:
+            vuelos_a_unificar.append((pb_cache, vuelo_cache, angulo_cache,
+                                      angulos[clave_cache], True))
 
     filas = []
     emisor.iniciar("Construir filas", len(asignaciones), barra=(90, 8))
@@ -1736,9 +1882,20 @@ def construir_indice(
         emisor.progreso(n_filas, len(asignaciones))
     emisor.progreso(len(asignaciones), len(asignaciones), forzar=True)
     filas = _desambiguar_colisiones_generales(filas, manifiesto.rutas_salida_por_clave())
+    _avisar_paridad_tw(filas, progress_callback)
+    _avisar_jpeg_sin_eoi(filas, progress_callback)
     # Último punto seguro: tras insertar, las filas ya existen en el manifiesto.
     cancelacion.comprobar()
     resultado = manifiesto.insertar_o_reabrir(filas, ejecucion_id=ejecucion_id)
+    for pb_u, vuelo_u, viejo, nuevo, _ in vuelos_a_unificar:
+        cambia = viejo != nuevo
+        n_reabiertas = manifiesto.unificar_angulo_vuelo(
+            pb_u, vuelo_u, nuevo, VERSION_ALGORITMO_GIRO, reabrir=cambia)
+        if cambia:
+            progress_callback.emit(
+                f"\nAVISO: PB{pb_u} {vuelo_u}: el ángulo de giro cambia de {viejo}º a "
+                f"{nuevo}º (algoritmo {VERSION_ALGORITMO_GIRO}). Se reabren {n_reabiertas} "
+                "imagen(es) del vuelo para reprocesarlas con el ángulo nuevo.\n")
     if resultado.reasignadas or resultado.siguen_sin_asignar:
         progress_callback.emit(
             f"\n{resultado.reasignadas} foto(s) sin asignar de tandas anteriores "

@@ -471,7 +471,11 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
                 fila["ruta_origen"], bytes_origen=fila.get("bytes_origen") or bytes_origen)
             if (os.path.splitext(fila["ruta_origen"])[1].lower() in (".jpg", ".jpeg")
                     and not lectura_segura.jpeg_cola_valida(
-                        datos_origen[-lectura_segura.VENTANA_COLA_JPEG:])):
+                        datos_origen[-lectura_segura.VENTANA_COLA_JPEG:])
+                    and not lectura_segura.jpeg_eoi_en_cola_util(datos_origen)
+                    and not lectura_segura.jpeg_eoi_por_segmentos(datos_origen)):
+                # Sin decode extra: si hay EOI en la cola útil, el `img.load()` de
+                # abajo (decode que ya se hace) detecta un truncado real.
                 raise OSError("JPEG truncado en origen (cola a ceros/sin EOI): "
                               + fila["ruta_origen"])
             img = pipeline_mod.Image.open(io.BytesIO(datos_origen))
@@ -959,82 +963,27 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
 # ThreadPoolExecutor, no en procesos.
 
 
-# Calidad del re-encodado al girar el JPG térmico. 95, la misma que usaba
-# `pipeline._girar_termica_local`: el giro obliga a descomprimir y volver a
-# comprimir, y esta es la única copia que queda, así que no puede añadir
-# artefactos visibles. NO es `pipeline._ROTATION_JPEG_QUALITY` (40), que es la
-# de RGB — bajarla aquí degradaría la térmica frente al motor viejo.
+# Calidad histórica del giro del JPG térmico. Ya no se usa (la T JPG se copia
+# byte a byte); se conserva la constante por si algún import externo la referencia.
 _CALIDAD_GIRO_JPG_TERMICO = 95
 
 
 def _copiar_jpg_destino(origen: str, destino: str, angulo: int = 0) -> None:
-    """Publica el JPG térmico en su ruta final, girándolo si el ángulo del
-    manifiesto lo pide, de forma atómica (`<raíz>.parcial<ext>` + `os.replace`).
+    """Publica el JPG térmico en su ruta final de forma atómica
+    (`<raíz>.parcial<ext>` + `os.replace`), SIEMPRE byte a byte con `copy2`.
 
-    El giro es el que hacía el motor viejo (`pipeline.rotate_thermal_jpgs_in_place`
-    -> `_girar_termica_local`) y usa el MISMO mapeo `_transpose_para_angulo` que
-    el TIFF y que RGB (invariante nº1: todo el vuelo comparte ángulo), así que el
-    `*_T.JPG` y el TIFF salen orientados igual.
-
-    Re-guardar con PIL DESTRUYE el payload radiométrico propietario del R-JPEG:
-    aquí es inocuo porque a esta altura el TIFF ya está extraído del ORIGINAL
-    (`_convertir_una_termica` convierte antes de llamar aquí) y el giro se aplica
-    sobre la copia de destino, nunca sobre el fichero de origen — el motor viejo
-    sí giraba en sitio. El EXIF se arrastra explícitamente: lleva el GPS y la
-    fecha, que es justo lo que se consulta luego sobre estas fotos.
-
-    Sin giro (`angulo` 0) se copia byte a byte con `copy2`, sin reabrir ni
-    recomprimir nada: el caso normal no paga ningún coste.
+    Decisión de Rodrigo (2026-10-08): la T JPG (R-JPEG DJI M30T con bloque
+    radiométrico) nunca se gira, recomprime ni recibe XMP: re-guardar con PIL
+    destruye el payload radiométrico y graba corrupción. `angulo` se acepta por
+    compatibilidad con el llamador pero se ignora; el TIFF y la RGB (W) siguen
+    su propio camino y su giro.
     """
     carpeta = os.path.dirname(destino)
     if carpeta:
         os.makedirs(carpeta, exist_ok=True)
     parcial = ruta_parcial(destino)
-    transpose = _transpose_para_angulo(angulo, pipeline)
     try:
-        if transpose is None:
-            shutil.copy2(origen, parcial)
-        else:
-            img = pipeline.Image.open(origen)
-            try:
-                if img.height > img.width:
-                    # Las térmicas DJI son apaisadas de fábrica (640x512). Si esta
-                    # ya viene vertical, girarla la dejaría a 180º: se publica tal
-                    # cual. Misma guarda que `pipeline._girar_termica_local`.
-                    img.close()
-                    shutil.copy2(origen, parcial)
-                else:
-                    exif = img.info.get("exif")
-                    # El bloque XMP (GimbalYawDegree, GPS DJI, etc.) se lee del
-                    # ORIGEN antes de girar: `PIL.Image.save` no lo re-adjunta
-                    # (solo conoce el EXIF de `img.info`), así que sin esto la
-                    # copia girada perdía el XMP aunque conservase el EXIF.
-                    bloque_xmp = extraer_bloque_xmp_crudo(origen)
-                    if bloque_xmp:
-                        validar_bloque_xmp(bloque_xmp)
-                    girada = img.transpose(transpose)
-                    try:
-                        kw = {"exif": exif} if exif else {}
-                        girada.save(parcial, format="JPEG",
-                                    quality=_CALIDAD_GIRO_JPG_TERMICO, **kw)
-                    finally:
-                        girada.close()
-                    if bloque_xmp:
-                        # XMP como APP1 en cabecera con una sola escritura `wb`
-                        # a otro temporal (no `save(xmp=)`: no existe en todas
-                        # las versiones de Pillow; ni `ab`: corrompe en Drive).
-                        parcial_xmp = ruta_parcial(destino)
-                        try:
-                            insertar_xmp_app1(parcial, parcial_xmp, bloque_xmp)
-                        except Exception:
-                            if os.path.exists(parcial_xmp):
-                                os.remove(parcial_xmp)
-                            raise
-                        os.remove(parcial)
-                        parcial = parcial_xmp
-                    verificar_parcial(parcial)
-            finally:
-                img.close()
+        shutil.copy2(origen, parcial)
     except Exception:
         if os.path.exists(parcial):
             os.remove(parcial)
@@ -1406,9 +1355,18 @@ def _motivo_jpeg_truncado(ruta: str) -> "str | None":
     if len(ventana) < tamano - ini:
         return ("origen incompleto en Drive: {0} de {1} bytes servidos"
                 .format(ini + len(ventana), tamano))
-    if not lectura_segura.jpeg_cola_valida(ventana):
-        return "JPEG truncado en origen (cola a ceros/sin EOI)"
-    return None
+    if lectura_segura.jpeg_cola_valida(ventana):
+        return None
+    # Cola sospechosa: el criterio real es EOI por segmentos + decode completo (un
+    # DJI bueno puede llevar relleno o payload >64 KiB tras el EOI). Solo se paga en el caso raro.
+    try:
+        with open(ruta, "rb") as f:
+            datos = f.read()
+    except Exception as exc:  # noqa: BLE001
+        return f"No se pudo leer el JPEG de origen ({type(exc).__name__}: {exc})"
+    if lectura_segura.jpeg_valido(datos):
+        return None
+    return "JPEG truncado en origen (cola a ceros/sin EOI y decode falla)"
 
 
 TIMEOUT_LECTURA_JPEG_S = 30.0
@@ -1428,6 +1386,12 @@ def _validar_jpeg_origen(manifiesto, filas: list[dict], progress_callback) -> li
     def _motivo_fila(f):
         if cancelacion.cancelado():
             return None  # se salta: tras la pasada se sale por cancelación
+        if f.get("jpeg_sin_eoi") == 0:
+            # El índice (única fase que lee y decide) ya vio EOI útil en la cola:
+            # sin relectura. Si la marca es 1 (sin EOI) o None (no comprobada,
+            # manifiesto antiguo, gs://) se confirma aquí; el decode de abajo
+            # sigue siendo el criterio definitivo.
+            return None
         return _motivo_jpeg_truncado(f["ruta_origen"])
 
     # `_ejecutar_con_limite` (indice.py) sale con RunCancelado si se cancela y

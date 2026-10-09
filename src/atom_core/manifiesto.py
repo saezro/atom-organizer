@@ -202,7 +202,14 @@ _SENTENCIAS_ESQUEMA = (
         -- Rutas (original/crop/tiff, separadas por salto de línea) que esta imagen tenía en
         -- SIN_ORDENAR cuando se reabrió porque ahora sí tiene vuelo. Se borran
         -- SOLO cuando la escritura nueva acaba bien (`marcar_hecha`).
-        previas_sin_ordenar TEXT
+        previas_sin_ordenar TEXT,
+        -- VERSION_ALGORITMO_GIRO con la que el índice calculó `angulo_giro`. NULL
+        -- en manifiestos antiguos: ese ángulo no se respeta al reprocesar.
+        angulo_version TEXT,
+        -- Cola del JPG vista por el índice: 1 = sin EOI útil (posible truncado en
+        -- origen), 0 = con EOI, NULL = no comprobada (no JPG, gs://, manifiesto
+        -- antiguo). Solo marca: el descarte lo decide el decode del apply.
+        jpeg_sin_eoi INTEGER
     )
     """,
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_clave ON imagenes(clave)",
@@ -298,6 +305,11 @@ class FilaManifiesto:
     # Equipo: EXIF `Image Make` y `Equipo_de_vuelo` del estadillo (ver `atom_core.equipo`).
     make: str | None = None
     equipo_estadillo: str | None = None
+    # Versión del algoritmo de giro que calculó `angulo_giro` (ver indice.VERSION_ALGORITMO_GIRO).
+    angulo_version: str | None = None
+    # El índice vio la cola del JPG sin EOI útil (ver `indice._leer_cabecera`).
+    # True = sin EOI útil, False = con EOI, None = no comprobada.
+    jpeg_sin_eoi: bool | None = None
 
 
 @dataclass
@@ -390,7 +402,9 @@ class Manifiesto:
         se quedaría sin las columnas nuevas y reventaría al insertar."""
         existentes = set(self._columnas(conexion))
         for nombre, definicion in (("bytes_origen", "INTEGER NOT NULL DEFAULT 0"),
-                                  ("previas_sin_ordenar", "TEXT")):
+                                  ("previas_sin_ordenar", "TEXT"),
+                                  ("angulo_version", "TEXT"),
+                                  ("jpeg_sin_eoi", "INTEGER")):
             if nombre not in existentes:
                 conexion.execute(f"ALTER TABLE imagenes ADD COLUMN {nombre} {definicion}")
 
@@ -445,6 +459,8 @@ class Manifiesto:
                 datos = {nombre: getattr(fila, nombre) for nombre in nombres}
                 for booleano in ("comprime", "unassigned", "meta_leida"):
                     datos[booleano] = int(datos[booleano])
+                if datos["jpeg_sin_eoi"] is not None:
+                    datos["jpeg_sin_eoi"] = int(datos["jpeg_sin_eoi"])
                 datos["nombre_original"] = nombre_de_ruta(fila.ruta_origen)
                 datos["clave"] = clave_imagen(fila.ruta_origen, fila.timestamp_exif, fila.bytes_origen)
                 datos["ejecucion_id"] = ejecucion_id
@@ -673,6 +689,43 @@ class Manifiesto:
                 "SELECT MIN(id) FROM imagenes WHERE pb IS NOT NULL AND vuelo IS NOT NULL "
                 "AND unassigned = 0 GROUP BY pb, vuelo)")
         }
+
+    def angulos_versionados_por_vuelo(self) -> dict[tuple[str, str], tuple[int, str | None]]:
+        """`{(pb, vuelo): (angulo_giro, angulo_version)}` del destino. La versión es
+        la del algoritmo que calculó el ángulo (None = manifiesto antiguo)."""
+        return {
+            (fila["pb"], fila["vuelo"]): (fila["angulo_giro"], fila["angulo_version"])
+            for fila in self._conexion().execute(
+                "SELECT pb, vuelo, angulo_giro, angulo_version FROM imagenes WHERE id IN ("
+                "SELECT MIN(id) FROM imagenes WHERE pb IS NOT NULL AND vuelo IS NOT NULL "
+                "AND unassigned = 0 GROUP BY pb, vuelo)")
+        }
+
+    def unificar_angulo_vuelo(self, pb: str, vuelo: str, angulo: int, version: str,
+                              reabrir: bool) -> int:
+        """Deja TODAS las filas asignadas de `(pb, vuelo)` con un solo ángulo y una sola
+        versión de algoritmo (invariante: un ángulo por vuelo). Con `reabrir=True`
+        (el ángulo cambió) las filas pasan a `pendiente` (incluidas las `hecho`), para
+        que el apply reescriba su salida con el ángulo nuevo (misma clave: sobrescribe).
+        Con `reabrir=False` (mismo ángulo) solo se actualiza `angulo_version`.
+        Devuelve cuántas filas se reabrieron (las que no estaban ya `pendiente`)."""
+        conexion = self._conexion()
+        with conexion:
+            if not reabrir:
+                conexion.execute(
+                    "UPDATE imagenes SET angulo_version = ? WHERE pb = ? AND vuelo = ? "
+                    "AND unassigned = 0 AND angulo_version IS NOT ?",
+                    (version, pb, vuelo, version))
+                return 0
+            reabiertas = conexion.execute(
+                "SELECT COUNT(*) FROM imagenes WHERE pb = ? AND vuelo = ? AND unassigned = 0 "
+                "AND estado != 'pendiente'", (pb, vuelo)).fetchone()[0]
+            conexion.execute(
+                "UPDATE imagenes SET angulo_giro = ?, angulo_version = ?, estado = 'pendiente', "
+                "motivo_fallo = NULL, verificacion = NULL "
+                "WHERE pb = ? AND vuelo = ? AND unassigned = 0",
+                (angulo, version, pb, vuelo))
+        return int(reabiertas)
 
     def abrir_ejecucion(self, origen: str, version_app: str) -> int:
         conexion = self._conexion()

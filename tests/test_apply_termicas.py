@@ -202,7 +202,8 @@ def test_el_tiff_usa_el_angulo_del_manifiesto_igual_que_su_jpg(tmp_path, make_dj
 
     assert resultado == {"hecho": 1, "fallido": 0}
     esperado = apply._transpose_para_angulo(90, pipeline_real)
-    assert transposes_aplicados == [esperado, esperado]
+    # Solo el TIFF se gira (3.4.123): el JPG térmico se copia byte a byte.
+    assert transposes_aplicados == [esperado]
     assert salida_tiff.exists()
     assert salida_jpg.exists()
     manifiesto.cerrar()
@@ -372,10 +373,9 @@ def _jpg_termico_apaisado(path):
     PILImage.new("RGB", (640, 512), color=(80, 90, 100)).save(path, format="JPEG", quality=95)
 
 
-def test_jpg_termico_se_gira_con_gen_thumbnails_activo(tmp_path):
-    """Con `gen_thumbnails=True` (switch maestro de rotación activo), el
-    `*_T.JPG` publicado sale girado con el ángulo del manifiesto: ancho y
-    alto quedan intercambiados respecto al origen apaisado (640x512 -> 512x640)."""
+def test_jpg_termico_no_se_gira_con_gen_thumbnails_activo(tmp_path):
+    """Con `gen_thumbnails=True` y ángulo en el manifiesto, el `*_T.JPG` publicado
+    sale idéntico al origen (3.4.123: la T JPG se copia byte a byte, nunca se gira)."""
     origen = tmp_path / "origen" / "DJI_0001_T.JPG"
     _jpg_termico_apaisado(str(origen))
 
@@ -395,11 +395,12 @@ def test_jpg_termico_se_gira_con_gen_thumbnails_activo(tmp_path):
         ancho_origen, alto_origen = img_origen.size
     with PILImage.open(salida_jpg) as img_salida:
         ancho_salida, alto_salida = img_salida.size
-    assert (ancho_salida, alto_salida) == (alto_origen, ancho_origen)
+    assert (ancho_salida, alto_salida) == (ancho_origen, alto_origen)
+    assert salida_jpg.read_bytes() == origen.read_bytes()
     manifiesto.cerrar()
 
 
-def test_jpg_termico_con_exif_real_conserva_gps_fecha_y_yaw_tras_girar(
+def test_jpg_termico_con_exif_real_conserva_gps_fecha_y_yaw_al_copiar(
     tmp_path, make_dji_jpeg, logger
 ):
     """Con un `*_T.JPG` que trae EXIF real (GPS + `DateTimeOriginal` + XMP
@@ -439,7 +440,8 @@ def test_jpg_termico_con_exif_real_conserva_gps_fecha_y_yaw_tras_girar(
 
     with PILImage.open(salida_jpg) as img_salida:
         ancho_salida, alto_salida = img_salida.size
-    assert alto_salida > ancho_salida, "el JPG térmico girado debe quedar vertical"
+    assert ancho_salida > alto_salida, "el JPG térmico no se gira: sigue apaisado"
+    assert salida_jpg.read_bytes() == contenido_origen_antes
 
     _, lat_despues, lon_despues, _alt_despues = meta_location_obj.leerLatitudLongitudAltitud_exif_DJI(
         str(salida_jpg), _SignalFalsa()

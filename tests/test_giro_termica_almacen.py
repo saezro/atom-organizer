@@ -121,74 +121,42 @@ def _jpg_bytes(make_dji_jpeg, tmp_path, nombre="fuente.JPG"):
 
 # --- 1) Paridad byte a byte: mismo giro sobre disco y sobre gs:// -------------
 
-def test_paridad_local_y_gcs_mismo_contenido(tmp_path, logger, make_dji_jpeg):
-    """Misma fixture de entrada (una térmica DJI), procesada por disco y por
-    `gs://…`: el resultado debe ser sha256 idéntico fichero a fichero."""
+def test_paridad_local_y_gcs_no_se_toca_nada(tmp_path, logger, make_dji_jpeg):
+    """3.4.123: `rotate_thermal_jpgs_in_place` es NO-OP (la T JPG va byte a byte).
+    Disco y `gs://…` quedan idénticos al origen, sin giro ni subidas."""
     contenido = _jpg_bytes(make_dji_jpeg, tmp_path)
 
-    # -- local --
     raiz_local = tmp_path / "local" / "TERMICA" / "PB1" / "PB1_V1"
     raiz_local.mkdir(parents=True)
     (raiz_local / "DJI_0001_T.JPG").write_bytes(contenido)
-    obj_local = _split(logger)
-    giradas_local = obj_local.rotate_thermal_jpgs_in_place(
+    giradas_local = _split(logger).rotate_thermal_jpgs_in_place(
         str(tmp_path / "local" / "TERMICA"), _noop_progress(), _noop_progress(), rotate_90=True)
-    assert giradas_local == 1
-    resultado_local = (raiz_local / "DJI_0001_T.JPG").read_bytes()
+    assert giradas_local == 0
+    assert (raiz_local / "DJI_0001_T.JPG").read_bytes() == contenido
 
-    # -- gs:// --
     bucket = _sembrar_almacen_gcs("bucket-paridad-giro")
     bucket.objetos["TERMICA/PB1/PB1_V1/DJI_0001_T.JPG"] = contenido
-    obj_gcs = _split(logger)
-    giradas_gcs = obj_gcs.rotate_thermal_jpgs_in_place(
+    giradas_gcs = _split(logger).rotate_thermal_jpgs_in_place(
         "gs://bucket-paridad-giro/TERMICA", _noop_progress(), _noop_progress(), rotate_90=True)
-    assert giradas_gcs == 1
-    resultado_gcs = bucket.objetos["TERMICA/PB1/PB1_V1/DJI_0001_T.JPG"]
-
-    assert _sha256(resultado_local) == _sha256(resultado_gcs)
-    assert resultado_local != contenido, "el giro debía cambiar el contenido"
+    assert giradas_gcs == 0
+    assert bucket.uploads == 0
+    assert bucket.objetos["TERMICA/PB1/PB1_V1/DJI_0001_T.JPG"] == contenido
 
 
-# --- 2) Idempotencia en gs://: segunda pasada no vuelve a girar ---------------
+# --- 2) Repetir la pasada tampoco toca ni sube nada en gs:// -------------------
 
-def test_idempotencia_en_gcs_segunda_pasada_no_gira(logger, make_dji_jpeg, tmp_path):
+def test_segunda_pasada_en_gcs_no_gira_ni_sube_nada(logger, make_dji_jpeg, tmp_path):
     contenido = _jpg_bytes(make_dji_jpeg, tmp_path)
     bucket = _sembrar_almacen_gcs("bucket-idempotencia-giro")
     bucket.objetos["TERMICA/PB1/PB1_V1/DJI_0001_T.JPG"] = contenido
 
     obj = _split(logger)
-    primera = obj.rotate_thermal_jpgs_in_place(
-        "gs://bucket-idempotencia-giro/TERMICA", _noop_progress(), _noop_progress(), rotate_90=True)
-    assert primera == 1
-    tras_primera = bucket.objetos["TERMICA/PB1/PB1_V1/DJI_0001_T.JPG"]
-
-    segunda = obj.rotate_thermal_jpgs_in_place(
-        "gs://bucket-idempotencia-giro/TERMICA", _noop_progress(), _noop_progress(), rotate_90=True)
-    assert segunda == 0, "la segunda pasada no debe volver a girar (guard height>width)"
-    assert bucket.objetos["TERMICA/PB1/PB1_V1/DJI_0001_T.JPG"] == tras_primera
-
-
-def test_idempotencia_en_gcs_segunda_pasada_no_sube_nada(logger, make_dji_jpeg, tmp_path):
-    """La `"ya_girada"` no debe republicar el objeto: el `editar_en_sitio` de
-    `_rotate_one_thermal_jpg_in_place` pasa `publicar_solo_si_cambia=True` para
-    no resubir decenas de GB de térmicas sin cambios en cada reejecución."""
-    contenido = _jpg_bytes(make_dji_jpeg, tmp_path)
-    bucket = _sembrar_almacen_gcs("bucket-idempotencia-sin-upload")
-    bucket.objetos["TERMICA/PB1/PB1_V1/DJI_0001_T.JPG"] = contenido
-
-    obj = _split(logger)
-    primera = obj.rotate_thermal_jpgs_in_place(
-        "gs://bucket-idempotencia-sin-upload/TERMICA", _noop_progress(), _noop_progress(), rotate_90=True)
-    assert primera == 1
-    tras_primera = bucket.objetos["TERMICA/PB1/PB1_V1/DJI_0001_T.JPG"]
-    uploads_tras_primera = bucket.uploads
-
-    segunda = obj.rotate_thermal_jpgs_in_place(
-        "gs://bucket-idempotencia-sin-upload/TERMICA", _noop_progress(), _noop_progress(), rotate_90=True)
-    assert segunda == 0
-    assert bucket.uploads == uploads_tras_primera, (
-        "la segunda pasada (ya_girada) no debe subir nada al bucket")
-    assert bucket.objetos["TERMICA/PB1/PB1_V1/DJI_0001_T.JPG"] == tras_primera
+    for _ in range(2):
+        assert obj.rotate_thermal_jpgs_in_place(
+            "gs://bucket-idempotencia-giro/TERMICA", _noop_progress(), _noop_progress(),
+            rotate_90=True) == 0
+    assert bucket.uploads == 0
+    assert bucket.objetos["TERMICA/PB1/PB1_V1/DJI_0001_T.JPG"] == contenido
 
 
 # --- 3) El origen sobrevive intacto si el giro falla a medio camino ----------
@@ -241,59 +209,38 @@ def test_origen_sobrevive_intacto_y_nada_se_publica_si_falla_el_giro_en_gcs(
 
 # --- 4) El recorrido encuentra las mismas imágenes por disco y por gs:// -----
 
-def test_recorrido_encuentra_las_mismas_imagenes_local_y_gcs(
-    tmp_path, logger, make_dji_jpeg
-):
-    """Estructura con subcarpetas anidadas (dos vuelos bajo dos PBs): el
-    listado de imágenes giradas debe coincidir entre disco y gs://."""
+def test_varias_imagenes_local_y_gcs_quedan_intactas(tmp_path, logger, make_dji_jpeg):
+    """Subcarpetas anidadas (dos vuelos bajo dos PBs), una de ellas corrupta: NO-OP
+    en disco y en gs://; nada se modifica ni se publica."""
     contenido = _jpg_bytes(make_dji_jpeg, tmp_path)
     relativos = [
         "PB1/PB1_V1/DJI_0001_T.JPG",
         "PB1/PB1_V2/DJI_0001_T.JPG",
         "PB2/PB2_V1/DJI_0001_T.JPG",
     ]
-
     raiz_local = tmp_path / "local_termica"
     for rel in relativos:
         destino = raiz_local / rel
         destino.parent.mkdir(parents=True, exist_ok=True)
         destino.write_bytes(contenido)
-    obj_local = _split(logger)
-    giradas_local = obj_local.rotate_thermal_jpgs_in_place(
-        str(raiz_local), _noop_progress(), _noop_progress(), rotate_90=True)
+    rota = raiz_local / "PB2/PB2_V1/DJI_0002_T.JPG"
+    rota.write_bytes(b"esto no es un JPEG")
+    assert _split(logger).rotate_thermal_jpgs_in_place(
+        str(raiz_local), _noop_progress(), _noop_progress(), rotate_90=True) == 0
+    for rel in relativos:
+        assert (raiz_local / rel).read_bytes() == contenido
+    assert rota.read_bytes() == b"esto no es un JPEG"
 
     bucket = _sembrar_almacen_gcs("bucket-recorrido-giro")
     for rel in relativos:
         bucket.objetos[f"TERMICA/{rel}"] = contenido
-    obj_gcs = _split(logger)
-    giradas_gcs = obj_gcs.rotate_thermal_jpgs_in_place(
-        "gs://bucket-recorrido-giro/TERMICA", _noop_progress(), _noop_progress(), rotate_90=True)
-
-    assert giradas_local == len(relativos)
-    assert giradas_gcs == len(relativos)
+    bucket.objetos["TERMICA/PB2/PB2_V1/DJI_0002_T.JPG"] = b"esto no es un JPEG"
+    assert _split(logger).rotate_thermal_jpgs_in_place(
+        "gs://bucket-recorrido-giro/TERMICA", _noop_progress(), _noop_progress(), rotate_90=True) == 0
+    assert bucket.uploads == 0
     for rel in relativos:
-        girada_local = (raiz_local / rel).read_bytes()
-        girada_gcs = bucket.objetos[f"TERMICA/{rel}"]
-        assert _sha256(girada_local) == _sha256(girada_gcs), rel
-
-
-# --- 5) Fallo en una imagen no impide procesar las demás (gs://) -------------
-
-def test_fallo_en_una_imagen_no_impide_procesar_las_demas_en_gcs(
-    logger, make_dji_jpeg, tmp_path
-):
-    contenido = _jpg_bytes(make_dji_jpeg, tmp_path)
-    bucket = _sembrar_almacen_gcs("bucket-fallo-parcial-giro")
-    bucket.objetos["TERMICA/PB1/PB1_V1/DJI_0001_T.JPG"] = contenido
-    bucket.objetos["TERMICA/PB1/PB1_V1/DJI_0002_T.JPG"] = b"esto no es un JPEG"
-
-    obj = _split(logger)
-    giradas = obj.rotate_thermal_jpgs_in_place(
-        "gs://bucket-fallo-parcial-giro/TERMICA", _noop_progress(), _noop_progress(), rotate_90=True)
-
-    assert giradas == 1, "la buena sí se gira aunque la corrupta falle"
-    assert bucket.objetos["TERMICA/PB1/PB1_V1/DJI_0002_T.JPG"] == b"esto no es un JPEG", (
-        "la corrupta no puede quedar tocada ni truncada")
+        assert bucket.objetos[f"TERMICA/{rel}"] == contenido
+    assert bucket.objetos["TERMICA/PB2/PB2_V1/DJI_0002_T.JPG"] == b"esto no es un JPEG"
 
 
 def test_read_auto_rotate_degree_lee_el_criterio_desde_gcs(logger):

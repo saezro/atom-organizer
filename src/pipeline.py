@@ -3234,6 +3234,14 @@ class SplitImages:
         - progress_bar - porcentaje a la barra de progreso.
         - rotate_90 / rotate_minus_90 / auto_rotate - mismos flags de la conversión.
         """
+        # NO-OP desde 3.4.123 (decisión de Rodrigo, 2026-10-08): la T JPG (R-JPEG
+        # DJI con bloque radiométrico) no se gira ni recomprime nunca; se deja tal
+        # cual (byte a byte). El TIFF se gira por su propio camino. Se dice en el log
+        # (nada de salidas mudas, ver el caso de v3.4.3 más abajo).
+        progress_callback.emit(
+            "\nSin giro de los JPG térmicos: se entregan byte a byte, igual que el origen "
+            "(el TIFF se gira por su propio camino).\n")
+        return 0
         if not (rotate_90 or rotate_minus_90 or auto_rotate):
             # Salida silenciosa NO: los tres flags a False es indistinguible, desde el
             # log, de "el criterio salió 0" o de "el paso ni se ejecutó". Costó una
