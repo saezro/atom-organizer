@@ -122,6 +122,16 @@ class ErrorModeloSinRecorte(Exception):
     faltan por configurar."""
 
 
+class ErrorGiroContradictorio(Exception):
+    """El ángulo FINAL asignado a uno o más vuelos (calculado, reutilizado de
+    un manifiesto previo o cacheado de una tanda anterior) contradice el
+    consenso de `FlightYawDegree` de sus propias imágenes (caso Willka: 6
+    vuelos con 90º cuando FlightYaw decía 270º, por gimbal inestable cerca del
+    nadir). `construir_indice` aborta con la lista COMPLETA de vuelos
+    contradictorios ANTES de escribir ninguna fila ni mover ninguna imagen.
+    No se lanza sin imágenes con FlightYaw ni sin consenso por FlightYaw."""
+
+
 @dataclass
 class _Posicion:
     """Posición de una imagen tal y como la escribe hoy meta/location: lat/lon
@@ -158,6 +168,8 @@ class _MetadatosImagen:
     posicion: "_Posicion | None" = None
     meta_leida: bool = False
     make: str | None = None
+    # True si el Make no se pudo leer por error (no por ausencia): no se descarta.
+    make_ilegible: bool = False
     # True si la propia lectura de cabecera detectó que el fichero está a
     # medio copiar (ver `_leer_cabecera`): el índice lo deja fuera.
     a_medias: bool = False
@@ -884,6 +896,24 @@ def _con_reintento_fichero_completo(funcion_pura, buf: bytes, ruta: str):
         return funcion_pura(buf_completo)
 
 
+def _motivo_no_dji(dato) -> str | None:
+    """Motivo por el que un fichero NO es DJI, o `None` si hay que indexarlo.
+
+    Solo se descarta si el Make se leyó y no contiene 'DJI', o si es un PNG
+    sin Make (un PNG nunca es DJI). Make ilegible por error o JPG sin tag
+    Make -> NO se descarta. En `gs://` no se lee la cabecera (sin round-trip
+    extra por foto): solo se filtra por extensión PNG."""
+    es_png = dato.ruta.lower().endswith(".png")
+    make = (dato.make or "").strip()
+    if almacen.es_uri_gcs(dato.ruta):
+        return "PNG no DJI" if es_png else None
+    if make:
+        return None if "dji" in make.lower() else f"Make={make}"
+    if es_png and not dato.make_ilegible:
+        return "sin Make"
+    return None
+
+
 def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
     """Una imagen -> sus metadatos, o `None` en cada campo que no se pudo
     leer. Cada lectura va en su propio `try/except`: que falle el yaw no
@@ -940,11 +970,20 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
             modelo = None
 
     make = None
+    make_ilegible = False
+    make_resuelto = False  # True si el buffer ya dio un veredicto (valor o "sin tag")
     if buf_exif is not None:
         try:
             make = _con_reintento_fichero_completo(_make_desde_buffer, buf_exif, ruta)
-        except Exception:  # noqa: BLE001 — dato informativo, no bloquea
+            make_resuelto = True
+        except Exception:  # noqa: BLE001 — se reintenta abajo con el fichero entero
             make = None
+    if make is None and not make_resuelto and not almacen.es_uri_gcs(ruta):
+        try:
+            make = exif.get_make(ruta) or None
+        except Exception:  # noqa: BLE001 — Make ilegible: no se descarta
+            make = None
+            make_ilegible = True
 
     yaw = None
     gimbal = None
@@ -1002,6 +1041,7 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
     return _MetadatosImagen(ruta=ruta, nombre=nombre, timestamp=timestamp,
                             modelo=modelo, yaw=yaw, gps=gps,
                             posicion=posicion, meta_leida=meta_leida, make=make,
+                            make_ilegible=make_ilegible,
                             pitch=pitch, flight_yaw=flight_yaw, jpeg_sin_eoi=jpeg_sin_eoi)
 
 
@@ -1409,7 +1449,63 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
             "gira'. Verifica la orientación en la Suite si esta planta es "
             "horizontal.\n")
 
+    _validar_giro_contra_flight_yaw(asignaciones, angulos, cfg)
     return angulos
+
+
+def _validar_giro_contra_flight_yaw(asignaciones, angulos: dict, cfg) -> None:
+    """Guarda bloqueante: recalcula el ángulo de cada vuelo SOLO con las
+    imágenes que traen `flight_yaw` (mismas bandas y umbral que el consenso) y
+    lanza `ErrorGiroContradictorio` si hay consenso por FlightYaw y difiere del
+    ángulo final de `angulos`. Lista todos los vuelos contradictorios. No aplica
+    a plantas horizontales ni a modo manual; sin FlightYaw o sin consenso no
+    bloquea."""
+    if _orientacion_normalizada(getattr(cfg, "orientacion", "")) == "horizontal":
+        return
+    if not cfg.choose_mode_auto:
+        return
+    add_to_angle, subs_to_angle, _max_error = utils.sane_rotation_criteria(
+        cfg.gen_thumbnails_add_to_angle, cfg.gen_thumbnails_subs_to_angle,
+        cfg.gen_thumbnails_max_error)
+    lim_max_90 = add_to_angle + 90
+    lim_min_90 = 90 - subs_to_angle
+    lim_max_270 = add_to_angle - 90
+    lim_min_270 = (-90) - subs_to_angle
+    fy_por_vuelo: dict[tuple[str, str, str | None], list[float]] = {}
+    for dato, ventana in asignaciones:
+        fy = getattr(dato, "flight_yaw", None)
+        if ventana is None or fy is None or _es_pb_generales(ventana["pb"]):
+            continue
+        clave = (ventana["pb"], ventana["vuelo"], ventana.get("sufijo"))
+        fy_por_vuelo.setdefault(clave, []).append(fy)
+    contradictorios = []
+    for clave, fys in fy_por_vuelo.items():
+        if clave not in angulos:
+            continue
+        total = len(fys)
+        n_90 = sum(1 for y in fys if lim_min_90 < y < lim_max_90)
+        n_270 = sum(1 for y in fys if lim_min_270 < y < lim_max_270)
+        n_0 = max(total - n_90 - n_270, 0)
+        if n_270 / total >= UMBRAL_SENTIDO_GIRO_VUELO:
+            segun_fy, n_banda = 270, n_270
+        elif n_90 / total >= UMBRAL_SENTIDO_GIRO_VUELO:
+            segun_fy, n_banda = 90, n_90
+        elif n_0 / total >= UMBRAL_SENTIDO_GIRO_VUELO:
+            segun_fy, n_banda = 0, n_0
+        else:
+            continue
+        if segun_fy != angulos[clave]:
+            pb, vuelo, sufijo = clave
+            contradictorios.append(
+                f"PB{pb} {_nombre_carpeta_vuelo(pb, vuelo, cfg.include_v, sufijo)}: "
+                f"ángulo asignado {angulos[clave]}º, según FlightYaw {segun_fy}º "
+                f"({total} imágenes con FlightYaw, {round(100.0 * n_banda / total, 1)}% "
+                f"en la banda de {segun_fy}º)")
+    if contradictorios:
+        raise ErrorGiroContradictorio(
+            f"El giro asignado contradice FlightYaw en {len(contradictorios)} vuelo(s); "
+            "no se ha movido ni escrito nada. Revisa el vuelo (¿ángulo cacheado de una "
+            "tanda anterior?):\n- " + "\n- ".join(contradictorios))
 
 
 def _pct_por_modelo(modelo: str, pipeline) -> float:
@@ -1732,6 +1828,36 @@ def _desambiguar_colisiones_generales(
     return resultado
 
 
+def _dias_sin_estadillo(metadatos, ventanas) -> list[tuple[str, int]]:
+    """Días (YYYY-MM-DD) con fotos y SIN ninguna ventana de estadillo de ese
+    día, con su nº de fotos. Solo informativo (nunca bloquea). Las fotos sin
+    timestamp no cuentan; una fecha de estadillo ilegible se ignora. Sin
+    ninguna fecha de estadillo legible no se concluye nada -> []."""
+    try:
+        cubiertos = set()
+        for ventana in ventanas:
+            texto = str(ventana.get("fecha", "")).strip()
+            for formato in ("%Y:%m:%d", "%Y-%m-%d", "%d/%m/%Y"):
+                try:
+                    cubiertos.add(datetime.datetime.strptime(texto, formato).date())
+                    break
+                except ValueError:
+                    continue
+        if not cubiertos:
+            return []
+        conteo: Counter = Counter()
+        for dato in metadatos:
+            ts = dato.timestamp
+            if ts is None or not hasattr(ts, "date"):
+                continue
+            dia = ts.date()
+            if dia not in cubiertos:
+                conteo[dia] += 1
+        return [(dia.isoformat(), n) for dia, n in sorted(conteo.items())]
+    except Exception:  # noqa: BLE001 - el aviso nunca debe romper el índice
+        return []
+
+
 def construir_indice(
     cfg,
     pipeline,
@@ -1886,6 +2012,7 @@ def construir_indice(
     # Cada lectura con tiempo máximo (`_ejecutar_con_limite`): un fichero de
     # Drive sin descargar ya no cuelga la fase.
     metadatos = []
+    no_dji: list[tuple[str, str]] = []
     if imagenes:
         emisor.iniciar("Leer EXIF/XMP", len(imagenes), barra=(5, 75))
         lecturas = _ejecutar_con_limite(
@@ -1896,6 +2023,8 @@ def construir_indice(
                 lentas.append(ruta)
             elif lectura.a_medias:
                 omitidas_copiandose.append(ruta)
+            elif _motivo_no_dji(lectura):
+                no_dji.append((ruta, _motivo_no_dji(lectura)))
             else:
                 metadatos.append(lectura)
 
@@ -1916,6 +2045,8 @@ def construir_indice(
                 no_disponibles.append(ruta)
             elif lectura is None:
                 omitidas_copiandose.append(ruta)
+            elif _motivo_no_dji(lectura):
+                no_dji.append((ruta, _motivo_no_dji(lectura)))
             else:
                 metadatos.append(lectura)
         metadatos.sort(key=lambda dato: dato.ruta)
@@ -1951,6 +2082,24 @@ def construir_indice(
             f"descárgalas/espera a que se sincronicen y vuelve a lanzar:\n{detalle}\n")
         progress_callback.emit(texto)
         progress_summarize.emit(texto)
+
+    ilegibles = [d.ruta for d in metadatos if d.make_ilegible]
+    if ilegibles:
+        progress_callback.emit(
+            f"\nAVISO: Make ilegible en {len(ilegibles)} ficheros (se indexan igualmente): "
+            f"{', '.join(os.path.basename(r) for r in sorted(ilegibles)[:10])}"
+            f"{'…' if len(ilegibles) > 10 else ''}\n")
+    if no_dji:
+        no_dji.sort()
+        nombres = ", ".join(os.path.basename(r) for r, _m in no_dji[:10])
+        progress_callback.emit(
+            f"\nAVISO: {len(no_dji)} ficheros no DJI ignorados (quedan en origen): "
+            f"{nombres}{'…' if len(no_dji) > 10 else ''}\n")
+
+    dias_sin_estadillo = _dias_sin_estadillo(metadatos, ventanas)
+    for dia, n_fotos in dias_sin_estadillo:
+        progress_callback.emit(
+            f"\nAVISO: día {dia} sin estadillo ({n_fotos} fotos) → irán a SIN_ORDENAR\n")
 
     # Falla pronto y en un único golpe si el recorte automático está activo
     # y algún modelo EXIF no tiene % configurado: ANTES de asignar vuelos o
@@ -1995,6 +2144,9 @@ def construir_indice(
         elif clave_cache in angulos:
             vuelos_a_unificar.append((pb_cache, vuelo_cache, angulo_cache,
                                       angulos[clave_cache], True))
+    # Guarda bloqueante con el ángulo FINAL (incluido el cacheado de arriba),
+    # antes de construir/escribir ninguna fila.
+    _validar_giro_contra_flight_yaw(asignaciones, angulos, cfg)
 
     filas = []
     emisor.iniciar("Construir filas", len(asignaciones), barra=(90, 8))
@@ -2020,6 +2172,16 @@ def construir_indice(
                 f"\nAVISO: PB{pb_u} {vuelo_u}: el ángulo de giro cambia de {viejo}º a "
                 f"{nuevo}º (algoritmo {VERSION_ALGORITMO_GIRO}). Se reabren {n_reabiertas} "
                 "imagen(es) del vuelo para reprocesarlas con el ángulo nuevo.\n")
+    if resultado.reabiertas_por_nombre:
+        progress_callback.emit(
+            f"\n{resultado.reabiertas_por_nombre} foto(s) reconocidas por nombre+EXIF+bytes "
+            "con otra ruta de origen: se reutiliza su fila (sin duplicar).\n")
+    for aviso in resultado.ambiguas:
+        progress_callback.emit(f"\nAVISO: emparejado ambiguo, posible duplicado: {aviso}\n")
+    if resultado.borrados_pendientes:
+        progress_callback.emit(
+            f"\nERROR: {resultado.borrados_pendientes} fichero(s) viejos de SIN_ORDENAR de "
+            "tandas anteriores siguen sin poder borrarse.\n")
     if resultado.reasignadas or resultado.siguen_sin_asignar:
         progress_callback.emit(
             f"\n{resultado.reasignadas} foto(s) sin asignar de tandas anteriores "
@@ -2076,4 +2238,6 @@ def construir_indice(
         "omitidas_copiandose": len(omitidas_copiandose),
         "vuelos_equipo_discrepa": vuelos_equipo_discrepa,
         "no_disponibles": no_disponibles,
+        "dias_sin_estadillo": dias_sin_estadillo,
+        "no_dji": no_dji,
     }

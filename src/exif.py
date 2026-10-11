@@ -135,6 +135,18 @@ class GeneralInformationFromImage:
             if tag not in ('JPEGThumbnail', 'TIFFThumbnail', 'Filename'):
                 self.organizer_logger.logger.info(tag, tags[tag])
 
+    def get_make(self, filename: str):
+        """Fabricante EXIF (`Image Make`) leyendo el fichero entero. `None` si no
+        hay tag; los errores de lectura se propagan (quien llama decide)."""
+        with open(filename, 'rb') as f:
+            tags = exifread.process_file(f, details=False, stop_tag="Image Make")
+            if "Image Make" not in tags:
+                f.seek(0)
+                tags = exifread.process_file(f, details=True)
+        if "Image Make" not in tags:
+            return None
+        return str(tags["Image Make"]).strip("\x00").strip() or None
+
     def get_model(self, filename: str, progress_callback) -> str:
         try:
             f = open(filename, 'rb')

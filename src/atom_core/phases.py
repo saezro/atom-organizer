@@ -1319,6 +1319,18 @@ class PipelinePhasesMixin:
                     progress_callback.emit(
                         f"\nERROR no se pudo emitir el marcador de errores del cierre: "
                         f"{excepcion_marcador}\n")
+                dias_sin_est = (resumen_indice or {}).get("dias_sin_estadillo") or []
+                no_dji = (resumen_indice or {}).get("no_dji") or []
+                if no_dji:
+                    progress_callback.emit(
+                        f"\nAVISO: {len(no_dji)} ficheros no DJI ignorados (quedan en origen): "
+                        + ", ".join(os.path.basename(r) for r, _m in no_dji[:10])
+                        + ("…" if len(no_dji) > 10 else "") + "\n")
+                for dia, n_fotos in dias_sin_est:
+                    progress_callback.emit(
+                        f"\nAVISO: día {dia} sin estadillo ({n_fotos} fotos) → "
+                        "irán a SIN_ORDENAR\n")
+                n_avisos = (1 if no_dji else 0) + len(dias_sin_est)
                 no_disp = (resumen_indice or {}).get("no_disponibles") or []
                 if no_disp:
                     progress_callback.emit(
@@ -1328,7 +1340,11 @@ class PipelinePhasesMixin:
                     for ruta in no_disp:
                         progress_callback.emit(f"  - {ruta}\n")
                 elif not problemas:
-                    progress_callback.emit("\nOrganizado completado sin problemas.\n")
+                    if n_avisos:
+                        progress_callback.emit(
+                            f"\nOrganizado completado con {n_avisos} aviso(s).\n")
+                    else:
+                        progress_callback.emit("\nOrganizado completado sin problemas.\n")
             except cancelacion.RunCancelado as cancelada:
                 # Cancelado: se sale SIN cierre (CSVs/verificación darían las
                 # filas 'pendiente' por run roto). Las filas 'hecho' están

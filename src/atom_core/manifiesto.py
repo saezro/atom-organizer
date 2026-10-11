@@ -358,6 +358,16 @@ class ResultadoInsercion:
     # asignar que siguen sin ventana en esta tanda.
     reasignadas: int = 0
     siguen_sin_asignar: int = 0
+    # Fotos reabiertas por (nombre + EXIF + bytes) porque su ruta de origen
+    # cambió entre tandas (p. ej. Drive -> bucket).
+    reabiertas_por_nombre: int = 0
+    # Fotos con >1 candidato por nombre+EXIF+bytes: no se emparejaron (se
+    # insertaron como nuevas) y se avisó. Una línea de texto por foto.
+    ambiguas: tuple = ()
+    # Borrados pendientes de tandas anteriores que se reintentaron / siguen sin
+    # poder borrarse.
+    borrados_reintentados: int = 0
+    borrados_pendientes: int = 0
 
 
 class Manifiesto:
@@ -492,7 +502,12 @@ class Manifiesto:
         asignaciones = ", ".join(f"{c} = :{c}" for c in columnas if c != "clave")
         conexion = self._conexion()
         nuevas = saltadas = reintentadas = reasignadas = siguen_sin_asignar = 0
+        reabiertas_por_nombre = 0
+        reclamadas: set[int] = set()   # filas ya emparejadas por nombre en ESTA llamada
+        ambiguas: list[str] = []
         vuelos_saltados: list[tuple[str, str]] = []
+        # Borrados que fallaron en una tanda anterior: se reintentan ahora.
+        borrados_reintentados, borrados_pendientes = self.reintentar_borrados_pendientes()
         with conexion:
             for fila in filas:
                 datos = {nombre: getattr(fila, nombre) for nombre in nombres}
@@ -507,10 +522,43 @@ class Manifiesto:
                     "SELECT id, estado, pb, vuelo, unassigned, ruta_salida_original, "
                     "ruta_salida_crop, ruta_salida_tiff FROM imagenes WHERE clave = ?",
                     (datos["clave"],)).fetchone()
+                por_nombre = False
+                if previa is None and datos["timestamp_exif"]:
+                    # Misma foto con otra ruta de origen (Drive -> bucket...):
+                    # nombre + EXIF + bytes, ignorando la ruta, y solo contra
+                    # filas de tandas ANTERIORES (dentro de una tanda dos
+                    # ficheros iguales de dos SD siguen siendo dos filas).
+                    candidatas = conexion.execute(
+                        "SELECT id, estado, pb, vuelo, unassigned, ruta_salida_original, "
+                        "ruta_salida_crop, ruta_salida_tiff, ruta_origen FROM imagenes "
+                        "WHERE nombre_original = ? AND timestamp_exif = ? AND bytes_origen = ? "
+                        "AND (? IS NULL OR ejecucion_id IS NULL OR ejecucion_id != ?)",
+                        (datos["nombre_original"], datos["timestamp_exif"],
+                         int(datos["bytes_origen"] or 0), ejecucion_id, ejecucion_id)).fetchall()
+                    candidatas = [c for c in candidatas if c["id"] not in reclamadas]
+                    if len(candidatas) == 1:
+                        previa = candidatas[0]
+                        por_nombre = True
+                        reclamadas.add(previa["id"])
+                    elif len(candidatas) > 1:
+                        aviso = (f"{fila.ruta_origen}: {len(candidatas)} filas del manifiesto "
+                                 "coinciden por nombre+EXIF+bytes con otra ruta de origen; "
+                                 "no se empareja ninguna (se trata como foto nueva)")
+                        ambiguas.append(aviso)
+                        logging.getLogger(__name__).warning(
+                            "Emparejado ambiguo, posible duplicado: %s", aviso)
                 if previa is None:
                     conexion.execute(f"INSERT INTO imagenes ({lista}) VALUES ({marcadores})", datos)
                     nuevas += 1
-                elif (previa["estado"] == "hecho" and previa["unassigned"]
+                    continue
+                if por_nombre:
+                    # La fila adopta la identidad nueva (ruta y clave) antes de
+                    # decidir qué hacer con ella; así la próxima tanda casa exacto.
+                    reabiertas_por_nombre += 1
+                    conexion.execute(
+                        "UPDATE imagenes SET ruta_origen = :ruta_origen, clave = :clave "
+                        "WHERE id = :id_previa", dict(datos, id_previa=previa["id"]))
+                if (previa["estado"] == "hecho" and previa["unassigned"]
                       and not datos["unassigned"]):
                     previas = "\n".join(
                         r for r in (previa["ruta_salida_original"], previa["ruta_salida_crop"],
@@ -536,7 +584,8 @@ class Manifiesto:
                     reintentadas += 1
             self._escribir_vuelos(conexion, vuelos or ())
         return ResultadoInsercion(nuevas, saltadas, reintentadas, vuelos_saltados,
-                                  reasignadas, siguen_sin_asignar)
+                                  reasignadas, siguen_sin_asignar, reabiertas_por_nombre,
+                                  tuple(ambiguas), borrados_reintentados, borrados_pendientes)
 
     def insertar_muchas(self, filas: Iterable[FilaManifiesto]) -> int:
         """Compatibilidad: cuántas filas NUEVAS entraron."""
@@ -589,30 +638,150 @@ class Manifiesto:
             nuevas = {r.casefold() for r in (previas["ruta_salida_original"],
                                              previas["ruta_salida_crop"],
                                              previas["ruta_salida_tiff"]) if r}
+            pendientes = []
             for ruta in previas["previas_sin_ordenar"].split("\n"):
                 if ruta and ruta.casefold() not in nuevas:
-                    self._borrar_ruta_previa(ruta, id_fila)
+                    if not self._borrar_ruta_previa(ruta, id_fila):
+                        pendientes.append(ruta)
+            if pendientes:
+                # Sin columna nueva: `previas_sin_ordenar` en una fila `hecho`
+                # significa "borrado pendiente". `insertar_o_reabrir` lo
+                # reintenta en la tanda siguiente y el cierre lo reporta.
+                self._actualizar(id_fila, previas_sin_ordenar="\n".join(pendientes))
 
-    def _borrar_ruta_previa(self, ruta: str, id_fila: int) -> None:
-        """Borra un fichero viejo de SIN_ORDENAR. Best-effort: un fallo al
-        borrar no debe tumbar la fila ya escrita. No borra si otra fila lo
-        tiene como salida (nunca se quita un fichero ajeno)."""
-        ajena = self._conexion().execute(
-            "SELECT 1 FROM imagenes WHERE id != ? AND (ruta_salida_original = ? "
-            "OR ruta_salida_crop = ? OR ruta_salida_tiff = ?) LIMIT 1",
-            (id_fila, ruta, ruta, ruta)).fetchone()
-        if ajena is not None:
-            return
+    _COLUMNAS_SALIDA = ("ruta_salida_original", "ruta_salida_crop", "ruta_salida_tiff")
+
+    def _todas_las_salidas(self) -> set[str]:
+        """Set casefold de las salidas actuales de TODAS las filas (una pasada)."""
+        conexion = self._conexion()
+        salidas: set[str] = set()
+        for fila in conexion.execute(
+                "SELECT ruta_salida_original, ruta_salida_crop, ruta_salida_tiff "
+                "FROM imagenes"):
+            salidas.update(r.casefold() for r in fila if r)
+        return salidas
+
+    def _salidas_coincidentes(self, ruta: str) -> set[str]:
+        """Salidas casefold de las filas que PUEDEN coincidir con `ruta`, sin
+        recorrer la tabla en Python. Consulta acotada (NOCASE en C, sin caché
+        entre llamadas que invalidar). NOCASE solo pliega ASCII: rutas con
+        no-ASCII caen al recorrido completo para conservar el casefold exacto."""
+        if not ruta.isascii():
+            return self._todas_las_salidas()
+        condicion = " OR ".join(f"{c} = ? COLLATE NOCASE" for c in self._COLUMNAS_SALIDA)
+        salidas: set[str] = set()
+        for fila in self._conexion().execute(
+                f"SELECT {', '.join(self._COLUMNAS_SALIDA)} FROM imagenes WHERE {condicion}",
+                (ruta,) * len(self._COLUMNAS_SALIDA)):
+            salidas.update(r.casefold() for r in fila if r)
+        return salidas
+
+    def _borrar_ruta_previa(self, ruta: str, id_fila: int,
+                            salidas: set[str] | None = None) -> bool:
+        """Borra un fichero viejo de SIN_ORDENAR y VERIFICA que ya no existe.
+        Un fallo no tumba la fila ya escrita, pero NO es silencioso: ERROR en
+        el log y devuelve False para que el llamante deje el borrado pendiente.
+        No borra si otra fila lo tiene como salida (nunca se quita un fichero
+        ajeno). True = ya no existe (borrado o ajeno/ausente)."""
+        # Comparación con casefold (igual que marcar_hecha) contra la salida
+        # actual de CUALQUIER fila, incluida la propia: si coincide, el fichero
+        # es una foto buena en uso y NO se borra (el pendiente se da por resuelto).
+        if salidas is None:
+            salidas = self._salidas_coincidentes(ruta)
+        if ruta.casefold() in salidas:
+            return True
+        log = logging.getLogger(__name__)
         try:
             from . import almacen
             if almacen.es_uri_gcs(ruta):
                 almacen_obj, prefijo = almacen.abrir_almacen(ruta)
                 almacen_obj.borrar(prefijo)
-            elif os.path.exists(ruta):
-                os.remove(ruta)
+                sigue = almacen_obj.existe(prefijo)
+            else:
+                if os.path.exists(ruta):
+                    os.remove(ruta)
+                sigue = os.path.exists(ruta)
         except Exception as exc:
-            logging.getLogger(__name__).warning(
-                "No se pudo borrar la ruta previa de SIN_ORDENAR %s: %s", ruta, exc)
+            log.error("No se pudo borrar la ruta previa de SIN_ORDENAR %s: %s "
+                      "(queda pendiente de borrado en la próxima tanda)", ruta, exc)
+            return False
+        if sigue:
+            log.error("La ruta previa de SIN_ORDENAR %s SIGUE existiendo tras borrarla "
+                      "(queda pendiente de borrado en la próxima tanda)", ruta)
+            return False
+        return True
+
+    def reintentar_borrados_pendientes(self) -> tuple[int, int]:
+        """Reintenta los borrados de SIN_ORDENAR que fallaron en una tanda
+        anterior (filas `hecho` con `previas_sin_ordenar`). Devuelve
+        (reintentados_ok, siguen_pendientes)."""
+        ok = pendientes = 0
+        filas = self._conexion().execute(
+            "SELECT id, previas_sin_ordenar FROM imagenes "
+            "WHERE estado = 'hecho' AND previas_sin_ordenar IS NOT NULL "
+            "AND previas_sin_ordenar != ''").fetchall()
+        if not filas:
+            return 0, 0
+        # Una sola lectura de salidas: borrar ficheros viejos no cambia las
+        # salidas de ninguna fila, así que el set vale durante todo el bucle.
+        salidas = self._todas_las_salidas()
+        cambios = []
+        for fila in filas:
+            quedan = []
+            rutas = [r for r in fila["previas_sin_ordenar"].split("\n") if r]
+            for ruta in rutas:
+                if self._borrar_ruta_previa(ruta, fila["id"], salidas):
+                    ok += 1
+                else:
+                    quedan.append(ruta)
+            pendientes += len(quedan)
+            nuevo = "\n".join(quedan) or None
+            if nuevo != fila["previas_sin_ordenar"]:
+                cambios.append((nuevo, fila["id"]))
+        if cambios:
+            conexion = self._conexion()
+            with conexion:  # un único commit
+                conexion.executemany(
+                    "UPDATE imagenes SET previas_sin_ordenar = ? WHERE id = ?", cambios)
+        return ok, pendientes
+
+    def borrados_sin_ordenar_pendientes(self) -> list[str]:
+        """Rutas viejas de SIN_ORDENAR que siguen sin borrarse (filas `hecho`)."""
+        rutas: list[str] = []
+        for fila in self._conexion().execute(
+                "SELECT previas_sin_ordenar FROM imagenes WHERE estado = 'hecho' "
+                "AND previas_sin_ordenar IS NOT NULL AND previas_sin_ordenar != ''"):
+            rutas.extend(r for r in fila["previas_sin_ordenar"].split("\n") if r)
+        return rutas
+
+    def duplicados_en_sin_ordenar(self) -> list[tuple[str, str]]:
+        """Fotos ya ordenadas (hecho, con vuelo) que además tienen OTRA fila
+        `hecho` sin asignar con el mismo nombre + EXIF y cuyo fichero sigue en
+        SIN_ORDENAR. Devuelve (ruta en SIN_ORDENAR, ruta ordenada). Solo
+        reporta: nunca borra."""
+        from . import almacen
+        ordenadas: dict[tuple[str, str], str] = {}
+        sin_ordenar: list[tuple[tuple[str, str], str]] = []
+        for fila in self._conexion().execute(
+                "SELECT nombre_original, timestamp_exif, unassigned, ruta_salida_original "
+                "FROM imagenes WHERE estado = 'hecho' AND timestamp_exif IS NOT NULL "
+                "AND timestamp_exif != '' ORDER BY id"):
+            clave = (fila["nombre_original"], fila["timestamp_exif"])
+            if fila["unassigned"]:
+                if fila["ruta_salida_original"]:
+                    sin_ordenar.append((clave, fila["ruta_salida_original"]))
+            elif fila["ruta_salida_original"]:
+                ordenadas.setdefault(clave, fila["ruta_salida_original"])
+        duplicados = []
+        for clave, ruta in sin_ordenar:
+            if clave in ordenadas:
+                try:
+                    existe = almacen.existe_ruta(ruta)
+                except Exception:  # noqa: BLE001 — duda = se reporta
+                    existe = True
+                if existe:
+                    duplicados.append((ruta, ordenadas[clave]))
+        return duplicados
 
     def rutas_salida_por_clave(self) -> dict[str, set[str]]:
         """`ruta de salida (original, crop o tiff)` -> claves de las imágenes

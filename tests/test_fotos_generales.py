@@ -64,6 +64,9 @@ class _ExifDePrueba:
     def get_timestamp_from_image(self, pathImagen):
         return self._timestamps.get(pathImagen)
 
+    def get_make(self, filename):
+        return "DJI"
+
     def get_model(self, filename, progress_callback):
         return self._modelos.get(filename, "M3T")
 

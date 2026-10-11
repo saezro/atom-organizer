@@ -161,12 +161,12 @@ def _inspeccion(tmp_path, make_dji_jpeg):
     origen = tmp_path / "origen"
     origen.mkdir()
     ts = dt.datetime(2026, 1, 15, 10, 0, 0)
-    make_dji_jpeg(str(origen / "DJI_0001_D.JPG"), dt_val=ts, gimbal_yaw=0.0)
-    make_dji_jpeg(str(origen / "DJI_0002_D.JPG"), dt_val=ts + dt.timedelta(seconds=5), gimbal_yaw=0.0)
-    make_dji_jpeg(str(origen / "DJI_0001_T.JPG"), dt_val=ts, gimbal_yaw=0.0)
-    make_dji_jpeg(str(origen / "DJI_0002_T.JPG"), dt_val=ts + dt.timedelta(seconds=5), gimbal_yaw=0.0)
+    make_dji_jpeg(str(origen / "DJI_0001_D.JPG"), dt_val=ts, gimbal_yaw=0.0, make="DJI")
+    make_dji_jpeg(str(origen / "DJI_0002_D.JPG"), dt_val=ts + dt.timedelta(seconds=5), gimbal_yaw=0.0, make="DJI")
+    make_dji_jpeg(str(origen / "DJI_0001_T.JPG"), dt_val=ts, gimbal_yaw=0.0, make="DJI")
+    make_dji_jpeg(str(origen / "DJI_0002_T.JPG"), dt_val=ts + dt.timedelta(seconds=5), gimbal_yaw=0.0, make="DJI")
     # Fuera de toda ventana del estadillo -> SIN_ORDENAR.
-    make_dji_jpeg(str(origen / "DJI_9999_D.JPG"), dt_val=dt.datetime(2020, 1, 1, 0, 0, 0), gimbal_yaw=0.0)
+    make_dji_jpeg(str(origen / "DJI_9999_D.JPG"), dt_val=dt.datetime(2020, 1, 1, 0, 0, 0), gimbal_yaw=0.0, make="DJI")
 
     _escribir_estadillo(tmp_path / "estadillo.csv",
                        [("1", "1", "2026:01:15", "09:55:00", "10:05:00")])
@@ -294,9 +294,9 @@ def test_rgb_extra_cuenta_como_rgb_no_se_queda_pendiente(tmp_path, make_dji_jpeg
     origen = tmp_path / "origen"
     origen.mkdir()
     ts = dt.datetime(2026, 1, 15, 10, 0, 0)
-    make_dji_jpeg(str(origen / "DJI_0001_D.JPG"), dt_val=ts, gimbal_yaw=0.0)
-    make_dji_jpeg(str(origen / "DJI_0001_T.JPG"), dt_val=ts, gimbal_yaw=0.0)
-    make_dji_jpeg(str(origen / "DJI_0001_E.JPG"), dt_val=ts, gimbal_yaw=0.0)
+    make_dji_jpeg(str(origen / "DJI_0001_D.JPG"), dt_val=ts, gimbal_yaw=0.0, make="DJI")
+    make_dji_jpeg(str(origen / "DJI_0001_T.JPG"), dt_val=ts, gimbal_yaw=0.0, make="DJI")
+    make_dji_jpeg(str(origen / "DJI_0001_E.JPG"), dt_val=ts, gimbal_yaw=0.0, make="DJI")
     _escribir_estadillo(tmp_path / "estadillo.csv",
                        [("1", "1", "2026:01:15", "09:55:00", "10:05:00")])
 
@@ -451,11 +451,11 @@ def test_segundo_cachito_acumula_salta_lo_hecho_y_reutiliza_el_angulo(tmp_path, 
     sd1, sd2 = tmp_path / "sd1", tmp_path / "sd2"
     sd1.mkdir()
     sd2.mkdir()
-    make_dji_jpeg(str(sd1 / "DJI_0001_D.JPG"), dt_val=ts, gimbal_yaw=90.0)
-    make_dji_jpeg(str(sd1 / "DJI_0002_D.JPG"), dt_val=ts + dt.timedelta(seconds=5), gimbal_yaw=90.0)
+    make_dji_jpeg(str(sd1 / "DJI_0001_D.JPG"), dt_val=ts, gimbal_yaw=90.0, make="DJI")
+    make_dji_jpeg(str(sd1 / "DJI_0002_D.JPG"), dt_val=ts + dt.timedelta(seconds=5), gimbal_yaw=90.0, make="DJI")
     import shutil as _sh
     _sh.copy2(sd1 / "DJI_0002_D.JPG", sd2 / "DJI_0002_D.JPG")
-    make_dji_jpeg(str(sd2 / "DJI_0003_D.JPG"), dt_val=ts + dt.timedelta(seconds=9), gimbal_yaw=0.0)
+    make_dji_jpeg(str(sd2 / "DJI_0003_D.JPG"), dt_val=ts + dt.timedelta(seconds=9), gimbal_yaw=0.0, make="DJI")
     _escribir_estadillo(tmp_path / "estadillo.csv", [("1", "1", "2026:01:15", "09:55:00", "10:05:00")])
 
     cfg1 = _cfg(tmp_path, input_folder=str(sd1), convert_to_tif=False)
