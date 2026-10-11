@@ -152,7 +152,8 @@ def _horas():
 def _arbol(root):
     """{ruta relativa: contenido} de todo lo que cuelga de `root`."""
     salida = {}
-    for dirpath, _dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d != ".organizado"]
         for f in filenames:
             completa = os.path.join(dirpath, f)
             salida[os.path.relpath(completa, root)] = open(completa, "rb").read()

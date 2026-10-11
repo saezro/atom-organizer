@@ -5,12 +5,17 @@
 Cuando el `else` del fallback vivía DENTRO del bucle, se ejecutaba una vez por
 entrada: las mismas imágenes se giraban dos veces (90 + 90 = 180).
 """
+import logging
 import os
+import types
 import pipeline
+
+_PROG = types.SimpleNamespace(emit=lambda *a, **k: None)
 
 
 def _obj_con_espia(monkeypatch, llamadas):
     obj = pipeline.GenStructFolder.__new__(pipeline.GenStructFolder)
+    obj.organizer_logger = types.SimpleNamespace(logger=logging.getLogger("test"))
     monkeypatch.setattr(
         obj, "gen_thumbnails_and_rotate",
         lambda carpeta, *a, **k: llamadas.append(carpeta), raising=False,
@@ -35,7 +40,7 @@ def test_fallback_con_dos_carpetas_rota_una_sola_vez(tmp_path, monkeypatch):
     obj = _obj_con_espia(monkeypatch, llamadas)
     obj.check_input_folder_and_iterate(
         str(raiz), ["TERMICA", "RGB"], 5, 280, 260, 100, 80,
-        True, False, None, None,
+        True, False, _PROG, _PROG,
     )
 
     assert llamadas == [str(raiz)], (
@@ -51,7 +56,7 @@ def test_fallback_con_dos_carpetas_y_only_pb_rota_una_sola_vez(tmp_path, monkeyp
     obj = _obj_con_espia(monkeypatch, llamadas)
     obj.check_input_folder_and_iterate(
         str(raiz), ["TERMICA", "RGB"], 5, 280, 260, 100, 80,
-        True, False, None, None, only_pb=["PB16_V1"],
+        True, False, _PROG, _PROG, only_pb=["PB16_V1"],
     )
 
     assert llamadas == [os.path.join(str(raiz), "PB16_V1")], (
@@ -68,7 +73,7 @@ def test_carpeta_presente_no_dispara_fallback(tmp_path, monkeypatch):
     obj = _obj_con_espia(monkeypatch, llamadas)
     obj.check_input_folder_and_iterate(
         str(raiz), ["TERMICA", "RGB"], 5, 280, 260, 100, 80,
-        True, False, None, None,
+        True, False, _PROG, _PROG,
     )
 
     assert llamadas == [os.path.join(str(raiz), "TERMICA")], (
