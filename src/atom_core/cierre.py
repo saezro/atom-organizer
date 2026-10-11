@@ -407,6 +407,26 @@ def verificar(manifiesto, cfg) -> list[str]:
             f"Ejemplo: {ejemplo['ruta_origen']} ({motivo})"
         )
 
+    # 4c. Duplicados en SIN_ORDENAR: foto ya ordenada que además sigue en
+    # SIN_ORDENAR (misma foto con otra ruta de origen entre tandas, o borrado
+    # fallido). ERROR visible; no se borra nada automáticamente.
+    try:
+        duplicados = manifiesto.duplicados_en_sin_ordenar()
+        pendientes_borrado = manifiesto.borrados_sin_ordenar_pendientes()
+    except Exception as exc:  # noqa: BLE001 — la comprobación no se traga
+        problemas.append(f"{PREFIJO_ERROR}no se pudo comprobar SIN_ORDENAR: {exc}")
+        duplicados, pendientes_borrado = [], []
+    if duplicados:
+        ejemplos = "; ".join(f"{a} (ya ordenada en {b})" for a, b in duplicados[:10])
+        problemas.append(
+            f"{PREFIJO_ERROR}{len(duplicados)} foto(s) en SIN_ORDENAR duplican una foto "
+            f"ya ordenada en destino (mismo nombre y EXIF). Ejemplos (máx 10): {ejemplos}")
+    if pendientes_borrado:
+        problemas.append(
+            f"{PREFIJO_ERROR}{len(pendientes_borrado)} fichero(s) viejos de SIN_ORDENAR "
+            f"no se pudieron borrar (se reintentará en la próxima tanda). Ejemplos "
+            f"(máx 10): {'; '.join(pendientes_borrado[:10])}")
+
     # 5. Toda ruta de salida de una fila 'hecho' existe en disco y no está vacía.
     # Es el fallo más peligroso: el manifiesto dice que la imagen está lista
     # pero no hay nada que entregar.

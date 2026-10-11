@@ -352,3 +352,176 @@ def test_aplicar_rgb_cuenta_vetadas_como_fallidas(tmp_path, monkeypatch):
     assert res == {"hecho": 0, "fallido": 2}
     assert open(destino, "rb").read() == b"organizado"
     m.cerrar()
+
+
+# --- Duplicados en SIN_ORDENAR al cambiar la ruta de origen entre tandas ----
+
+def test_cambio_de_ruta_origen_reabre_la_misma_fila_y_no_duplica(tmp_path):
+    m = _manifiesto_simple(tmp_path)
+    viejo = str(tmp_path / "SIN_ORDENAR" / "RGB" / "DJI_0001.JPG")
+    _escribir(viejo)
+    m.insertar_o_reabrir([_fila("gdrive:/x/DJI_0001.JPG", viejo, pb=None, vuelo=None,
+                                unassigned=True, bytes_origen=10)], ejecucion_id=1)
+    m.marcar_hecha(m.todas()[0]["id"], "ok")
+    # Clave guardada con la ruta de origen dentro (formato antiguo/otro origen):
+    # la clave exacta de la tanda 2 ya no casa.
+    m._conexion().execute("UPDATE imagenes SET clave = 'gdrive:/x/DJI_0001.JPG|t|10'")
+    m._conexion().commit()
+
+    nuevo = str(tmp_path / "RGB" / "PB1" / "DJI_0001.JPG")
+    r = m.insertar_o_reabrir([_fila("gs://b/DJI_0001.JPG", nuevo, bytes_origen=10)],
+                             ejecucion_id=2)
+
+    assert (r.nuevas, r.reasignadas, r.reabiertas_por_nombre) == (0, 1, 1)
+    filas = m.todas()
+    assert len(filas) == 1
+    assert filas[0]["ruta_origen"] == "gs://b/DJI_0001.JPG"
+    assert filas[0]["estado"] == "pendiente"
+    m.marcar_hecha(filas[0]["id"], "ok")
+    assert not os.path.exists(viejo)                      # sin duplicado en SIN_ORDENAR
+    # La tanda siguiente ya casa por clave exacta.
+    r2 = m.insertar_o_reabrir([_fila("gs://b/DJI_0001.JPG", nuevo, bytes_origen=10)],
+                              ejecucion_id=3)
+    assert (r2.nuevas, r2.saltadas, r2.reabiertas_por_nombre) == (0, 1, 0)
+    m.cerrar()
+
+
+def test_candidato_ambiguo_no_empareja_y_avisa(tmp_path, caplog):
+    import logging
+    m = _manifiesto_simple(tmp_path)
+    for i, origen in enumerate(("/a/DJI_0001.JPG", "/b/DJI_0001.JPG")):
+        m.insertar_o_reabrir([_fila(origen, f"/s{origen}", pb=None, vuelo=None,
+                                    unassigned=True, bytes_origen=10)], ejecucion_id=1)
+        m._conexion().execute("UPDATE imagenes SET clave = ? WHERE clave NOT LIKE 'viejo%'",
+                              (f"viejo{i}",))
+        m._conexion().commit()
+    with caplog.at_level(logging.WARNING):
+        r = m.insertar_o_reabrir([_fila("gs://b/DJI_0001.JPG", "/d/x.JPG", bytes_origen=10)],
+                                 ejecucion_id=2)
+    assert (r.nuevas, r.reabiertas_por_nombre) == (1, 0)
+    assert len(r.ambiguas) == 1
+    assert any("ambiguo" in x.getMessage() for x in caplog.records)
+    assert len(m.todas()) == 3
+    m.cerrar()
+
+
+def test_borrado_que_falla_avisa_y_se_reintenta_en_la_tanda_siguiente(tmp_path, monkeypatch, caplog):
+    import logging
+    m = _manifiesto_simple(tmp_path)
+    viejo = str(tmp_path / "SIN_ORDENAR" / "DJI_0001.JPG")
+    _escribir(viejo)
+    m.insertar_o_reabrir([_fila("/o/DJI_0001.JPG", viejo, pb=None, vuelo=None, unassigned=True)],
+                         ejecucion_id=1)
+    m.marcar_hecha(m.todas()[0]["id"], "ok")
+    nuevo = str(tmp_path / "RGB" / "DJI_0001.JPG")
+    m.insertar_o_reabrir([_fila("/o/DJI_0001.JPG", nuevo)], ejecucion_id=2)
+    id_fila = m.todas()[0]["id"]
+
+    real_remove = os.remove
+    monkeypatch.setattr(os, "remove", lambda r: (_ for _ in ()).throw(OSError("bloqueado")))
+    with caplog.at_level(logging.ERROR):
+        m.marcar_hecha(id_fila, "ok")
+    assert any("bloqueado" in x.getMessage() for x in caplog.records)
+    assert os.path.exists(viejo)
+    assert m.borrados_sin_ordenar_pendientes() == [viejo]
+
+    monkeypatch.setattr(os, "remove", real_remove)        # el bloqueo desaparece
+    r = m.insertar_o_reabrir([_fila("/o/DJI_0001.JPG", nuevo)], ejecucion_id=3)
+    assert r.borrados_reintentados == 1 and r.borrados_pendientes == 0
+    assert not os.path.exists(viejo)
+    assert m.borrados_sin_ordenar_pendientes() == []
+    m.cerrar()
+
+
+def test_borrado_que_no_surte_efecto_se_detecta_por_verificacion(tmp_path, monkeypatch, caplog):
+    import logging
+    m = _manifiesto_simple(tmp_path)
+    viejo = str(tmp_path / "SIN_ORDENAR" / "A.JPG")
+    _escribir(viejo)
+    m.insertar_o_reabrir([_fila("/o/A.JPG", str(tmp_path / "RGB" / "A.JPG"))])
+    monkeypatch.setattr(os, "remove", lambda r: None)     # "borra" pero sigue ahí
+    with caplog.at_level(logging.ERROR):
+        assert m._borrar_ruta_previa(viejo, m.todas()[0]["id"]) is False
+    assert any("SIGUE existiendo" in x.getMessage() for x in caplog.records)
+    monkeypatch.undo()
+    assert m._borrar_ruta_previa(viejo, m.todas()[0]["id"]) is True
+    assert not os.path.exists(viejo)
+    m.cerrar()
+
+
+def test_cierre_reporta_duplicado_en_sin_ordenar(tmp_path):
+    from atom_core import cierre
+    from .test_cierre_organizado import _cfg as _cfg_cierre
+    m = _manifiesto_simple(tmp_path)
+    viejo = str(tmp_path / "SIN_ORDENAR" / "DJI_0001.JPG")
+    _escribir(viejo)
+    ordenada = str(tmp_path / "RGB" / "DJI_0001.JPG")
+    _escribir(ordenada)
+    # Dos filas (el caso real: la clave difería por la ruta de origen).
+    m.insertar_o_reabrir([_fila("/o/DJI_0001.JPG", viejo, pb=None, vuelo=None, unassigned=True)],
+                         ejecucion_id=1)
+    m._conexion().execute("UPDATE imagenes SET clave = 'viejo'")
+    m._conexion().commit()
+    m.insertar_o_reabrir([_fila("/o/DJI_0001.JPG", ordenada)], ejecucion_id=1)
+    for f in m.todas():
+        m.marcar_hecha(f["id"], "ok")
+    assert m.duplicados_en_sin_ordenar() == [(viejo, ordenada)]
+    problemas = cierre.verificar(m, _cfg_cierre(tmp_path))
+    errores, _ = cierre.separar_problemas(problemas)
+    assert any("SIN_ORDENAR duplican" in e and viejo in e for e in errores)
+    m.cerrar()
+
+
+def test_fila_reabierta_que_vuelve_a_la_misma_ruta_no_borra_la_foto(tmp_path):
+    for variante in (lambda r: r, lambda r: r.swapcase()):
+        m = Manifiesto(tmp_path / f"m{id(variante)}.db")
+        m.crear_esquema()
+        ruta = str(tmp_path / f"v{id(variante)}" / "SIN_ORDENAR" / "A.JPG")
+        _escribir(ruta)
+        fila = m.todas()
+        m.insertar_o_reabrir([_fila("/o/A.JPG", ruta, pb=None, vuelo=None, unassigned=True)])
+        idf = m.todas()[0]["id"]
+        m._actualizar(idf, previas_sin_ordenar=variante(ruta))
+        m.marcar_hecha(idf, "ok")
+        # Camino de reintento (tanda siguiente) y camino directo.
+        m._actualizar(idf, previas_sin_ordenar=variante(ruta))
+        ok, pend = m.reintentar_borrados_pendientes()
+        assert os.path.exists(ruta) and pend == 0
+        assert m._borrar_ruta_previa(variante(ruta), idf) is True
+        assert os.path.exists(ruta)
+        m.cerrar()
+
+
+
+def test_rendimiento_borrado_previas_con_miles_de_filas(tmp_path):
+    """~5000 filas, ~500 reasignadas: marcar_hecha y el reintento no son O(filas) por ruta."""
+    m = Manifiesto(tmp_path / "perf.db")
+    m.crear_esquema()
+    n, reasig = 5000, 500
+    m.insertar_o_reabrir([
+        _fila(f"/o/D{i}.JPG", f"/d/PB1/V1/D{i}.JPG", timestamp_exif=f"2024-06-01T10:{i % 60:02d}:{i // 60:02d}")
+        for i in range(n)])
+    filas = m.todas()
+    viejos = []
+    for k, fila in enumerate(filas[:reasig]):
+        viejo = str(tmp_path / "SIN_ORDENAR" / f"V{k}.JPG")
+        _escribir(viejo)
+        viejos.append(viejo)
+        m._actualizar(fila["id"], previas_sin_ordenar=viejo)
+    # Una protegida: salida actual de otra fila, en otra capitalización.
+    protegida = str(tmp_path / "SIN_ORDENAR" / "KEEP.JPG")
+    _escribir(protegida)
+    m._actualizar(filas[reasig]["id"], ruta_salida_original=protegida)
+    m._actualizar(filas[0]["id"], previas_sin_ordenar=viejos[0] + "\n" + protegida.swapcase())
+    t0 = time.perf_counter()
+    for fila in filas[:reasig // 2]:
+        m.marcar_hecha(fila["id"], "ok")
+    for fila in filas[reasig // 2:reasig]:
+        m._actualizar(fila["id"], estado="hecho")
+    ok, pend = m.reintentar_borrados_pendientes()
+    dt_s = time.perf_counter() - t0
+    assert dt_s < 5, dt_s
+    assert pend == 0
+    assert all(not os.path.exists(v) for v in viejos)
+    assert os.path.exists(protegida)
+    m.cerrar()
