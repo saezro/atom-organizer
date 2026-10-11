@@ -1,6 +1,10 @@
 # tests/test_fallback_only_pb.py
+import logging
 import os
+import types
 import pipeline
+
+_PROG = types.SimpleNamespace(emit=lambda *a, **k: None)
 
 
 def test_fallback_sin_carpeta_respeta_only_pb(tmp_path, monkeypatch):
@@ -12,6 +16,7 @@ def test_fallback_sin_carpeta_respeta_only_pb(tmp_path, monkeypatch):
     llamadas = []
 
     obj = pipeline.GenStructFolder.__new__(pipeline.GenStructFolder)
+    obj.organizer_logger = types.SimpleNamespace(logger=logging.getLogger("test"))
     monkeypatch.setattr(
         obj, "gen_thumbnails_and_rotate",
         lambda carpeta, *a, **k: llamadas.append(carpeta), raising=False,
@@ -24,7 +29,7 @@ def test_fallback_sin_carpeta_respeta_only_pb(tmp_path, monkeypatch):
 
     obj.check_input_folder_and_iterate(
         str(raiz), ["RGB"], 5, 280, 260, 100, 80,
-        True, False, None, None, only_pb=["PB16_V1"],
+        True, False, _PROG, _PROG, only_pb=["PB16_V1"],
     )
 
     assert llamadas == [os.path.join(str(raiz), "PB16_V1")], (

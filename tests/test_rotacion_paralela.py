@@ -153,6 +153,8 @@ def test_los_mensajes_del_worker_llegan_al_log_del_padre(tmp_path, logger, make_
     para el usuario: el pipeline seguiría y la ventana de log no diría nada.
     """
     planta_folder, flight_folder = _vuelo_rgb(tmp_path, make_dji_jpeg, con_crop=False)
+    for i in range(10, 18):  # vuelo suficiente para superar UMBRAL_SENTIDO_GIRO_VUELO
+        make_dji_jpeg(str(flight_folder / f"DJI_{i:04d}_D.JPG"), gimbal_yaw=-90.0)
     (flight_folder / "DJI_0003_D.JPG").write_bytes(b"esto no es un JPEG")
     obj = _obj(logger, planta_folder)
 
@@ -179,8 +181,10 @@ def test_una_imagen_corrupta_no_tumba_el_lote(tmp_path, logger, make_dji_jpeg):
     de llegar a ese try.
     """
     planta_folder, flight_folder = _vuelo_rgb(tmp_path, make_dji_jpeg, con_crop=False)
+    for i in range(10, 18):  # vuelo suficiente para superar UMBRAL_SENTIDO_GIRO_VUELO
+        make_dji_jpeg(str(flight_folder / f"DJI_{i:04d}_D.JPG"), gimbal_yaw=-90.0)
     (flight_folder / "DJI_0003_D.JPG").write_bytes(b"esto no es un JPEG")
-    antes = {n: Image.open(flight_folder / n).size for n in ("DJI_0001_D.JPG", "DJI_0002_D.JPG")}
+    antes = {n: Image.open(flight_folder / n).size for n in sorted(os.listdir(flight_folder)) if n != "DJI_0003_D.JPG"}
 
     _rotar(_obj(logger, planta_folder), flight_folder)
 
