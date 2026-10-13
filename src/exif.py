@@ -1080,7 +1080,16 @@ class MetaLocation:
             # .csv encontrado en la carpeta, copiaba SIEMPRE el mismo fichero al mismo
             # destino: el resultado era idéntico, pero se repetía la copia N veces (y
             # sobre gcsfuse cada una es una subida completa a GCS).
-            shutil.copy2(csv_generado, csv_folder)
+            # `csv_folder` puede no existir (cierre organizado): `copy2` a una ruta
+            # inexistente crearía un FICHERO llamado `CSVs`. Se crea la carpeta, y si ya
+            # hay un fichero con ese nombre (usuarios afectados) se aparta sin perder dato.
+            if os.path.isfile(csv_folder):
+                apartado = f"{csv_folder}.roto-{datetime.datetime.now():%Y%m%d%H%M%S}"
+                self.organizer_logger.logger.warning(
+                    f"'{csv_folder}' es un fichero, no una carpeta; se renombra a '{apartado}'")
+                os.replace(csv_folder, apartado)
+            os.makedirs(csv_folder, exist_ok=True)
+            shutil.copy2(csv_generado, os.path.join(csv_folder, nombre_csv))
         return csv_generado
 
     def gen_meta_location(self, input_folder: str, filename: str, progress_callback, progress_bar, csv_folder, flight_height:float, calculate_proyected_distance: bool) -> None:
