@@ -411,7 +411,7 @@ jobs:
           ID=$(gcloud builds submit --config=packaging/cloudbuild-job.yaml \
                  --substitutions=_VERSION="$VER" \
                  --project=aerotools-484814 \
-                 --gcs-source-staging-dir=gs://aerotools-484814-cloudbuild-staging/staging \
+                 --gcs-source-staging-dir=gs://aerotools-organizer-ci-build/staging \
                  --async --format='value(id)' .)
           echo "Build $ID — https://console.cloud.google.com/cloud-build/builds/$ID?project=217557350193"
           # El build ronda los 10 min con E2_HIGHCPU_8; el timeout del yaml es 3600s.
