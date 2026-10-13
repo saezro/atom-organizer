@@ -53,7 +53,7 @@ METODOS_EXPUESTOS = frozenset({
     "red_ap_estado", "red_ap_activar", "red_ap_desactivar",
     "disco_estado",
     "pin_estado", "pin_fijar", "pin_verificar", "pin_cambiar", "pin_telemetria",
-    "logs_listar", "logs_leer", "logs_carpeta",
+    "logs_listar", "logs_leer", "logs_carpeta", "log_front",
     "sesion_remota",
     "estadillo_espera_iniciar", "estadillo_espera_cancelar", "estadillo_espera_estado",
     "estadillo_espera_carpeta",
