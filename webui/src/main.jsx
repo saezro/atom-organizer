@@ -4,7 +4,42 @@ import './index.css'
 import App from './App.jsx'
 import MovilRed from './MovilRed.jsx'
 import ErrorBoundary from './ErrorBoundary.jsx'
-import { esRemoto } from './bridge.js'
+import { esRemoto, logFront } from './bridge.js'
+
+// Errores del front -> log de Python (diagnostico por SSH).
+let reenviando = false
+function reenviar(nivel, mensaje, detalle) {
+  if (reenviando) return
+  reenviando = true
+  try {
+    logFront(nivel, mensaje, detalle)
+  } finally {
+    reenviando = false
+  }
+}
+function texto(a) {
+  if (a instanceof Error) return a.stack || a.message
+  if (typeof a === 'string') return a
+  try {
+    return JSON.stringify(a)
+  } catch {
+    return String(a)
+  }
+}
+window.addEventListener('error', (e) => {
+  reenviar('error', `window.onerror: ${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`, e.error?.stack)
+})
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e.reason
+  reenviar('error', `unhandledrejection: ${r?.message || texto(r)}`, r?.stack)
+})
+for (const [nivel, metodo] of [['error', 'error'], ['warning', 'warn']]) {
+  const original = console[metodo].bind(console)
+  console[metodo] = (...args) => {
+    original(...args)
+    reenviar(nivel, `console.${metodo}: ${args.map(texto).join(' ')}`)
+  }
+}
 
 // Modo de prueba: `?cursor` en la URL repone el puntero del raton dentro del
 // kiosco (ver App.css). Solo para probar desde un navegador de escritorio; la

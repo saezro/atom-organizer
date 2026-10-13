@@ -41,6 +41,9 @@ const ESPERA_ESTADO_MS = 6000
 
 export function useSesion() {
   const [cargando, setCargando] = useState(true)
+  // Login de Google en curso: deshabilita botones sin tocar `cargando` (el gate
+  // de App desmontaría PantallaEntrada).
+  const [entrando, setEntrando] = useState(false)
   const [cuenta, setCuenta] = useState(null)
   const [invitado, setInvitado] = useState(false)
   const [error, setError] = useState(null)
@@ -60,9 +63,9 @@ export function useSesion() {
   // Generacion de `refrescar`: solo la llamada mas reciente puede escribir estado.
   const generacionRef = useRef(0)
 
-  const refrescar = useCallback(async () => {
+  const refrescar = useCallback(async ({ silencioso = false } = {}) => {
     const gen = ++generacionRef.current
-    setCargando(true)
+    if (!silencioso) setCargando(true)
     setError(null)
     errorPendienteRef.current = false
     try {
@@ -134,7 +137,7 @@ export function useSesion() {
 
   const entrarConGoogle = useCallback(async () => {
     setError(null)
-    setCargando(true)
+    setEntrando(true)
     try {
       // `cloud_login` es fire-and-forget: la promesa resuelve en cuanto se
       // lanza el hilo, mucho antes de que el usuario complete el
@@ -167,11 +170,11 @@ export function useSesion() {
       if (evento && evento.ok === false) {
         throw new Error(String(evento.text || 'No se pudo iniciar sesión.'))
       }
-      await refrescar()
+      await refrescar({ silencioso: true })
     } catch (e) {
       setError(String(e?.message || e))
-      setCargando(false)
     } finally {
+      setEntrando(false)
       offLoginRef.current?.()
       offLoginRef.current = null
     }
@@ -188,7 +191,7 @@ export function useSesion() {
       if (!respuesta || respuesta.ok === false || respuesta.error) {
         throw new Error(String(respuesta?.error || respuesta?.reason || 'No se pudo iniciar sesión.'))
       }
-      await refrescar()
+      await refrescar({ silencioso: true })
       return true
     } catch (e) {
       setError(String(e?.message || e))
@@ -246,6 +249,7 @@ export function useSesion() {
 
   return {
     cargando,
+    entrando,
     entrado: Boolean(cuenta) || invitado,
     invitado,
     cuenta,

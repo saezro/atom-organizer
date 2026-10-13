@@ -430,6 +430,7 @@ class GoogleAuth:
         self._gcs_cache = {}
         self._gcs_prefijos = {}
         self._acceso_modulos = None
+        self._identity = None
         try:
             self._store.meta_set(META_SESION_EXPIRA, None)
             self._store.meta_set(META_ACCESO_MODULOS, None)

@@ -1,11 +1,11 @@
 """El chequeo automático de arranque (`start_update_check`, 3 s tras crear la
-ventana) emite `atom:update` por el sink, pero `UpdateModal` no está montado
-mientras el usuario no ha pasado el login: el evento se pierde y el aviso de
-versión nueva nunca sale (ver `App.jsx`, que solo monta `<PantallaEntrada>`
-mientras `!entrado`).
+ventana) emite `atom:update` por el sink, pero puede hacerlo antes de que el
+front haya montado `UpdateModal` o registrado su listener (el modal está
+montado siempre, también en la pantalla de entrada, ver `App.jsx`): el evento
+se pierde y el aviso de versión nueva nunca sale.
 
 Fix: `Api` cachea el último aviso "hay versión nueva" en `_ultimo_update`, y
-`get_ultimo_update()` lo expone para que el modal, al montarse tarde, lo
+`get_ultimo_update()` lo expone para que el modal, al montarse, lo
 recupere por su cuenta.
 """
 from __future__ import annotations

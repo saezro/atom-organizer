@@ -756,6 +756,10 @@ select.glass-input option {
 .field-hint.hint-warn {
   color: #f0b866;
 }
+.field-hint.hint-error {
+  color: var(--peligro, #e5484d);
+  font-weight: 600;
+}
 /* Pantalla «Esperando estadillo» (EsperaEstadillo): modo «Recibir del
    portátil» de PasoEstadillo. Tres estados por color (amarillo/verde/rojo,
    `data-fase`), pantalla oscura, tipografía monoespaciada para los datos que
@@ -3946,6 +3950,10 @@ html.kiosk-modo body * {
   font-size: var(--fs-md, 1rem);
   padding: 1rem 1.5rem;
   text-align: center;
+}
+.entrada-error.entrada-error-activo {
+  color: var(--peligro, #e5484d);
+  font-weight: 600;
 }
 .entrada-error {
   max-width: min(24rem, 85vw);

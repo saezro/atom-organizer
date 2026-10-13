@@ -46,12 +46,16 @@ sea siempre cuatro y `parse_prefijo()` no tenga que adivinar.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
 import unicodedata
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, asdict
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "Inspeccion",
@@ -261,8 +265,14 @@ def cargar_catalogo(bucket: str, auth) -> dict:
     try:
         inspecciones = descargar_catalogo_api(auth)
     except Exception as exc:  # noqa: BLE001 - se enseña, no se traga
-        return {"ok": False, "inspecciones": [], "origen": "api",
-                "bajado_en": 0.0, "error": f"api: {exc}"}
+        logger.warning("No se pudo descargar el catálogo de la API: %r", exc)
+        res = {"ok": False, "inspecciones": [], "origen": "api",
+               "bajado_en": 0.0, "error": f"api: {exc}"}
+        # 401 = la sesión local no vale contra la Suite: quien llama debe
+        # invalidarla en vez de dejar al operador con una lista vacía muda.
+        if isinstance(exc, urllib.error.HTTPError) and exc.code == 401:
+            res["auth_invalida"] = True
+        return res
     return {"ok": True, "inspecciones": [i.to_dict() for i in inspecciones],
             "origen": "api", "bajado_en": time.time(), "error": None}
 
