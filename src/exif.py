@@ -1176,14 +1176,94 @@ class MetaLocation:
             return por_idx, sin_patron
         t_idx, t_np = indexar(imagenes_t, "T")
         w_idx, w_np = indexar(imagenes_w, "W")
-        pares, sin_pareja = [], []
-        for k in sorted(set(t_idx) | set(w_idx)):
-            ts, ws = t_idx.get(k, []), w_idx.get(k, [])
-            if len(ts) == 1 and len(ws) == 1:
-                pares.append((ts[0], ws[0]))
+        # Desfase W-T por vuelo (la lista recibida es UN vuelo): 1) moda de idx_W - idx_T entre T y su W
+        # más cercano en timestamp (del nombre, tolerancia 2 s); 2) sin timestamps, el desfase de
+        # (0, 1, -1, 2, -2) que más empareje. Cada W se usa una sola vez.
+        t_ok = {k: v[0] for k, v in t_idx.items() if len(v) == 1}
+        w_ok = {k: v[0] for k, v in w_idx.items() if len(v) == 1}
+        desfase = None
+        ts_t = {k: self._ts_nombre(n) for k, n in t_ok.items()}
+        ts_w = {k: self._ts_nombre(n) for k, n in w_ok.items()}
+        if ts_t and ts_w and all(v is not None for v in ts_t.values()) and all(v is not None for v in ts_w.values()):
+            from collections import Counter  # noqa: PLC0415
+            deltas = []
+            for kt, tt in ts_t.items():
+                kw, dif = min(((kw, abs((tw - tt).total_seconds())) for kw, tw in ts_w.items()), key=lambda x: x[1])
+                if dif <= 2.0:
+                    deltas.append(kw - kt)
+            if deltas:
+                cuenta = Counter(deltas)
+                top = cuenta.most_common(2)
+                if len(top) == 1 or top[0][1] > top[1][1]:  # empate: no es evidencia, se prueba por candidatos
+                    desfase = top[0][0]
+        if desfase is None:
+            mejor = -1
+            for d in (0, 1, -1, 2, -2):
+                n = sum(1 for k in t_ok if (k + d) in w_ok)
+                if n > mejor:
+                    mejor, desfase = n, d
+        pares, sin_pareja, usados_w = [], [], set()
+        for k in sorted(t_idx):
+            if k in t_ok and (k + desfase) in w_ok and (k + desfase) not in usados_w:
+                pares.append((t_ok[k], w_ok[k + desfase])); usados_w.add(k + desfase)
             else:
-                sin_pareja.extend(ts + ws)
+                sin_pareja.extend(t_idx[k])
+        for k in sorted(w_idx):
+            if k not in usados_w:
+                sin_pareja.extend(w_idx[k])
+        # Recuperación de saltos/reinicios del contador DJI (999 -> 0001) con las T y W sueltas.
+        recuperados = 0
+        t_sueltas = [k for k in sorted(t_ok) if not any(p[0] == t_ok[k] for p in pares)]
+        w_libres = {k: n for k, n in w_ok.items() if k not in usados_w}
+        con_ts = bool(ts_t) and bool(ts_w) and all(v is not None for v in ts_t.values()) \
+            and all(v is not None for v in ts_w.values())
+        nuevos = {}
+        if t_sueltas and w_libres:
+            if con_ts:
+                for kt in t_sueltas:
+                    cand = [(abs((ts_w[kw] - ts_t[kt]).total_seconds()), kw) for kw in w_libres if kw not in nuevos.values()]
+                    if cand:
+                        dif, kw = min(cand)
+                        if dif <= 2.0:
+                            nuevos[kt] = kw
+            else:
+                todos = list(t_idx) + list(w_idx)
+                lo, hi = min(todos), max(todos)
+                span = hi - lo + 1
+                for kt in t_sueltas:
+                    kw = (kt + desfase - lo) % span + lo
+                    if kw != kt + desfase and kw in w_libres and kw not in nuevos.values():
+                        nuevos[kt] = kw
+        if nuevos:
+            for kt, kw in nuevos.items():
+                pares.append((t_ok[kt], w_ok[kw])); usados_w.add(kw)
+            recuperados = len(nuevos)
+            quitar = {t_ok[k] for k in nuevos} | {w_ok[k] for k in nuevos.values()}
+            sin_pareja = [n for n in sin_pareja if n not in quitar]
+            pares.sort(key=lambda par: self._clave_idx_dji(par[0], "T"))
+            self.organizer_logger.logger.info(
+                f"Emparejado T/W: {recuperados} pares recuperados por salto/reinicio del contador DJI "
+                f"({'por timestamp' if con_ts else 'por reinicio de índice'}).")
+        self.desfase_tw = desfase
+        if t_idx and w_idx:
+            self.organizer_logger.logger.info(
+                f"Emparejado T/W: desfase de índice DJI detectado (idx_W - idx_T) = {desfase:+d}; "
+                f"{len(pares)} pares, {len(sin_pareja)} fotos sin pareja.")
         return pares, sin_pareja, t_np + w_np
+
+    @staticmethod
+    def _ts_nombre(nombre: str):
+        """datetime del timestamp del nombre (`DJI_<YYYYMMDDHHMMSS>_...` o `<YYYYMMDD>_<HHMMSS>_DJI_...`) o None."""
+        import datetime as _dt  # noqa: PLC0415
+        import re as _re  # noqa: PLC0415
+        b = os.path.basename(str(nombre))
+        m = _re.search(r"(?<!\d)(\d{8})_?(\d{6})(?!\d)", b)
+        if not m:
+            return None
+        try:
+            return _dt.datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+        except ValueError:
+            return None
 
     def _aviso(self, progress_callback, texto: str, error: bool = True) -> None:
         self.organizer_logger.logger.info(texto)
@@ -1200,6 +1280,13 @@ class MetaLocation:
         self._aviso(progress_callback,
                     f"AVISO: {vuelo}: {len(sin_pareja)} fotos sin pareja T/W por índice DJI; "
                     f"excluidas de meta y location: {ej}.", error=False)
+
+    def _aviso_sin_pares(self, progress_callback, vuelo: str, n_t: int) -> None:
+        """Hay térmicas pero ningún par T/W: ERROR visible (cuenta en error_meta_location)."""
+        if n_t:
+            self._aviso(progress_callback,
+                        f"ERROR: {vuelo}: {n_t} térmicas pero ningún par T/W emparejable por índice DJI; "
+                        "meta.csv y location.csv NO se generan.")
 
     def gen_meta_location_emparejado(self, carpeta_t: str, carpeta_w: str, progress_callback, progress_bar,
                                      csv_folder: str, flight_height: float, calculate_proyected_distance: bool) -> None:
@@ -1226,6 +1313,7 @@ class MetaLocation:
         for n in sin_patron:
             self._aviso(progress_callback, f"ERROR: {n} sin patrón DJI '_<idx>_T|W'; excluida de meta y location.")
         if not pares:
+            self._aviso_sin_pares(progress_callback, carpeta_t or carpeta_w, len(imgs_t))
             return
         rutas = [(unir(carpeta_t, t), unir(carpeta_w, w)) for t, w in pares]
         flat = [r for par in rutas for r in par]
