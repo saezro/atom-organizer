@@ -21,6 +21,7 @@ import atexit
 import io
 import csv
 import json
+import logging
 import os
 import queue
 import re
@@ -1037,6 +1038,10 @@ def _timeout_exif_s() -> float:
     return float(os.environ.get("ATOM_EXIF_TIMEOUT_S", "120") or 120)
 
 
+class _MuerteAlArrancar(RuntimeError):
+    """Un proceso exiftool murió antes de contestar nada (reintentable)."""
+
+
 class _PoolExiftool:
     """Pool de procesos `exiftool -stay_open` reutilizables desde los hilos de
     conversión. Cada hilo reserva un hueco (semáforo de `procesos`), toma un
@@ -1059,6 +1064,10 @@ class _PoolExiftool:
         self._cerrado = False
         self._alguna_vez_ok = False
         self.fatal: "str | None" = None
+        # Arranque robusto: el primer proceso va en serie (el exiftool.exe PAR
+        # se autoextrae en %TEMP% una sola vez) y un arranque fallido se reintenta.
+        self._calentamiento = threading.Lock()
+        self._esperas_arranque = (0.5, 1.0, 2.0)
 
     def _nuevo(self):
         if self._comando is not None:
@@ -1076,6 +1085,7 @@ class _PoolExiftool:
             raise ExiftoolNoDisponible(self.fatal) from exc
         with self._lock:
             self._todos.append(proc)
+        proc._contesto = False  # por proceso: True al ver su primer {ready
         return proc
 
     def _tomar(self):
@@ -1098,6 +1108,34 @@ class _PoolExiftool:
             self._huecos.release()
 
     def _copiar_con_hueco(self, src: str, dst: str) -> None:
+        if self._alguna_vez_ok:
+            self._intentar_con_reintentos(src, dst)
+            return
+        with self._calentamiento:
+            if self.fatal:
+                raise ExiftoolNoDisponible(self.fatal)
+            self._intentar_con_reintentos(src, dst)
+
+    def _intentar_con_reintentos(self, src: str, dst: str) -> None:
+        """Reintenta con espera creciente (0.5/1/2 s) si un proceso exiftool muere antes de contestar, sea el primero o uno nuevo. Si se agotan los intentos: con el pool sin ninguna respuesta correcta es fatal (ExiftoolNoDisponible con exit code y salida); con el pool ya sano solo falla esa fila (RuntimeError)."""
+        esperas = self._esperas_arranque
+        for intento in range(len(esperas) + 1):
+            try:
+                self._intentar(src, dst)
+                return
+            except _MuerteAlArrancar as exc:
+                logging.getLogger(__name__).warning(
+                    "exiftool murió al arrancar (intento %d/%d): %s",
+                    intento + 1, len(esperas) + 1, exc)
+                if intento >= len(esperas):
+                    if self._alguna_vez_ok:  # pool sano: falla solo esta fila
+                        raise RuntimeError(str(exc)) from exc
+                    self.fatal = "exiftool terminó nada más arrancar sin contestar ({0} intentos): {1}".format(
+                        len(esperas) + 1, exc)
+                    raise ExiftoolNoDisponible(self.fatal) from exc
+                time.sleep(esperas[intento])
+
+    def _intentar(self, src: str, dst: str) -> None:
         proc = self._tomar()
         bueno = False
         salida: list = []
@@ -1120,15 +1158,27 @@ class _PoolExiftool:
             while True:
                 linea = proc.stdout.readline()
                 if not linea:
-                    if not self._alguna_vez_ok and not salida and not matado_por_timeout.is_set():
-                        self.fatal = "exiftool terminó nada más arrancar sin contestar."
-                        raise ExiftoolNoDisponible(self.fatal)
+                    if not proc._contesto and matado_por_timeout.is_set():
+                        # Colgado sin contestar nunca: es un arranque fallido.
+                        cola = " | ".join(t for t in salida if t)[-500:]
+                        raise _MuerteAlArrancar(
+                            "timeout de {0:g} s sin respuesta; salida: {1}".format(
+                                self._timeout, cola or "(vacía)"))
+                    if not proc._contesto and not matado_por_timeout.is_set():
+                        try:
+                            codigo = proc.wait(timeout=2)
+                        except Exception:
+                            codigo = proc.poll()
+                        cola = " | ".join(t for t in salida if t)[-500:]
+                        raise _MuerteAlArrancar("exit code {0}; salida: {1}".format(
+                            codigo, cola or "(vacía)"))
                     raise RuntimeError(
                         "exiftool terminó inesperadamente o no contestó en {0:g} s copiando "
                         "metadatos a {1}".format(self._timeout, dst))
                 texto = linea.decode("utf-8", "replace").strip()
                 pos = texto.find("{ready")
                 if pos >= 0:
+                    proc._contesto = True
                     if texto[:pos].strip():
                         salida.append(texto[:pos].strip())
                     break
