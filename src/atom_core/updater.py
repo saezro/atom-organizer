@@ -322,16 +322,16 @@ def install(path: str, on_failure=None, expected_sha256: str | None = None) -> d
     """Lanza el instalador en silencio y deja que cierre/reabra la app.
 
     Flags Inno Setup:
-      /VERYSILENT             sin UI (salvo el UAC si lo hubiera; el instalador es per-user)
+      /SILENT                 solo barra de progreso (el usuario ve que se actualiza y no
+                              reabre la app a mitad); `WizardSilent` sigue siendo true
       /SUPPRESSMSGBOXES       sin diálogos bloqueantes
       /CLOSEAPPLICATIONS      cierra la instancia en marcha (la nuestra) para poder sustituir ficheros
       /FORCECLOSEAPPLICATIONS mata las que no responden al cierre limpio. Sin esto,
                               `QtWebEngineProcess` ignora al Restart Manager, Inno aborta
                               con ExitCode 5 y la actualización NO se aplica (verificado
                               en la VM de pruebas, 2026-08-04).
-      /RESTARTAPPLICATIONS    intenta reabrirla al terminar. Con force-close el Restart
-                              Manager ya no la revive: de relanzarla se encarga la entrada
-                              [Run] con `Check: WizardSilent` del .iss.
+                              (Sin /RESTARTAPPLICATIONS: de relanzarla se encarga la
+                              entrada [Run] con `Check: WizardSilent` del .iss.)
       /NORESTART              nunca reiniciar Windows
       /LOG="<ruta>"           deja el log de la instalación en la carpeta de logs.
 
@@ -374,8 +374,8 @@ def install(path: str, on_failure=None, expected_sha256: str | None = None) -> d
     try:
         creationflags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
         proc = subprocess.Popen(
-            [str(exe), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS",
-             "/FORCECLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS", "/NORESTART",
+            [str(exe), "/SILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS",
+             "/FORCECLOSEAPPLICATIONS", "/NORESTART",
              f"/LOG={log_path}"],
             close_fds=True,
             creationflags=creationflags,
@@ -387,7 +387,8 @@ def install(path: str, on_failure=None, expected_sha256: str | None = None) -> d
     if on_failure is not None:
         threading.Thread(target=_watch, args=(proc, on_failure, str(log_path)),
                          daemon=True).start()
-    return {"ok": True, "log": str(log_path)}
+    # `_proc` lo consume (y quita) quien llama; no es serializable hacia la UI.
+    return {"ok": True, "log": str(log_path), "_proc": proc}
 
 
 def _watch(proc: "subprocess.Popen", on_failure, log_path: str = "") -> None:
