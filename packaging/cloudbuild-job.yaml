@@ -12,7 +12,8 @@
 # Para que eso funcione (concedido 2026-08-10, mínimo privilegio a propósito):
 #   - rol `serviceusage.serviceUsageConsumer` a nivel proyecto — solo habilita
 #     *usar* APIs, no da acceso a ningún dato.
-#   - `storage.objectAdmin` SOLO sobre gs://aerotools-484814-cloudbuild-staging.
+#   - `storage.objectAdmin` + `storage.legacyBucketReader` (buckets.get, lo pide
+#     `builds submit`) SOLO sobre gs://aerotools-organizer-ci-build (recreado 2026-10-13).
 #     A nivel proyecto NO: le daría escritura sobre gs://<bucket>.
 # Por eso el `--gcs-source-staging-dir` es obligatorio: el bucket de staging por
 # defecto (aerotools-484814_cloudbuild) no le está concedido, y sin el flag el
@@ -24,7 +25,7 @@
 #     --substitutions=_VERSION=$VER \
 #     --project=aerotools-484814 \
 #     --account=atom-compute-ops@aerotools-484814.iam.gserviceaccount.com \
-#     --gcs-source-staging-dir=gs://aerotools-484814-cloudbuild-staging/staging .
+#     --gcs-source-staging-dir=gs://aerotools-organizer-ci-build/staging .
 #   gcloud run jobs update atom-organizer-pipeline --region=europe-west4 \
 #     --project=aerotools-484814 \
 #     --account=atom-compute-ops@aerotools-484814.iam.gserviceaccount.com \
