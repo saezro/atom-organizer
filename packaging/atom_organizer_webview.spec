@@ -303,3 +303,11 @@ coll = COLLECT(
     upx=False,
     name='ATOM-Organizer',         # dist/ATOM-Organizer/ATOM-Organizer.exe
 )
+
+# Marker de versión del build: el programa lo compara al arrancar con su __version__;
+# si no coinciden (exe nuevo + _internal viejo tras un update fallido) avisa y sale.
+# Ver atom_core/instalacion_guard.py.
+_marker_dir = _os.path.join(DISTPATH, 'ATOM-Organizer', '_internal')
+_os.makedirs(_marker_dir, exist_ok=True)
+with open(_os.path.join(_marker_dir, '.build-version'), 'w', encoding='utf-8') as _fh:
+    _fh.write(_APP_VER)

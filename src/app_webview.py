@@ -1218,8 +1218,8 @@ class Api:
         return {"started": True}
 
     def install_update(self, path: str | None = None) -> dict:
-        """Lanza el instalador silencioso. Él cierra esta instancia
-        (/FORCECLOSEAPPLICATIONS) y la reabre al terminar (entrada [Run] del .iss).
+        """Lanza el instalador (/SILENT, con barra de progreso) y se cierra sola;
+        Setup la reabre al terminar (entrada [Run] del .iss).
 
         Si el instalador falla y esta instancia sigue viva, el aviso llega a la UI
         por el mismo canal `atom:update`: sin esto el modal se quedaba en
@@ -1236,9 +1236,45 @@ class Api:
             return {"ok": False, "error": msg}
         res = updater.install(self._update_path, on_failure=on_failure,
                               expected_sha256=self._update_sha256)
+        proc = res.pop("_proc", None)
         if not res.get("ok"):
             self._push_update({"kind": "error", "text": res.get("error")})
+        else:
+            # Si Setup muere enseguida con error, NO cerrar: `on_failure` (hilo
+            # `_watch`) ya avisa a la UI y el usuario conserva la app abierta.
+            if self._setup_sigue_o_ok(proc):
+                self._cerrar_para_actualizar()
         return res
+
+    @staticmethod
+    def _setup_sigue_o_ok(proc, espera: float = 4.0, paso: float = 0.2) -> bool:
+        """Sondea `proc.poll()` ~4 s. False si Setup salió con código != 0."""
+        if proc is None:
+            return True
+        fin = time.monotonic() + espera
+        while time.monotonic() < fin:
+            code = proc.poll()
+            if code is not None:
+                return code == 0
+            time.sleep(paso)
+        return True
+
+    def _cerrar_para_actualizar(self) -> None:
+        """Setup ya está lanzado: cerrar esta instancia limpiamente (destruir la
+        ventana saca a `webview.start()` del loop y el proceso termina) para no
+        depender de que Inno la mate. Si en 8 s sigue viva, salida dura: mejor
+        eso que dejar QtWebEngineProcess bloqueando ficheros."""
+        def _cerrar() -> None:
+            time.sleep(1.5)  # deja que el JS reciba el retorno de install_update
+            try:
+                if self._window is not None:
+                    self._window.destroy()
+            except Exception:
+                logger.exception("No se pudo destruir la ventana tras lanzar Setup")
+            time.sleep(8)
+            os._exit(0)
+
+        threading.Thread(target=_cerrar, daemon=True).start()
 
     def _push_update(self, detail: dict) -> None:
         if not self._sink:
@@ -4593,6 +4629,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Interfaz del modo servidor. Por defecto solo local; usa 0.0.0.0 "
              "SOLO si quieres abrirla desde otro equipo de la red.",
     )
+    parser.add_argument("--tras-actualizar", action="store_true",
+                        help="Lo pasa el instalador al relanzar tras una actualización "
+                             "(el guard espera a que termine Setup).")
     parser.add_argument("--port", type=int, default=8765,
                         help="Puerto del modo servidor (por defecto 8765).")
     return parser
@@ -4756,6 +4795,15 @@ if __name__ == "__main__":
     # llamaba en su propio __main__, pero el entry point del build webview es ESTE
     # fichero y gui.py sólo se importa como módulo, así que aquel nunca corría.
     multiprocessing.freeze_support()
+    # Segundo paso más temprano: antes de tocar Qt/pywebview. Solo Windows y modo
+    # ventana (no --server); los hijos multiprocessing ya salieron en freeze_support.
+    if platform.system() == "Windows" and "--server" not in sys.argv:
+        from atom_core import instalacion_guard
+        from version import __version__ as _ver_programa
+        if instalacion_guard.comprobar_arranque(
+                version_programa=_ver_programa,
+                tras_actualizar="--tras-actualizar" in sys.argv):
+            sys.exit(0)
     if platform.system() == "Linux":
         # UseOzonePlatform: integración Wayland/X11 del Chromium de QtWebEngine.
         os.environ.setdefault(

@@ -66,7 +66,7 @@ def test_install_conserva_los_flags_que_hacen_funcionar_la_actualizacion(
     """Regresión: quitar cualquiera de estos rompe el auto-update entero.
 
     /FORCECLOSEAPPLICATIONS es el que evita el ExitCode 5 (el Restart Manager no
-    consigue cerrar QtWebEngineProcess); sin /VERYSILENT y /SUPPRESSMSGBOXES el
+    consigue cerrar QtWebEngineProcess); sin /SILENT y /SUPPRESSMSGBOXES el
     instalador se queda esperando a un usuario que no ve ninguna ventana.
     """
     monkeypatch.setattr(updater, "_install_log_path", lambda: tmp_path / "inst.log")
@@ -74,9 +74,13 @@ def test_install_conserva_los_flags_que_hacen_funcionar_la_actualizacion(
     updater.install(str(instalador))
 
     flags = set(popen_espia["argv"][1:])
-    for esperado in ("/VERYSILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS",
-                     "/FORCECLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS", "/NORESTART"):
+    for esperado in ("/SILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS",
+                     "/FORCECLOSEAPPLICATIONS", "/NORESTART"):
         assert esperado in flags, f"falta el flag {esperado}"
+    # /VERYSILENT oculta el progreso (el usuario reabre la app a mitad);
+    # /RESTARTAPPLICATIONS lo sustituye el [Run] con WizardSilent.
+    assert "/VERYSILENT" not in flags
+    assert "/RESTARTAPPLICATIONS" not in flags
 
 
 def test_log_va_a_la_carpeta_de_logs_del_usuario(monkeypatch, tmp_path):
@@ -143,3 +147,44 @@ def test_watch_calla_cuando_la_instalacion_va_bien(tmp_path):
                    str(tmp_path / "inst.log"))
 
     assert avisos == []
+
+
+def _api_para_install(monkeypatch, proc):
+    import app_webview
+    api = app_webview.Api.__new__(app_webview.Api)
+    api._update_path = "x.exe"
+    api._update_sha256 = "abc"
+    api._sink = None
+    cerrado = []
+    monkeypatch.setattr(updater, "install",
+                        lambda *a, **k: {"ok": True, "log": "l", "_proc": proc})
+    monkeypatch.setattr(app_webview.Api, "_cerrar_para_actualizar",
+                        lambda self: cerrado.append(True))
+    monkeypatch.setattr(app_webview.time, "sleep", lambda s: None)
+    return api, cerrado
+
+
+def test_install_update_no_cierra_si_setup_sale_con_error(monkeypatch):
+    class _P:
+        def poll(self):
+            return 5
+    api, cerrado = _api_para_install(monkeypatch, _P())
+    res = api.install_update()
+    assert res["ok"] is True and "_proc" not in res
+    assert cerrado == []
+
+
+def test_install_update_cierra_si_setup_sigue_vivo_o_sale_ok(monkeypatch):
+    class _Vivo:
+        def poll(self):
+            return None
+    api, cerrado = _api_para_install(monkeypatch, _Vivo())
+    api.install_update()
+    assert cerrado == [True]
+
+    class _Ok:
+        def poll(self):
+            return 0
+    api, cerrado = _api_para_install(monkeypatch, _Ok())
+    api.install_update()
+    assert cerrado == [True]

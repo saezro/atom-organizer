@@ -10,14 +10,19 @@
 ;    hace upgrade in-place. NO CAMBIAR NUNCA: cambiarlo rompe las actualizaciones
 ;    (dejaría dos apps instaladas en paralelo).
 ;  - PrivilegesRequired=lowest → instalación por usuario en %LOCALAPPDATA%\Programs,
-;    SIN UAC. Imprescindible para que el updater pueda lanzar el instalador en
-;    silencio (/VERYSILENT) sin que salte un diálogo de administrador que el
-;    usuario no vería (la app se cierra durante el proceso).
-;  - CloseApplications + RestartApplications: el Restart Manager cierra la
-;    instancia en marcha para poder sustituir los ficheros, y la reabre al acabar.
-;    OJO: en el updater in-app va con /FORCECLOSEAPPLICATIONS porque el cierre
-;    limpio no funciona (QtWebEngineProcess lo ignora), y entonces el Restart
-;    Manager ya no reabre nada → la reapertura la hace la entrada [Run] silenciosa.
+;    SIN UAC. Imprescindible para que el updater pueda lanzar el instalador sin
+;    que salte un diálogo de administrador que el usuario no vería.
+;  - El updater in-app usa /SILENT (barra de progreso visible, WizardSilent true),
+;    no /VERYSILENT: así el usuario ve que se está actualizando y no reabre la app.
+;  - SetupMutex (NO AppMutex: abortaría un silent install con la app viva): la app
+;    lo detecta al arrancar y se niega a abrirse mientras se instala.
+;  - CloseApplications: el Restart Manager cierra la instancia en marcha; en el
+;    updater va con /FORCECLOSEAPPLICATIONS (QtWebEngineProcess ignora el cierre
+;    limpio). NO hay RestartApplications: la reapertura la hace solo la entrada
+;    [Run] con Check: WizardSilent (con --tras-actualizar).
+;  - Bloque Code: PrepareToInstall espera a que mueran los procesos y comprueba que
+;    QtCore.pyd se abre en exclusiva ANTES de copiar nada: si no, aborta con la
+;    versión anterior intacta (evita la mezcla exe nuevo + _internal viejo).
 
 #ifndef MyVersion
   #define MyVersion "0.0.0"
@@ -53,9 +58,9 @@ OutputBaseFilename=ATOM-Organizer-Setup-v{#MyTag}
 Compression=lzma2/fast
 SolidCompression=no
 WizardStyle=modern
-; Cierra la app en marcha (y la reabre) al actualizar
+; Cierra la app en marcha al actualizar. La reapertura la hace [Run].
 CloseApplications=yes
-RestartApplications=yes
+SetupMutex=ATOM-Organizer-Setup
 CloseApplicationsFilter=*.exe
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExe}
@@ -94,11 +99,89 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: deskto
 Filename: "{app}\{#MyAppExe}"; Description: "Abrir {#MyAppName}"; Flags: nowait postinstall skipifsilent
 ; En modo silencioso (updater in-app) hay que relanzarla a mano: el updater usa
 ; /FORCECLOSEAPPLICATIONS y el Restart Manager, tras matar los procesos a la
-; fuerza, ya NO los revive con /RESTARTAPPLICATIONS (verificado en la VM,
-; 2026-08-04: instalaba bien pero la app no volvía). `WizardSilent` acota esta
+; fuerza, ya NO los revive (verificado en la VM, 2026-08-04: instalaba bien pero
+; la app no volvía). `WizardSilent` acota esta
 ; entrada a /SILENT y /VERYSILENT, para no abrirla dos veces en la interactiva.
-Filename: "{app}\{#MyAppExe}"; Flags: nowait runasoriginaluser; Check: WizardSilent
+Filename: "{app}\{#MyAppExe}"; Parameters: "--tras-actualizar"; Flags: nowait runasoriginaluser; Check: WizardSilent
 
 [UninstallDelete]
 ; Restos del updater (instaladores descargados en %TEMP%)
 Type: filesandordirs; Name: "{localappdata}\Temp\atom-organizer-update"
+
+[Code]
+// Devuelve True si queda (o no se puede descartar que quede) algún proceso de la
+// app vivo. Usa tasklist (por nombre de imagen); si no se puede saber -> True.
+function ProcesoVivo(Nombre: String): Boolean;
+var
+  Salida: String;
+  Contenido: AnsiString;
+  Code: Integer;
+begin
+  Result := True;
+  Salida := ExpandConstant('{tmp}\atom_tasklist.txt');
+  DeleteFile(Salida);
+  if not Exec(ExpandConstant('{cmd}'),
+              '/S /C "tasklist /FI "IMAGENAME eq ' + Nombre + '" /NH > "' + Salida + '" 2>&1"',
+              '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Exit;
+  if not FileExists(Salida) then
+    Exit;
+  if not LoadStringFromFile(Salida, Contenido) then
+    Exit;
+  Result := Pos(Lowercase(Nombre), Lowercase(String(Contenido))) > 0;
+end;
+
+function QuedanProcesos(): Boolean;
+begin
+  Result := ProcesoVivo('ATOM-Organizer.exe') or ProcesoVivo('QtWebEngineProcess.exe');
+end;
+
+// True si QtCore.pyd se puede abrir en exclusiva (nadie lo tiene cargado).
+// Renombrar NO sirve: Windows deja renombrar una DLL cargada.
+function PydLibre(Pyd: String): Boolean;
+var
+  S: TFileStream;
+begin
+  Result := True;
+  if not FileExists(Pyd) then
+    Exit;
+  try
+    S := TFileStream.Create(Pyd, fmOpenReadWrite or fmShareExclusive);
+    S.Free;
+  except
+    Result := False;
+  end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Inicio, Ahora: DWORD;
+  Code: Integer;
+  Matado: Boolean;
+begin
+  Result := '';
+  // Instalación nueva: nada que proteger.
+  if not DirExists(ExpandConstant('{app}')) then
+    Exit;
+
+  // Espera hasta 20 s reales; a los 10 s, taskkill de los dos nombres (una vez).
+  Inicio := GetTickCount;
+  Matado := False;
+  while QuedanProcesos() do
+  begin
+    Ahora := GetTickCount - Inicio;
+    if Ahora >= 20000 then
+      Break;
+    if (Ahora >= 10000) and (not Matado) then
+    begin
+      Matado := True;
+      Exec('taskkill.exe', '/F /IM ATOM-Organizer.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+      Exec('taskkill.exe', '/F /IM QtWebEngineProcess.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    end;
+    Sleep(500);
+  end;
+
+  // Comprobación final: apertura exclusiva de QtCore.pyd.
+  if not PydLibre(ExpandConstant('{app}\_internal\PySide6\QtCore.pyd')) then
+    Result := 'ATOM Organizer sigue abierto. Ciérralo y vuelve a intentar la actualización.';
+end;
