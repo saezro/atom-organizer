@@ -153,6 +153,9 @@ begin
   end;
 end;
 
+function GetTickCount: DWORD;
+  external 'GetTickCount@kernel32.dll stdcall';
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Inicio, Ahora: DWORD;
