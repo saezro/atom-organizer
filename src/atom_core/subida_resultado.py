@@ -163,6 +163,9 @@ def seleccionar(destino, prefijo: str) -> Seleccion:
 # Parte 2: partición, proveedor y subida
 # ---------------------------------------------------------------------------
 
+MAX_PAGINAS_RESULTADO = 2000
+
+
 class SubidaResultadoError(RuntimeError):
     """Fallo de la subida del resultado que la UI debe enseñar tal cual."""
 
@@ -228,6 +231,15 @@ class ProveedorResultado(cu.GcsOAuthProvider):
                 "Subir el resultado al bucket exige entrar con usuario y contraseña de ATOM Suite.")
         super().__init__(BUCKET_RESULTADO, auth, inspeccion_id=int(inspeccion_id), ambito=AMBITO_RESULTADO)
 
+    def listar_remotos(self, prefix: str):
+        """Inventario SIN el tope de 50.000 de los crudos: 2.000 páginas (2 M de
+        objetos). Si aun así se trunca lanza `ListadoTruncado` (no verificable)."""
+        return cu.listar_objetos_remotos(
+            self.bucket, prefix, self.auth, base=self.base,
+            token_prefix=self.prefix or prefix, inspeccion_id=self.inspeccion_id,
+            planta_id=self.planta_id, ambito=self.ambito,
+            max_paginas=MAX_PAGINAS_RESULTADO, estricto=True)
+
     def prefijo_destino(self) -> str:
         """Prefijo decidido por la Suite (pide el token si aún no lo hay)."""
         return self.auth.prefijo_resultado(self.inspeccion_id)
@@ -252,10 +264,46 @@ class ResumenResultado:
     sin_clasificar: int = 0
     cancelado: bool = False
     simulado: bool = False
+    # Objetos que `upload_plan` devolvió como "cancelado" SIN que `should_stop`
+    # lo pidiera (subida cortada por otra causa): no son `fallidas`, pero faltan.
+    cancelados: list = field(default_factory=list)
+    # Verificación fresca contra el bucket tras subir: lo que falta o difiere
+    # (`[(remote, motivo)]`) y si se pudo comprobar (False = no se pudo listar).
+    faltantes: list = field(default_factory=list)
+    verificado: bool = True
+    # El listado del bucket no cabió (truncado): ni ok ni re-encolable.
+    truncado: bool = False
+
+    @property
+    def incompleta(self) -> bool:
+        """Faltan objetos en el bucket o no se pudo comprobar que estén."""
+        return bool(self.faltantes or self.cancelados or not self.verificado or self.truncado)
 
     @property
     def ok(self) -> bool:
-        return not (self.cancelado or self.fallidas or self.conflictos)
+        return not (self.cancelado or self.fallidas or self.conflictos or self.incompleta)
+
+    def motivo_incompleto(self) -> str:
+        """Texto para log/UI/telemetría: cuántos faltan y unos ejemplos."""
+        if self.truncado:
+            return ("El bucket tiene demasiados objetos para comprobarlo (listado truncado): "
+                    "la subida no es verificable.")
+        if not self.verificado:
+            return "No se pudo comprobar el bucket tras subir: no se da la subida por buena."
+        fall = {f[0] for f in self.fallidas}
+        total = {f[0] for f in self.faltantes} | set(self.cancelados) | fall
+        n = len(total)
+        if n == 0:
+            return "Subida no completada."
+        ej = "; ".join(f"{r}: {m}" for r, m in self.faltantes[:3])
+        if fall:
+            # Con fallidas la subida se corta: lo demás ni se intentó.
+            desglose = f"{len(fall)} fallidos, {len(total - fall)} sin intentar"
+        else:
+            desglose = f"{n} faltan en el bucket"
+        if self.cancelados:
+            desglose += f", {len(self.cancelados)} cortados (cancelado)"
+        return f"{n} objetos sin subir ({desglose}{'; ' + ej if ej else ''})."
 
     def a_dict(self) -> dict:
         return {
@@ -266,6 +314,9 @@ class ResumenResultado:
             "conflictos": [list(c) for c in self.conflictos],
             "fallidas": [list(f) for f in self.fallidas],
             "avisos": list(self.avisos), "sin_clasificar": self.sin_clasificar,
+            "faltantes": len({f[0] for f in self.faltantes} | set(self.cancelados)),
+            "faltantes_ejemplos": [list(f) for f in self.faltantes[:5]],
+            "verificado": self.verificado, "truncado": self.truncado,
         }
 
 
@@ -288,7 +339,10 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
     proveedor = proveedor or ProveedorResultado(auth, inspeccion_id)
     prefijo = proveedor.prefijo_destino()
     sel = seleccionar(destino, prefijo)
-    remotos = proveedor.listar_remotos(prefijo)
+    try:
+        remotos = proveedor.listar_remotos(prefijo)
+    except cu.ListadoTruncado as exc:
+        raise SubidaResultadoError(f"{exc}: no se sube nada.") from exc
     if remotos is None:
         raise SubidaResultadoError("No se pudo consultar el contenido del bucket: no se sube nada.")
     (destino / NOMBRE_CARPETA_MANIFIESTO).mkdir(parents=True, exist_ok=True)
@@ -339,9 +393,30 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
         resumen.fallidas += [f for f in res.failed if f[1] != "cancelado"]
         if should_stop is not None and should_stop():
             resumen.cancelado = True
+        else:
+            # Cortada sin que nadie lo pidiera: antes se filtraban y quedaba ok.
+            resumen.cancelados += [f[0] for f in res.failed if f[1] == "cancelado"]
         emitir(nombre)
         if resumen.cancelado or resumen.fallidas:
             break
+    # Verificación FRESCA contra el bucket: un `res.ok` solo dice que no hubo
+    # excepciones. Se cruzan todos los items de los grupos de este modo (menos los
+    # conflictos, que ya hacen la subida no-ok y a propósito no se suben).
+    if not simular and not resumen.cancelado:
+        conflictivos = {c[0] for c in resumen.conflictos}
+        todos = [it for _n, items in grupos for it in items if it.remote not in conflictivos]
+        try:
+            frescos = proveedor.listar_remotos(prefijo)
+        except cu.ListadoTruncado as exc:
+            logger.warning("verificación del resultado: %s", exc)
+            resumen.truncado = True
+            return resumen
+        except Exception:  # noqa: BLE001 - no poder comprobar = no ok
+            frescos = None
+        if frescos is None:
+            resumen.verificado = False
+        else:
+            resumen.faltantes = cu.faltantes_en_remoto(todos, frescos)
     return resumen
 
 

@@ -349,6 +349,26 @@ class RemoteObject:
     md5: str = ""
 
 
+class ListadoTruncado(RuntimeError):
+    """El inventario remoto no cabe en `max_paginas` y no se puede dar por completo."""
+
+
+def faltantes_en_remoto(items, remotos: dict) -> list[tuple[str, str]]:
+    """Cruza `items` contra un inventario remoto: `[(remote, motivo)]` de lo que
+    no está en el bucket o está con otro tamaño. Helper común de la verificación
+    de lotes (`Api._verificar_lote_completo`) y de la subida del resultado."""
+    faltantes: list[tuple[str, str]] = []
+    for item in items:
+        remoto = remotos.get(item.remote)
+        if remoto is None:
+            faltantes.append((item.remote, "no esta en el bucket"))
+        elif item.size >= 0 and remoto.size != item.size:
+            faltantes.append((
+                item.remote,
+                f"tamaño remoto {remoto.size} != {item.size} local"))
+    return faltantes
+
+
 def listar_objetos_remotos(bucket: str, prefix: str, auth, *,
                            base: str = "https://storage.googleapis.com",
                            timeout: int = TIMEOUT,
@@ -356,7 +376,8 @@ def listar_objetos_remotos(bucket: str, prefix: str, auth, *,
                            token_prefix: str | None = None,
                            inspeccion_id: int | None = None,
                            planta_id: int | None = None,
-                           ambito: str | None = None) -> dict[str, RemoteObject]:
+                           ambito: str | None = None,
+                           estricto: bool = False) -> dict[str, RemoteObject]:
     """Inventario COMPLETO de lo que hay bajo `prefix`, indexado por nombre.
 
     Esta es la pieza que hace que reseleccionar la misma carpeta no vuelva a
@@ -373,6 +394,10 @@ def listar_objetos_remotos(bucket: str, prefix: str, auth, *,
     no puede dejar la pantalla colgada. Cortar por lo sano es seguro: los
     objetos que no se lleguen a ver se tratan como no subidos, así que como
     mucho se resube de más — nunca de menos.
+
+    `estricto=True` (verificación del resultado): un inventario truncado NO es
+    utilizable, porque daría falsos faltantes; en vez de avisar y seguir, lanza
+    `ListadoTruncado`.
     """
     prefijo = prefix.strip("/")
     prefijo = prefijo + "/" if prefijo else ""
@@ -412,6 +437,10 @@ def listar_objetos_remotos(bucket: str, prefix: str, auth, *,
         # Se agotaron las páginas con `nextPageToken` todavía pendiente: el
         # inventario está incompleto y hay que decirlo, porque explica que se
         # resuba algo que en realidad ya estaba.
+        if estricto:
+            raise ListadoTruncado(
+                f"el destino tiene más de {max_paginas * 1000} objetos: "
+                "listado truncado, no verificable")
         _log.warning("el destino tiene más de %d objetos; me quedo con los "
                      "primeros %d y el resto se tratará como no subido",
                      max_paginas * 1000, len(encontrados))

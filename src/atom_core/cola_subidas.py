@@ -179,7 +179,8 @@ def descartar(job_id: str, *, ruta: Path | None = None) -> bool:
         return True
 
 
-def marcar_intento(job_id: str, error: str = "", *, ruta: Path | None = None) -> None:
+def marcar_intento(job_id: str, error: str = "", *, ruta: Path | None = None) -> int:
+    """Suma un intento al job y devuelve el contador nuevo (0 si no existe)."""
     ruta = ruta or _ruta_cola()
     with _SeccionCritica(ruta):
         jobs = _leer(ruta)
@@ -188,4 +189,5 @@ def marcar_intento(job_id: str, error: str = "", *, ruta: Path | None = None) ->
                 j["intentos"] = int(j.get("intentos", 0)) + 1
                 j["ultimo_error"] = error
                 _escribir(ruta, jobs)
-                return
+                return int(j["intentos"])
+    return 0

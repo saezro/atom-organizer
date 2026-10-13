@@ -70,6 +70,8 @@ class RunReporter:
         self._ultimo_latido = 0.0
         self._buffer_logs: list[dict] = []
         self._seq_log = 0
+        # Motivo de la ultima alta rechazada por la Suite (None si no hubo).
+        self.ultimo_error: str | None = None
 
     # -- utilidad interna ---------------------------------------------------
     def _peticion(self, metodo: str, ruta: str, cuerpo: dict,
@@ -156,7 +158,14 @@ class RunReporter:
                 cuerpo["bytes_total"] = bytes_total
             cuerpo.update(extra)
 
-            resp = self._peticion("POST", RUTA_RUNS, cuerpo)
+            # `detallar_error`: un 400 de la Suite ('inspeccion_id-requerido'...)
+            # llega como dict con `ok: False` y queda en `ultimo_error`, para que
+            # el llamador pueda avisar en vez de fallar en silencio.
+            resp = self._peticion("POST", RUTA_RUNS, cuerpo, detallar_error=True)
+            self.ultimo_error = None
+            if isinstance(resp, dict) and resp.get("ok") is False:
+                self.ultimo_error = str(resp.get("error") or "")
+                resp = None
             run_id = (resp or {}).get("id") if isinstance(resp, dict) else None
             with self._lock:
                 self._id = run_id if isinstance(run_id, int) else None
