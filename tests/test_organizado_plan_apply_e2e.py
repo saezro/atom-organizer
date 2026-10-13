@@ -21,7 +21,7 @@ Dobles a mano (`_HostDePrueba`, `_SignalFalsa`, `_ConfigObjFalso`) y
 Lo que estos tests sujetan:
 1. El árbol de salida final es el legacy que el equipo espera: `RGB/PBx/PBx_Vy`,
    `TERMICA/PBx/PBx_Vy`, `SIN_ORDENAR` (lo que no cae en ningún vuelo del
-   estadillo) y el CSV de criterio de giro en `CSVs/_criterio/`.
+   estadillo) (sin CSV Videofiles: el cierre ya no lo genera).
 2. Las 4 fases nuevas emiten su prefijo `---> SUBPROCESO:` con el nombre
    EXACTO que espera `atom_core.organize._SPLIT_PHASES`: es lo que
    `atom_core.organize._on_summary` intercepta para alimentar
@@ -219,14 +219,12 @@ def test_organizado_completo_produce_el_arbol_esperado(_inspeccion, logger, monk
     assert os.path.isdir(os.path.join(destino, "RGB", "PB1", "PB1_V1"))
     assert os.path.isdir(os.path.join(destino, "TERMICA", "PB1", "PB1_V1"))
     assert os.path.isdir(os.path.join(destino, "SIN_ORDENAR"))
-    assert os.path.isdir(os.path.join(destino, "CSVs", "_criterio"))
 
     assert len(os.listdir(os.path.join(destino, "RGB", "PB1", "PB1_V1"))) == 2
     # JPG + TIF por cada térmica del vuelo (2 térmicas -> 2 JPG + 2 TIF).
     assert len(os.listdir(os.path.join(destino, "TERMICA", "PB1", "PB1_V1"))) == 4
-    # El nombre del CSV de criterio usa `pb_vuelo` tal cual (`cierre._emitir_csv_criterio`),
-    # NO el nombre de la carpeta del vuelo (`PBx_Vy`, que lleva el prefijo "PB"/"V").
-    assert os.path.isfile(os.path.join(destino, "CSVs", "_criterio", "1_1_Videofiles.csv"))
+    # El cierre organizado ya NO escribe el CSV Videofiles.
+    assert not any(f.endswith("_Videofiles.csv") for _, _, fs in os.walk(destino) for f in fs)
 
     sin_ordenar_rgb = os.path.join(destino, "SIN_ORDENAR", "RGB")
     assert os.path.isdir(sin_ordenar_rgb)
