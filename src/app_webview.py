@@ -464,6 +464,9 @@ def _es_error_de_red(exc: BaseException) -> bool:
                             urllib.error.URLError))
 
 
+MAX_INTENTOS_RESULTADO = 3
+
+
 class Api:
     """Objeto puente expuesto a JS como `window.pywebview.api`."""
 
@@ -2109,16 +2112,7 @@ class Api:
                              prefix_lote, exc)
             return [], False
 
-        faltantes: list[tuple[str, str]] = []
-        for item in plan.items:
-            remoto = remotos.get(item.remote)
-            if remoto is None:
-                faltantes.append((item.remote, "no esta en el bucket"))
-            elif item.size >= 0 and remoto.size != item.size:
-                faltantes.append((
-                    item.remote,
-                    f"tamaño remoto {remoto.size} != {item.size} local"))
-        return faltantes, True
+        return cloud_upload.faltantes_en_remoto(plan.items, remotos), True
 
     def _inventario_precalentar(self, prefix: str) -> None:
         """Lanza (si no está ya) el listado del prefijo en un hilo.
@@ -3421,7 +3415,7 @@ class Api:
         ident = auth.identity if auth is not None else None
         return ident.email if ident else None
 
-    def _reporter_actual(self):
+    def _reporter_actual(self, tipo: str = "subida"):
         """`RunReporter` con la sesión activa, o `None` sin login.
 
         Sin login no hay a quién atribuir la misión ni credencial para
@@ -3433,7 +3427,7 @@ class Api:
         auth = self._get_auth()
         if auth is None or not getattr(auth, "is_logged_in", lambda: False)():
             return None
-        return RunReporter(auth=auth)
+        return RunReporter(auth=auth, tipo=tipo)
 
     def _log_subida(self, msg: str, *args) -> None:
         """Log local del reporte de subida. Nunca lanza: se usa en rutas
@@ -3560,7 +3554,12 @@ class Api:
                 if r.get("started"):
                     lanzados += 1
                     break
-                cola_subidas.marcar_intento(job["id"], str(r.get("reason", "")))
+                # «Ya hay una subida en curso» (busy) no es un intento fallido:
+                # el job queda en cola, sin sumar, para el siguiente drenado.
+                if not r.get("busy"):
+                    n = cola_subidas.marcar_intento(job["id"], str(r.get("reason", "")))
+                    if n >= MAX_INTENTOS_RESULTADO:
+                        cola_subidas.descartar(job["id"])
                 continue
             r = self.cloud_upload(job["folder"], prefix=job["prefix"],
                                   inspeccion_id=job.get("inspeccion_id"))
@@ -3612,16 +3611,19 @@ class Api:
             return {"started": False, "reason": "La carpeta de salida no existe."}
         with self._resultado_lock:
             if self._subiendo_resultado:
-                return {"started": False, "reason": "Ya hay una subida del resultado en curso."}
+                return {"started": False, "busy": True,
+                        "reason": "Ya hay una subida del resultado en curso."}
             self._subiendo_resultado = True
         self._cancel_resultado = False
 
         def worker() -> None:
             resumen = None
+            reporter = None
             modos = [sr.MODO_URGENCIA, sr.MODO_NORMAL] if (modo == sr.MODO_URGENCIA and seguir_en_normal) else [modo]
             try:
                 auth = self._get_auth()
                 self._push_resultado({"kind": "start", "modo": modo})
+                reporter = self._telemetria_resultado_iniciar(inspeccion_id, folder)
                 for i, m in enumerate(modos):
                     resumen = sr.subir_resultado(
                         folder, int(inspeccion_id), m, auth, on_estado=lambda e: self._push_resultado({"kind": "estado", **e}),
@@ -3630,13 +3632,52 @@ class Api:
                     self._push_resultado({"kind": "done", "continua": sigue, **resumen.a_dict()})
                     if not sigue:
                         break
+                incompleta = resumen is not None and resumen.incompleta
+                error_final = None
+                if incompleta and resumen.truncado:
+                    # No verificable: ni ok ni se re-encola (reintentar no lo arregla).
+                    error_final = resumen.motivo_incompleto()
+                    logger.warning("resultado_subir: %s", error_final)
+                    # Un job que ya estaba en cola se descarta: reintentar no lo
+                    # arregla y `drenar` lo relanzaría en cada arranque.
+                    for j in cola.pendientes():
+                        if j.get("tipo") == cola.TIPO_RESULTADO and j["folder"] == str(folder) and j.get("inspeccion_id") == inspeccion_id:
+                            cola.descartar(j["id"])
+                    self._push_resultado({"kind": "error", "text": error_final})
+                elif resumen is not None and resumen.cancelado:
+                    # Cancelado por el usuario: sin reintento automático.
+                    for j in cola.pendientes():
+                        if j.get("tipo") == cola.TIPO_RESULTADO and j["folder"] == str(folder) and j.get("inspeccion_id") == inspeccion_id:
+                            cola.descartar(j["id"])
+                elif (incompleta or (resumen is not None and not resumen.ok)) and not self._cancel_resultado:
+                    # Faltan objetos (o fallidas/conflictos) (o no se pudo comprobar): el job queda en cola
+                    # y el reintento (idempotente, `particionar` salta lo ya subido)
+                    # completa lo que falte, con tope de intentos.
+                    msg = resumen.motivo_incompleto()
+                    job = cola.encolar(str(folder), "@resultado", inspeccion_id, tipo=cola.TIPO_RESULTADO)
+                    intentos = cola.marcar_intento(job["id"], msg) or 1
+                    if intentos >= MAX_INTENTOS_RESULTADO:
+                        cola.descartar(job["id"])
+                        error_final = (f"subida incompleta tras {intentos} intentos: {msg}")
+                        logger.error("resultado_subir: %s", error_final)
+                        self._push_resultado({"kind": "error", "text": error_final})
+                    else:
+                        logger.warning("resultado_subir: subida incompleta (%s); queda en cola "
+                                       "(intento %d/%d)", msg, intentos, MAX_INTENTOS_RESULTADO)
+                        self._push_resultado({"kind": "error", "text": (
+                            f"{msg} La subida queda pendiente y se reintentará "
+                            f"(intento {intentos}/{MAX_INTENTOS_RESULTADO}).")})
                 for j in cola.pendientes():
                     if j.get("tipo") == cola.TIPO_RESULTADO and j["folder"] == str(folder) and j.get("inspeccion_id") == inspeccion_id:
                         if resumen is not None and resumen.ok:
                             cola.descartar(j["id"])
+                self._telemetria_resultado_fin(reporter, resumen, error=error_final)
+                reporter = None
             except sr.SubidaResultadoError as exc:
+                self._telemetria_resultado_fin(reporter, None, error=str(exc))
                 self._push_resultado({"kind": "error", "text": str(exc)})
             except Exception as exc:  # noqa: BLE001 - se reclasifica: solo auth/red se reintenta
+                self._telemetria_resultado_fin(reporter, None, error=f"{type(exc).__name__}: {exc}")
                 if not (isinstance(exc, AuthError) or _es_error_de_red(exc)):
                     logger.exception("resultado_subir falló")
                     self._push_resultado({"kind": "error", "text": f"{type(exc).__name__}: {exc}"})
@@ -3655,6 +3696,33 @@ class Api:
             self._push_resultado({"kind": "error", "text": msg})
             return {"started": False, "reason": msg}
         return {"started": True}
+
+    def _telemetria_resultado_iniciar(self, inspeccion_id, folder):
+        """Run `etapa="subida"` de la subida del resultado. `None` si no aplica. Fail-open."""
+        try:
+            reporter = self._reporter_actual()
+            if reporter is None:
+                return None
+            reporter.iniciar(inspeccion=os.path.basename(str(folder).rstrip("/\\")) or None,
+                             etapa="subida", inspeccion_id=inspeccion_id)
+            return reporter if reporter.activo else None
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            logger.warning("telemetria subida resultado (inicio) falló: %s", exc)
+            return None
+
+    def _telemetria_resultado_fin(self, reporter, resumen, error: str | None = None) -> None:
+        """Cierra el run: error "N objetos sin subir" si quedó incompleta. Fail-open."""
+        if reporter is None:
+            return
+        try:
+            if error is None and resumen is not None and resumen.ok:
+                reporter.fin(ok=True)
+            else:
+                if error is None:
+                    error = resumen.motivo_incompleto() if resumen is not None else "sin resultado"
+                reporter.fin(ok=False, error=error)
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            logger.debug("telemetria subida resultado (fin) falló: %s", exc)
 
     def _auto_subir_resultado(self, params: dict, done: dict | None) -> None:
         """Disparo automático al terminar un `split_images`: urgencia primero y, sin parar,
@@ -3740,6 +3808,10 @@ class Api:
             elif payload is not None:
                 detail["text"] = str(payload)
             self._push(detail)
+            self._telemetria_org_evento(tele, kind, payload)
+
+        # Telemetría hacia `/organizer` (etapa="organizacion"). Fail-open total.
+        tele = self._telemetria_org_iniciar(task, params)
 
         try:
             # Import perezoso: atom_core arrastra gui.py/PySide → no lo cargamos
@@ -3775,7 +3847,103 @@ class Api:
             # Sin esto, lo que quedara en el buffer cuando el pipeline deja de
             # emitir no llegaria nunca: el vaciado lo dispara el evento
             # SIGUIENTE, y despues del ultimo no hay ninguno.
-            self._flush_push()
+            try:
+                self._flush_push()
+            finally:
+                # AL FINAL: el POST de cierre es síncrono (hasta 5 s con la Suite
+                # lenta) y no puede retener `_running` ni la UI del operario.
+                # En `finally` para que un fallo del volcado a la UI no lo evite.
+                self._telemetria_org_fin(tele)
+
+    # ---- telemetría de la organización LOCAL hacia /organizer ---------------
+    def _telemetria_org_iniciar(self, task: str, params: dict) -> dict | None:
+        """Da de alta el run `etapa="organizacion"` en la Suite. `None` si no
+        aplica (otro task, sin login, Suite caída): entonces todo es no-op.
+        Fail-open: nunca lanza ni frena la organización."""
+        try:
+            if task != "split_images":
+                return None
+            reporter = self._reporter_actual(tipo="organizacion")
+            if reporter is None:
+                return None
+            origen = str(params.get("origen") or params.get("input_folder") or "")
+            destino = str(params.get("destino") or params.get("output_folder") or "")
+            nombre = os.path.basename(origen.rstrip("/\\")) or origen or None
+            # Id de la inspección: el explícito o, como la subida, el del
+            # catálogo cargado (`_ids_inspeccion`: prefijo -> id). Solo por
+            # coincidencia EXACTA del nombre de carpeta con el prefijo; sin
+            # coincidencia no se adivina: el run va sin id.
+            inspeccion_id = params.get("inspeccion_id")
+            if inspeccion_id is None:
+                ids = getattr(self, "_ids_inspeccion", {}) or {}
+                for cand in (nombre, os.path.basename(destino.rstrip("/\\"))):
+                    if cand and cand in ids:
+                        inspeccion_id = ids[cand]
+                        break
+            extra = {} if inspeccion_id is None else {"inspeccion_id": inspeccion_id}
+            reporter.iniciar(inspeccion=nombre, etapa="organizacion", **extra)
+            if not reporter.activo:
+                motivo = getattr(reporter, "ultimo_error", None)
+                logger.warning(
+                    "organizacion: la Suite rechazó el alta del run (%s)%s; se organiza "
+                    "sin telemetría en /organizer",
+                    motivo or "sin respuesta / red caída",
+                    "" if inspeccion_id is not None else " [sin inspeccion_id]")
+                self._log_subida("organizacion: alta del run rechazada (%s)",
+                                 motivo or "sin respuesta")
+                return None
+            return {"reporter": reporter, "ok": None, "error": None}
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            logger.warning("telemetria organizacion (inicio) falló: %s", exc)
+            return None
+
+    def _telemetria_org_evento(self, tele: dict | None, kind: str, payload) -> None:
+        """Reenvía fase/progreso y recuerda el resultado para `fin`. No lanza."""
+        if tele is None:
+            return
+        try:
+            reporter = tele["reporter"]
+            if kind == "phase" and isinstance(payload, dict):
+                # En hilo aparte: la petición no puede frenar el pipeline.
+                threading.Thread(
+                    target=reporter.fase,
+                    kwargs={"index": int(payload.get("index") or 0),
+                            "total": int(payload.get("total") or 0),
+                            "nombre": str(payload.get("name") or "")},
+                    name="run-reporter-fase", daemon=True).start()
+            elif kind == "stats" and isinstance(payload, dict):
+                # `progreso` ya trae throttle y manda el PATCH en hilo aparte.
+                s = {"files_done": payload.get("done"),
+                     "files_total": payload.get("total")}
+                if payload.get("final"):
+                    s["final"] = True
+                reporter.progreso({k: v for k, v in s.items() if v is not None})
+            elif kind == "done" and isinstance(payload, dict):
+                status = payload.get("status")
+                if status == "cancelled":
+                    tele["ok"], tele["error"] = False, "Cancelado por el usuario"
+                elif status == "errors":
+                    tele["ok"] = False
+                    tele["error"] = f"{payload.get('errors') or 0} imágenes con error"
+                else:
+                    tele["ok"], tele["error"] = True, None
+            elif kind == "error":
+                tele["ok"], tele["error"] = False, str(payload)
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            logger.debug("telemetria organizacion (evento %s) falló: %s", kind, exc)
+
+    def _telemetria_org_fin(self, tele: dict | None) -> None:
+        """Cierra el run SIEMPRE (ok, error, excepción o cancelación)."""
+        if tele is None:
+            return
+        try:
+            ok = tele["ok"]
+            error = tele["error"]
+            if ok is None:  # murió sin `done` ni `error`
+                ok, error = False, "La organización terminó sin resultado"
+            tele["reporter"].fin(ok=bool(ok), error=error)
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            logger.debug("telemetria organizacion (fin) falló: %s", exc)
 
     def _mover_estadillo_espera_si_toca(self, params: dict) -> dict:
         """Si hay un estadillo recibido por LAN (modo espera, ver

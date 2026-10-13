@@ -203,8 +203,19 @@ class ProveedorFalso(StaticProvider):
     def prefijo_destino(self):
         return PREFIJO
 
+    refleja_subidas = True   # el «bucket» incluye lo que se ha subido (listado fresco)
+    fallar_listado_tras_subir = False
+
     def listar_remotos(self, prefix):
-        return None if self.remotos is None else dict(self.remotos)
+        if self.remotos is None:
+            return None
+        if self.calls and self.fallar_listado_tras_subir:
+            raise OSError("red caida")
+        res = dict(self.remotos)
+        if self.refleja_subidas:
+            for remote, size in self.calls:
+                res[remote] = cu.RemoteObject(remote, size, "")
+        return res
 
 
 def _remoto(rel: str, datos: bytes) -> tuple[str, cu.RemoteObject]:
@@ -423,3 +434,79 @@ def test_decidir_automatica_sin_inspeccion_o_sin_salida_avisa():
     assert ok is False and "inspección" in motivo
     ok, motivo = sr.decidir_automatica("split_images", {"inspeccion_id": 7}, {"status": "ok"})
     assert ok is False and "carpeta de salida" in motivo
+
+
+# --- verificación fresca tras subir (subida incompleta nunca es ok) -----------------
+
+def test_cancelado_sin_should_stop_es_incompleta(tmp_path):
+    _arbol(tmp_path, SALIDA_PEQUENA)
+
+    def subir(plan, provider, **kw):
+        return cu.UploadResult(uploaded=0, failed=[(i.remote, "cancelado") for i in plan.items])
+
+    prov = ProveedorFalso()
+    r = sr.subir_resultado(tmp_path, 7, sr.MODO_URGENCIA, auth=None, proveedor=prov, subir=subir)
+    assert not r.ok and r.incompleta and len(r.cancelados) == 5 and not r.cancelado
+    assert "5 objetos sin subir" in r.motivo_incompleto()
+
+
+def test_faltante_en_bucket_es_incompleta(tmp_path):
+    _arbol(tmp_path, SALIDA_PEQUENA)
+    prov = ProveedorFalso()
+    prov.refleja_subidas = False   # el bucket no refleja lo «subido»: falta todo
+    r = sr.subir_resultado(tmp_path, 7, sr.MODO_URGENCIA, auth=None, proveedor=prov, concurrency=1)
+    assert not r.ok and len(r.faltantes) == 5
+    d = r.a_dict()
+    assert d["faltantes"] == 5 and len(d["faltantes_ejemplos"]) == 5 and not d["ok"]
+
+
+def test_todo_presente_es_ok(tmp_path, gcs):
+    _arbol(tmp_path, SALIDA_PEQUENA)
+    r = sr.subir_resultado(tmp_path, 7, sr.MODO_NORMAL, auth=None, proveedor=ProveedorFalso(), concurrency=1)
+    assert r.ok and r.faltantes == [] and r.verificado
+
+
+def test_fallo_al_listar_tras_subir_no_es_ok(tmp_path, gcs):
+    _arbol(tmp_path, SALIDA_PEQUENA)
+    prov = ProveedorFalso()
+    prov.fallar_listado_tras_subir = True
+    r = sr.subir_resultado(tmp_path, 7, sr.MODO_URGENCIA, auth=None, proveedor=prov, concurrency=1)
+    assert not r.ok and not r.verificado and r.incompleta
+
+
+def test_listado_truncado_en_verificacion_es_no_verificable(tmp_path, gcs):
+    _arbol(tmp_path, SALIDA_PEQUENA)
+
+    class Truncado(ProveedorFalso):
+        def listar_remotos(self, prefix):
+            if self.calls:
+                raise cu.ListadoTruncado("demasiados objetos")
+            return super().listar_remotos(prefix)
+
+    r = sr.subir_resultado(tmp_path, 7, sr.MODO_URGENCIA, auth=None, proveedor=Truncado(), concurrency=1)
+    assert r.truncado and not r.ok and r.faltantes == [] and "truncado" in r.motivo_incompleto()
+
+
+def test_listar_objetos_remotos_estricto_lanza_si_trunca(monkeypatch):
+    import io
+    import json as _json
+
+    class R(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(cu.urllib.request, "urlopen", lambda *a, **k: R(
+        _json.dumps({"items": [{"name": "a", "size": "1"}], "nextPageToken": "t"}).encode()))
+    monkeypatch.setattr(cu, "token_gcs", lambda *a, **k: "tok")
+    import pytest as _pt
+    with _pt.raises(cu.ListadoTruncado):
+        cu.listar_objetos_remotos("b", "p", None, max_paginas=2, estricto=True)
+    assert len(cu.listar_objetos_remotos("b", "p", None, max_paginas=2)) == 1  # crudos: solo avisa
+
+
+def test_motivo_distingue_fallidos_de_sin_intentar(tmp_path):
+    r = sr.ResumenResultado(modo=sr.MODO_NORMAL, prefijo="P/",
+                            fallidas=[("P/a", "boom")],
+                            faltantes=[("P/a", "x"), ("P/b", "x"), ("P/c", "x")])
+    m = r.motivo_incompleto()
+    assert "3 objetos sin subir" in m and "1 fallidos, 2 sin intentar" in m
