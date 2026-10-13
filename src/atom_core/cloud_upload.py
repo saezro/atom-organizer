@@ -38,7 +38,7 @@ más la robustez de la transferencia que cualquier microoptimización:
 
 Uso típico::
 
-    auth = GoogleAuth(CLIENT_ID, CLIENT_SECRET, hosted_domain="ejemplo.com")
+    auth = GoogleAuth(CLIENT_ID, CLIENT_SECRET, hosted_domain="aerotools.es")
     if not auth.is_logged_in():
         auth.login()
 

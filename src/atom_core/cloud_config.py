@@ -35,8 +35,8 @@ BUCKET_DATOS = "datos_para_organizar"
 
 # Sólo cuentas de Aerotools. Es un filtro de UI (evita que alguien se loguee con
 # su Gmail personal y no entienda el 403); el permiso de verdad es el IAM del
-# bucket, que sólo tiene `group:ofi@ejemplo.com`.
-HOSTED_DOMAIN = "ejemplo.com"
+# bucket, que sólo tiene `group:ofi@aerotools.es`.
+HOSTED_DOMAIN = "aerotools.es"
 
 CLIENT_FILENAME = "google_client.json"
 
