@@ -1,12 +1,11 @@
-"""Cierre del organizado: CSV de criterio desde el manifiesto y verificación
+"""Cierre del organizado: CSVs desde el manifiesto y verificación
 manifiesto-contra-disco.
 
 Hoy los CSV se emiten fase a fase y las verificaciones son contadores
 acumulados en objetos distintos (`RgbCropping`, `ConvertToTif`,
 `MetaLocation`...) que pueden desincronizarse entre sí sin que nadie se
 entere. `atom_core.cierre` los sustituye por una única fuente: el manifiesto.
-Estos tests prueban que `emitir_csvs` escribe el CSV de criterio con el
-formato exacto que consume el giro del TIFF/JPG térmico, y que `verificar`
+Estos tests prueban que `emitir_csvs` ya no escribe el CSV Videofiles, y que `verificar`
 detecta los mismos desajustes que hoy detectan las fases de comprobación,
 pero mirando el manifiesto en vez de contadores que se resetean.
 """
@@ -110,36 +109,25 @@ def _crear_fichero(ruta, contenido=b"contenido"):
         fh.write(contenido)
 
 
-def _leer_criterio_csv(ruta):
-    with open(ruta, newline="", encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
-
-
-def test_el_csv_de_criterio_numera_desde_uno_con_cuatro_digitos(tmp_path):
-    """`New Name` es `<PBx_Vy>_NNNN.JPG`, NNNN = posición dentro del vuelo desde
-    1 con cuatro dígitos (pipeline.py:2078-2189) — NUNCA un dato de la imagen
-    (ni el nombre original, ni un timestamp). Si el índice arrancara en 0 o sin
-    `zfill`, el giro del TIFF (`read_auto_rotate_degree`) no encontraría la fila
-    de la imagen que le toca y dejaría de rotar en silencio."""
+def test_el_cierre_ya_no_escribe_el_csv_videofiles(tmp_path):
+    """Decisión cerrada: el cierre organizado NO genera `*_Videofiles.csv`
+    (el motor legacy sí, en `pipeline.py`). `emitir_csvs` no devuelve entradas
+    por vuelo y no crea ningún Videofiles en `CSVs/_criterio/`."""
     destino = tmp_path / "destino"
     manifiesto = Manifiesto(tmp_path / "m.db")
     manifiesto.crear_esquema()
     manifiesto.insertar_muchas([
         _fila_termica(destino, "/origen/PB1_V01/TERMICA/DJI_0001.JPG", "PB1", "V01", angulo_giro=90),
         _fila_termica(destino, "/origen/PB1_V01/TERMICA/DJI_0002.JPG", "PB1", "V01", angulo_giro=90),
-        _fila_termica(destino, "/origen/PB1_V01/TERMICA/DJI_0003.JPG", "PB1", "V01", angulo_giro=90),
     ])
     cfg = _cfg(destino)
     callback = _FakeCallback()
 
     rutas = emitir_csvs(manifiesto, cfg, callback)
 
-    ruta_csv = rutas["PB1_V01"]
-    filas = _leer_criterio_csv(ruta_csv)
-    assert [fila["New Name"] for fila in filas] == [
-        "PB1_V01_0001.JPG", "PB1_V01_0002.JPG", "PB1_V01_0003.JPG",
-    ]
-    assert [fila["Degree"] for fila in filas] == ["90", "90", "90"]
+    assert "PB1_V01" not in rutas
+    encontrados = [f for _, _, fs in os.walk(destino) for f in fs if f.endswith("_Videofiles.csv")]
+    assert encontrados == []
     manifiesto.cerrar()
 
 

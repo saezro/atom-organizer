@@ -16,21 +16,11 @@ tiene que poder inspeccionarse y mostrarse entera, no solo un booleano.
 from __future__ import annotations
 
 import os
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
-
-import pandas as pd
 
 import utils
-from atom_core.almacen import abrir_para_lectura, es_uri_gcs, existe_ruta, publicar_en, tamano_de, unir
+from atom_core.almacen import es_uri_gcs, existe_ruta, tamano_de, unir
 from atom_core.indice import NOMBRE_CARPETA_RGB_EXTRA, TIPOS_RGB
-
-# Columnas exactas del CSV de criterio de giro que hoy escribe
-# `Pipeline.write_videofiles_csv` (pipeline.py:1972). El giro/TIFF térmico lee
-# este fichero por nombre de columna: cambiar el orden o el texto lo rompería
-# en silencio.
-_COLUMNAS_VIDEOFILES = ["New Name", "Original Name", "Degree"]
 
 
 def _vuelos_del_manifiesto(manifiesto) -> list[tuple[str, str]]:
@@ -80,68 +70,6 @@ def _revisar_ruta(ruta_origen: str, ruta: str) -> str | None:
     if tamano_de(ruta) == 0:
         return f"{ruta_origen}: {ruta} existe pero está vacío."
     return None
-
-
-def _escribir_csv(df: pd.DataFrame, destino: str) -> None:
-    """Vuelca `df` a `destino` (local o `gs://…`) vía un temporal.
-
-    Calca el patrón de `Pipeline.write_videofiles_csv`/`exif.gen_meta_location`:
-    no se puede escribir directamente sobre `gs://…`, así que se vuelca a un
-    temporal local y se publica desde ahí con el nombre final ya compuesto.
-    """
-    descriptor, nombre_temporal = tempfile.mkstemp(suffix=".csv")
-    os.close(descriptor)
-    ruta_temporal = Path(nombre_temporal)
-    try:
-        df.to_csv(ruta_temporal, sep=",", header=True, index=False)
-        publicar_en(ruta_temporal, destino)
-    finally:
-        ruta_temporal.unlink(missing_ok=True)
-
-
-def _emitir_csv_criterio(manifiesto, cfg, progress_callback) -> dict[str, str]:
-    """Escribe `CSVs/_criterio/<PBx_Vy>_Videofiles.csv` por cada vuelo con térmicas.
-
-    Solo las térmicas llevan este CSV (igual que hoy: `write_videofiles_csv`
-    solo se llama `if not rgb_processing`), porque es lo que consume el giro
-    del TIFF/JPG térmico (`read_auto_rotate_degree`, `pipeline.py:3308`), no
-    algo que necesite la RGB.
-
-    El `New Name` es `<PBx_Vy>_NNNN.JPG` con `NNNN` = posición de la imagen
-    dentro del vuelo empezando en 1 (`str(indice + 1).zfill(4)`), en el orden
-    de `Manifiesto.filas_por_vuelo` (por `id`, es decir, orden de inserción del
-    índice) — igual que `pipeline.py:2078-2189` numera por posición dentro del
-    bucle, nunca por un campo de la imagen.
-    """
-    csvs_root = unir(cfg.output_folder, "CSVs")
-    criterio_folder = unir(csvs_root, utils.CRITERIO_DIRNAME)
-    if not es_uri_gcs(criterio_folder):
-        os.makedirs(criterio_folder, exist_ok=True)
-
-    rutas_emitidas: dict[str, str] = {}
-    # Un solo escaneo del manifiesto y agrupado en memoria, en vez de un
-    # escaneo completo + una consulta por vuelo (ver `_agrupar_por_vuelo`).
-    for (pb, vuelo), filas_vuelo in _agrupar_por_vuelo(manifiesto.todas()).items():
-        termicas = [fila for fila in filas_vuelo if fila["tipo"] == "TERMICA"]
-        if not termicas:
-            continue
-
-        clave = f"{pb}_{vuelo}"
-        df = pd.DataFrame(columns=_COLUMNAS_VIDEOFILES)
-        for indice, fila in enumerate(termicas):
-            df.loc[len(df)] = {
-                "New Name": f"{clave}_{str(indice + 1).zfill(4)}.JPG",
-                "Original Name": os.path.basename(fila["ruta_origen"]),
-                "Degree": fila["angulo_giro"],
-            }
-
-        nombre_csv = f"{clave}_Videofiles.csv"
-        destino = unir(criterio_folder, nombre_csv)
-        _escribir_csv(df, destino)
-        progress_callback.emit(f"\nGenerado CSV de criterio: {destino}\n")
-        rutas_emitidas[clave] = destino
-
-    return rutas_emitidas
 
 
 # Mismo recorrido que `MetaLocation.check_input_folder_and_iterate` (exif.py:1119):
@@ -331,28 +259,16 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
 def emitir_csvs(manifiesto, cfg, progress_callback, proyecciones: dict | None = None) -> dict[str, str]:
     """Emite todos los CSV de salida del run desde el manifiesto.
 
-    Devuelve un diccionario `{clave: ruta}` con lo emitido: una entrada por
-    vuelo para el CSV de criterio (`"PB1_V01": ".../PB1_V01_Videofiles.csv"`)
-    y, si `cfg.gen_meta_location`, la entrada `"meta_location"` con la carpeta
+    Devuelve un diccionario `{clave: ruta}` con lo emitido: si
+    `cfg.gen_meta_location`, la entrada `"meta_location"` con la carpeta
     `CSVs/` donde quedaron `meta.csv`/`location.csv`. Si `proyecciones` es un
     dict, se rellena con `{ruta_salida_original: (CalculatedDistance,
     LatitudFoto, LongitudFoto)}` para el índice Excel.
     """
-    rutas_emitidas = _emitir_csv_criterio(manifiesto, cfg, progress_callback)
+    rutas_emitidas: dict[str, str] = {}
     if cfg.gen_meta_location:
         rutas_emitidas.update(_emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones))
     return rutas_emitidas
-
-
-def _ruta_csv_criterio(cfg, pb: str, vuelo: str) -> str:
-    clave = f"{pb}_{vuelo}"
-    return unir(unir(cfg.output_folder, "CSVs"), utils.CRITERIO_DIRNAME, f"{clave}_Videofiles.csv")
-
-
-def _contar_lineas_csv(ruta: str) -> int:
-    with abrir_para_lectura(ruta) as ruta_local, open(ruta_local, "r", encoding="utf-8") as fichero:
-        total = sum(1 for linea in fichero if linea.strip())
-    return max(total - 1, 0)  # -1 por la cabecera (header=True al escribirlo)
 
 
 #: Prefijo de los problemas que son ERROR (imágenes fallidas), frente a los
@@ -463,19 +379,6 @@ def verificar(manifiesto, cfg) -> list[str]:
                     problemas.append(
                         f"{pb}/{vuelo}: {jpg_count} imágenes JPG térmicas pero "
                         f"{tiff_count} TIFF. No coinciden."
-                    )
-
-            # 3. csv_lines == image_count (hoy exif.py:780-864): el CSV de
-            # criterio ya emitido no puede tener menos ni más líneas que
-            # térmicas del vuelo. Si aún no se ha emitido, no hay nada que
-            # comparar todavía y no es un problema de `verificar` en sí.
-            ruta_csv = _ruta_csv_criterio(cfg, pb, vuelo)
-            if existe_ruta(ruta_csv):
-                csv_lines = _contar_lineas_csv(ruta_csv)
-                if csv_lines != len(termicas):
-                    problemas.append(
-                        f"{pb}/{vuelo}: el CSV de criterio tiene {csv_lines} línea(s) "
-                        f"pero hay {len(termicas)} imagen(es) térmica(s). No coinciden."
                     )
 
         # 2. crop_count == non_crop_count (hoy pipeline.py:3900-3960): cada RGB
