@@ -98,3 +98,98 @@ def test_salto_contador_999_a_1_sin_timestamp(tmp_path):
     w = ["DJI_0996_W.JPG", "DJI_0998_W.JPG", "DJI_0999_W.JPG", "DJI_0002_W.JPG"]
     pares, sp, _ = o.emparejar_por_idx(t, w)
     assert sorted(pares) == sorted(zip(t, w)) and sp == []
+
+
+def test_orden_cronologico_con_reinicio_contador(tmp_path):
+    o = _obj(tmp_path, "ord1")
+    def n(hms, i, s):
+        return f"20261005_{hms}_DJI_{i:04d}_{s}.JPG"
+    datos = [("130009", 905), ("130011", 907), ("130217", 2), ("130439", 70)]
+    t = [n(h, i, "T") for h, i in datos]
+    w = [n(h, i - 1, "W") for h, i in datos]
+    pares, sp, _ = o.emparejar_por_idx(list(reversed(t)), list(reversed(w)))
+    assert [p[0] for p in pares] == t and sp == []
+    assert [p[1] for p in pares] == w
+
+
+def test_orden_sin_reinicio_no_cambia(tmp_path):
+    o = _obj(tmp_path, "ord2")
+    t = [f"20261005_1300{s:02d}_DJI_{i:04d}_T.JPG" for i, s in ((1, 0), (2, 5), (3, 9))]
+    w = [x.replace("_T.", "_W.") for x in t]
+    pares, sp, _ = o.emparejar_por_idx(t, w)
+    assert [p[0] for p in pares] == t and sp == []
+
+
+def test_rollover_a_caballo_no_cruza(tmp_path):
+    o = _obj(tmp_path, "ord3")
+    t = ["20261005_130000_DJI_1000_T.JPG", "20261005_130500_DJI_0002_T.JPG"]
+    w = ["20261005_130000_DJI_0999_W.JPG", "20261005_130500_DJI_0001_W.JPG"]
+    pares, sp, _ = o.emparejar_por_idx(t, w)
+    assert pares == list(zip(t, w)) and sp == []
+    # mismo hueco de índice pero timestamps >2 s distintos: no se cruzan
+    pares, sp, _ = o.emparejar_por_idx([t[1]], [w[0]])
+    assert pares == [] and sorted(sp) == sorted([t[1], w[0]])
+
+
+def test_huerfanas_t_y_w(tmp_path):
+    o = _obj(tmp_path, "ord4")
+    t = ["20261005_130000_DJI_0002_T.JPG", "20261005_130100_DJI_0004_T.JPG"]
+    w = ["20261005_130000_DJI_0001_W.JPG", "20261005_130200_DJI_0007_W.JPG"]
+    pares, sp, _ = o.emparejar_por_idx(t, w)
+    assert pares == [(t[0], w[0])] and sorted(sp) == sorted([t[1], w[1]])
+
+
+def test_dos_t_misma_w_solo_una(tmp_path):
+    o = _obj(tmp_path, "ord5")
+    t = ["20261005_130000_DJI_0002_T.JPG", "20261005_130001_DJI_0004_T.JPG"]
+    w = ["20261005_130000_DJI_0001_W.JPG"]
+    pares, sp, _ = o.emparejar_por_idx(t, w)
+    assert pares == [(t[0], w[0])] and sp == [t[1]]
+
+
+def test_jitter_cadencia_corta_tras_rollover(tmp_path):
+    import datetime as dt
+    o = _obj(tmp_path, "ord6")
+    base = dt.datetime(2026, 10, 5, 13, 0, 0)
+    t, w = [], []
+    # disparos cada 2 s; W=n, T=n+1; el contador reinicia 0999 -> 0001; jitter T/W de +-1 s alterno
+    idxs = [(i, i + 1) for i in range(979, 999, 2)] + [(999, 1)] + [(i, i + 1) for i in range(2, 22, 2)]
+    for s, (wi, ti) in enumerate(idxs):
+        tw = base + dt.timedelta(seconds=2 * s)
+        tt = tw + dt.timedelta(seconds=1 if s % 2 else -1 if s else 0)
+        t.append(f"{tt:%Y%m%d_%H%M%S}_DJI_{ti:04d}_T.JPG")
+        w.append(f"{tw:%Y%m%d_%H%M%S}_DJI_{wi:04d}_W.JPG")
+    pares, sp, _ = o.emparejar_por_idx(t, w)
+    assert sp == [] and sorted(pares) == sorted(zip(t, w))
+
+
+def test_sin_ts_en_una_foto_no_desactiva_rama_ts(tmp_path):
+    o = _obj(tmp_path, "ord7")
+    t = ["20261005_130000_DJI_0002_T.JPG", "20261005_130005_DJI_0004_T.JPG", "DJI_0006_T.JPG"]
+    w = ["20261005_130000_DJI_0001_W.JPG", "20261005_130005_DJI_0003_W.JPG", "DJI_0005_W.JPG"]
+    pares, sp, _ = o.emparejar_por_idx(t, w)
+    assert sorted(pares) == sorted(zip(t, w)) and sp == []
+
+
+def test_reloj_tw_desfasado_recupera_por_idx(tmp_path):
+    o = _obj(tmp_path, "ord8")
+    t = ["20261005_130000_DJI_0002_T.JPG", "20261005_130005_DJI_0004_T.JPG", "20261005_130010_DJI_0006_T.JPG"]
+    w = ["20261005_130000_DJI_0001_W.JPG", "20261005_130005_DJI_0003_W.JPG", "20261005_130020_DJI_0005_W.JPG"]
+    pares, sp, _ = o.emparejar_por_idx(t, w)
+    assert sorted(pares) == sorted(zip(t, w)) and sp == []
+
+
+def test_rendimiento_3000(tmp_path):
+    import datetime as dt, time
+    o = _obj(tmp_path, "perf")
+    base = dt.datetime(2026, 10, 5, 13, 0, 0)
+    t, w = [], []
+    for s in range(3000):
+        ts = base + dt.timedelta(seconds=s * 3)
+        t.append(f"{ts:%Y%m%d_%H%M%S}_DJI_{(s * 2 + 2) % 1000:04d}_T.JPG".replace("_0000_", "_1000_"))
+        w.append(f"{ts:%Y%m%d_%H%M%S}_DJI_{(s * 2 + 1) % 1000:04d}_W.JPG")
+    t0 = time.time()
+    pares, sp, _ = o.emparejar_por_idx(t, w)
+    dt_s = time.time() - t0
+    print(f"PERF 3000x3000: {dt_s:.2f}s")
+    assert len(pares) + len(sp) // 2 >= 2990 and dt_s < 10

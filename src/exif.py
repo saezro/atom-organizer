@@ -1171,9 +1171,10 @@ class MetaLocation:
         return c[0]
 
     def emparejar_por_idx(self, imagenes_t: list[str], imagenes_w: list[str]):
-        """Empareja térmicas y RGB por índice DJI. Devuelve `(pares, sin_pareja, sin_patron)`:
-        `pares` = [(t, w)] ordenados por idx ascendente; `sin_pareja` = nombres con patrón
-        cuyo par falta (o idx duplicado en su lado); `sin_patron` = nombres sin patrón DJI."""
+        """Empareja térmicas y RGB. Criterio: timestamp del nombre (±2 s, 1:1, prioridad al idx DJI coherente con
+        el desfase del vuelo); lo que no case se empareja por idx coherente (con aviso); sin timestamps, solo por idx.
+        Devuelve `(pares, sin_pareja, sin_patron)`: `pares` = [(t, w)] en orden cronológico (ts, idx DJI);
+        `sin_pareja` = nombres con patrón cuyo par falta (o idx duplicado en su lado); `sin_patron` = sin patrón DJI."""
         def indexar(imgs, suf):
             por_idx, sin_patron = {}, []
             for im in imgs:
@@ -1191,15 +1192,22 @@ class MetaLocation:
         t_ok = {k: v[0] for k, v in t_idx.items() if len(v) == 1}
         w_ok = {k: v[0] for k, v in w_idx.items() if len(v) == 1}
         desfase = None
-        ts_t = {k: self._ts_nombre(n) for k, n in t_ok.items()}
-        ts_w = {k: self._ts_nombre(n) for k, n in w_ok.items()}
-        if ts_t and ts_w and all(v is not None for v in ts_t.values()) and all(v is not None for v in ts_w.values()):
+        # Solo cuentan para el desfase y el matching por timestamp las fotos con ts parseable en el nombre.
+        ts_t = {k: t for k, n in t_ok.items() if (t := self._ts_nombre(n)) is not None}
+        ts_w = {k: t for k, n in w_ok.items() if (t := self._ts_nombre(n)) is not None}
+        if ts_t and ts_w:
             from collections import Counter  # noqa: PLC0415
+            import bisect as _bisect  # noqa: PLC0415
+            import datetime as _dt  # noqa: PLC0415
+            ws = sorted((tw, kw) for kw, tw in ts_w.items())
             deltas = []
-            for kt, tt in ts_t.items():
-                kw, dif = min(((kw, abs((tw - tt).total_seconds())) for kw, tw in ts_w.items()), key=lambda x: x[1])
-                if dif <= 2.0:
-                    deltas.append(kw - kt)
+            claves_w = [v for v, _ in ws]
+            vent2 = _dt.timedelta(seconds=2)
+            for kt, tt in ts_t.items():  # voto de TODAS las W en ±2 s: el delta verdadero se repite, los falsos se dispersan
+                i = _bisect.bisect_left(claves_w, tt - vent2)
+                while i < len(ws) and ws[i][0] <= tt + vent2:
+                    deltas.append(ws[i][1] - kt)
+                    i += 1
             if deltas:
                 cuenta = Counter(deltas)
                 top = cuenta.most_common(2)
@@ -1211,6 +1219,63 @@ class MetaLocation:
                 n = sum(1 for k in t_ok if (k + d) in w_ok)
                 if n > mejor:
                     mejor, desfase = n, d
+        # Rama por timestamp (hay al menos una T y una W con ts en el nombre): ventana ±2 s, 1:1 global.
+        # Prioridad: idx coherente con el desfase del vuelo, luego ts más cercano, luego idx (el jitter T/W
+        # de ±1 s no debe cruzar disparos). Lo que quede libre (reloj T/W >2 s o sin ts) se empareja por
+        # idx coherente (idx_W - idx_T == desfase), 1:1 y con aviso. Sin ts en ninguna T o ninguna W: rama por índice (abajo).
+        todas_t = [n for v in t_idx.values() for n in v]
+        todas_w = [n for v in w_idx.values() for n in v]
+        ts_all_t = {n: self._ts_nombre(n) for n in todas_t}
+        ts_all_w = {n: self._ts_nombre(n) for n in todas_w}
+        if any(v is not None for v in ts_all_t.values()) and any(v is not None for v in ts_all_w.values()):
+            import bisect as _bisect  # noqa: PLC0415
+            import datetime as _dt  # noqa: PLC0415
+            idx_t = {n: self._clave_idx_dji(n, "T") for n in todas_t}
+            idx_w = {n: self._clave_idx_dji(n, "W") for n in todas_w}
+            d0 = desfase if desfase is not None else 0
+            ws = sorted((v, n) for n, v in ts_all_w.items() if v is not None)
+            claves = [v for v, _ in ws]
+            vent = _dt.timedelta(seconds=2)
+            aristas = []
+            for tn, tt in ts_all_t.items():
+                if tt is None:
+                    continue
+                i = _bisect.bisect_left(claves, tt - vent)
+                while i < len(ws) and ws[i][0] <= tt + vent:
+                    wn = ws[i][1]
+                    desv = abs(idx_w[wn] - idx_t[tn] - d0)
+                    aristas.append((desv > 0, abs((ws[i][0] - tt).total_seconds()), desv, idx_t[tn], idx_w[wn], tn, wn))
+                    i += 1
+            aristas.sort()
+            usT, usW, pares_ts = set(), set(), []
+            for *_k, tn, wn in aristas:
+                if tn in usT or wn in usW:
+                    continue
+                usT.add(tn); usW.add(wn); pares_ts.append((tn, wn))
+            # Pasada por idx coherente para lo libre (1:1; idx repetido entre las libres = ambiguo, queda libre).
+            libres_t, libres_w = {}, {}
+            for n in todas_t:
+                if n not in usT:
+                    libres_t.setdefault(idx_t[n], []).append(n)
+            for n in todas_w:
+                if n not in usW:
+                    libres_w.setdefault(idx_w[n], []).append(n)
+            por_idx_n = 0
+            for k in sorted(libres_t):
+                if len(libres_t[k]) == 1 and len(libres_w.get(k + d0, [])) == 1:
+                    tn, wn = libres_t[k][0], libres_w[k + d0][0]
+                    pares_ts.append((tn, wn)); usT.add(tn); usW.add(wn); por_idx_n += 1
+            if por_idx_n:
+                self.organizer_logger.logger.warning(
+                    f"Emparejado T/W: {por_idx_n} pares recuperados por índice DJI coherente (desfase {d0:+d}) "
+                    "al no casar por timestamp (reloj T/W >2 s de diferencia o sin timestamp en el nombre).")
+            sin_ts_n = [n for n, v in {**ts_all_t, **ts_all_w}.items() if v is None]
+            if sin_ts_n:
+                self.organizer_logger.logger.warning(
+                    f"Emparejado T/W: {len(sin_ts_n)} fotos sin timestamp parseable (p.ej. {sin_ts_n[0]}); "
+                    "solo pueden emparejarse por índice DJI.")
+            sin_ts_par = [n for n in todas_t if n not in usT] + [n for n in todas_w if n not in usW]
+            return self._cerrar_emparejado(pares_ts, sin_ts_par, t_idx, w_idx, desfase, t_np, w_np)
         pares, sin_pareja, usados_w = [], [], set()
         for k in sorted(t_idx):
             if k in t_ok and (k + desfase) in w_ok and (k + desfase) not in usados_w:
@@ -1224,8 +1289,7 @@ class MetaLocation:
         recuperados = 0
         t_sueltas = [k for k in sorted(t_ok) if not any(p[0] == t_ok[k] for p in pares)]
         w_libres = {k: n for k, n in w_ok.items() if k not in usados_w}
-        con_ts = bool(ts_t) and bool(ts_w) and all(v is not None for v in ts_t.values()) \
-            and all(v is not None for v in ts_w.values())
+        con_ts = bool(ts_t) and bool(ts_w) and len(ts_t) == len(t_ok) and len(ts_w) == len(w_ok)
         nuevos = {}
         if t_sueltas and w_libres:
             if con_ts:
@@ -1249,10 +1313,28 @@ class MetaLocation:
             recuperados = len(nuevos)
             quitar = {t_ok[k] for k in nuevos} | {w_ok[k] for k in nuevos.values()}
             sin_pareja = [n for n in sin_pareja if n not in quitar]
-            pares.sort(key=lambda par: self._clave_idx_dji(par[0], "T"))
             self.organizer_logger.logger.info(
                 f"Emparejado T/W: {recuperados} pares recuperados por salto/reinicio del contador DJI "
                 f"({'por timestamp' if con_ts else 'por reinicio de índice'}).")
+        return self._cerrar_emparejado(pares, sin_pareja, t_idx, w_idx, desfase, t_np, w_np)
+
+    def _cerrar_emparejado(self, pares, sin_pareja, t_idx, w_idx, desfase, t_np, w_np):
+        """Orden final cronológico (timestamp del nombre, luego idx DJI): con reinicio del contador
+        (0999 -> 0001) el idx solo desordenaría el CSV, que se publica con reordenar=False.
+        Si algún par no tiene timestamp en ninguna foto se ordena todo por idx y se AVISA (no es silencioso)."""
+        # ts del par = el de la T, o el de la W si la T no lo trae
+        tss = [self._ts_nombre(p[0]) or self._ts_nombre(p[1]) for p in pares]
+        sin_ts = [p[0] for p, t in zip(pares, tss) if t is None]  # antes de ordenar: alineado con tss
+        if not sin_ts:
+            pares = [p for _, p in sorted(zip(tss, pares), key=lambda x: (x[0], self._clave_idx_dji(x[1][0], "T")))]
+        else:
+            pares.sort(key=lambda par: self._clave_idx_dji(par[0], "T"))
+            self.organizer_logger.logger.warning(
+                f"Emparejado T/W: {len(sin_ts)} pares sin timestamp parseable en ninguna de sus fotos (p.ej. {sin_ts[0]}); "
+                "se ordenan por índice DJI (un reinicio del contador DJI no se detectará).")
+        if sin_pareja:
+            self.organizer_logger.logger.warning(
+                f"Emparejado T/W: {len(sin_pareja)} fotos sin pareja (p.ej. {sin_pareja[0]}).")
         self.desfase_tw = desfase
         if t_idx and w_idx:
             self.organizer_logger.logger.info(
