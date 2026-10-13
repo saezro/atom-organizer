@@ -59,6 +59,7 @@ export default function KioskScreen({
   carpeta,
   onPickCarpeta,
   inspecciones,
+  errorInspecciones,
   inspeccion,
   onSelectInspeccion,
   onActualizarInspecciones,
@@ -967,6 +968,11 @@ export default function KioskScreen({
               onClickCapture: alHacerClickInsp,
             } : {})}
           >
+            {credencialOk && errorInspecciones && (
+              <div className="kiosk-sistema-error" role="alert" data-testid="kiosk-inspecciones-error">
+                {errorInspecciones}
+              </div>
+            )}
             {credencialOk ? (
               <InspeccionSelector
                 inspecciones={inspecciones}

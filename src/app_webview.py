@@ -480,9 +480,10 @@ class Api:
         self._update_sha256: str | None = None
         self._update_asset_url: str | None = None
         # Último aviso "hay versión nueva" del chequeo automático (ver
-        # `start_update_check`). El modal (`UpdateModal.jsx`) no está montado
-        # mientras el usuario no ha entrado, así que el evento `atom:update`
-        # puede emitirse al vacío; esto le da algo que consultar al montarse.
+        # `start_update_check`). El modal (`UpdateModal.jsx`) está montado
+        # siempre (también en la pantalla de entrada), pero el evento
+        # `atom:update` puede emitirse antes de que el front monte o escuche;
+        # esto le da algo que consultar al montarse.
         self._ultimo_update: dict | None = None
         # Resultado crudo del ultimo chequeo de actualizacion (incluidos los
         # fallos), para poder mirarlo desde Ajustes en vez de perderlo en silencio.
@@ -610,6 +611,35 @@ class Api:
             "python": platform.python_version(),
             "platform": platform.system(),
         }
+
+    _LOG_FRONT_MAX_CHARS = 4000
+    _LOG_FRONT_MAX_POR_MIN = 30
+
+    def log_front(self, nivel: str = "error", mensaje: str = "", detalle=None) -> dict:
+        """Reenvía al log de Python un error/aviso del front (React/pywebview).
+
+        Trunca a ~4000 caracteres y limita a 30 entradas por minuto. Nunca
+        lanza excepciones."""
+        try:
+            ahora = time.monotonic()
+            ventana = getattr(self, "_log_front_ventana", None)
+            if ventana is None or ahora - ventana[0] >= 60:
+                ventana = [ahora, 0]
+                self._log_front_ventana = ventana
+            if ventana[1] >= self._LOG_FRONT_MAX_POR_MIN:
+                return {"ok": False, "limitado": True}
+            ventana[1] += 1
+            texto = str(mensaje)
+            if detalle:
+                texto += " | " + str(detalle)
+            texto = texto[: self._LOG_FRONT_MAX_CHARS]
+            if str(nivel).lower() in ("error", "err", "fatal"):
+                logger.error("[front] %s", texto)
+            else:
+                logger.warning("[front] %s", texto)
+            return {"ok": True}
+        except Exception:  # noqa: BLE001 — el log del front nunca debe romper nada
+            return {"ok": False}
 
     def sesion_remota(self) -> dict:
         try:
@@ -1958,6 +1988,16 @@ class Api:
                     "bajado_en": 0.0,
                     "error": "Inicia sesión para ver las inspecciones."}
         cat = inspecciones.cargar_catalogo(cloud_config.BUCKET_DATOS, auth)
+        if cat.get("auth_invalida"):
+            # La Suite rechaza la sesión (401): se descarta la local (no toca
+            # los perfiles guardados) y se dice, en vez de lista vacía muda.
+            try:
+                auth._olvidar_local()
+            except Exception:  # noqa: BLE001
+                logger.exception("No se pudo invalidar la sesión local")
+            return {"ok": False, "inspecciones": [], "origen": "api",
+                    "bajado_en": 0.0, "auth_invalida": True,
+                    "error": "La sesión ha caducado o no es válida. Vuelve a iniciar sesión."}
         if not hasattr(self, "_ids_inspeccion"):
             self._ids_inspeccion = {}
         for it in cat.get("inspecciones") or []:

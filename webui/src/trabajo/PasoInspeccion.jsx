@@ -18,6 +18,7 @@ export default function PasoInspeccion({ ready, prefijo, carpeta, estadilloRutas
   const sugerenciaRef = useRef(null)
   const eleccionRef = useRef(eleccion)
   eleccionRef.current = eleccion
+  const eleccionAutoRef = useRef(false)
 
   const inspecciones = catalogo?.inspecciones || []
   const elegida = inspecciones.find((i) => i.prefijo === eleccion) || null
@@ -42,42 +43,54 @@ export default function PasoInspeccion({ ready, prefijo, carpeta, estadilloRutas
   }, [ready, reloadToken])
 
   const claveEstadillo = (estadilloRutas || []).join('|')
-  // Si cambia la carpeta o el estadillo, una elección que vino de la
-  // autodetección ya no es fiable: se limpia y se vuelve a consultar. Una
-  // elección manual no se toca nunca.
-  const claveAnterior = useRef(`${carpeta}|${claveEstadillo}`)
+  // Si cambia la CARPETA, una elección que vino de la autodetección ya no es
+  // fiable: se limpia y se vuelve a consultar. Una elección manual no se toca
+  // nunca. Si solo cambia el estadillo se re-pide la sugerencia (efecto de
+  // abajo) pero NO se borra la elección: limpiarla cambiaba `prefijo`, eso
+  // reseteaba PasoEstadillo, que cambiaba el estadillo... y vuelta al bucle.
+  const carpetaAnterior = useRef(carpeta)
   useEffect(() => {
-    const clave = `${carpeta}|${claveEstadillo}`
-    if (claveAnterior.current === clave) return
-    claveAnterior.current = clave
+    if (carpetaAnterior.current === carpeta) return
+    carpetaAnterior.current = carpeta
     if (sugerencia?.auto && !eleccionManual.current && eleccionRef.current) {
       setEleccion('')
       setSugerencia(null)
       sugerenciaRef.current = null
+      eleccionAutoRef.current = false
+      // El efecto de sugerencia corre en este mismo commit, antes del render
+      // que actualiza `eleccionRef`: sin esto vería la elección vieja y no
+      // autodetectaría la carpeta nueva.
+      eleccionRef.current = ''
       onChange('', null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [carpeta, claveEstadillo])
+  }, [carpeta])
   useEffect(() => {
-    if (!carpeta || !catalogo?.ok || eleccion || eleccionManual.current) return
+    if (!carpeta || !catalogo?.ok || eleccionManual.current) return
+    // Con elección ya hecha solo se re-consulta si fue automática.
+    if (eleccionRef.current && !eleccionAutoRef.current) return
     const clave = `${carpeta}|${claveEstadillo}`
     if (sugerenciaRef.current === clave) return
     sugerenciaRef.current = clave
-    setSugerencia(null)
+    if (!eleccionRef.current) setSugerencia(null)
     let cancelado = false
     ;(async () => {
       try {
         const r = await api.inspeccionSugerir(carpeta, estadilloRutas || [])
-        // No pisar una decisión tomada mientras la consulta estaba en vuelo.
-        if (cancelado || eleccionManual.current || eleccionRef.current) return
+        // No pisar una decisión manual tomada mientras la consulta estaba en vuelo.
+        if (cancelado || eleccionManual.current) return
+        if (eleccionRef.current && !eleccionAutoRef.current) return
         if (r?.estado === 'unica' && r.prefijo) {
-          elegirAuto(r.prefijo)
+          // Mismo prefijo: no tocar nada (cambiarlo reseteaba PasoEstadillo).
+          if (r.prefijo !== eleccionRef.current) elegirAuto(r.prefijo)
           setSugerencia({ ...r, auto: true })
-        } else {
+        } else if (!eleccionRef.current) {
           setSugerencia(r || null)
         }
+        // Ya no es única pero hay elección automática: se deja (limpiarla
+        // reabriría el ciclo) y se mantiene el aviso de preseleccionada.
       } catch (e) {
-        if (!cancelado) setSugerencia({ estado: 'error', mensaje: String(e?.message || e) })
+        if (!cancelado && !eleccionRef.current) setSugerencia({ estado: 'error', mensaje: String(e?.message || e) })
       }
     })()
     return () => {
@@ -87,10 +100,12 @@ export default function PasoInspeccion({ ready, prefijo, carpeta, estadilloRutas
       if (sugerenciaRef.current === clave) sugerenciaRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [carpeta, claveEstadillo, catalogo, eleccion])
+  }, [carpeta, claveEstadillo, catalogo])
 
   // Elección hecha por la autodetección: no cuenta como manual.
   function elegirAuto(valor) {
+    eleccionAutoRef.current = true
+    eleccionRef.current = valor
     setEleccion(valor)
     onChange(valor, inspecciones.find((i) => i.prefijo === valor) || null)
   }
@@ -100,6 +115,7 @@ export default function PasoInspeccion({ ready, prefijo, carpeta, estadilloRutas
   // `onChange` — este componente solo se ocupa de la elección en sí.
   function elegir(valor) {
     eleccionManual.current = true
+    eleccionAutoRef.current = false
     setSugerencia((s) => (s?.auto ? { ...s, auto: false } : s))
     setEleccion(valor)
     if (valor === NUEVA) {
@@ -159,9 +175,12 @@ export default function PasoInspeccion({ ready, prefijo, carpeta, estadilloRutas
       {sugerencia?.auto && eleccion && eleccion !== NUEVA && (
         <span className="field-hint">Preseleccionada por la carpeta, puedes cambiarla.</span>
       )}
+      {catalogo?.error && (
+        <span className="field-hint hint-error" role="alert">{catalogo.error}</span>
+      )}
       <span className="field-hint">
         {catalogo?.error
-          ? catalogo.error
+          ? null
           : catalogo?.origen === 'cache'
             ? `${inspecciones.length} inspecciones de la última descarga (no se pudo consultar ahora).`
             : catalogo?.origen === 'bucket'

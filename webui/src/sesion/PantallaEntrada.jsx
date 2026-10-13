@@ -75,6 +75,7 @@ export default function PantallaEntrada({ onGoogle, onInvitado, cargando, error,
   const [usuario, setUsuario] = useState('')
   const [password, setPassword] = useState('')
   const [enviando, setEnviando] = useState(false)
+  const [errorActivar, setErrorActivar] = useState(null)
 
   useEffect(() => {
     let vivo = true
@@ -92,20 +93,23 @@ export default function PantallaEntrada({ onGoogle, onInvitado, cargando, error,
       return
     }
     setActivando(true)
+    let motivo = ''
     try {
       const respuesta = await api.activarPerfil(perfil.email)
       if (respuesta && respuesta.ok) {
+        setErrorActivar(null)
         if (onPerfilActivado) onPerfilActivado()
         else window.location.reload()
         return
       }
-    } catch {
-      // credencial caducada / bridge sin el método: relogin silencioso.
+      motivo = respuesta?.error || 'la credencial ha caducado'
+    } catch (e) {
+      motivo = e?.message || 'error desconocido'
     } finally {
       setActivando(false)
     }
-    // Sin confirmación ni error: es una decisión de producto, no un fallo
-    // que haya que explicarle al operador.
+    // Sin fallbacks silenciosos: se dice por qué no entró y se pide login.
+    setErrorActivar(`No se pudo activar el perfil: ${motivo}. Inicia sesión de nuevo.`)
     onGoogle()
   }
 
@@ -234,6 +238,7 @@ export default function PantallaEntrada({ onGoogle, onInvitado, cargando, error,
         </form>
       )}
 
+      {errorActivar && <p className="entrada-error entrada-error-activo" role="alert">{errorActivar}</p>}
       {error && <p className="entrada-error">{error}</p>}
     </div>
   )

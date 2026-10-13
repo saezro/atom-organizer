@@ -389,7 +389,14 @@ export const api = {
   // Fire-and-forget: el llamador debe tragar el error, nunca bloquear la UI.
   // NUNCA lleva los digitos del PIN ni su longitud/composicion.
   pinTelemetria: (datos) => call('pin_telemetria', datos),
-  cloudInspecciones: () => call('cloud_inspecciones'),
+  // Si Python descarta la sesión (401), se avisa con un evento para que App
+  // refresque la sesión y reaparezca la pantalla de entrada (vale para todo
+  // consumidor del catálogo).
+  cloudInspecciones: async () => {
+    const r = await call('cloud_inspecciones')
+    if (r && r.auth_invalida) window.dispatchEvent(new CustomEvent('atom:auth-invalida'))
+    return r
+  },
   // Sugerencia de inspección por carpeta + estadillo (ruta, lista de rutas o ''):
   // {estado: 'unica'|'varias'|'ninguna'|'conflicto'|'error', prefijo?, candidatos[], motivo?, mensaje?}
   inspeccionSugerir: (carpeta, estadilloPath) =>
@@ -517,6 +524,19 @@ export const api = {
   // argumentos. Devuelve {activa, motivo, desde} — la UI se bloquea con un
   // overlay (`SesionRemota.jsx`) mientras `activa` sea true.
   sesionRemota: () => call('sesion_remota'),
+}
+
+// Reenvia errores del front al log de Python (`Api.log_front`) para poder
+// diagnosticar por SSH. Fire-and-forget; no-op sin pywebview (tests, navegador).
+export function logFront(nivel, mensaje, detalle) {
+  try {
+    const fn = window.pywebview?.api?.log_front
+    if (typeof fn !== 'function') return
+    const r = fn(String(nivel || 'error'), String(mensaje ?? ''), detalle == null ? null : String(detalle))
+    if (r && typeof r.catch === 'function') r.catch(() => {})
+  } catch {
+    // nunca romper por el log
+  }
 }
 
 // Python empuja progreso del pipeline con:

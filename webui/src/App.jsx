@@ -159,7 +159,7 @@ function anexarLog(lineas, texto) {
   return siguiente
 }
 
-function App() {
+function AppInterna() {
   const [confirmar, dialogoConfirmar] = useConfirmar()
   const [ready, setReady] = useState(false)
   const [section, setSection] = useState('trabajo')
@@ -192,7 +192,7 @@ function App() {
   // el kiosco de la Pi (ver comprobación `!kiosco` más abajo, ese modo no
   // pasa por aquí). `useSesion` no hace polling, solo se refresca al montar
   // y tras entrar/salir.
-  const { cargando: sesionCargando, entrado, cuenta, invitado, error: sesionError, entrarConGoogle, loginPassword, entrarSinCuenta, salir, refrescar: refrescarSesion } = useSesion()
+  const { cargando: sesionCargando, entrando: sesionEntrando, entrado, cuenta, invitado, error: sesionError, entrarConGoogle, loginPassword, entrarSinCuenta, salir, refrescar: refrescarSesion } = useSesion()
 
   // `{organizer, estadillos}` del login usuario+contraseña; `null` = todo
   // visible (Google, broker o sesión sin dato). Sale de `cloudStatus`.
@@ -311,11 +311,28 @@ function App() {
   // Misma llamada que `BucketScreen.cargarInspecciones`: se extrae para
   // poder invocarla también desde el botón «Actualizar lista» de
   // `InspeccionSelector` dentro del kiosco.
+  // Python ya olvidó la sesión local tras un 401 (`auth_invalida`): se relee
+  // para que `entrado`/`cuenta` cambien y salga la pantalla de entrada.
+  useEffect(() => {
+    const alInvalida = () => refrescarSesion({ silencioso: true })
+    window.addEventListener('atom:auth-invalida', alInvalida)
+    return () => window.removeEventListener('atom:auth-invalida', alInvalida)
+  }, [refrescarSesion])
+
+  const [kioskInspeccionesError, setKioskInspeccionesError] = useState(null)
   const kioskCargarInspecciones = useCallback(() => {
     return api
       .cloudInspecciones()
-      .then((r) => setKioskInspecciones(r?.inspecciones || []))
-      .catch(() => setKioskInspecciones([]))
+      .then((r) => {
+        setKioskInspecciones(r?.inspecciones || [])
+        setKioskInspeccionesError(r && r.ok === false
+          ? (r.error || 'No se pudo cargar la lista de inspecciones.')
+          : null)
+      })
+      .catch((e) => {
+        setKioskInspecciones([])
+        setKioskInspeccionesError(`No se pudo cargar la lista de inspecciones: ${e?.message || e}`)
+      })
   }, [])
 
   useEffect(() => {
@@ -914,7 +931,7 @@ function App() {
           onGoogle={entrarConGoogle}
           onPassword={loginPassword}
           onInvitado={entrarSinCuenta}
-          cargando={sesionCargando}
+          cargando={sesionEntrando}
           error={sesionError}
           onPerfilActivado={refrescarSesion}
         />
@@ -1012,6 +1029,7 @@ function App() {
               carpeta={kioskCarpeta}
               onPickCarpeta={kioskPickCarpeta}
               inspecciones={kioskInspecciones}
+              errorInspecciones={kioskInspeccionesError}
               inspeccion={kioskInspeccion}
               onSelectInspeccion={setKioskInspeccion}
               onActualizarInspecciones={kioskCargarInspecciones}
@@ -1073,9 +1091,6 @@ function App() {
           onCancel={() => api.runCancelar()}
         />
       )}
-
-      {/* Se pinta solo si Python avisa de que hay versión nueva (`atom:update`). */}
-      <UpdateModal />
 
       {picker && (
         <FolderPicker
@@ -1374,6 +1389,18 @@ function ConfigScreen({ ready }) {
         )}
       </div>
     </div>
+  )
+}
+
+// `UpdateModal` vive aquí, fuera de los returns de AppInterna (gate de entrada
+// y app principal): una sola instancia que no se desmonta al entrar, así no
+// pierde la descarga en curso ni duplica listeners de `atom:update`.
+function App() {
+  return (
+    <>
+      <AppInterna />
+      <UpdateModal />
+    </>
   )
 }
 

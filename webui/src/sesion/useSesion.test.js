@@ -157,8 +157,10 @@ describe('useSesion', () => {
     })
 
     await waitFor(() => expect(cloudLoginMock).toHaveBeenCalledTimes(1))
-    // Sigue cargando: el `atom:cloud` de login todavía no ha llegado.
-    expect(result.current.cargando).toBe(true)
+    // Sigue entrando (sin `cargando`, para no desmontar PantallaEntrada): el
+    // `atom:cloud` de login todavía no ha llegado.
+    expect(result.current.entrando).toBe(true)
+    expect(result.current.cargando).toBe(false)
     expect(result.current.entrado).toBe(false)
 
     // Ahora sí llega el consentimiento: cloudStatus pasa a logged_in=true y
@@ -178,7 +180,8 @@ describe('useSesion', () => {
       )
     })
 
-    await waitFor(() => expect(result.current.cargando).toBe(false))
+    await waitFor(() => expect(result.current.entrando).toBe(false))
+    expect(result.current.cargando).toBe(false)
     expect(result.current.entrado).toBe(true)
     expect(result.current.cuenta?.email).toBe('user@example.com')
   })
@@ -201,7 +204,8 @@ describe('useSesion', () => {
       )
     })
 
-    await waitFor(() => expect(result.current.cargando).toBe(false))
+    await waitFor(() => expect(result.current.entrando).toBe(false))
+    expect(result.current.cargando).toBe(false)
     expect(result.current.entrado).toBe(false)
     expect(result.current.error).toBe('Consentimiento cancelado.')
   })
