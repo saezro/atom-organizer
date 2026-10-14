@@ -1199,11 +1199,27 @@ class PipelinePhasesMixin:
                 cancelacion.comprobar()
                 _copiar_estadillos_a_salida(cfg, self.organizer_logger_obj.logger)
 
-                if getattr(self, "solo_fallidas", False):
+                # Fallidas de OTRO origen (p. ej. el día anterior en un destino
+                # acumulado): no se reintentan, no se adoptan en este run (no
+                # entran en ERRORES_*.csv) y no sustituyen la corrida normal.
+                _ajenas = manifiesto.fallidas_de_otro_origen(cfg.input_folder)
+                if _ajenas:
+                    _carpetas = sorted({r.replace("\\", "/").rsplit("/", 1)[0] for r in _ajenas})
+                    progress_callback.emit(
+                        f"\n{len(_ajenas)} fallida(s) de otro origen ignoradas: "
+                        + ", ".join(_carpetas[:5])
+                        + (f" (+{len(_carpetas) - 5} carpetas más)" if len(_carpetas) > 5 else "")
+                        + "\n")
+                _solo_fallidas = getattr(self, "solo_fallidas", False)
+                if _solo_fallidas and not manifiesto.hay_fallidas_de_origen(cfg.input_folder):
+                    progress_callback.emit(
+                        "\n[reintento] no hay fallidas de este origen: corrida normal.\n")
+                    _solo_fallidas = False
+                if _solo_fallidas:
                     # Reintento dirigido: sin reescanear el origen. Las filas
                     # 'fallido' ya traen decisión y rutas; vuelven a 'pendiente'
                     # y el apply/cierre de siempre las procesa. 'hecho' intacto.
-                    n_reint = manifiesto.reabrir_fallidas(ejecucion_id)
+                    n_reint = manifiesto.reabrir_fallidas(ejecucion_id, cfg.input_folder)
                     conteo_previo = manifiesto.resumen()
                     resumen_indice = {
                         "nuevas": 0, "saltadas": conteo_previo.get("hecho", 0),
