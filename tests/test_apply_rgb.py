@@ -107,7 +107,7 @@ def _cfg(**overrides):
     """`SplitImagesConfig` mínima; solo `compress_level` importa a estos
     tests, el resto son valores neutros para poder construir el dataclass."""
     base = dict(
-        input_folder="/origen", output_folder="/destino",
+        input_folder="", output_folder="/destino",
         end_rgb_extra_files="", end_thermo_files="_T", end_rgb_files="",
         estad="/estadillo.csv", choose_mode_size=False, max_size="0",
         compress_rgb=True, compress_level=85, rename_images=True,

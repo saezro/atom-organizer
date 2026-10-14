@@ -64,7 +64,7 @@ def test_activo_con_env_var_a_0_es_falso_aunque_hubiera_cupy(monkeypatch):
 def _cfg():
     """`SplitImagesConfig` mínima; solo `compress_level` importa aquí."""
     return SplitImagesConfig(
-        input_folder="/origen", output_folder="/destino",
+        input_folder="", output_folder="/destino",
         end_rgb_extra_files="", end_thermo_files="_T", end_rgb_files="",
         estad="/estadillo.csv", choose_mode_size=False, max_size="0",
         compress_rgb=True, compress_level=85, rename_images=True,

@@ -723,7 +723,7 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
     # `compress_checked`). Dejarlas fuera de este filtro las dejaría
     # 'pendiente' para siempre y `cierre.verificar` las reportaría como run
     # interrumpido sin haberlo estado.
-    filas = [dict(fila) for fila in manifiesto.pendientes()
+    filas = [dict(fila) for fila in manifiesto.pendientes(origen=getattr(cfg, "input_folder", None))
             if fila["tipo"] in indice_mod.TIPOS_RGB]
     antes_del_veto = len(filas)
     filas = _vetar_sobrescrituras(manifiesto, filas, progress_callback)
@@ -1530,7 +1530,8 @@ def _aplicar_termicas_impl(manifiesto, cfg, pipeline, progress_callback, progres
     # haya ninguna térmica pendiente en esta pasada.
     _reportar_colisiones_destino(manifiesto, progress_callback)
 
-    filas = [dict(fila) for fila in manifiesto.pendientes() if fila["tipo"] == "TERMICA"]
+    filas = [dict(fila) for fila in manifiesto.pendientes(origen=getattr(cfg, "input_folder", None))
+             if fila["tipo"] == "TERMICA"]
     antes_del_veto = len(filas)
     filas = _vetar_sobrescrituras(manifiesto, filas, progress_callback)
     # Las vetadas ya quedaron 'fallido' en el manifiesto: cuentan como fallidas.
@@ -1673,7 +1674,8 @@ def _aplicar_termicas_impl(manifiesto, cfg, pipeline, progress_callback, progres
         sin_procesar = [
             fila for fila in manifiesto.todas()
             if fila["tipo"] == "TERMICA" and fila["estado"] in ("pendiente", "en_curso")
-            and not fila["unassigned"] and fila["pb"] and fila["vuelo"]]
+            and not fila["unassigned"] and fila["pb"] and fila["vuelo"]
+            and _fila_del_origen(fila, getattr(cfg, "input_folder", None))]
         if sin_procesar:
             msg = (f"Fase térmica incompleta: {len(sin_procesar)} térmica(s) con vuelo "
                    f"asignado NO se han procesado (ni giradas ni convertidas). "
@@ -1756,6 +1758,13 @@ def _con_marcador(impl, fase, slug, tipos, manifiesto, cfg, progress_callback, a
                     f"\nERROR no se pudo emitir el marcador de errores de {fase}: {exc}\n")
             except Exception:  # noqa: BLE001
                 pass
+
+
+def _fila_del_origen(fila, origen) -> bool:
+    """Destino acumulado: ¿la fila cuelga del origen del run? Sin origen, todas."""
+    from atom_core.manifiesto import ruta_bajo_origen
+    origen = str(origen or "").strip()
+    return (not origen) or ruta_bajo_origen(fila["ruta_origen"], origen)
 
 
 def aplicar_rgb(manifiesto, cfg, pipeline_mod, progress_callback, progress_bar,

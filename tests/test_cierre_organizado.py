@@ -262,7 +262,7 @@ def test_las_filas_pendientes_se_reportan(tmp_path):
     manifiesto.marcar_hecha(filas[0]["id"], verificacion="ok")
     # `filas[1]` se queda 'pendiente' a propósito.
 
-    cfg = _cfg(destino)
+    cfg = dataclasses.replace(_cfg(destino), input_folder="/origen")
     problemas = verificar(manifiesto, cfg)
 
     assert len(problemas) == 1
