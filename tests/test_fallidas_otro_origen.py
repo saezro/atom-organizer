@@ -91,3 +91,58 @@ def test_ruta_bajo_origen_no_confunde_prefijos():
     assert ruta_bajo_origen(r"C:\X\Dia1\a.jpg", r"c:\x\dia1")
     assert not ruta_bajo_origen(r"C:\X\Dia10\a.jpg", r"C:\X\Dia1")
     assert not ruta_bajo_origen(r"C:\X\a.jpg", "")
+
+
+def _manifiesto_cierre(tmp_path):
+    m = Manifiesto(os.path.join(str(tmp_path), "m.db"))
+    m.crear_esquema()
+    eid = m.abrir_ejecucion(ORIGEN_A, "t")
+    con = m._conexion()
+    with con:
+        for i in range(7072):
+            con.execute(
+                "INSERT INTO imagenes (ruta_origen, clave, tipo, ruta_salida_original, estado, "
+                "motivo_fallo, ejecucion_id) VALUES (?, ?, 'TERMICA', 'x', 'fallido', "
+                "'WinError 3', ?)", (ORIGEN_A + f"\\DCIM1\\DJI_{i:05d}_T.JPG", f"kA{i}", eid))
+    return m, eid
+
+
+def _cfg_cierre(tmp_path, origen):
+    c = type("C", (), {})()
+    c.input_folder, c.output_folder = origen, str(tmp_path)
+    return c
+
+
+def test_cierre_fallidas_otro_origen_son_aviso_no_error(tmp_path):
+    from atom_core.cierre import separar_problemas, verificar
+    m, _ = _manifiesto_cierre(tmp_path)
+    p = verificar(m, _cfg_cierre(tmp_path, r"C:\Users\Jonathan\Desktop\2026_10_08_TUTLY"))
+    errores, avisos = separar_problemas(p)
+    assert not [e for e in errores if "fallaron" in e]
+    assert any("7072 fallida(s)/pendiente(s) de otro origen" in a and "2026_10_07_TUTLY" in a
+               for a in avisos)
+    m.cerrar()
+
+
+def test_cierre_fallida_del_origen_actual_sigue_siendo_error(tmp_path):
+    from atom_core.cierre import separar_problemas, verificar
+    m, _ = _manifiesto_cierre(tmp_path)
+    b = r"C:\Users\Jonathan\Desktop\2026_10_08_TUTLY"
+    eid = m.abrir_ejecucion(b, "t")
+    con = m._conexion()
+    with con:
+        con.execute(
+            "INSERT INTO imagenes (ruta_origen, clave, tipo, ruta_salida_original, estado, "
+            "motivo_fallo, ejecucion_id) VALUES (?, 'kB', 'TERMICA', 'x', 'fallido', 'boom', ?)",
+            (b + r"\DCIM1\DJI_0001_T.JPG", eid))
+    errores, _ = separar_problemas(verificar(m, _cfg_cierre(tmp_path, b)))
+    assert any(e.startswith("ERROR: 1 imagen(es) fallaron") for e in errores)
+    m.cerrar()
+
+
+def test_cierre_origen_vacio_todas_cuentan_como_error(tmp_path):
+    from atom_core.cierre import separar_problemas, verificar
+    m, _ = _manifiesto_cierre(tmp_path)
+    errores, _ = separar_problemas(verificar(m, _cfg_cierre(tmp_path, "")))
+    assert any("7072 imagen(es) fallaron" in e for e in errores)
+    m.cerrar()

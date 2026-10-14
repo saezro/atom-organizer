@@ -1049,6 +1049,11 @@ class MetaLocation:
         # df = self.shuffle_csv(df)
         if reordenar:
             df = self.reorder_csv_from_date(df)
+            sin_hora = getattr(self, "fotos_sin_hora", [])
+            if sin_hora:
+                self._aviso(progress_callback,
+                            f"ERROR: {filename}: {len(sin_hora)} foto(s) sin hora de captura "
+                            f"(p.ej. {sin_hora[0]}); no se pueden ordenar cronológicamente.")
         # self.organizer_logger.logger.info(df)
         nombre_csv = os.path.basename(input_folder) + "_" + filename
         csv_generado = unir(input_folder, nombre_csv)
@@ -1175,6 +1180,7 @@ class MetaLocation:
         el desfase del vuelo); lo que no case se empareja por idx coherente (con aviso); sin timestamps, solo por idx.
         Devuelve `(pares, sin_pareja, sin_patron)`: `pares` = [(t, w)] en orden cronológico (ts, idx DJI);
         `sin_pareja` = nombres con patrón cuyo par falta (o idx duplicado en su lado); `sin_patron` = sin patrón DJI."""
+        self.pares_sin_hora, self.n_pares_ts_nombre = [], 0
         def indexar(imgs, suf):
             por_idx, sin_patron = {}, []
             for im in imgs:
@@ -1193,8 +1199,8 @@ class MetaLocation:
         w_ok = {k: v[0] for k, v in w_idx.items() if len(v) == 1}
         desfase = None
         # Solo cuentan para el desfase y el matching por timestamp las fotos con ts parseable en el nombre.
-        ts_t = {k: t for k, n in t_ok.items() if (t := self._ts_nombre(n)) is not None}
-        ts_w = {k: t for k, n in w_ok.items() if (t := self._ts_nombre(n)) is not None}
+        ts_t = {k: t for k, n in t_ok.items() if (t := self._ts_captura(n)) is not None}
+        ts_w = {k: t for k, n in w_ok.items() if (t := self._ts_captura(n)) is not None}
         if ts_t and ts_w:
             from collections import Counter  # noqa: PLC0415
             import bisect as _bisect  # noqa: PLC0415
@@ -1225,8 +1231,8 @@ class MetaLocation:
         # idx coherente (idx_W - idx_T == desfase), 1:1 y con aviso. Sin ts en ninguna T o ninguna W: rama por índice (abajo).
         todas_t = [n for v in t_idx.values() for n in v]
         todas_w = [n for v in w_idx.values() for n in v]
-        ts_all_t = {n: self._ts_nombre(n) for n in todas_t}
-        ts_all_w = {n: self._ts_nombre(n) for n in todas_w}
+        ts_all_t = {n: self._ts_captura(n) for n in todas_t}
+        ts_all_w = {n: self._ts_captura(n) for n in todas_w}
         if any(v is not None for v in ts_all_t.values()) and any(v is not None for v in ts_all_w.values()):
             import bisect as _bisect  # noqa: PLC0415
             import datetime as _dt  # noqa: PLC0415
@@ -1319,19 +1325,31 @@ class MetaLocation:
         return self._cerrar_emparejado(pares, sin_pareja, t_idx, w_idx, desfase, t_np, w_np)
 
     def _cerrar_emparejado(self, pares, sin_pareja, t_idx, w_idx, desfase, t_np, w_np):
-        """Orden final cronológico (timestamp del nombre, luego idx DJI): con reinicio del contador
-        (0999 -> 0001) el idx solo desordenaría el CSV, que se publica con reordenar=False.
-        Si algún par no tiene timestamp en ninguna foto se ordena todo por idx y se AVISA (no es silencioso)."""
-        # ts del par = el de la T, o el de la W si la T no lo trae
-        tss = [self._ts_nombre(p[0]) or self._ts_nombre(p[1]) for p in pares]
-        sin_ts = [p[0] for p, t in zip(pares, tss) if t is None]  # antes de ordenar: alineado con tss
-        if not sin_ts:
-            pares = [p for _, p in sorted(zip(tss, pares), key=lambda x: (x[0], self._clave_idx_dji(x[1][0], "T")))]
-        else:
-            pares.sort(key=lambda par: self._clave_idx_dji(par[0], "T"))
-            self.organizer_logger.logger.warning(
-                f"Emparejado T/W: {len(sin_ts)} pares sin timestamp parseable en ninguna de sus fotos (p.ej. {sin_ts[0]}); "
-                "se ordenan por índice DJI (un reinicio del contador DJI no se detectará).")
+        """Orden final SIEMPRE por hora de captura (la del manifiesto si se inyectó en
+        `_ts_externo`; si no, el timestamp del nombre), con el idx DJI solo como desempate
+        entre fotos de la misma hora. El idx nunca es el criterio principal: con reinicio del
+        contador (0999 -> 0001) desordenaría el CSV. Un par sin hora en ninguna de sus fotos
+        NO se adivina: va al final, queda en `self.pares_sin_hora` y quien publica debe
+        reportarlo como ERROR (`avisos_orden`). `self.n_pares_ts_nombre` = pares cuya hora
+        salió del nombre y no del manifiesto."""
+        con_hora, sin_hora, n_nombre = [], [], 0
+        for p in pares:
+            t, fuente = self._ts_con_fuente(p[0])
+            if t is None:
+                t, fuente = self._ts_con_fuente(p[1])
+            if t is None:
+                sin_hora.append(p)
+            else:
+                con_hora.append((t, self._clave_idx_dji(p[0], "T"), p))
+                n_nombre += fuente == "nombre"
+        con_hora.sort(key=lambda x: (x[0], x[1] if x[1] is not None else -1))
+        sin_hora.sort(key=lambda p: self._clave_idx_dji(p[0], "T") or 0)
+        pares = [p for _t, _i, p in con_hora] + sin_hora
+        self.pares_sin_hora, self.n_pares_ts_nombre = sin_hora, n_nombre
+        if sin_hora:
+            self.organizer_logger.logger.error(
+                f"Emparejado T/W: {len(sin_hora)} pares sin hora de captura en ninguna de sus fotos "
+                f"(p.ej. {sin_hora[0][0]}); no se puede ordenar cronológicamente.")
         if sin_pareja:
             self.organizer_logger.logger.warning(
                 f"Emparejado T/W: {len(sin_pareja)} fotos sin pareja (p.ej. {sin_pareja[0]}).")
@@ -1355,6 +1373,31 @@ class MetaLocation:
             return _dt.datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
         except ValueError:
             return None
+
+    def _ts_con_fuente(self, nombre: str):
+        """`(datetime, "exif"|"nombre")` de la hora de captura de `nombre`, o `(None, None)`.
+        La hora del manifiesto (inyectada en `_ts_externo` por el cierre) manda; el nombre es respaldo."""
+        t = getattr(self, "_ts_externo", {}).get(os.path.basename(str(nombre)))
+        if t is not None:
+            return t, "exif"
+        t = self._ts_nombre(nombre)
+        return (t, "nombre") if t is not None else (None, None)
+
+    def _ts_captura(self, nombre: str):
+        return self._ts_con_fuente(nombre)[0]
+
+    def avisos_orden(self, progress_callback) -> None:
+        """Reporta del último emparejado: pares sin hora (ERROR) y pares ordenados por la hora del nombre (WARN)."""
+        sin_hora = getattr(self, "pares_sin_hora", [])
+        if sin_hora:
+            self._aviso(progress_callback,
+                        f"ERROR: {len(sin_hora)} par(es) T/W sin hora de captura (p.ej. {sin_hora[0][0]}); "
+                        "no se pueden ordenar cronológicamente y se excluyen de meta y location.")
+        n = getattr(self, "n_pares_ts_nombre", 0)
+        if n:
+            self._aviso(progress_callback,
+                        f"WARN: {n} par(es) T/W ordenados por la hora del NOMBRE del fichero "
+                        "(sin hora de captura en el manifiesto).", error=False)
 
     def _aviso(self, progress_callback, texto: str, error: bool = True) -> None:
         self.organizer_logger.logger.info(texto)
@@ -1391,6 +1434,7 @@ class MetaLocation:
         if not imgs_t and not imgs_w:
             return
         pares, sin_pareja, sin_patron = self.emparejar_por_idx(imgs_t, imgs_w)
+        self.avisos_orden(progress_callback)
         if (not imgs_t or not imgs_w) or (not pares and sin_patron and not sin_pareja):
             # Vuelo solo RGB (o solo T) o sin patrón DJI: independientes, como siempre.
             if imgs_t and imgs_w:
@@ -1715,33 +1759,9 @@ class MetaLocation:
         return result
 
     def reorder_csv(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Reordena el dataframe a partir del número secuencial extraído del nombre de imagen en la columna 'Foto'.
-        El número se extrae buscando el patrón _XXXX_ (4 dígitos entre guiones bajos) en el nombre del archivo.
-
-        Arguments:
-        ---------
-        - df - DataFrame con la columna 'Foto' que contiene los nombres de las imágenes.
-
-        Returns:
-        --------
-        DataFrame ordenado por el número secuencial extraído del nombre de imagen.
-        """
-        def extract_sequence_number(filename: str) -> int:
-            # Busca el patrón _DDDD_ (4 dígitos entre guiones bajos) en el nombre del archivo
-            match = re.search(r'_(\d{4})_', filename)
-            if match:
-                return int(match.group(1))
-            # Si no hay match con 4 dígitos, busca cualquier secuencia de dígitos entre guiones bajos
-            match = re.search(r'_(\d+)_', filename)
-            if match:
-                return int(match.group(1))
-            return 0
-
-        df_sorted = df.copy()
-        df_sorted['_sort_key'] = df_sorted['Foto'].apply(extract_sequence_number)
-        df_sorted = df_sorted.sort_values('_sort_key').drop(columns=['_sort_key']).reset_index(drop=True)
-        return df_sorted
+        """Antes ordenaba SOLO por el número DJI del nombre. Ahora delega en
+        `reorder_csv_from_date`: el orden es siempre por hora de captura y el idx DJI solo desempata."""
+        return self.reorder_csv_from_date(df)
 
     def reorder_csv_from_date(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -1790,14 +1810,27 @@ class MetaLocation:
                     return pd.NaT
             return pd.NaT
 
+        def extract_idx(filename: str) -> int:
+            # Solo DESEMPATE entre fotos de la misma hora; nunca criterio principal.
+            match = re.search(r'_(\d+)_', filename)
+            return int(match.group(1)) if match else -1
+
         df_sorted = df.copy()
         df_sorted['_sort_key'] = df_sorted['Foto'].apply(extract_datetime)
+        df_sorted['_sort_idx'] = df_sorted['Foto'].apply(extract_idx)
+        sin_hora = df_sorted.loc[df_sorted['_sort_key'].isna(), 'Foto'].tolist()
+        self.fotos_sin_hora = sin_hora
+        if sin_hora:
+            self.organizer_logger.logger.error(
+                f"{len(sin_hora)} foto(s) sin hora de captura en el nombre (p.ej. {sin_hora[0]}); "
+                "no se pueden ordenar cronológicamente (van al final, en el orden recibido).")
 
         if df_sorted['_sort_key'].isna().all():
-            # Ningún nombre contiene fecha reconocible: ordenar alfabéticamente por 'Foto'
-            df_sorted = df_sorted.drop(columns=['_sort_key']).sort_values('Foto').reset_index(drop=True)
+            # Ningún nombre trae hora: no se inventa un orden, se respeta el recibido (ERROR arriba).
+            df_sorted = df_sorted.drop(columns=['_sort_key', '_sort_idx']).reset_index(drop=True)
         else:
-            df_sorted = df_sorted.sort_values('_sort_key').drop(columns=['_sort_key']).reset_index(drop=True)
+            df_sorted = df_sorted.sort_values(['_sort_key', '_sort_idx'], kind='stable', na_position='last') \
+                .drop(columns=['_sort_key', '_sort_idx']).reset_index(drop=True)
 
         return df_sorted
 
