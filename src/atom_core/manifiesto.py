@@ -255,7 +255,8 @@ _SENTENCIAS_ESQUEMA = (
     )
     """,
     # Consenso de giro por vuelo (reparto de votos). Fuente de verdad del criterio:
-    # el CSV `_criterio/*_Videofiles.csv` es solo artefacto de compatibilidad.
+    # el CSV legado `_criterio/*_Videofiles.csv` ya no se escribe; solo se lee para
+    # carpetas procesadas por versiones anteriores.
     # `sufijo` = '' cuando el vuelo no colisiona.
     """
     CREATE TABLE IF NOT EXISTS vuelos (

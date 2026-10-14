@@ -27,7 +27,9 @@ import glob
 import logging
 import os
 import pathlib
+import re
 import shutil
+import sqlite3
 import struct
 import subprocess
 import tempfile
@@ -47,6 +49,10 @@ from PIL import Image
 import matplotlib
 from matplotlib import cm
 
+# `version_algoritmo` de las filas de `vuelos` escritas por `gen_thumbnails_and_rotate*`.
+# Distinta de `indice.VERSION_ALGORITMO_GIRO` a propósito: el índice no las reutiliza.
+VERSION_GIRO_LEGADO = "legacy-gen_thumbnails"
+
 import utils  # acceso diferido (utils.X) para evitar ciclo de import con utils.py, que hace `import pipeline`.
 
 import exif as exif_management
@@ -57,6 +63,7 @@ import external_tools
 import dji_worker_pool
 import dji_irp_windows
 from atom_core import almacen, esperado, rjpeg, sharding, lectura_segura
+from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO, NOMBRE_FICHERO_MANIFIESTO
 
 
 def _is_windows() -> bool:
@@ -989,6 +996,122 @@ class CompressImage:
                     return
             progress_callback.emit(f"\nERROR: las claves {list_of_missing_keys} no están en la imagen comprimida {ruta}\n")
 
+def _ruta_manifiesto_de(raiz: str) -> str:
+    """`<raiz>/.organizado/manifiesto.db`. Solo existe en disco local: SQLite no
+    vive en `gs://`."""
+    return os.path.join(raiz, NOMBRE_CARPETA_MANIFIESTO, NOMBRE_FICHERO_MANIFIESTO)
+
+
+_LOCK_MANIFIESTO_GCS = threading.Lock()
+
+
+def _ruta_manifiesto_remoto(raiz: str) -> str:
+    """URI `gs://…/.organizado/manifiesto.db` de una raíz `gs://`."""
+    return almacen.unir(raiz, NOMBRE_CARPETA_MANIFIESTO, NOMBRE_FICHERO_MANIFIESTO)
+
+
+def _copia_local_manifiesto_gcs(raiz: str) -> str:
+    """Ruta de la COPIA LOCAL del manifiesto de una raíz `gs://` (SQLite no vive en
+    el bucket), ÚNICA por llamada: `<tmp>/atom_manifiesto_gcs/<sha1(raiz)>-<uuid>/manifiesto.db`.
+    Dos llamadas (hilos/runs) nunca comparten fichero."""
+    import hashlib  # noqa: PLC0415
+    import uuid  # noqa: PLC0415
+    huella = hashlib.sha1(raiz.rstrip("/").encode("utf-8")).hexdigest()[:16]
+    return os.path.join(tempfile.gettempdir(), "atom_manifiesto_gcs",
+                        f"{huella}-{uuid.uuid4().hex}", NOMBRE_FICHERO_MANIFIESTO)
+
+
+def _limpiar_copia_local_manifiesto_gcs(local: str) -> None:
+    """Borra la copia local (y su carpeta única). Nunca lanza."""
+    shutil.rmtree(os.path.dirname(local), ignore_errors=True)
+
+
+def _conservar_copia_local_manifiesto_gcs(local: str) -> str:
+    """Mueve la copia local a `<tmp>/atom_manifiesto_gcs_no_subido/manifiesto-<uuid>-NO-SUBIDO.db`
+    (ruta que `_sincronizar_manifiesto_gcs` no toca) y devuelve la nueva ruta."""
+    import uuid  # noqa: PLC0415
+    carpeta = os.path.join(tempfile.gettempdir(), "atom_manifiesto_gcs_no_subido")
+    os.makedirs(carpeta, exist_ok=True)
+    destino = os.path.join(carpeta, f"manifiesto-{uuid.uuid4().hex}-NO-SUBIDO.db")
+    shutil.move(local, destino)
+    _limpiar_copia_local_manifiesto_gcs(local)
+    return destino
+
+
+def _sincronizar_manifiesto_gcs(raiz: str) -> tuple[str, int]:
+    """Deja en una copia local ÚNICA la versión del bucket y devuelve `(ruta_local,
+    generation)`; `generation` = 0 si no existía en el bucket (la copia local se
+    crea de cero al abrirla). Se pasa a `_subir_manifiesto_gcs` para la subida
+    optimista. El llamador borra la copia con `_limpiar_copia_local_manifiesto_gcs`.
+    Errores de red/permiso se propagan (nunca se ignoran)."""
+    local = _copia_local_manifiesto_gcs(raiz)
+    os.makedirs(os.path.dirname(local), exist_ok=True)
+    try:
+        generacion = almacen.descargar_con_generacion(_ruta_manifiesto_remoto(raiz), local)
+    except BaseException:
+        _limpiar_copia_local_manifiesto_gcs(local)
+        raise
+    return local, generacion
+
+
+def _subir_manifiesto_gcs(raiz: str, local: str, generacion: int) -> None:
+    """Sube la copia local SOLO si el objeto sigue en la `generacion` descargada
+    (0 = sigue sin existir). Lanza si falla (412 incluido)."""
+    almacen.publicar_en(local, _ruta_manifiesto_remoto(raiz), if_generation_match=generacion)
+
+
+def _es_precondicion_fallida(error: BaseException) -> bool:
+    """¿412 PreconditionFailed del SDK de GCS (otro proceso subió antes)?"""
+    return getattr(error, "code", None) == 412 or type(error).__name__ == "PreconditionFailed"
+
+
+def _es_reintentable_manifiesto(error: BaseException) -> bool:
+    """412 o NotFound (404: el objeto cambió/desapareció entre `reload` y descarga)."""
+    return (_es_precondicion_fallida(error) or getattr(error, "code", None) == 404
+            or type(error).__name__ == "NotFound")
+
+
+#: Reintentos de la subida optimista del manifiesto y base del backoff (segundos).
+REINTENTOS_MANIFIESTO_GCS = 5
+_BACKOFF_MANIFIESTO_GCS = 0.2
+
+
+def _actualizar_manifiesto_gcs(raiz: str, aplicar) -> None:
+    """Lee-modifica-sube el manifiesto de una raíz `gs://` con concurrencia
+    optimista (muchas tasks de Cloud Run sobre la misma raíz): descarga con su
+    `generation`, `aplicar(manifiesto)` (debe ser idempotente: se repite), sube con
+    `if_generation_match`. En 412 vuelve a descargar y reaplica (máx.
+    `REINTENTOS_MANIFIESTO_GCS`, backoff exponencial con jitter). Agotados los
+    reintentos, o cualquier otro fallo, lanza (el llamador lo hace visible)."""
+    import random  # noqa: PLC0415
+    ultimo = None
+    for intento in range(REINTENTOS_MANIFIESTO_GCS):
+        with _LOCK_MANIFIESTO_GCS:
+            local = None
+            try:
+                local, generacion = _sincronizar_manifiesto_gcs(raiz)
+                manifiesto = Manifiesto(local)
+                try:
+                    manifiesto.crear_esquema()
+                    aplicar(manifiesto)
+                finally:
+                    manifiesto.cerrar()  # checkpoint del WAL antes de subir
+                _subir_manifiesto_gcs(raiz, local, generacion)
+                return
+            except Exception as error:
+                if not _es_reintentable_manifiesto(error):
+                    raise
+                ultimo = error
+            finally:
+                if local is not None:
+                    _limpiar_copia_local_manifiesto_gcs(local)
+        if intento < REINTENTOS_MANIFIESTO_GCS - 1:
+            time.sleep(random.uniform(0, _BACKOFF_MANIFIESTO_GCS * (2 ** intento)))
+    raise RuntimeError(
+        f"el manifiesto de {raiz} cambió {REINTENTOS_MANIFIESTO_GCS} veces mientras se subía "
+        f"(conflicto 412 con otras tasks): {ultimo}")
+
+
 class GenStructFolder:
     """
     Clase que aglutina las funciones centradas en la generación de la estructura de carpetas.
@@ -1363,7 +1486,12 @@ class GenStructFolder:
                         inicio, fin = self.ventana_horaria_vuelo(
                             fecha_estadillo, horaInicio, horaFinal, seconds_range,
                             desfase_horas, desfase_minutos)
-                        ventanas.append({"inicio": inicio, "fin": fin, "destinos": destinos})
+                        inicio_exacto, fin_exacto = self.ventana_horaria_vuelo(
+                            fecha_estadillo, horaInicio, horaFinal, 0,
+                            desfase_horas, desfase_minutos)
+                        ventanas.append({"inicio": inicio, "fin": fin, "destinos": destinos,
+                                         "inicio_exacto": inicio_exacto, "fin_exacto": fin_exacto,
+                                         "generales": True})
                         if not almacen.es_uri_gcs(output_folder):
                             os.makedirs(carpeta_generales, exist_ok=True)
                     continue
@@ -1490,6 +1618,8 @@ class GenStructFolder:
         """
         from rjpeg_a_tiff import EXTS_IMAGEN  # import local: evita ciclo con rjpeg_a_tiff, que hace `import pipeline`
 
+        from atom_core.indice import elegir_ventana, _en_ventana_exacta  # diferido: indice importa utils -> pipeline
+        por_margen = 0
         subcarpetas = ["TERMICA", "RGB"] + (["RGB_extra"] if extra_suffix else [])
         etiquetas = {"TERMICA": "Térmicas", "RGB": "RGB", "RGB_extra": "RGB Extra"}
 
@@ -1540,11 +1670,13 @@ class GenStructFolder:
                 # El primer vuelo del estadillo que la reclama se la queda. Las que
                 # no caen en ninguna ventana se quedan donde están: se las lleva
                 # después `checking_results_gen_struct_folder` a SIN_ORDENAR.
-                destino = next((v["destinos"][sub] for v in ventanas
-                                if sub in v["destinos"]
-                                and v["inicio"] < fecha_hora_imagen < v["fin"]), None)
-                if destino is None:
+                ventana_img = elegir_ventana(
+                    fecha_hora_imagen, [v for v in ventanas if sub in v["destinos"]])
+                if ventana_img is None:
                     continue
+                destino = ventana_img["destinos"][sub]
+                if not _en_ventana_exacta(fecha_hora_imagen, ventana_img):
+                    por_margen += 1
                 movimientos.append((origen, almacen.unir(destino, imagen)))
                 por_destino[destino] = por_destino.get(destino, 0) + 1
 
@@ -1553,6 +1685,12 @@ class GenStructFolder:
                     cuantas, etiquetas[sub], destino)
                 self.organizer_logger.logger.info(mensaje)
                 progress_callback.emit(mensaje)
+
+        if por_margen:
+            progress_callback.emit(
+                f"\nAVISO: {por_margen} foto(s) fuera de la franja horaria exacta de su vuelo, "
+                "asignadas solo por el margen de tolerancia (hueco entre vuelos del estadillo). "
+                "Revisa que son del vuelo correcto.\n")
 
         # Contrato con la etapa final (atom_core/esperado): lo que esta tarea se
         # compromete a colocar, anotado ANTES de mover.
@@ -2047,37 +2185,89 @@ class GenStructFolder:
             self.compress_image_obj.error_compress += 1
             self.compress_image_obj.images_error_compress.append(image_path)
 
-    def write_videofiles_csv(self, input_folder: str, df_videofiles) -> None:
-        """
-        Escribe el criterio de giro del vuelo (`<PBX_VXX>_Videofiles.csv`, columna `Degree`)
-        en `CSVs/_criterio/`.
+    _RE_CARPETA_VUELO = re.compile(r"^PB([^_]+)_V([^_]+)(?:_(.+))?$")
 
-        Vivía dentro de MINIATURAS hasta que se eliminaron las miniaturas, luego en
-        `CSVs/<vuelo>/` y luego plano en `CSVs/`. NO es un subproducto descartable: es
-        lo único que le dice a la conversión a TIFF y al giro del JPG térmico cuánto
-        tienen que girar (`read_auto_rotate_degree`). Si falta, ambas dejan de rotar en
-        silencio. Pero tampoco es un entregable, y plano en `CSVs/` se mezclaba con los
-        CSVs que el usuario sí consume (meta, location), así que va apartado en una
-        subcarpeta interna.
+    def _error_giro_no_registrado(self, input_folder: str, motivo: str, progress_callback) -> None:
+        """Error VISIBLE de un giro que no pudo quedar en el manifiesto: log ERROR,
+        mensaje al usuario y `_register_image_error`. Sin esa fila, la conversión a TIFF
+        no tiene criterio de giro para este vuelo."""
+        msg = (f"ERROR: el giro de {os.path.basename(input_folder)} NO se ha guardado en el "
+               f"manifiesto: {motivo}. La conversión a TIFF no tendrá criterio de giro para este vuelo.")
+        self.organizer_logger.logger.error(msg)
+        progress_callback.emit("\n" + msg + "\n")
+        self._register_image_error(input_folder)
+
+    def registrar_giro_vuelo(self, input_folder: str, grados: int, n_total: int, n_90: int,
+                             n_270: int, n_0: int, estado: str, motivo, progress_callback) -> None:
+        """Deja el giro decidido de un vuelo en `self.giros_por_vuelo` (ya lo hacía el
+        llamador) y en la tabla `vuelos` del manifiesto de la raíz
+        (`<raiz>/.organizado/manifiesto.db`), con clave `(pb, vuelo, sufijo)` igual a la
+        del índice (`indice._nombre_carpeta_vuelo` con `include_v=True`).
+
+        Sustituye al antiguo `CSVs/_criterio/<vuelo>_Videofiles.csv`: el criterio que
+        leen la conversión a TIFF y el giro del JPG térmico (`_leer_criterio_giro`)
+        sale de aquí. Sin fallbacks silenciosos: nombre de carpeta que no casa, raíz
+        `gs://` (`Manifiesto` es SQLite en disco local, no admite `gs://`) o fallo de
+        sqlite -> error visible (`_error_giro_no_registrado`), nunca se omite en silencio.
+
+        `version_algoritmo` = `VERSION_GIRO_LEGADO`, distinta de
+        `indice.VERSION_ALGORITMO_GIRO`: el índice no reutiliza estas filas, recalcula y,
+        si el ángulo difiere, reabre el vuelo (`unificar_angulo_vuelo`).
         """
-        criterio_folder = almacen.unir(self.csvs_root_folder, utils.CRITERIO_DIRNAME)
-        if not almacen.es_uri_gcs(criterio_folder):
-            os.makedirs(criterio_folder, exist_ok=True)
-        self.utils_obj.hide_folder_on_windows(criterio_folder)
-        nombre_csv = os.path.basename(input_folder) + "_Videofiles.csv"
-        # No se puede escribir directamente sobre `gs://…`: se vuelca a un temporal
-        # local y se publica desde ahí, con el destino ya compuesto (nombre completo,
-        # no el directorio) porque `publicar_en` sobre `gs://…` no conserva el
-        # basename si se le pasa una "carpeta" (mismo patrón que `gen_meta_location`
-        # en exif.py).
-        descriptor, nombre_temporal = tempfile.mkstemp(suffix=".csv")
-        os.close(descriptor)
-        ruta_temporal = Path(nombre_temporal)
+        from atom_core.indice import _nombre_carpeta_vuelo  # diferido: indice importa utils -> pipeline
+        nombre = os.path.basename(input_folder.rstrip("/\\"))
+        coincidencia = self._RE_CARPETA_VUELO.match(nombre)
+        if coincidencia is None:
+            self._error_giro_no_registrado(
+                input_folder, f"el nombre de carpeta {nombre!r} no es PB<x>_V<y>[_<sufijo>]",
+                progress_callback)
+            return
+        pb, vuelo, sufijo = coincidencia.group(1), coincidencia.group(2), coincidencia.group(3)
+        if _nombre_carpeta_vuelo(pb, vuelo, True, sufijo) != nombre:
+            self._error_giro_no_registrado(
+                input_folder, f"la clave ({pb}, {vuelo}, {sufijo}) no reproduce el nombre {nombre!r}",
+                progress_callback)
+            return
+        raiz = self.root_folder
+
+        def _pct(n):
+            return round(100.0 * n / n_total, 1) if n_total else 0.0
+
+        fila = {"pb": pb, "vuelo": vuelo, "sufijo": sufijo or "", "angulo": int(grados),
+                "n_total": n_total, "n_90": n_90, "n_270": n_270, "n_0": n_0,
+                "pct_90": _pct(n_90), "pct_270": _pct(n_270), "pct_0": _pct(n_0),
+                "pct_ganadora": _pct({90: n_90, 270: n_270}.get(int(grados), n_0)),
+                "estado": estado, "motivo": motivo,
+                "version_algoritmo": VERSION_GIRO_LEGADO}
+        es_gcs = almacen.es_uri_gcs(raiz)
+        ruta_db = _ruta_manifiesto_de(raiz)
+        manifiesto = None
         try:
-            df_videofiles.to_csv(ruta_temporal, sep=",", header=True, index=False)
-            almacen.publicar_en(ruta_temporal, almacen.unir(criterio_folder, nombre_csv))
+            if es_gcs:
+                # Raíz gs://: manifiesto LOCAL (descargado del bucket si existe), se
+                # escribe el giro (upsert idempotente) y se SUBE con concurrencia
+                # optimista; si algo falla, error visible.
+                _actualizar_manifiesto_gcs(raiz, lambda m: m.guardar_vuelos([fila]))
+            else:
+                os.makedirs(os.path.dirname(ruta_db), exist_ok=True)
+                manifiesto = Manifiesto(ruta_db)
+                manifiesto.crear_esquema()
+                manifiesto.guardar_vuelos([fila])
+        except (sqlite3.Error, OSError) as error:
+            self.organizer_logger.logger.exception(error)
+            self._error_giro_no_registrado(
+                input_folder, f"fallo escribiendo en {ruta_db}: {error}", progress_callback)
+        except Exception as error:
+            if not es_gcs:
+                raise
+            self.organizer_logger.logger.exception(error)
+            self._error_giro_no_registrado(
+                input_folder,
+                f"fallo sincronizando/subiendo el manifiesto de {raiz} (gs://): {error}",
+                progress_callback)
         finally:
-            ruta_temporal.unlink(missing_ok=True)
+            if manifiesto is not None:
+                manifiesto.cerrar()
 
     def gen_thumbnails_and_rotate(self, input_folder: str, rgb_processing: bool, max_error: int, lim_max_270: int, lim_min_270: int, lim_max_90: int, lim_min_90: int, progress_callback, progress_bar) -> None:
         """
@@ -2099,9 +2289,6 @@ class GenStructFolder:
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
         """
         if os.path.basename(input_folder).startswith("PB") and "_V" in os.path.basename(input_folder):  # Necesitamos llevar a cabo el procesado solo dentro de las carpetas PBX_VXX
-            nombresColumnas = ['New Name','Original Name','Degree']
-            df_videofiles = pd.DataFrame(columns=nombresColumnas)  # Creamos un dataframe para crear posteriormente un csv
-
             images = self.utils_obj.get_images_from_dir(input_folder, ["_CROP"], solo_fuente=True)
             # se enviará 0 imágenes.
             rotate_90 = 0
@@ -2156,8 +2343,6 @@ class GenStructFolder:
                     progress_callback.emit(f"\nOK: Al menos un {_pct_umbral}% de las imágenes del vuelo tienen que rotar 270\n")
                     # Cuando se rota con PIL se rota en sentido antihorario. De ahí que pongamos ROTATE_90, ya que rotará los -90 si fuera en sentido horario
                     self._rotate_images_batch(images, input_folder, Image.ROTATE_90, rgb_processing, progress_callback, progress_bar)
-                    for index, image in enumerate(images):
-                        df_videofiles.loc[len(df_videofiles)] = {"New Name": os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", "Original Name": image, "Degree": 270}
 
                     self.organizer_logger.logger.info("Imágenes rotadas 270º")
                     # logging.info("Images rotated 270º")
@@ -2170,8 +2355,6 @@ class GenStructFolder:
                     progress_callback.emit(f"\nOK: Al menos un {_pct_umbral}% de las imágenes del vuelo tienen que rotar 90\n")
                     # Cuando se rota con PIL se rota en sentido antihorario. De ahí que pongamos ROTATE_270, ya que rotará los 90 si fuera en sentido horario
                     self._rotate_images_batch(images, input_folder, Image.ROTATE_270, rgb_processing, progress_callback, progress_bar)
-                    for index, image in enumerate(images):
-                        df_videofiles.loc[len(df_videofiles)] = {"New Name": os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", "Original Name": image, "Degree": 90}
                     self.organizer_logger.logger.info("Imágenes rotadas 90")
                     # logging.info("Images rotated 90")
                     self.giros_por_vuelo[os.path.basename(input_folder)] = {
@@ -2194,9 +2377,7 @@ class GenStructFolder:
                         if almacen.existe_ruta(almacen.unir(input_folder, crop_image_name)):
                             self.send_progress_to_bar(progress_bar, progress_callback) # Si hay imágenes recortadas, contamos una más. Lo hago diferente aquí porque no estoy llamando a rotate_and_save
                         
-                        # gimbal_yaw = self.exif_management_obj.get_gimbal_yaw_pitch(os.path.join(input_folder,image))[0]
-                        # No se rota nada (ni RGB ni térmica) y las miniaturas ya no se generan: aquí solo queda dejar constancia del Degree 0.
-                        df_videofiles.loc[len(df_videofiles)] = {"New Name": os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", "Original Name": image, "Degree": 0}
+                        # No se rota nada (ni RGB ni térmica) y las miniaturas ya no se generan.
                     self.organizer_logger.logger.info("Imágenes no rotadas")
                 else:
                     images_to_rotate = False
@@ -2213,9 +2394,22 @@ class GenStructFolder:
                 if images_to_rotate and not rgb_processing:  # Comprobamos que procesamos térmicas y que además hemos rotado imágenes.
                     self.copy_flight_csvs(input_folder, progress_callback)
 
-                # Entiendo que sólo generamos el archivo _Videofiles.csv en el caso de las térmicas.
+                # El criterio de giro vive en la tabla `vuelos` del manifiesto; solo térmicas.
                 if not rgb_processing:
-                    self.write_videofiles_csv(input_folder, df_videofiles)
+                    if es_panorama:
+                        estado_giro, motivo_giro = "ok", "carpeta panorámica, no se rota"
+                        grados_giro = 0
+                    elif images_to_rotate:
+                        grados_giro = self.giros_por_vuelo[os.path.basename(input_folder)]["grados"]
+                        estado_giro, motivo_giro = "ok", None
+                    else:
+                        grados_giro = 0
+                        estado_giro = "sin_consenso"
+                        motivo_giro = (f"ningún sentido llega al {_pct_umbral}%: 90º={rotate_90}, "
+                                       f"270º={rotate_270}, sin girar={images_no_rotated} de {len(images)}")
+                    self.registrar_giro_vuelo(input_folder, grados_giro, len(images), rotate_90,
+                                              rotate_270, images_no_rotated, estado_giro, motivo_giro,
+                                              progress_callback)
                 return  # En este caso cortamos la recursividad para este directorio, porque si no, seguiría buscando en el directorio creado,
                     # por lo que volvería a crear otro dentro y así sucesivamente.
 
@@ -2246,9 +2440,6 @@ class GenStructFolder:
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
         """
         if os.path.basename(input_folder).startswith("PB") and "_V" in os.path.basename(input_folder):  # Necesitamos llevar a cabo el procesado solo dentro de las carpetas PBX_VXX
-            nombresColumnas = ['New Name','Original Name','Degree']
-            df_videofiles = pd.DataFrame(columns=nombresColumnas)  # Creamos un dataframe para crear posteriormente un csv
-
             images = self.utils_obj.get_images_from_dir(input_folder, ["_CROP"], solo_fuente=True)
             if len(images) != 0:
                 progress_callback.emit("\nProcesando {0} imágenes en el directorio {1}".format(len(images), input_folder) + "\n") # Se envía información al iniciar el procesado de un directorio solo si hay imágenes.
@@ -2262,12 +2453,6 @@ class GenStructFolder:
                 degrees = Image.ROTATE_270 if rotation_value_90 else Image.ROTATE_90
                 self._rotate_images_batch(images, input_folder, degrees, rgb_processing, progress_callback, progress_bar)
 
-                for index, image in enumerate(images):
-                    # El Degree tiene que reflejar lo que se acaba de rotar: es lo que lee
-                    # después el criterio de giro del TIFF. Escribir 270 fijo hacía que un
-                    # vuelo rotado a mano 90 girase el TIFF al revés.
-                    df_videofiles.loc[len(df_videofiles)] = {"New Name": os.path.basename(input_folder) + "_" + str(index + 1).zfill(4) + ".JPG", "Original Name": image, "Degree": 90 if rotation_value_90 else 270}
-
                 self.giros_por_vuelo[os.path.basename(input_folder)] = {
                     "vuelo": os.path.basename(input_folder), "grados": 90 if rotation_value_90 else 270,
                     "imagenes": len(images), "modo": "manual", "detalle": None,
@@ -2277,7 +2462,13 @@ class GenStructFolder:
                     self.copy_flight_csvs(input_folder, progress_callback)
 
                 if not rgb_processing:
-                    self.write_videofiles_csv(input_folder, df_videofiles)
+                    # El grado registrado tiene que reflejar lo que se acaba de rotar: es lo
+                    # que lee después el criterio de giro del TIFF.
+                    self.registrar_giro_vuelo(
+                        input_folder, 90 if rotation_value_90 else 270, len(images),
+                        len(images) if rotation_value_90 else 0,
+                        0 if rotation_value_90 else len(images), 0, "ok", "giro manual",
+                        progress_callback)
                 return  # En este caso cortamos la recursividad para este directorio, porque si no, seguiría buscando en el directorio creado,
                     # por lo que volvería a crear otro dentro y así sucesivamente.
 
@@ -3466,9 +3657,10 @@ class SplitImages:
         """Criterio de giro AUTO de un vuelo, MEMOIZADO por carpeta.
 
         El criterio depende solo de `input_folder` y no cambia durante la corrida: lo
-        deja escrito la fase de rotación, que va ANTES que la conversión. Resolverlo
+        deja registrado la fase de rotación (tabla `vuelos` del manifiesto), que va ANTES
+        que la conversión. Resolverlo
         una vez por vuelo en vez de una vez por imagen ahorra, por cada térmica, hasta
-        4 `os.path.exists` y un `pd.read_csv` entero.
+        4 `os.path.exists` y una lectura de manifiesto/CSV entera.
 
         Cambio de comportamiento deliberado en el caso degradado: cuando el CSV no se
         puede leer, el aviso al log y el registro del error ocurren **una vez por
@@ -3488,25 +3680,70 @@ class SplitImages:
                 self._criterio_giro_cache[input_folder] = degree
             return degree
 
+    def _giro_desde_manifiesto(self, raiz: str, nombre_vuelo: str):
+        """Fila de `vuelos` cuya carpeta de salida se llama `nombre_vuelo`, o None si no
+        hay manifiesto local / no tiene tabla `vuelos` / no tiene ese vuelo (ausencia de
+        dato: el llamador sigue con el CSV legado). Un fallo REAL de sqlite
+        (`sqlite3.Error` distinto de «no such table») NO se traga: se propaga y
+        `_leer_criterio_giro` lo convierte en error visible."""
+        if almacen.es_uri_gcs(raiz):
+            # Raíz gs://: se baja el manifiesto del bucket a la copia local y se lee de ahí.
+            # Sin manifiesto en el bucket = ausencia de dato (sigue el CSV legado). Un fallo
+            # de descarga se propaga como `sqlite3.Error` para que `_leer_criterio_giro` lo
+            # haga visible (nunca se traga).
+            with _LOCK_MANIFIESTO_GCS:
+                if not almacen.existe_ruta(_ruta_manifiesto_remoto(raiz)):
+                    return None
+                try:
+                    ruta_db, _generacion = _sincronizar_manifiesto_gcs(raiz)
+                except Exception as error:
+                    raise sqlite3.Error(f"no se pudo descargar el manifiesto de {raiz}: {error}") from error
+        else:
+            ruta_db = _ruta_manifiesto_de(raiz)
+            if not os.path.isfile(ruta_db):
+                return None
+        from atom_core.indice import _nombre_carpeta_vuelo  # diferido: indice importa utils -> pipeline
+        manifiesto = Manifiesto(ruta_db)
+        es_copia_gcs = almacen.es_uri_gcs(raiz)
+        try:
+            try:
+                vuelos = manifiesto.vuelos()
+            except sqlite3.OperationalError as error:
+                if "no such table" in str(error).lower():
+                    return None  # manifiesto anterior a la tabla `vuelos`
+                raise
+            for fila in vuelos.values():
+                sufijo = fila["sufijo"] or None
+                if nombre_vuelo in (_nombre_carpeta_vuelo(fila["pb"], fila["vuelo"], True, sufijo),
+                                    _nombre_carpeta_vuelo(fila["pb"], fila["vuelo"], False, sufijo)):
+                    return fila
+            return None
+        finally:
+            manifiesto.cerrar()
+            if es_copia_gcs:
+                _limpiar_copia_local_manifiesto_gcs(ruta_db)
+
     def _leer_criterio_giro(self, input_folder: str, progress_callback) -> int:
         """Lectura real del criterio de giro. Ver `read_auto_rotate_degree`, que la memoiza.
 
         Criterio de giro AUTO de un vuelo: 0, 90 o 270 grados (horario).
 
-        La decisión NO se recalcula aquí: la toma el paso de rotación y la deja
-        escrita en `CSVs/<PBX_VXX>_Videofiles.csv`
-        (columna `Degree`). Este método es la ÚNICA lectura de ese criterio, para
-        que la conversión a TIFF y la copia girada del JPG no puedan divergir:
-        ambas tienen que girar lo mismo o el par TIFF/JPG deja de casar.
+        La decisión NO se recalcula aquí: la toma el paso de rotación (o el índice del
+        motor plan-apply) y la deja en la tabla `vuelos` del manifiesto
+        (`<raiz>/.organizado/manifiesto.db`). Este método es la ÚNICA lectura de ese
+        criterio, para que la conversión a TIFF y la copia girada del JPG no puedan
+        divergir. Orden de fuentes:
 
-        Ese CSV vivía en `MINIATURAS/<vuelo>_miniaturas/` hasta que se eliminaron las
-        miniaturas, luego en `CSVs/<vuelo>/` (v3.4.0-v3.4.1), luego plano en `CSVs/`
-        (v3.4.2-v3.4.4) y ahora en `CSVs/_criterio/`. Se mantienen TODOS los fallbacks
-        de lectura para poder re-procesar carpetas generadas por versiones anteriores
-        sin que el vuelo deje de rotar en silencio.
+        1. Manifiesto (`vuelos`).
+        2. Solo LECTURA del CSV `*_Videofiles.csv` de versiones anteriores
+           (`CSVs/_criterio/`, `CSVs/`, `CSVs/<vuelo>/`, `MINIATURAS/…`): ya no se
+           escribe, pero las carpetas procesadas antes lo conservan.
 
-        Sin criterio legible (CSV ausente, vacío o sin la columna) devuelve 0 —
-        no rotar — y lo dice; nunca revienta el vuelo.
+        Sin criterio en ninguna fuente (o con el manifiesto ilegible) es un ERROR VISIBLE:
+        log ERROR + mensaje + `_register_image_error` + `_criterio_giro_fallo`. Se
+        devuelve 0 solo por contrato de tipo (el vuelo no revienta, el TIFF sale sin
+        rotar) y marcado como fallo para que `read_auto_rotate_degree` no lo memoice;
+        no es un giro válido.
 
         Arguments:
         ---------
@@ -3519,19 +3756,50 @@ class SplitImages:
             pb_v_name = os.path.basename(input_folder)
 
         root_folder = input_folder.split("TERMICA")[0].rstrip("/\\")
+
+        try:
+            fila_vuelo = self._giro_desde_manifiesto(root_folder, pb_v_name)
+        except sqlite3.Error as error:
+            ruta_db = _ruta_manifiesto_de(root_folder)
+            msg = ("ERROR: no se pudo leer el criterio de giro de {0} en el manifiesto {1}: {2}. "
+                   "El TIFF se genera SIN rotar.").format(pb_v_name, ruta_db, error)
+            self.organizer_logger.logger.error(msg)
+            progress_callback.emit("\n" + msg + "\n")
+            self._register_image_error(ruta_db)
+            self._criterio_giro_fallo.valor = True
+            return 0
+        if fila_vuelo is not None:
+            if fila_vuelo["estado"] == "sin_consenso":
+                # Igual que el CSV legado de un vuelo sin consenso (vacío): aviso, 0 y
+                # fallo (no se memoiza). El ERROR por vuelo ya lo registró quien decidió el giro.
+                progress_callback.emit(
+                    "\nEl vuelo {0} no tiene un giro común ({1}). El TIFF se genera SIN rotar.\n".format(
+                        pb_v_name, fila_vuelo["motivo"]))
+                self.organizer_logger.logger.warning(
+                    f"{pb_v_name}: sin consenso de giro en el manifiesto, TIFF sin rotar.")
+                self._criterio_giro_fallo.valor = True
+                return 0
+            return int(fila_vuelo["angulo"])
+
+        # Solo LECTURA del CSV legado (carpetas procesadas por versiones anteriores).
         csv_name = pb_v_name + "_Videofiles.csv"
         csvs_folder = almacen.unir(root_folder, "CSVs")
         candidatos = (
-            almacen.unir(csvs_folder, utils.CRITERIO_DIRNAME, csv_name),                           # Actual: CSVs/_criterio/.
+            almacen.unir(csvs_folder, utils.CRITERIO_DIRNAME, csv_name),                           # CSVs/_criterio/.
             almacen.unir(csvs_folder, csv_name),                                                   # v3.4.2-v3.4.4: CSVs/ plano.
             almacen.unir(csvs_folder, pb_v_name, csv_name),                                        # v3.4.0-v3.4.1: subcarpeta por vuelo.
             almacen.unir(root_folder, "MINIATURAS", pb_v_name + "_miniaturas", csv_name),          # Legacy: las carpetas antiguas sí llevaban el sufijo _miniaturas.
         )
-        criterio_path = candidatos[0]
-        for candidato in candidatos:
-            if almacen.existe_ruta(candidato):
-                criterio_path = candidato  # Carpeta procesada por una versión anterior: el criterio sigue donde lo dejó.
-                break
+        criterio_path = next((c for c in candidatos if almacen.existe_ruta(c)), None)
+        if criterio_path is None:
+            msg = ("ERROR: no hay criterio de giro para {0}: ni fila en la tabla `vuelos` del "
+                   "manifiesto ({1}) ni CSV {2} legado. No se rota la imagen.").format(
+                       pb_v_name, _ruta_manifiesto_de(root_folder), csv_name)
+            self.organizer_logger.logger.error(msg)
+            progress_callback.emit("\n" + msg + "\n")
+            self._register_image_error(candidatos[0])
+            self._criterio_giro_fallo.valor = True
+            return 0
         try:
             # `pandas` no lleva fsspec/gcsfs (a propósito: el acceso a GCS es
             # cosa de `atom_core.almacen`), así que un `read_csv` sobre `gs://`
@@ -3539,32 +3807,25 @@ class SplitImages:
             # local `abrir_para_lectura` cede la propia ruta sin copiar.
             with almacen.abrir_para_lectura(criterio_path) as ruta_criterio:
                 df_pb_csv = pd.read_csv(ruta_criterio)
-            # El CSV puede existir y estar VACÍO (solo cabecera): pasa cuando el paso
-            # de rotación se fue por la rama "hay demasiadas imágenes que no rotan
-            # igual" y no escribió ninguna fila. Ahí `df["Degree"][0]` lanzaba KeyError,
-            # que no captura el `except FileNotFoundError` de abajo, y reventaba la
-            # conversión de CADA imagen del vuelo sin decir por qué. Sin fila no hay
-            # criterio: no se rota, pero se dice en el log.
+            # CSV vacío (solo cabecera): lo dejaban los vuelos sin consenso. Sin fila
+            # no hay criterio: no se rota, pero se dice en el log.
             if df_pb_csv.empty or "Degree" not in df_pb_csv.columns:
                 progress_callback.emit(
                     "\nEl criterio de giro ({0}) está vacío: el paso de rotación no llegó a "
-                    "decidir un ángulo para este vuelo. El TIFF se genera SIN rotar.\n".format(
-                        pb_v_name + "_Videofiles.csv"))
+                    "decidir un ángulo para este vuelo. El TIFF se genera SIN rotar.\n".format(csv_name))
                 self.organizer_logger.logger.warning(
-                    f"{pb_v_name}_Videofiles.csv sin filas: no hay Degree que aplicar, TIFF sin rotar.")
-                # Sin fila/columna no se memoiza: el paso de rotacion puede
-                # escribirla despues (igual que CSV ausente).
+                    f"{csv_name} sin filas: no hay Degree que aplicar, TIFF sin rotar.")
                 self._criterio_giro_fallo.valor = True
                 return 0
             return int(df_pb_csv["Degree"][0])
-        # EmptyDataError = el CSV existe pero tiene 0 bytes (ni cabecera). Mismo
-        # desenlace que si faltara: no hay criterio, no se rota, y se avisa.
-        except (FileNotFoundError, pd.errors.EmptyDataError, pd.errors.ParserError, KeyError) as file_not_found:
+        # EmptyDataError = el CSV existe pero tiene 0 bytes (ni cabecera).
+        except (FileNotFoundError, pd.errors.EmptyDataError, pd.errors.ParserError, KeyError) as error:
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            self.organizer_logger.logger.error(file_not_found.__str__)
-            self.organizer_logger.logger.exception(file_not_found)
+            self.organizer_logger.logger.error(
+                "ERROR: no se pudo leer el criterio de giro legado {0}: {1}".format(criterio_path, error))
+            self.organizer_logger.logger.exception(error)
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
-            progress_callback.emit("\nNo se pudo leer el criterio de giro {0}. No se rota la imagen.\n".format(csv_name))
+            progress_callback.emit("\nERROR: no se pudo leer el criterio de giro {0}. No se rota la imagen.\n".format(csv_name))
             self._register_image_error(criterio_path)
             self._criterio_giro_fallo.valor = True
             return 0
@@ -3575,7 +3836,7 @@ class SplitImages:
         (antihorario) o 0 (ninguno). Los flags manuales mandan sobre el automático.
 
         El criterio automático sale de `read_auto_rotate_degree`, que es el punto ÚNICO
-        de lectura (columna `Degree` del `<vuelo>_Videofiles.csv`). El `_T.JPG` se gira
+        de lectura (tabla `vuelos` del manifiesto; el CSV `*_Videofiles.csv` solo como lectura legada). El `_T.JPG` se gira
         con ese mismo criterio, así que TIFF, JPG y escala de grises quedan siempre en
         la misma orientación: norte arriba.
         """

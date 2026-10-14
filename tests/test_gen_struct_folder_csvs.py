@@ -1,5 +1,5 @@
 import os
-import utils as utils_module
+from tests.helpers_giro import leer_vuelos
 
 
 def test_csvs_folder_recibe_copia_de_meta_y_location(tmp_path, organizer_logger_stub):
@@ -86,26 +86,20 @@ def test_en_csvs_no_queda_ninguna_subcarpeta(tmp_path, organizer_logger_stub):
     carpeta dentro de CSVs y duplicaba byte a byte el meta/location que el paso de
     meta/location ya deja plano ahí mismo.
     """
-    import pandas as pd
-
     from pipeline import GenStructFolder
     termica_vuelo = _monta_vuelo(tmp_path)
     obj = _obj(tmp_path, organizer_logger_stub)
 
     obj.copy_flight_csvs(str(termica_vuelo), _noop())
-    obj.write_videofiles_csv(str(termica_vuelo),
-                             pd.DataFrame(columns=["New Name", "Original Name", "Degree"]))
+    obj.root_folder = str(tmp_path)
+    obj.registrar_giro_vuelo(str(termica_vuelo), 0, 2, 0, 0, 2, "ok", None, _noop())
 
     csvs = tmp_path / "CSVs"
-    # La ÚNICA subcarpeta admitida es la interna del criterio de giro. Cualquier otra
-    # es la regresión que fijaba este test (v3.4.0-v3.4.1 creaban una carpeta por
-    # vuelo). El criterio se aparta ahí a propósito desde v3.4.4: no es un CSV que el
-    # usuario consuma y estorbaba entre los de meta/location.
-    assert [p.name for p in csvs.iterdir() if p.is_dir()] == [utils_module.CRITERIO_DIRNAME], (
-        "Ha aparecido una carpeta inesperada dentro de CSVs; ahí solo deben ir los .csv "
-        f"y la interna {utils_module.CRITERIO_DIRNAME}/."
+    # El criterio de giro ya no se escribe en CSVs/: va a la tabla `vuelos` del manifiesto.
+    # Cualquier carpeta dentro de CSVs es la regresión que fijaba este test (v3.4.0-v3.4.1
+    # creaban una carpeta por vuelo).
+    assert [p.name for p in csvs.iterdir() if p.is_dir()] == [], (
+        "Ha aparecido una carpeta dentro de CSVs; ahí solo deben ir los .csv."
     )
-    assert not (csvs / "PB1_V01_Videofiles.csv").exists(), (
-        "El criterio de giro sigue suelto en CSVs/: debe ir en la subcarpeta interna."
-    )
-    assert (csvs / utils_module.CRITERIO_DIRNAME / "PB1_V01_Videofiles.csv").exists()
+    assert not list(tmp_path.rglob("*_Videofiles.csv")), "Ya no se escribe ningún *_Videofiles.csv."
+    assert leer_vuelos(tmp_path)["PB1_V01"]["angulo"] == 0

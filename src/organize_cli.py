@@ -227,10 +227,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--giro-tiff", dest="giro_tiff",
                         choices=("auto", "90", "-90", "ninguno"), default="auto",
                         help="Giro del TIFF termico. `auto` (por defecto) lee el "
-                             "criterio de `CSVs/_criterio/<vuelo>_Videofiles.csv`, "
-                             "que lo escribe el subproceso ROTACION; con "
-                             "`--sin-rotacion` ese CSV NO existe y `auto` degrada "
-                             "en silencio a 0 grados (TIFF sin girar, 1280x1024). "
+                             "criterio de la tabla `vuelos` del manifiesto "
+                             "(`.organizado/manifiesto.db`), que lo escribe el "
+                             "subproceso ROTACION (el CSV `*_Videofiles.csv` de "
+                             "versiones anteriores solo se lee, ya no se escribe); "
+                             "con `--sin-rotacion` no hay criterio nuevo y, si "
+                             "tampoco hay uno previo, `auto` da ERROR visible "
+                             "y el TIFF sale sin girar (1280x1024). "
                              "`-90` fuerza 270 (antihorario, lo normal en vuelos "
                              "de inspeccion con la camara perpendicular: "
                              "GimbalYawDegree ~ -90), `90` fuerza horario y "

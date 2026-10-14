@@ -12,17 +12,15 @@ La referencia autoritativa es el modo MANUAL (pipeline.py:1355-1358), que sí
 distingue: `rotation_value_90` -> ROTATE_270, si no -> ROTATE_90.
 
 Segundo fallo del mismo bloque: el modo manual escribía `Degree: 270` fijo en
-`_Videofiles.csv` aunque hubiera rotado 90. Ese CSV es justo el que lee después
-el criterio de giro del TIFF (ver test_tiff_rotacion_auto.py), así que un vuelo
+el criterio de giro (antes `_Videofiles.csv`, ahora la tabla `vuelos`) aunque hubiera
+rotado 90. Ese criterio es justo el que lee después la conversión a TIFF (ver test_tiff_rotacion_auto.py), así que un vuelo
 rotado a mano 90 acababa girando el TIFF al revés.
 """
-import os
 import types
 
-import pandas as pd
 from PIL import Image
 
-import utils
+from tests.helpers_giro import angulo_de
 
 
 def _recording_progress():
@@ -64,8 +62,7 @@ def _obj_con_espia(logger, planta_folder):
 
 
 def _leer_degrees(obj):
-    csv_path = os.path.join(obj.csvs_root_folder, utils.CRITERIO_DIRNAME, "PB1_V01_Videofiles.csv")
-    return set(pd.read_csv(csv_path)["Degree"].unique())
+    return {angulo_de(obj.root_folder, "PB1_V01")}
 
 
 # ---------------------------------------------------------------- modo automático
