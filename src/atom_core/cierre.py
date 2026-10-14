@@ -20,6 +20,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import utils
 from atom_core.almacen import es_uri_gcs, existe_ruta, tamano_de, unir
+from atom_core import pares as pares_mod
+from atom_core.manifiesto import ruta_bajo_origen
 from atom_core.indice import NOMBRE_CARPETA_RGB_EXTRA, TIPOS_RGB
 
 
@@ -93,6 +95,26 @@ def _lectura_de_fila(meta_location_obj, fila, progress_callback) -> tuple:
     return meta_location_obj.leer_exif_imagen(fila["ruta_salida_original"], progress_callback)
 
 
+_SIN_FECHA = "SIN_FECHA"
+
+
+def _datetime_captura(texto):
+    """datetime de `timestamp_exif` del manifiesto (ISO) o None."""
+    import datetime as _dt  # noqa: PLC0415
+    if not texto:
+        return None
+    try:
+        return _dt.datetime.fromisoformat(str(texto))
+    except ValueError:
+        return None
+
+
+def _fecha_captura(texto) -> str:
+    """`YYYYMMDD` de la hora de captura del manifiesto, o '' si no hay."""
+    t = _datetime_captura(texto)
+    return t.strftime("%Y%m%d") if t is not None else ""
+
+
 def _carpeta_de(ruta: str) -> str:
     """Directorio que contiene `ruta` (fichero), URI-aware: en `gs://` las
     rutas son claves con `/` siempre, así que no vale `os.path.dirname` (mete
@@ -125,14 +147,46 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
         progress_callback.emit("\nERROR: No se han podido generar los archivos meta y location (no existen TERMICA ni RGB).\n")
         return {}
 
-    grupos: "dict[tuple[str, str, str], list]" = {}
+    # Grupos por (tipo, pb, vuelo, FECHA): en un destino acumulado el mismo PB_V puede traer
+    # días distintos y nunca se mezclan en un CSV. La fecha es la de la hora de captura del
+    # manifiesto (la misma con la que el estadillo asignó el vuelo); sin ella, la del nombre
+    # (respaldo, contado y avisado); sin ninguna, grupo "SIN_FECHA" (ERROR y no se emite).
+    grupos: "dict[tuple[str, str, str, str], list]" = {}
+    n_fecha_nombre = 0
     for fila in manifiesto.todas():
         if fila["estado"] != "hecho" or fila["unassigned"] or not fila["pb"] or not fila["vuelo"]:
             continue
-        grupos.setdefault((fila["tipo"], fila["pb"], fila["vuelo"]), []).append(fila)
+        fecha = _fecha_captura(fila["timestamp_exif"])
+        if not fecha:
+            t_nombre = meta_location_obj._ts_nombre(fila["ruta_salida_original"])
+            if t_nombre is not None:
+                fecha, n_fecha_nombre = t_nombre.strftime("%Y%m%d"), n_fecha_nombre + 1
+        grupos.setdefault((fila["tipo"], fila["pb"], fila["vuelo"], fecha or _SIN_FECHA), []).append(fila)
     meta_location_obj.total_images_number = sum(len(f) for f in grupos.values())
+    if n_fecha_nombre:
+        meta_location_obj._aviso(
+            progress_callback,
+            f"WARN: {n_fecha_nombre} imagen(es) sin hora de captura en el manifiesto: su día se "
+            "toma del NOMBRE del fichero.", error=False)
+    fechas_de_vuelo: "dict[tuple[str, str], list[str]]" = {}
+    for (_tipo, pb, vuelo, fecha) in grupos:
+        if fecha != _SIN_FECHA and fecha not in fechas_de_vuelo.setdefault((pb, vuelo), []):
+            fechas_de_vuelo[(pb, vuelo)].append(fecha)
+    for (pb, vuelo), fechas in sorted(fechas_de_vuelo.items()):
+        if len(fechas) > 1:
+            meta_location_obj._aviso(
+                progress_callback,
+                f"WARN: PB{pb}_{vuelo} aparece en {len(fechas)} fechas distintas ({', '.join(sorted(fechas))}): "
+                "se genera un meta/location por fecha (<vuelo>_<YYYYMMDD>_meta|location.csv), sin mezclar días. "
+                "Si existe un <vuelo>_meta|location.csv de una tanda anterior, mezcla días: bórralo a mano.",
+                error=False)
+
+    def _prefijo(pb, vuelo, fecha) -> str:
+        return f"{fecha}_" if len(fechas_de_vuelo.get((pb, vuelo), [])) > 1 else ""
 
     rutas_emitidas: dict[str, str] = {}
+
+    horas: dict = {}  # nombre -> hora de captura del manifiesto (del grupo en curso)
 
     def _por_nombre(filas) -> dict:
         # Mismo filtro que `get_images_from_dir(..., ["_CROP"], solo_fuente=True)`.
@@ -141,6 +195,9 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
             nombre = os.path.basename(fila["ruta_salida_original"])
             if os.path.splitext(nombre)[1].lower() in EXTS_FUENTE and "_CROP" not in nombre:
                 res[nombre] = fila
+                t = _datetime_captura(fila["timestamp_exif"])
+                if t is not None:
+                    horas[nombre] = t
         return res
 
     def _leer(images, por_nombre) -> list:
@@ -175,16 +232,39 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
                     linea["CalculatedDistance"], linea["LatitudFoto"], linea["LongitudFoto"])
 
     def _independiente(por_nombre, nombre_csv):
-        images = natsorted(por_nombre)
+        # Orden SIEMPRE por hora de captura (manifiesto; respaldo: nombre); el idx DJI solo
+        # desempata. Sin hora en ninguna parte: ERROR y la foto no entra (no se adivina).
+        images, sin_hora, n_nombre = [], [], 0
+        for n in por_nombre:
+            t = horas.get(n)
+            if t is None:
+                t = meta_location_obj._ts_nombre(n)
+                n_nombre += t is not None
+            if t is None:
+                sin_hora.append(n)
+            else:
+                clave = pares_mod.clave_pareja(n)
+                images.append((t, clave[0] if clave else -1, n))
+        images = [n for _t, _i, n in sorted(images)]
+        if sin_hora:
+            meta_location_obj._aviso(
+                progress_callback,
+                f"ERROR: {nombre_csv}: {len(sin_hora)} foto(s) sin hora de captura (p.ej. {sin_hora[0]}); "
+                "no se pueden ordenar cronológicamente y se excluyen.")
+        if n_nombre:
+            meta_location_obj._aviso(
+                progress_callback,
+                f"WARN: {nombre_csv}: {n_nombre} foto(s) ordenadas por la hora del NOMBRE "
+                "(sin hora de captura en el manifiesto).", error=False)
         if not images:
             return
         carpeta = _carpeta_real(por_nombre, images)
         progress_callback.emit(
             "\nProcesando {0} imágenes en directorio {1}".format(len(images), carpeta) + "\n")
-        df = _publicar(images, por_nombre, _leer(images, por_nombre), nombre_csv, carpeta, True)
-        _emitir_df(df, por_nombre, carpeta, nombre_csv, True)
+        df = _publicar(images, por_nombre, _leer(images, por_nombre), nombre_csv, carpeta, False)
+        _emitir_df(df, por_nombre, carpeta, nombre_csv, False)
 
-    def _emparejado(pn_t, pn_w):
+    def _emparejado(pn_t, pn_w, pref=""):
         """Espejo de `MetaLocation.gen_meta_location_emparejado`: meta (T) y location (W)
         del vuelo desde UNA lista de pares por idx DJI, mismo orden, misma longitud."""
         imgs_t, imgs_w = natsorted(pn_t), natsorted(pn_w)
@@ -193,9 +273,12 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
         pares, sin_pareja, sin_patron = meta_location_obj.emparejar_por_idx(imgs_t, imgs_w)
         if (not imgs_t or not imgs_w) or (not pares and sin_patron and not sin_pareja):
             # Vuelo solo RGB (o solo T) o sin patrón DJI: independientes, como antes del emparejado.
-            _independiente(pn_w, "location.csv")
-            _independiente(pn_t, "meta.csv")
+            _independiente(pn_w, pref + "location.csv")
+            _independiente(pn_t, pref + "meta.csv")
             return
+        meta_location_obj.avisos_orden(progress_callback)
+        sin_hora = {n for par in meta_location_obj.pares_sin_hora for n in par}
+        pares = [p for p in pares if p[0] not in sin_hora]
         meta_location_obj._aviso_sin_pareja(progress_callback, sin_pareja, _carpeta_de(
             (pn_t.get(imgs_t[0]) or pn_w[imgs_w[0]])["ruta_salida_original"]))
         for n in sin_patron:
@@ -219,33 +302,47 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
         if not ok_t:
             return
         carpeta_t, carpeta_w = _carpeta_real(pn_t, ok_t), _carpeta_real(pn_w, ok_w)
-        df_t = _publicar(ok_t, pn_t, l_t, "meta.csv", carpeta_t, False)
-        df_w = _publicar(ok_w, pn_w, l_w, "location.csv", carpeta_w, False)
+        df_t = _publicar(ok_t, pn_t, l_t, pref + "meta.csv", carpeta_t, False)
+        df_w = _publicar(ok_w, pn_w, l_w, pref + "location.csv", carpeta_w, False)
         if len(df_t) != len(df_w):
             meta_location_obj._aviso(
                 progress_callback,
                 f"ERROR: {carpeta_t}: meta y location con distinta longitud ({len(df_t)} vs {len(df_w)}); no se escriben.")
             return
-        _emitir_df(df_t, pn_t, carpeta_t, "meta.csv", False)
-        _emitir_df(df_w, pn_w, carpeta_w, "location.csv", False)
+        _emitir_df(df_t, pn_t, carpeta_t, pref + "meta.csv", False)
+        _emitir_df(df_w, pn_w, carpeta_w, pref + "location.csv", False)
 
     try:
         # RGB y TERMICA EMPAREJADOS por vuelo (mismo idx DJI = misma fila), igual que
         # `MetaLocation.check_input_folder_and_iterate`; luego RGB_Extra, que pisa el
         # location de RGB homónimo igual que hoy.
-        vuelos = sorted({(pb, vuelo) for (tipo, pb, vuelo) in grupos if tipo in ("RGB", "TERMICA")})
-        for pb, vuelo in vuelos:
-            try:
-                _emparejado(_por_nombre(grupos.get(("TERMICA", pb, vuelo), [])),
-                            _por_nombre(grupos.get(("RGB", pb, vuelo), [])))
-            except Exception as excepcion_vuelo:  # pragma: no cover - salvaguarda
-                progress_callback.emit(
-                    f"\nERROR generando meta/location de PB{pb}_{vuelo}: {excepcion_vuelo}\n")
-        for (tipo_grupo, pb, vuelo), filas in grupos.items():
-            if tipo_grupo != NOMBRE_CARPETA_RGB_EXTRA:
+        vuelos = sorted({(pb, vuelo, fecha) for (tipo, pb, vuelo, fecha) in grupos
+                         if tipo in ("RGB", "TERMICA")})
+        for pb, vuelo, fecha in vuelos:
+            if fecha == _SIN_FECHA:
+                n = sum(len(grupos.get((t, pb, vuelo, fecha), [])) for t in ("RGB", "TERMICA"))
+                meta_location_obj._aviso(
+                    progress_callback,
+                    f"ERROR: PB{pb}_{vuelo}: {n} imagen(es) sin hora de captura ni fecha en el nombre; "
+                    "se excluyen de meta y location.")
                 continue
             try:
-                _independiente(_por_nombre(filas), "location.csv")
+                horas.clear()
+                pn_t = _por_nombre(grupos.get(("TERMICA", pb, vuelo, fecha), []))
+                pn_w = _por_nombre(grupos.get(("RGB", pb, vuelo, fecha), []))
+                meta_location_obj._ts_externo = dict(horas)
+                _emparejado(pn_t, pn_w, _prefijo(pb, vuelo, fecha))
+            except Exception as excepcion_vuelo:  # pragma: no cover - salvaguarda
+                progress_callback.emit(
+                    f"\nERROR generando meta/location de PB{pb}_{vuelo} ({fecha}): {excepcion_vuelo}\n")
+        for (tipo_grupo, pb, vuelo, fecha), filas in grupos.items():
+            if tipo_grupo != NOMBRE_CARPETA_RGB_EXTRA or fecha == _SIN_FECHA:
+                continue
+            try:
+                horas.clear()
+                pn_x = _por_nombre(filas)
+                meta_location_obj._ts_externo = dict(horas)
+                _independiente(pn_x, _prefijo(pb, vuelo, fecha) + "location.csv")
             except Exception as excepcion_vuelo:  # pragma: no cover - salvaguarda
                 progress_callback.emit(
                     f"\nERROR generando meta/location de PB{pb}_{vuelo}: {excepcion_vuelo}\n")
@@ -292,10 +389,22 @@ def verificar(manifiesto, cfg) -> list[str]:
     problemas: list[str] = []
     filas = manifiesto.todas()
 
+    # Destino acumulado: pendientes/fallidas de OTRO origen (p. ej. el día anterior,
+    # rutas que ya no existen) no son error de ESTA corrida; se avisan aparte. Sin
+    # origen de corrida disponible (`cfg.input_folder` vacío) todas cuentan como error.
+    origen = str(getattr(cfg, "input_folder", "") or "").strip()
+
+    def _propia(fila) -> bool:
+        return (not origen) or ruta_bajo_origen(fila["ruta_origen"], origen)
+
+    ajenas: list = []
+
     # 4. Toda fila está 'hecho' o 'fallido': ninguna 'pendiente' ni 'en_curso'.
     # Un run interrumpido a mitad no puede darse por bueno solo porque las
     # filas que sí se procesaron salieron bien.
-    sin_terminar = [fila for fila in filas if fila["estado"] in ("pendiente", "en_curso")]
+    sin_terminar_todas = [fila for fila in filas if fila["estado"] in ("pendiente", "en_curso")]
+    sin_terminar = [fila for fila in sin_terminar_todas if _propia(fila)]
+    ajenas += [fila for fila in sin_terminar_todas if not _propia(fila)]
     termicas_sin_procesar = [
         fila for fila in sin_terminar
         if fila["tipo"] == "TERMICA" and not fila["unassigned"] and fila["pb"] and fila["vuelo"]]
@@ -316,7 +425,15 @@ def verificar(manifiesto, cfg) -> list[str]:
     # 4b. Ninguna fila quedó 'fallido' (manifiesto.marcar_fallida): esas imágenes
     # no se han procesado y el run no puede darse por limpio solo porque el
     # resto salió bien.
-    fallidas = [fila for fila in filas if fila["estado"] == "fallido"]
+    fallidas_todas = [fila for fila in filas if fila["estado"] == "fallido"]
+    fallidas = [fila for fila in fallidas_todas if _propia(fila)]
+    ajenas += [fila for fila in fallidas_todas if not _propia(fila)]
+    if ajenas:
+        carpetas = sorted({f["ruta_origen"].replace("\\", "/").rsplit("/", 1)[0] for f in ajenas})
+        problemas.append(
+            f"{len(ajenas)} fallida(s)/pendiente(s) de otro origen no organizadas (no son de "
+            f"esta corrida): {', '.join(carpetas[:3])}"
+            + (f" (+{len(carpetas) - 3} carpetas más)" if len(carpetas) > 3 else ""))
     if fallidas:
         ejemplo = fallidas[0]
         motivo = ejemplo["motivo_fallo"] if ejemplo["motivo_fallo"] else "sin motivo registrado"

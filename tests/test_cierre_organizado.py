@@ -9,6 +9,7 @@ Estos tests prueban que `emitir_csvs` ya no escribe el CSV Videofiles, y que `ve
 detecta los mismos desajustes que hoy detectan las fases de comprobación,
 pero mirando el manifiesto en vez de contadores que se resetean.
 """
+import dataclasses
 import csv
 import os
 
@@ -286,6 +287,7 @@ def test_las_filas_fallidas_se_reportan(tmp_path):
     manifiesto.marcar_fallida(filas[1]["id"], "error al girar la imagen")
 
     cfg = _cfg(destino)
+    cfg = dataclasses.replace(cfg, input_folder="/origen")  # fallidas = origen de esta corrida
     problemas = verificar(manifiesto, cfg)
 
     assert len(problemas) == 1
