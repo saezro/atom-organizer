@@ -306,41 +306,42 @@ def test_convert_dji_image_no_skip_si_tiff_vacio_gcs(monkeypatch):
     assert almacen_mod.tamano_de(tiff_path) == 0
 
 
-# --- GenStructFolder.write_videofiles_csv: mismo nombre y contenido local/gs:// (FIX 2) ---
+# --- GenStructFolder.registrar_giro_vuelo: raíz local escribe `vuelos`; gs:// da error visible ---
 
-def test_write_videofiles_csv_local_y_gcs_mismo_nombre_y_contenido(tmp_path, logger):
-    import pandas as pd
-    import utils as utils_module
+def test_registrar_giro_vuelo_local_escribe_vuelos_y_gcs_sube_manifiesto(tmp_path, logger):
+    import sqlite3
+    import types
 
-    df_videofiles = pd.DataFrame(
-        {"New Name": ["PB1_V1_0001.JPG"], "Original Name": ["DJI_0001_T.JPG"], "Degree": [90]}
-    )
+    mensajes = []
+    cb = types.SimpleNamespace(emit=lambda payload=None, *a, **k: mensajes.append(payload))
 
-    # --- Local ---
+    # --- Local: fila en `vuelos`, ningún CSV ---
     raiz_local = tmp_path / "root"
     obj_local = pipeline.GenStructFolder(logger)
-    obj_local.csvs_root_folder = str(raiz_local / "CSVs")
-    obj_local.write_videofiles_csv(str(raiz_local / "TERMICA" / "PB1_V1"), df_videofiles)
+    obj_local.root_folder = str(raiz_local)
+    obj_local.registrar_giro_vuelo(str(raiz_local / "TERMICA" / "PB1_V1"), 90, 10, 9, 0, 1, "ok", None, cb)
 
-    ruta_local = raiz_local / "CSVs" / utils_module.CRITERIO_DIRNAME / "PB1_V1_Videofiles.csv"
-    assert ruta_local.exists()
-    contenido_local = ruta_local.read_bytes()
-    assert b"PB1_V1_0001.JPG" in contenido_local
+    con = sqlite3.connect(str(raiz_local / ".organizado" / "manifiesto.db"))
+    try:
+        filas = con.execute("SELECT pb, vuelo, sufijo, angulo, n_total, n_90 FROM vuelos").fetchall()
+    finally:
+        con.close()
+    assert filas == [("1", "1", "", 90, 10, 9)]
+    assert obj_local.error_gen_struct_folder == 0 and mensajes == []
 
-    # --- gs:// ---
-    bucket = _sembrar_almacen_gcs("bucket-videofiles-csv")
-
+    # --- gs://: manifiesto local + subida al bucket (detalle en test_giro_manifiesto_gcs.py) ---
+    from tests.test_giro_manifiesto_gcs import _BucketGen
+    bucket = _BucketGen()
+    almacen_mod._ALMACENES["gs://bucket-videofiles-csv"] = __import__("atom_core.almacen_gcs", fromlist=["x"]).AlmacenGCS(
+        "bucket-videofiles-csv", cliente=ClienteFalso(bucket))
     obj_gcs = pipeline.GenStructFolder(logger)
-    obj_gcs.csvs_root_folder = "gs://bucket-videofiles-csv/dest/CSVs"
-    obj_gcs.write_videofiles_csv("gs://bucket-videofiles-csv/dest/TERMICA/PB1_V1", df_videofiles)
+    obj_gcs.root_folder = "gs://bucket-videofiles-csv/dest"
+    obj_gcs.registrar_giro_vuelo("gs://bucket-videofiles-csv/dest/TERMICA/PB1_V1", 90, 10, 9, 0, 1, "ok", None, cb)
 
-    clave_esperada = f"dest/CSVs/{utils_module.CRITERIO_DIRNAME}/PB1_V1_Videofiles.csv"
-    assert clave_esperada in bucket.objetos
-    assert bucket.objetos[clave_esperada] == contenido_local
-    # El nombre publicado NUNCA es el del temporal: ninguna otra clave del bucket
-    # contiene "Videofiles.csv" aparte de la esperada.
-    claves_videofiles = [k for k in bucket.objetos if "Videofiles.csv" in k]
-    assert claves_videofiles == [clave_esperada]
+    assert obj_gcs.error_gen_struct_folder == 0 and mensajes == []
+    assert [k for k in bucket.objetos if "Videofiles" in k] == []
+    assert [k for k in bucket.objetos if k.endswith(".organizado/manifiesto.db")] == ["dest/.organizado/manifiesto.db"]
+
 
 
 # --- pipeline._reflink_or_copy: origen inexistente no desactiva el reflink (FIX 3) ---

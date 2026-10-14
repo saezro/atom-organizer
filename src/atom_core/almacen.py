@@ -226,7 +226,15 @@ def abrir_para_lectura(ruta: str):
         yield Path(ruta)
 
 
-def publicar_en(origen_local: "str | Path", destino: str) -> None:
+def descargar_con_generacion(origen_gcs: str, destino_local: "str | Path") -> int:
+    """Descarga el objeto `gs://…` a `destino_local` y devuelve su `generation`
+    (`0` si no existe; entonces no se escribe nada). Solo `gs://`."""
+    almacen, prefijo = abrir_almacen(origen_gcs)
+    return almacen.descargar_con_generacion(prefijo, Path(destino_local))
+
+
+def publicar_en(origen_local: "str | Path", destino: str,
+                if_generation_match: "int | None" = None) -> None:
     """Deja el fichero `origen_local` en `destino` (ruta o URI).
 
     El origen es normalmente local (el nombre lo dice), pero desde 3790 F5 el
@@ -239,7 +247,12 @@ def publicar_en(origen_local: "str | Path", destino: str) -> None:
     `pipeline.py` importa medio mundo y `almacen.py` debe poder cargarse
     suelto, p. ej. en tests) para conservar la copia CoW que ya usa el
     escritorio; si esa función no está disponible cae a `shutil.copy2`, igual
-    que hacía el pipeline antes de tener reflink."""
+    que hacía el pipeline antes de tener reflink.
+
+    `if_generation_match`: solo `gs://` (subida condicional, ver
+    `AlmacenGCS.publicar`); en destino local no se admite (ValueError)."""
+    if if_generation_match is not None and not es_uri_gcs(destino):
+        raise ValueError("if_generation_match solo vale con destino gs://")
     if es_uri_gcs(str(origen_local)):
         # Se baja a un temporal (que `abrir_para_lectura` limpia al salir del
         # `with`) y se reentra por el camino de siempre, así el destino -local
@@ -257,7 +270,10 @@ def publicar_en(origen_local: "str | Path", destino: str) -> None:
 
     if es_uri_gcs(destino):
         almacen, prefijo = abrir_almacen(destino)
-        almacen.publicar(Path(origen_local), prefijo)
+        if if_generation_match is None:
+            almacen.publicar(Path(origen_local), prefijo)
+        else:
+            almacen.publicar(Path(origen_local), prefijo, if_generation_match=if_generation_match)
         return
 
     try:

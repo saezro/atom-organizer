@@ -6,20 +6,18 @@ tocado, que es lo que fija este fichero:
   1. Borrar la fase entera habría dejado de girar también las RGB, porque el giro
      del original RGB in-place vivía dentro de la misma función que escribía la
      miniatura térmica. La rotación RGB tiene que seguir intacta.
-  2. El criterio de giro (`_Videofiles.csv`, columna `Degree`) vivía DENTRO de
-     MINIATURAS. Es lo único que le dice a la conversión a TIFF y al giro del JPG térmico
-     cuánto girar: si desapareciera con la carpeta, ambas dejarían de rotar EN
-     SILENCIO. Ahora va a `CSVs/`, plano.
+  2. El criterio de giro vivía DENTRO de MINIATURAS (`_Videofiles.csv`). Es lo único
+     que le dice a la conversión a TIFF y al giro del JPG térmico cuánto girar: si
+     desapareciera con la carpeta, ambas dejarían de rotar EN SILENCIO. Ahora va a la
+     tabla `vuelos` del manifiesto (`.organizado/manifiesto.db`).
   3. El `*_T.JPG` crudo sigue sin tocarse: es R-JPEG propietario de DJI y re-encodarlo
      pierde el payload radiométrico.
 """
-import os
 import types
 
-import pandas as pd
 from PIL import Image
 
-import utils
+from tests.helpers_giro import angulo_de, csv_videofiles_existentes, leer_vuelos
 
 
 def _noop_progress():
@@ -60,17 +58,17 @@ def test_no_se_crea_la_carpeta_miniaturas(tmp_path, logger, make_dji_jpeg):
     assert not list(carpeta.glob("*_miniaturas*")), "Quedan restos de miniaturas junto al vuelo."
 
 
-def test_el_criterio_de_giro_se_escribe_en_csvs(tmp_path, logger, make_dji_jpeg):
-    """Sin este CSV, el TIFF y el JPG térmico dejan de rotar sin decir nada."""
+def test_el_criterio_de_giro_se_escribe_en_el_manifiesto(tmp_path, logger, make_dji_jpeg):
+    """Sin esta fila, el TIFF y el JPG térmico no tienen criterio de giro."""
     planta, carpeta = _vuelo(tmp_path, make_dji_jpeg, "DJI_0001_T.JPG")
     _corre_fase(logger, planta, carpeta, rgb_processing=False)
 
-    csv_path = planta / "CSVs" / utils.CRITERIO_DIRNAME / "PB1_V01_Videofiles.csv"
-    assert csv_path.exists(), (
-        "El criterio de giro no está en CSVs/: se ha ido con MINIATURAS y el vuelo "
-        "dejará de rotar el TIFF y el JPG térmico en silencio."
+    assert "PB1_V01" in leer_vuelos(planta), (
+        "El criterio de giro no está en la tabla `vuelos` del manifiesto: el vuelo "
+        "se quedaría sin criterio para el TIFF y el JPG térmico."
     )
-    assert set(pd.read_csv(csv_path)["Degree"].unique()) == {270}
+    assert angulo_de(planta, "PB1_V01") == 270
+    assert not csv_videofiles_existentes(planta)
 
 
 def test_la_termica_cruda_no_se_toca(tmp_path, logger, make_dji_jpeg):

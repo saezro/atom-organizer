@@ -12,12 +12,12 @@ Tests de dos cambios de la 3.4.x:
 import datetime
 import os
 
-import pandas as pd
 import pytest
 
 import utils
 from pipeline import GenStructFolder
 from utils import OrganizerLogger as ol
+from tests.helpers_giro import leer_vuelos
 
 
 class FakeSignal:
@@ -67,10 +67,10 @@ def _preparar_vuelo(tmp_path, nombre_vuelo, yaws):
     return gsf, carpeta
 
 
-def _degrees_del_videofiles(gsf, nombre_vuelo):
-    csv = os.path.join(gsf.csvs_root_folder, utils.CRITERIO_DIRNAME, nombre_vuelo + "_Videofiles.csv")
-    df = pd.read_csv(csv)
-    return list(df["Degree"]) if not df.empty else []
+def _degrees_del_vuelo(gsf, nombre_vuelo):
+    """Ángulo registrado en `vuelos` para el vuelo, o `None` si no hay fila."""
+    fila = leer_vuelos(gsf.root_folder).get(nombre_vuelo)
+    return None if fila is None else fila["angulo"]
 
 
 def _correr_rotacion(gsf, carpeta):
@@ -90,7 +90,8 @@ def test_panorama_con_giros_dispares_no_es_error_y_no_rota(tmp_path):
     _correr_rotacion(gsf, carpeta)
 
     assert lotes_rotados == [], "Un panorama no debe rotar ninguna imagen"
-    assert _degrees_del_videofiles(gsf, "PBPano_V1") == [0] * len(yaws), "El panorama debe quedar con Degree 0"
+    fila = leer_vuelos(gsf.root_folder)["PBPano_V1"]
+    assert (fila["angulo"], fila["estado"], fila["n_total"]) == (0, "ok", len(yaws)), "El panorama debe quedar con ángulo 0 y estado ok"
     assert gsf.error_gen_struct_folder == 0, "Un panorama no debe sumar errores"
 
 
@@ -104,7 +105,8 @@ def test_vuelo_normal_con_giros_dispares_sigue_siendo_error(tmp_path):
     _correr_rotacion(gsf, carpeta)
 
     assert lotes_rotados == [], "En el caso de error no se rota nada"
-    assert _degrees_del_videofiles(gsf, "PB1_V1") == [], "En el caso de error el Videofiles.csv queda vacío"
+    fila = leer_vuelos(gsf.root_folder)["PB1_V1"]
+    assert (fila["angulo"], fila["estado"]) == (0, "sin_consenso"), "Sin consenso: ángulo 0 y estado sin_consenso en `vuelos`"
 
 
 def test_vuelo_normal_con_giro_dominante_sigue_rotando(tmp_path):
@@ -116,7 +118,7 @@ def test_vuelo_normal_con_giro_dominante_sigue_rotando(tmp_path):
     _correr_rotacion(gsf, carpeta)
 
     assert len(lotes_rotados) == 1 and len(lotes_rotados[0]) == 20, "Un vuelo normal con giro dominante sí rota"
-    assert _degrees_del_videofiles(gsf, "PB1_V1") == [90] * 20
+    assert _degrees_del_vuelo(gsf, "PB1_V1") == 90
 
 
 # --- 3. Caché de timestamps EXIF ----------------------------------------------

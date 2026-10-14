@@ -9,11 +9,10 @@ import types
 
 import numpy as np
 import numpy.testing  # noqa: F401  (import eager para evitar lazy-load bajo monkeypatch de subprocess.run)
-import pandas as pd
 import pytest
 from PIL import Image as PILImage
 
-import utils
+from tests.helpers_giro import csv_videofiles_existentes, leer_vuelos
 
 
 def _noop_progress():
@@ -128,9 +127,9 @@ def test_tiff_rotation_preserves_radiometry_and_copies_exif(
     assert any(a.endswith("DJI_0001_T.tiff") for a in exiftool_cmd), "El TIFF destino no está en el comando."
 
 
-# --- 3. CSV _Videofiles con columnas ['New Name','Original Name','Degree'] --
+# --- 3. Giro del vuelo en la tabla `vuelos` del manifiesto (ya no hay CSV _Videofiles) --
 # gen_struct/gen_struct_folder.py:503-658 (gen_thumbnails_and_rotate).
-def test_videofiles_csv_columns_and_degree(tmp_path, logger, make_dji_jpeg):
+def test_giro_del_vuelo_se_registra_en_el_manifiesto(tmp_path, logger, make_dji_jpeg):
     import pipeline as gen_struct_folder
 
     planta_folder = tmp_path / "PLANTA"
@@ -156,16 +155,12 @@ def test_videofiles_csv_columns_and_degree(tmp_path, logger, make_dji_jpeg):
         progress_callback=progress, progress_bar=progress,
     )
 
-    csv_path = os.path.join(obj.csvs_root_folder, utils.CRITERIO_DIRNAME, "PB1_V01_Videofiles.csv")
-    assert os.path.exists(csv_path), (
-        "No se generó el CSV _Videofiles — gen_struct/gen_struct_folder.py:649-652"
-    )
-    df = pd.read_csv(csv_path)
-    assert list(df.columns) == ["New Name", "Original Name", "Degree"], (
-        "Columnas del CSV _Videofiles distintas de las esperadas."
-    )
-    assert len(df) == 2
-    assert set(df["Degree"].unique()) == {0}
+    fila = leer_vuelos(planta_folder).get("PB1_V01")
+    assert fila is not None, "No se registró el giro del vuelo en la tabla `vuelos` del manifiesto."
+    assert fila["angulo"] == 0
+    assert (fila["n_total"], fila["n_90"], fila["n_270"], fila["n_0"]) == (2, 0, 0, 2)
+    assert fila["estado"] == "ok"
+    assert not csv_videofiles_existentes(planta_folder), "Ya no se escribe ningún *_Videofiles.csv."
 
 
 # --- 4. La rotación RGB es un transpose real, in-place ----------------------

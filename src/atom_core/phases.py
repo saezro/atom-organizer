@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 import tempfile
 import time
 
@@ -1181,9 +1182,19 @@ class PipelinePhasesMixin:
         self.organizer_logger_obj.logger.info("###################################################################")
 
         adaptador = _PipelineAdaptadorPlanApply(self)
-        carpeta_manifiesto = os.path.join(cfg.output_folder, NOMBRE_CARPETA_MANIFIESTO)
-        os.makedirs(carpeta_manifiesto, exist_ok=True)
-        manifiesto = Manifiesto(os.path.join(carpeta_manifiesto, "manifiesto.db"))
+        # Salida gs://: SQLite no vive en el bucket. Copia LOCAL descargada del bucket
+        # (con su `generation`) y subida condicional al terminar; nunca una carpeta
+        # local «gs:». En local, como siempre: `<salida>/.organizado/manifiesto.db`.
+        es_gcs = es_uri_gcs(cfg.output_folder)
+        generacion_manifiesto = 0
+        if es_gcs:
+            with pipeline._LOCK_MANIFIESTO_GCS:
+                ruta_manifiesto, generacion_manifiesto = pipeline._sincronizar_manifiesto_gcs(cfg.output_folder)
+        else:
+            carpeta_manifiesto = os.path.join(cfg.output_folder, NOMBRE_CARPETA_MANIFIESTO)
+            os.makedirs(carpeta_manifiesto, exist_ok=True)
+            ruta_manifiesto = os.path.join(carpeta_manifiesto, "manifiesto.db")
+        manifiesto = Manifiesto(ruta_manifiesto)
         try:
             manifiesto.crear_esquema()
             reabiertas = manifiesto.reabrir_huerfanas(cfg.input_folder)
@@ -1395,6 +1406,25 @@ class PipelinePhasesMixin:
             # `.organizado/` se conserva SIEMPRE: haya o no problemas, el
             # `cerrar()` del SQLite es lo único incondicional.
             manifiesto.cerrar()
+            if es_gcs:
+                excepcion_en_vuelo = sys.exc_info()[0] is not None
+                try:
+                    pipeline._subir_manifiesto_gcs(cfg.output_folder, ruta_manifiesto, generacion_manifiesto)
+                except Exception as error_subida:  # noqa: BLE001 — el run acaba FALLIDO
+                    try:
+                        copia = pipeline._conservar_copia_local_manifiesto_gcs(ruta_manifiesto)
+                    except Exception as error_copia:  # noqa: BLE001
+                        copia = f"{ruta_manifiesto} (no se pudo renombrar: {error_copia})"
+                    msg = (f"ERROR: no se pudo subir el manifiesto a {cfg.output_folder}: {error_subida}. "
+                           f"El estado del run NO queda guardado en el bucket. Copia local conservada en: {copia}")
+                    logger.error(msg)
+                    progress_callback.emit("\n" + msg + "\n")
+                    if not excepcion_en_vuelo:
+                        # Sin excepción en vuelo: se propaga para que el run acabe fallido.
+                        # Con excepción en vuelo se deja propagar la original (no se tapa).
+                        raise RuntimeError(msg) from error_subida
+                else:
+                    pipeline._limpiar_copia_local_manifiesto_gcs(ruta_manifiesto)
 
     def rename_images(self, cfg: RenameImagesConfig, progress_callback, progress_bar, progress_summarize):
         """Función que renombra las imágenes que se encuentran en la carpeta elegida

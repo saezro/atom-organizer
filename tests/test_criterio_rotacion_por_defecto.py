@@ -13,15 +13,14 @@ import os
 import re
 import types
 
-import pandas as pd
 import pytest
 
-import utils
 from utils import (
     ROTATION_MIN_AGREEMENT_PCT,
     ROTATION_YAW_MARGIN,
     sane_rotation_criteria,
 )
+from tests.helpers_giro import angulo_de, leer_vuelos
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -139,10 +138,8 @@ def test_con_los_limites_a_cero_la_barrera_rota_igual(tmp_path, logger, make_dji
         progress_callback=progress, progress_bar=progress,
     )
 
-    csv_path = os.path.join(planta_folder, "CSVs", utils.CRITERIO_DIRNAME, "PB1_V01_Videofiles.csv")
-    assert os.path.exists(csv_path), "No se llegó a procesar el vuelo."
-    df = pd.read_csv(csv_path)
-    assert set(df["Degree"].unique()) == {270}, (
+    assert "PB1_V01" in leer_vuelos(planta_folder), "No se llegó a procesar el vuelo."
+    assert angulo_de(planta_folder, "PB1_V01") == 270, (
         "Con los límites colapsados el vuelo sigue sin rotarse: la barrera no actuó."
     )
     assert any(isinstance(m, str) and "margen de yaw" in m for m in mensajes), (

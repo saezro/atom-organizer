@@ -1056,12 +1056,11 @@ ROTATION_MIN_AGREEMENT_PCT = 50
 # entrar en la conversión ni descuadrar `jpg_count == tiff_count`.
 ROTATED_JPG_SUFFIX = "_ROT"
 
-# Subcarpeta de `CSVs/` donde vive el criterio de giro (`<vuelo>_Videofiles.csv`).
-# NO es un fichero descartable —lo leen la conversión a TIFF y el giro del JPG térmico—
-# pero tampoco es un entregable: al usuario le estorba entre los CSVs que sí
-# consume (meta, location). Se aparta a una subcarpeta interna en vez de
-# borrarse. `read_auto_rotate_degree` mantiene los fallbacks a las ubicaciones
-# anteriores para re-procesar carpetas de versiones previas.
+# Subcarpeta de `CSVs/` donde las versiones anteriores dejaban el criterio de giro
+# (`<vuelo>_Videofiles.csv`). Ya NO se escribe: el giro va a la tabla `vuelos` del
+# manifiesto (`GenStructFolder.registrar_giro_vuelo`). Se conserva solo para que
+# `read_auto_rotate_degree` pueda LEER ese CSV (y los de ubicaciones aún más
+# antiguas) al re-procesar carpetas de versiones previas.
 CRITERIO_DIRNAME = "_criterio"
 
 
@@ -1159,8 +1158,7 @@ class SplitImagesConfig:
     # PRUEBA dejara 5.049 objetos a partir de 2.516.
     modo_destino: str = MODO_SOBRESCRIBIR
     # orientación de la planta de la inspección elegida ("Horizontal",
-    # "Vertical", "Varias"), tal cual, sin normalizar -eso lo hace quien la
-    # consume (`atom_core.indice._orientacion_normalizada`). Vacío si no hay
+    # "Vertical", "Varias"), tal cual, sin normalizar. Vacío si no hay
     # inspección elegida o si la API de la Suite todavía no manda el campo
     # (ver `atom_core/inspecciones.py`, decisión 2026-09-28).
     orientacion: str = ""

@@ -17,12 +17,9 @@ valor: ni siquiera un yaw de exactamente 90. Los contadores salen 0 y 0 sea cual
 sea la imagen, y el vuelo entero se va por la rama "no se deben rotar"
 (pipeline.py:1209) imprimiendo un "OK" en el log.
 """
-import os
 import types
 
-import pandas as pd
-
-import utils
+from tests.helpers_giro import angulo_de
 
 
 def _recording_progress():
@@ -63,9 +60,7 @@ def test_margen_cero_no_rota_ni_con_el_yaw_exacto(tmp_path, logger, make_dji_jpe
     _run(obj, flight_folder, progress,
          lim_max_270=-90, lim_min_270=-90, lim_max_90=90, lim_min_90=90)
 
-    csv_path = os.path.join(obj.csvs_root_folder, utils.CRITERIO_DIRNAME, "PB1_V01_Videofiles.csv")
-    df = pd.read_csv(csv_path)
-    assert set(df["Degree"].unique()) == {0}, (
+    assert angulo_de(planta_folder, "PB1_V01") == 0, (
         "Con márgenes a 0 y yaw -90 exacto se rotó algo: el intervalo ya no está vacío."
     )
 
@@ -84,9 +79,7 @@ def test_margen_amplio_si_rota_el_mismo_yaw(tmp_path, logger, make_dji_jpeg):
     _run(obj, flight_folder, progress,
          lim_max_270=-10, lim_min_270=-170, lim_max_90=170, lim_min_90=10)
 
-    csv_path = os.path.join(obj.csvs_root_folder, utils.CRITERIO_DIRNAME, "PB1_V01_Videofiles.csv")
-    df = pd.read_csv(csv_path)
-    assert set(df["Degree"].unique()) == {270}, (
+    assert angulo_de(planta_folder, "PB1_V01") == 270, (
         "El mismo yaw -90 con margen amplio debería rotar 270 — si no, el fallo no es el margen."
     )
 

@@ -1088,6 +1088,11 @@ def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
         inicio, fin = pipeline.ventana_horaria_vuelo(
             fecha, hora_inicio, hora_final, cfg.seconds_range,
             cfg.mismatch_hours, cfg.mismatch_minutes)
+        # Ventana EXACTA del estadillo (sin el margen `seconds_range`): decide quién
+        # gana cuando el margen de un vuelo invade a otro (ver `_asignar_vuelo`).
+        inicio_exacto, fin_exacto = pipeline.ventana_horaria_vuelo(
+            fecha, hora_inicio, hora_final, 0,
+            cfg.mismatch_hours, cfg.mismatch_minutes)
 
         equipo = None
         if col_equipo is not None and col_equipo in estadillo_df.columns:
@@ -1098,6 +1103,7 @@ def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
                   if (pb, vuelo) in colisiones_pb_vuelo else None)
 
         ventanas.append({"pb": pb, "vuelo": vuelo, "inicio": inicio, "fin": fin,
+                         "inicio_exacto": inicio_exacto, "fin_exacto": fin_exacto,
                          "equipo": equipo, "fecha": fecha, "sufijo": sufijo})
     return ventanas
 
@@ -1180,12 +1186,45 @@ def _heredar_vuelo_por_pareja(asignaciones: list[tuple[_MetadatosImagen, dict | 
     return resultado
 
 
+def _es_ventana_generales(ventana: dict) -> bool:
+    """Ventana de fotos GENERALES: la del estadillo (`pb` GENERALES) o la que marca
+    explícitamente el motor legado (`generales=True`)."""
+    return bool(ventana.get("generales")) or _es_pb_generales(ventana.get("pb"))
+
+
+def _en_ventana_exacta(timestamp, ventana: dict) -> bool:
+    """¿`timestamp` cae ESTRICTAMENTE dentro de la ventana del estadillo, sin el
+    margen `seconds_range`? Sin `inicio_exacto/fin_exacto` (ventana construida a
+    mano) se usa la ventana con margen."""
+    inicio = ventana.get("inicio_exacto", ventana["inicio"])
+    fin = ventana.get("fin_exacto", ventana["fin"])
+    return inicio < timestamp < fin
+
+
+def elegir_ventana(timestamp, ventanas: list[dict]) -> dict | None:
+    """Ventana que reclama un timestamp. Regla única del índice y del motor legado:
+
+    1. Una ventana GENERALES cuya franja EXACTA contiene el timestamp gana siempre.
+       El margen `seconds_range` (30 s por defecto) de un PB se come el hueco que
+       separa su fin del inicio de GENERALES (en AT141A: 13:51:14 vs 13:51:20), y
+       como el orden del estadillo desempata, las fotos GENERALES acababan en el PB
+       anterior (PB1_V1, unassigned=0) sin crear FOTOS_GENERALES.
+    2. Si no, la primera ventana (orden del estadillo) cuyo `(inicio, fin)` con
+       margen la contiene estrictamente.
+
+    `None` si ninguna la reclama."""
+    for ventana in ventanas:
+        if _es_ventana_generales(ventana) and _en_ventana_exacta(timestamp, ventana):
+            return ventana
+    for ventana in ventanas:
+        if ventana["inicio"] < timestamp < ventana["fin"]:
+            return ventana
+    return None
+
+
 def _asignar_vuelo(dato: _MetadatosImagen, ventanas: list[dict]) -> dict | None:
-    """Primera ventana (en orden del estadillo) cuyo `(inicio, fin)` contiene
-    ESTRICTAMENTE el timestamp de la imagen, igual que
-    `obtenerListaImagenesVuelo` (pipeline.py:1528: `inicio < ts < fin`). Sin
-    timestamp, o sin ninguna ventana que la reclame, la imagen es
-    `unassigned`.
+    """Ventana (ver `elegir_ventana`) que reclama la imagen. Sin timestamp, o sin
+    ninguna ventana que la reclame, la imagen es `unassigned`.
 
     `ventanas` ya viene ESCOPADA a la carpeta que le corresponde a `dato`
     (ver `_ventanas_para_imagen`): solo se compara contra las ventanas del
@@ -1195,10 +1234,27 @@ def _asignar_vuelo(dato: _MetadatosImagen, ventanas: list[dict]) -> dict | None:
     solapadas el mismo día (ver `agrupar_rutas_por_carpeta`)."""
     if dato.timestamp is None:
         return None
-    for ventana in ventanas:
-        if ventana["inicio"] < dato.timestamp < ventana["fin"]:
-            return ventana
-    return None
+    return elegir_ventana(dato.timestamp, ventanas)
+
+
+def _avisar_asignadas_por_margen(asignaciones: list[tuple[_MetadatosImagen, dict | None]],
+                                 progress_callback) -> None:
+    """AVISO visible (sin fallback silencioso) de las fotos que NO caen en la franja
+    exacta de su vuelo y solo entran por el margen `seconds_range`: están en el
+    hueco entre vuelos (o en el solape de dos márgenes) y se asignan por tolerancia."""
+    por_vuelo: dict[str, int] = {}
+    for dato, ventana in asignaciones:
+        if ventana is None or dato.timestamp is None or _en_ventana_exacta(dato.timestamp, ventana):
+            continue
+        etiqueta = (f"{NOMBRE_CARPETA_GENERALES}" if _es_ventana_generales(ventana)
+                    else f"PB{ventana['pb']}/V{ventana['vuelo']}")
+        por_vuelo[etiqueta] = por_vuelo.get(etiqueta, 0) + 1
+    if por_vuelo:
+        detalle = ", ".join(f"{k}: {n}" for k, n in sorted(por_vuelo.items()))
+        progress_callback.emit(
+            f"\nAVISO: {sum(por_vuelo.values())} foto(s) fuera de la franja horaria exacta de su "
+            f"vuelo, asignadas solo por el margen de tolerancia (hueco entre vuelos del "
+            f"estadillo). Revisa que son del vuelo correcto. Por vuelo: {detalle}.\n")
 
 
 def _bajo_carpeta(directorio: str, ruta: str) -> bool:
@@ -1234,12 +1290,6 @@ def _ventanas_para_imagen(ruta_imagen: str, ventanas_por_carpeta: dict[str, list
     if mejor_directorio is not None:
         return ventanas_por_carpeta[mejor_directorio]
     return ventanas_sin_carpeta
-
-
-def _orientacion_normalizada(valor) -> str:
-    """`cfg.orientacion` normalizada para comparar: strip + lower. `""` si no
-    hay valor (planta desconocida o inspección sin seleccionar)."""
-    return str(valor or "").strip().lower()
 
 
 def _yaw_normalizado(yaw: float, pitch: float | None) -> float:
@@ -2088,6 +2138,7 @@ def construir_indice(
         emisor.progreso(n_asignadas, len(metadatos))
     emisor.progreso(len(metadatos), len(metadatos), forzar=True)
     asignaciones = _heredar_vuelo_por_pareja(asignaciones, progress_callback)
+    _avisar_asignadas_por_margen(asignaciones, progress_callback)
     vuelos_equipo_discrepa = _avisar_equipo(asignaciones, progress_callback)
     reparto_vuelos: dict = {}
     votos_giro: dict = {}

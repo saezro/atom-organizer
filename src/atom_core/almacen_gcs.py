@@ -128,9 +128,27 @@ class AlmacenGCS:
         except Exception:
             pass
 
-    def publicar(self, ruta_local: Path, destino: str) -> None:
+    def descargar_con_generacion(self, ruta: str, destino_local: Path) -> int:
+        """Descarga `ruta` a `destino_local` y devuelve su `generation` (la de ESA
+        versión: la descarga lleva `if_generation_match`). `0` = el objeto no existe
+        (nada descargado). Base de la concurrencia optimista de `publicar`."""
+        blob = self.bucket.blob(self._clave(ruta))
+        if not blob.exists():
+            return 0
+        blob.reload()
+        generacion = int(blob.generation)
+        blob.download_to_filename(str(destino_local), if_generation_match=generacion)
+        return generacion
+
+    def publicar(self, ruta_local: Path, destino: str, if_generation_match: int | None = None) -> None:
+        """Sube `ruta_local`. Con `if_generation_match` (0 = «no debe existir») la
+        subida es condicional: si otro proceso cambió el objeto, el SDK lanza
+        `PreconditionFailed` (412) y NO se sobrescribe nada."""
         blob = self.bucket.blob(self._clave(destino))
-        blob.upload_from_filename(str(ruta_local))
+        if if_generation_match is None:
+            blob.upload_from_filename(str(ruta_local))
+        else:
+            blob.upload_from_filename(str(ruta_local), if_generation_match=if_generation_match)
         # Una subida "sin excepcion" no garantiza el objeto integro: se
         # comprueba tamano (y md5 si el SDK lo da) contra el fichero local.
         blob.reload()

@@ -1,0 +1,3 @@
+Empresa;Trabajo;Fecha;Piloto;Equipo_de_vuelo;Pitch;Hora_de_inicio;Hora_final;PB;Vuelo;Desplazado;Vel_vuelo;Alt_vuelo;Vel_de_aire;Temp_aire;Nubes;Radiacion;Tiempo_vuelo;Dist_Recorrida;Set_Bat_1;Set_Bat_2;Set_Bat_3;Volt_inicial;Volt_final;GB1/;GB2/;Anotaciones;Termica;RGB;Cali_Ini;Cali_Final;Tipologia;Vuelo_abortado
+Metlen;AT141A;2026:10:06;Marcos Fidalgo;Mavic 2EA;8;13:46:57;13:51:14;1;1;C;3;26;De 5 a 10;20-25;0;>800;;;29;;;16;;;;;1;1;0;0;Fijo;0
+Metlen;AT141A;2026:10:06;Marcos Fidalgo;Mavic 2EA;8;13:51:20;13:53:35;GENERALES;AT141A;C;3;26;De 5 a 10;20-25;0;>800;;;1;;;1;;;;;1;1;0;0;Fijo;0
