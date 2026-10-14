@@ -1261,7 +1261,7 @@ def _yaw_normalizado(yaw: float, pitch: float | None) -> float:
 # el criterio (yaw normalizado, FlightYaw, orden de bandas...): un
 # vuelo de la tabla `vuelos` del manifiesto con otra versión
 # se recalcula en vez de reutilizarse, para no perpetuar ángulos mal calculados.
-VERSION_ALGORITMO_GIRO = "2026-10-09.2"
+VERSION_ALGORITMO_GIRO = "2026-10-14.1"
 # Por debajo de este % de imágenes en la banda elegida el consenso se avisa.
 _UMBRAL_CONFIANZA_GIRO = 80.0
 # Regla por vuelo (Rodrigo 2026-10-09): un sentido (90 / 270 / sin girar) con
@@ -1298,17 +1298,9 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
     por carpeta, es lo que corrige el bug que motiva el proyecto entero (hoy
     el TIFF y su JPG pueden acabar con criterios de giro distintos).
 
-    Regla del responsable (2026-09-28, caso de una planta -orientación =
-    'Horizontal', 1986/1986 imágenes giradas por yaw cuando no debían-):
-    una planta `Horizontal` **nunca se gira**, ángulo 0 para todas sus
-    imágenes (térmica, RGB, JPG térmico), decisión que manda sobre
-    cualquier consenso por yaw o CSV de un re-proceso anterior. El resto
-    de orientaciones (`Vertical`, `Varias`, desconocida) sigue el
-    comportamiento de siempre: consenso por yaw. Si la orientación no se
-    conoce (inspección sin elegir, o API de la Suite sin el campo
-    -`lib/organizer-catalogo.js` de Atom-suite todavía no lo manda-) se seguirá
-    girando por yaw como hasta ahora, pero se avisa (ver abajo): es un giro
-    decidido a ciegas, sin saber si la planta es Horizontal.
+    Regla (Rodrigo 2026-10-14, sustituye la regla de orientación del
+    2026-09-28): el giro se decide SOLO por el yaw de cada vuelo. La
+    orientación de la planta (Horizontal/Vertical/vacía) NO influye.
 
     El criterio vive en el manifiesto (tabla `vuelos`, voto por imagen en
     `imagenes.giro_voto`); el CSV `_criterio` ya no se lee. `vuelos_previos`
@@ -1339,13 +1331,6 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
             flight_yaw if flight_yaw is not None
             else _yaw_normalizado(dato.yaw, getattr(dato, "pitch", None)))
         datos_por_vuelo.setdefault(clave, []).append(dato)
-
-    orientacion = _orientacion_normalizada(getattr(cfg, "orientacion", ""))
-    if orientacion == "horizontal":
-        # Punto único de la regla: se decide ANTES de mirar ningún yaw ni CSV
-        # de un re-proceso anterior -es una propiedad de la planta, no del
-        # vuelo ni de una corrida concreta-.
-        return {clave: 0 for clave in yaws_por_vuelo}
 
     angulos: dict[tuple[str, str, str | None], int] = {}
 
@@ -1437,18 +1422,6 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
         if reparto_out is not None:
             reparto_out[clave] = reparto
 
-    if not orientacion and any(a in (90, 270) for a in angulos.values()):
-        # Orientación desconocida (sin inspección elegida, o la API de la
-        # Suite todavía sin el campo) y al menos un vuelo se va a girar: se
-        # sigue girando por yaw -comportamiento de siempre-, pero a ciegas,
-        # sin saber si esta planta es Horizontal (que no debería girar
-        # nunca). Aviso visible, no silencioso.
-        progress_callback.emit(
-            "\nAVISO: orientación de la planta desconocida; se gira por "
-            "consenso de yaw sin poder aplicar la regla 'Horizontal nunca "
-            "gira'. Verifica la orientación en la Suite si esta planta es "
-            "horizontal.\n")
-
     _validar_giro_contra_flight_yaw(asignaciones, angulos, cfg)
     return angulos
 
@@ -1458,10 +1431,8 @@ def _validar_giro_contra_flight_yaw(asignaciones, angulos: dict, cfg) -> None:
     imágenes que traen `flight_yaw` (mismas bandas y umbral que el consenso) y
     lanza `ErrorGiroContradictorio` si hay consenso por FlightYaw y difiere del
     ángulo final de `angulos`. Lista todos los vuelos contradictorios. No aplica
-    a plantas horizontales ni a modo manual; sin FlightYaw o sin consenso no
+    a modo manual; sin FlightYaw o sin consenso no
     bloquea."""
-    if _orientacion_normalizada(getattr(cfg, "orientacion", "")) == "horizontal":
-        return
     if not cfg.choose_mode_auto:
         return
     add_to_angle, subs_to_angle, _max_error = utils.sane_rotation_criteria(

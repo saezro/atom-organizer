@@ -68,10 +68,11 @@ def test_sin_consenso_flightyaw_no_lanza(tmp_path):
     assert res[("1", "2", None)] == 90
 
 
-def test_horizontal_y_manual_no_lanzan(tmp_path):
+def test_horizontal_ya_no_exime_y_manual_no_lanza(tmp_path):
     v = {"2": [(20, 88.0, -90.0, -90.0)]}
-    assert _run(v, cfg=_cfg(orientacion="Horizontal"), previos=_previo("2", 90),
-                tmp=str(tmp_path))[("1", "2", None)] == 0
+    with pytest.raises(ErrorGiroContradictorio):
+        _run(v, cfg=_cfg(orientacion="Horizontal"), previos=_previo("2", 90),
+             tmp=str(tmp_path))
     assert _run(v, cfg=_cfg(auto=False, rotate_90=True),
                 tmp=str(tmp_path))[("1", "2", None)] == 90
 
