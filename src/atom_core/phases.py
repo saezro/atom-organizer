@@ -24,6 +24,7 @@ El host que herede este mixin DEBE proveer:
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tempfile
@@ -52,7 +53,7 @@ from atom_core.almacen import (
 )
 from atom_core.apply import (aplicar_rgb, aplicar_termicas, _formatear_duracion,
                              _ContadorRotacion, emitir_errores_fase)
-from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO
+from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO, ruta_bajo_origen
 from external_tools import resource_path
 from version import __version__
 from utils import (
@@ -70,6 +71,8 @@ from utils import (
     TifRotatingConfig,
 )
 from rjpeg_a_tiff import EXTS_IMAGEN
+
+logger = logging.getLogger(__name__)
 
 
 def _existe_carpeta(ruta: str) -> bool:
@@ -336,6 +339,10 @@ class PipelinePhasesMixin:
                 # Una fila "hecho" ya tiene su salida colocada: un homónimo en la
                 # raíz es de una corrida anterior sobre el mismo destino.
                 if fila["estado"] == "hecho":
+                    continue
+                # Destino acumulado: filas de otro origen (día anterior) no son de este run.
+                _origen = str(getattr(cfg, "input_folder", "") or "").strip()
+                if _origen and not ruta_bajo_origen(fila["ruta_origen"], _origen):
                     continue
                 tipo = str(fila["tipo"] or "").upper()
                 subs = (tipo,) if tipo in ("TERMICA", "RGB") else ("TERMICA", "RGB")
@@ -1179,7 +1186,7 @@ class PipelinePhasesMixin:
         manifiesto = Manifiesto(os.path.join(carpeta_manifiesto, "manifiesto.db"))
         try:
             manifiesto.crear_esquema()
-            reabiertas = manifiesto.reabrir_huerfanas()
+            reabiertas = manifiesto.reabrir_huerfanas(cfg.input_folder)
             if reabiertas:
                 progress_callback.emit(
                     f"\n{reabiertas} imagen(es) quedaron a medias en un run anterior; "
@@ -1204,12 +1211,7 @@ class PipelinePhasesMixin:
                 # entran en ERRORES_*.csv) y no sustituyen la corrida normal.
                 _ajenas = manifiesto.fallidas_de_otro_origen(cfg.input_folder)
                 if _ajenas:
-                    _carpetas = sorted({r.replace("\\", "/").rsplit("/", 1)[0] for r in _ajenas})
-                    progress_callback.emit(
-                        f"\n{len(_ajenas)} fallida(s) de otro origen ignoradas: "
-                        + ", ".join(_carpetas[:5])
-                        + (f" (+{len(_carpetas) - 5} carpetas más)" if len(_carpetas) > 5 else "")
-                        + "\n")
+                    logger.debug("%d fallida(s) de otro origen ignoradas", len(_ajenas))
                 _solo_fallidas = getattr(self, "solo_fallidas", False)
                 if _solo_fallidas and not manifiesto.hay_fallidas_de_origen(cfg.input_folder):
                     progress_callback.emit(
@@ -1326,6 +1328,12 @@ class PipelinePhasesMixin:
                         progress_callback.emit(f"  - {problema}\n")
                     self.organizer_logger_obj.logger.warning(
                         "Cierre con %d problema(s): %s", len(avisos_cierre), avisos_cierre)
+                try:
+                    _info_ajenas = cierre_mod.linea_info_ajenas(manifiesto, cfg)
+                except Exception:  # noqa: BLE001 — informativo
+                    _info_ajenas = None
+                if _info_ajenas:
+                    progress_callback.emit("\n" + _info_ajenas + "\n")
                 # Marcador propio del cierre: fallidas de CUALQUIER tipo de ESTE
                 # run, para que el estado final sea 'errors' aunque no sean RGB/TERMICA.
                 try:
@@ -1366,7 +1374,7 @@ class PipelinePhasesMixin:
                 # filas 'pendiente' por run roto). Las filas 'hecho' están
                 # completas; el resto sigue 'pendiente' y se retoma al relanzar.
                 try:
-                    conteo = manifiesto.resumen()
+                    conteo = manifiesto.resumen(cfg.input_folder)
                     cancelada.hechas = conteo.get("hecho", 0)
                     cancelada.total = sum(conteo.values())
                 except Exception:  # noqa: BLE001 — el recuento es informativo

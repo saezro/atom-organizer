@@ -116,7 +116,7 @@ def _cfg(**overrides):
     """`SplitImagesConfig` mínima, calcada de `test_apply_rgb._cfg`: solo los
     campos `convert_to_tif_*` importan a estos tests."""
     base = dict(
-        input_folder="/origen", output_folder="/destino",
+        input_folder="", output_folder="/destino",
         end_rgb_extra_files="", end_thermo_files="_T", end_rgb_files="",
         estad="/estadillo.csv", choose_mode_size=False, max_size="0",
         compress_rgb=True, compress_level=85, rename_images=True,

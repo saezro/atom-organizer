@@ -615,8 +615,15 @@ class Manifiesto:
         """Compatibilidad: cuántas filas NUEVAS entraron."""
         return self.insertar_o_reabrir(filas).nuevas
 
-    def pendientes(self, limite: int | None = None) -> list[sqlite3.Row]:
+    def pendientes(self, limite: int | None = None,
+                   origen: str | None = None) -> list[sqlite3.Row]:
+        """Filas 'pendiente'. Con `origen` (no vacío) SOLO las que cuelgan de esa
+        carpeta: las de otros orígenes (destino acumulado) no se tocan."""
         consulta = "SELECT * FROM imagenes WHERE estado = 'pendiente' ORDER BY id"
+        if origen is not None and str(origen).strip():
+            filas = [f for f in self._conexion().execute(consulta)
+                     if ruta_bajo_origen(f["ruta_origen"], origen)]
+            return filas if limite is None else filas[:int(limite)]
         if limite is not None:
             consulta += f" LIMIT {int(limite)}"
         return list(self._conexion().execute(consulta))
@@ -837,11 +844,22 @@ class Manifiesto:
                 f"UPDATE imagenes SET {asignaciones} WHERE id = :id_fila", parametros
             )
 
-    def reabrir_huerfanas(self) -> int:
+    def reabrir_huerfanas(self, origen: str | None = None) -> int:
         """Devuelve a 'pendiente' las filas que quedaron 'en_curso' porque el
         proceso murió a mitad. Sin esto, un run interrumpido deja imágenes que
-        nadie vuelve a mirar."""
+        nadie vuelve a mirar. Con `origen` (no vacío) SOLO las de esa carpeta."""
         conexion = self._conexion()
+        if origen is not None and str(origen).strip():
+            ids = [f["id"] for f in conexion.execute(
+                "SELECT id, ruta_origen FROM imagenes WHERE estado = 'en_curso'")
+                if ruta_bajo_origen(f["ruta_origen"], origen)]
+            with conexion:
+                for i in range(0, len(ids), 500):
+                    lote = ids[i:i + 500]
+                    conexion.execute(
+                        "UPDATE imagenes SET estado = 'pendiente' WHERE id IN (%s)"
+                        % ",".join("?" * len(lote)), lote)
+            return len(ids)
         with conexion:
             cursor = conexion.execute(
                 "UPDATE imagenes SET estado = 'pendiente' WHERE estado = 'en_curso'"
@@ -886,8 +904,13 @@ class Manifiesto:
                 (ejecucion_id,))
         return cursor.rowcount
 
-    def resumen(self) -> dict[str, int]:
+    def resumen(self, origen: str | None = None) -> dict[str, int]:
         conteos = {estado: 0 for estado in ESTADOS}
+        if origen is not None and str(origen).strip():
+            for fila in self._conexion().execute("SELECT estado, ruta_origen FROM imagenes"):
+                if ruta_bajo_origen(fila["ruta_origen"], origen):
+                    conteos[fila["estado"]] = conteos.get(fila["estado"], 0) + 1
+            return conteos
         for fila in self._conexion().execute(
             "SELECT estado, COUNT(*) AS total FROM imagenes GROUP BY estado"
         ):

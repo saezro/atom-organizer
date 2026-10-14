@@ -15,6 +15,7 @@ tiene que poder inspeccionarse y mostrarse entera, no solo un booleano.
 """
 from __future__ import annotations
 
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 
@@ -23,6 +24,8 @@ from atom_core.almacen import es_uri_gcs, existe_ruta, tamano_de, unir
 from atom_core import pares as pares_mod
 from atom_core.manifiesto import ruta_bajo_origen
 from atom_core.indice import NOMBRE_CARPETA_RGB_EXTRA, TIPOS_RGB
+
+logger = logging.getLogger(__name__)
 
 
 def _vuelos_del_manifiesto(manifiesto) -> list[tuple[str, str]]:
@@ -379,6 +382,24 @@ def separar_problemas(problemas) -> tuple[list[str], list[str]]:
     return errores, [p for p in problemas if not p.startswith(PREFIJO_ERROR)]
 
 
+def linea_info_ajenas(manifiesto, cfg) -> str | None:
+    """Línea INFORMATIVA (no es problema: no suma avisos ni cambia el estado) con
+    las fallidas/pendientes de OTRO origen del destino acumulado; None si no hay."""
+    origen = str(getattr(cfg, "input_folder", "") or "").strip()
+    if not origen:
+        return None
+    rutas = [f["ruta_origen"] for f in manifiesto.todas()
+             if f["estado"] in ("pendiente", "en_curso", "fallido")
+             and not ruta_bajo_origen(f["ruta_origen"], origen)]
+    if not rutas:
+        return None
+    carpetas = sorted({r.replace("\\", "/").rsplit("/", 1)[0] for r in rutas})
+    return (f"ℹ️ Quedan {len(rutas)} imagen(es) fallidas/pendientes de otra carpeta "
+            f"({', '.join(carpetas[:3])}"
+            + (f" y {len(carpetas) - 3} más" if len(carpetas) > 3 else "")
+            + "), no de esta tanda.")
+
+
 def verificar(manifiesto, cfg) -> list[str]:
     """Compara el manifiesto contra lo que hay en disco.
 
@@ -429,11 +450,10 @@ def verificar(manifiesto, cfg) -> list[str]:
     fallidas = [fila for fila in fallidas_todas if _propia(fila)]
     ajenas += [fila for fila in fallidas_todas if not _propia(fila)]
     if ajenas:
-        carpetas = sorted({f["ruta_origen"].replace("\\", "/").rsplit("/", 1)[0] for f in ajenas})
-        problemas.append(
-            f"{len(ajenas)} fallida(s)/pendiente(s) de otro origen no organizadas (no son de "
-            f"esta corrida): {', '.join(carpetas[:3])}"
-            + (f" (+{len(carpetas) - 3} carpetas más)" if len(carpetas) > 3 else ""))
+        # Destino acumulado: filas de otro origen no son de esta corrida; ni
+        # aviso ni warning (solo traza interna).
+        logger.debug("cierre.verificar: %d fila(s) fallida/pendiente de otro origen ignoradas",
+                     len(ajenas))
     if fallidas:
         ejemplo = fallidas[0]
         motivo = ejemplo["motivo_fallo"] if ejemplo["motivo_fallo"] else "sin motivo registrado"

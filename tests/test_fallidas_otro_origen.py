@@ -49,9 +49,11 @@ def test_fallidas_de_otro_origen_no_bloquean_la_corrida_normal(
     # B (origen actual) organizado entero.
     assert os.path.isdir(os.path.join(cfg.output_folder, "TERMICA", "PB1", "PB1_V1"))
     assert os.path.isdir(os.path.join(cfg.output_folder, "RGB", "PB1", "PB1_V1"))
-    # Aviso visible, A sin tocar.
-    assert "3 fallida(s) de otro origen ignoradas" in texto
+    # Una sola línea informativa neutra sobre A; sin aviso ni error; A sin tocar.
+    assert texto.count("de otra carpeta") == 1
     assert "2026_10_07_TUTLY" in texto
+    assert "HA HABIDO AVISOS" not in texto and "HA HABIDO ERRORES" not in texto
+    assert "de otro origen" not in texto
     m = Manifiesto(os.path.join(cfg.output_folder, NOMBRE_CARPETA_MANIFIESTO, "manifiesto.db"))
     m.crear_esquema()
     filas = m.todas()
@@ -113,14 +115,13 @@ def _cfg_cierre(tmp_path, origen):
     return c
 
 
-def test_cierre_fallidas_otro_origen_son_aviso_no_error(tmp_path):
+def test_cierre_fallidas_otro_origen_ni_aviso_ni_error(tmp_path):
     from atom_core.cierre import separar_problemas, verificar
     m, _ = _manifiesto_cierre(tmp_path)
     p = verificar(m, _cfg_cierre(tmp_path, r"C:\Users\Jonathan\Desktop\2026_10_08_TUTLY"))
     errores, avisos = separar_problemas(p)
     assert not [e for e in errores if "fallaron" in e]
-    assert any("7072 fallida(s)/pendiente(s) de otro origen" in a and "2026_10_07_TUTLY" in a
-               for a in avisos)
+    assert not avisos and not errores
     m.cerrar()
 
 
@@ -145,4 +146,109 @@ def test_cierre_origen_vacio_todas_cuentan_como_error(tmp_path):
     m, _ = _manifiesto_cierre(tmp_path)
     errores, _ = separar_problemas(verificar(m, _cfg_cierre(tmp_path, "")))
     assert any("7072 imagen(es) fallaron" in e for e in errores)
+    m.cerrar()
+
+
+B = r"C:\Users\Jonathan\Desktop\2026_10_08_TUTLY"
+
+
+def _insertar(m, ruta, estado, clave, tipo="TERMICA", pb="PB1", vuelo="V1"):
+    eid = m.abrir_ejecucion(ruta, "t")
+    with m._conexion() as con:
+        con.execute(
+            "INSERT INTO imagenes (ruta_origen, clave, tipo, ruta_salida_original, estado, "
+            "pb, vuelo, ejecucion_id) VALUES (?, ?, ?, 'x', ?, ?, ?, ?)",
+            (ruta, clave, tipo, estado, pb, vuelo, eid))
+
+
+def _mixto(tmp_path):
+    m = Manifiesto(os.path.join(str(tmp_path), "m.db"))
+    m.crear_esquema()
+    _insertar(m, ORIGEN_A + r"\DCIM1\a1_T.JPG", "fallido", "a1")
+    _insertar(m, ORIGEN_A + r"\DCIM1\a2_T.JPG", "pendiente", "a2")
+    _insertar(m, ORIGEN_A + r"\DCIM1\a3_T.JPG", "en_curso", "a3")
+    _insertar(m, B + r"\DCIM1\b1_T.JPG", "pendiente", "b1")
+    _insertar(m, B + r"\DCIM1\b2_T.JPG", "hecho", "b2")
+    return m
+
+
+def test_pendientes_solo_del_origen_actual(tmp_path):
+    m = _mixto(tmp_path)
+    assert len(m.pendientes()) == 2
+    assert [f["clave"] for f in m.pendientes(origen=B)] == ["b1"]
+    assert [f["clave"] for f in m.pendientes(origen=ORIGEN_A)] == ["a2"]
+    assert len(m.pendientes(origen="")) == 2
+    m.cerrar()
+
+
+def test_reabrir_huerfanas_limitado_al_origen(tmp_path):
+    m = _mixto(tmp_path)
+    assert m.reabrir_huerfanas(B) == 0
+    assert m.resumen()["en_curso"] == 1
+    assert m.reabrir_huerfanas(ORIGEN_A) == 1
+    m.cerrar()
+
+
+def test_resumen_para_cancelacion_solo_origen_actual(tmp_path):
+    m = _mixto(tmp_path)
+    r = m.resumen(B)
+    assert r["hecho"] == 1 and r["pendiente"] == 1 and r["fallido"] == 0
+    assert sum(r.values()) == 2
+    assert sum(m.resumen().values()) == 5
+    m.cerrar()
+
+
+def test_cierre_mixto_sin_avisos_por_otro_origen(tmp_path):
+    from atom_core.cierre import separar_problemas, verificar
+    m = _mixto(tmp_path)
+    with m._conexion() as con:
+        con.execute("DELETE FROM imagenes WHERE clave LIKE 'b%'")  # B sin filas: solo A ajena
+    cfg = _cfg_cierre(tmp_path, B)
+    cfg.convert_to_tif = cfg.cropping_rgb = cfg.gen_meta_location = False
+    cfg.calculate_proyected_distance, cfg.flight_height = False, 0
+    errores, avisos = separar_problemas(verificar(m, cfg))
+    assert not [x for x in errores + avisos if "2026_10_07_TUTLY" in x]
+    assert not [x for x in errores if "pendiente" in x or "fallaron" in x]
+    assert not [x for x in avisos if "otro origen" in x]
+    m.cerrar()
+
+
+def test_guard_termico_y_sin_vuelo_ignoran_otro_origen(tmp_path):
+    from atom_core import apply
+    m = _mixto(tmp_path)
+    cfg = _cfg_cierre(tmp_path, B)
+    filas = [f for f in m.todas() if f["estado"] in ("pendiente", "en_curso")
+             and apply._fila_del_origen(f, cfg.input_folder)]
+    assert [f["clave"] for f in filas] == ["b1"]
+    m.cerrar()
+
+
+def test_guard_sin_vuelo_en_raiz_ignora_filas_de_otro_origen(tmp_path):
+    from types import SimpleNamespace
+    import pytest as _pt
+    from atom_core.manifiesto import FilaManifiesto
+    from tests.test_guard_termicas_sin_girar import _Cb, _fake_phases, _fila_t, _manifiesto as _mf
+    raiz = tmp_path / "destino"
+    (raiz / "TERMICA").mkdir(parents=True)
+    (raiz / "TERMICA" / "DJI_0001_T.JPG").write_bytes(b"x")  # homónimo del día 7
+    _mf(raiz / NOMBRE_CARPETA_MANIFIESTO / "manifiesto.db",
+        [_fila_t(raiz, "/dia7/DJI_0001_T.JPG")]).cerrar()
+    fake, _ = _fake_phases(tmp_path)
+    # Run del día 8: la fila del día 7 no cuenta.
+    fake._exigir_sin_vuelo_asignado_en_raiz(
+        SimpleNamespace(output_folder=str(raiz), input_folder="/dia8"), _Cb())
+    # Run del día 7: sí cuenta (sigue siendo error).
+    with _pt.raises(ValueError, match="DJI_0001_T.JPG"):
+        fake._exigir_sin_vuelo_asignado_en_raiz(
+            SimpleNamespace(output_folder=str(raiz), input_folder="/dia7"), _Cb())
+
+
+def test_linea_info_ajenas_neutra(tmp_path):
+    from atom_core.cierre import linea_info_ajenas, separar_problemas, verificar
+    m, _ = _manifiesto_cierre(tmp_path)
+    cfg = _cfg_cierre(tmp_path, B)
+    linea = linea_info_ajenas(m, cfg)
+    assert "7072" in linea and "otra carpeta" in linea and "2026_10_07_TUTLY" in linea
+    assert linea_info_ajenas(m, _cfg_cierre(tmp_path, ORIGEN_A)) is None
+    assert linea_info_ajenas(m, _cfg_cierre(tmp_path, "")) is None
     m.cerrar()
