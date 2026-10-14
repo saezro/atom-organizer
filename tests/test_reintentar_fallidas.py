@@ -134,6 +134,8 @@ def test_fallidas_reintentables_wal_sin_shm_cae_a_select_normal(tmp_path, monkey
     m = Manifiesto(cfg_out / NOMBRE_CARPETA_MANIFIESTO / "manifiesto.db")
     m.crear_esquema()
     _fila_sql(m, 1, "RGB", "fallido", 1, "x")
+    m._conexion().execute("UPDATE imagenes SET ruta_origen = '/mi/origen/1.jpg'")
+    m._conexion().commit()
     m.abrir_ejecucion("/mi/origen/", "t")
     m.cerrar()
     real = sqlite3.connect

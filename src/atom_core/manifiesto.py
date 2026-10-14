@@ -66,10 +66,32 @@ def _clave_origen(ruta: str) -> str:
     return os.path.normcase(os.path.normpath(str(ruta or "")))
 
 
-def _leer_fallidas_y_origenes(ruta: Path, con: sqlite3.Connection) -> tuple[int, set]:
+def _clave_ruta(ruta: str) -> str:
+    """Clave de comparación de rutas robusta a Windows: separadores `\\`/`/`
+    unificados, normalizada y sin distinguir mayúsculas (también en posix, donde
+    `os.path.normcase` no hace nada: el manifiesto puede venir de un PC Windows)."""
+    import posixpath
+    return posixpath.normpath(str(ruta or "").replace("\\", "/")).casefold()
+
+
+def ruta_bajo_origen(ruta: str, origen: str) -> bool:
+    """¿`ruta` está dentro de la carpeta `origen` (o es ella misma)?"""
+    base, r = _clave_ruta(origen), _clave_ruta(ruta)
+    if not str(origen or "").strip():
+        return False
+    return r == base or r.startswith(base.rstrip("/") + "/")
+
+
+def _leer_fallidas_y_origenes(ruta: Path, con: sqlite3.Connection,
+                              origen: str | None = None) -> tuple[int, set]:
     try:
-        fallidas = con.execute(
-            "SELECT COUNT(*) FROM imagenes WHERE estado = 'fallido'").fetchone()[0]
+        if origen is None:
+            fallidas = con.execute(
+                "SELECT COUNT(*) FROM imagenes WHERE estado = 'fallido'").fetchone()[0]
+        else:
+            fallidas = sum(1 for f in con.execute(
+                "SELECT ruta_origen FROM imagenes WHERE estado = 'fallido'")
+                if ruta_bajo_origen(f[0], origen))
         origenes = {_clave_origen(f[0]) for f in con.execute(
             "SELECT origen FROM ejecuciones")}
     finally:
@@ -80,7 +102,9 @@ def _leer_fallidas_y_origenes(ruta: Path, con: sqlite3.Connection) -> tuple[int,
 def fallidas_reintentables(carpeta: str | Path, origen: str) -> dict:
     """Solo lectura: `{"fallidas": N, "mismo_origen": bool}` del destino
     `carpeta`. `mismo_origen` = alguna ejecución del manifiesto se lanzó con
-    ese `origen` (comparado con la ruta normalizada). Sin manifiesto: `{"fallidas": 0,
+    ese `origen` (comparado con la ruta normalizada). `fallidas` cuenta SOLO las
+    filas cuyo `ruta_origen` cuelga de `origen`: las de otros orígenes (p. ej. el
+    día anterior en un destino acumulado) no se reintentan ni se ofrecen. Sin manifiesto: `{"fallidas": 0,
     "mismo_origen": False}`. Si el manifiesto existe pero NO se puede leer (ni con
     `mode=ro` ni con una conexión normal de solo SELECT, p. ej. WAL sin `-shm`),
     se añade `"error"` con el motivo: la UI lo muestra, el botón no desaparece
@@ -91,13 +115,13 @@ def fallidas_reintentables(carpeta: str | Path, origen: str) -> dict:
     ruta = Path(carpeta) / NOMBRE_CARPETA_MANIFIESTO / NOMBRE_FICHERO_MANIFIESTO
     try:
         fallidas, origenes = _leer_fallidas_y_origenes(
-            ruta, sqlite3.connect(f"{ruta.as_uri()}?mode=ro", uri=True, timeout=1.0))
+            ruta, sqlite3.connect(f"{ruta.as_uri()}?mode=ro", uri=True, timeout=1.0), origen)
     except (sqlite3.Error, OSError, ValueError):
         try:
             # WAL sin -shm: `mode=ro` no puede crearlo. Conexión normal, solo SELECT.
             con = sqlite3.connect(str(ruta), timeout=5.0)
             con.execute("PRAGMA query_only=ON")
-            fallidas, origenes = _leer_fallidas_y_origenes(ruta, con)
+            fallidas, origenes = _leer_fallidas_y_origenes(ruta, con, origen)
         except (sqlite3.Error, OSError, ValueError) as exc:
             return dict(nada, error=f"no se pudo leer el manifiesto: {type(exc).__name__}: {exc}")
     return {"fallidas": fallidas, "mismo_origen": _clave_origen(origen) in origenes}
@@ -824,11 +848,37 @@ class Manifiesto:
             )
         return cursor.rowcount
 
-    def reabrir_fallidas(self, ejecucion_id: int | None = None) -> int:
-        """Devuelve a 'pendiente' TODAS las filas 'fallido' (reintento dirigido,
-        sin reescanear el origen). No toca las 'hecho'. Con `ejecucion_id` las
-        adopta para ESTE run (así el cierre no las cuenta dos veces). Devuelve cuántas."""
+    def hay_fallidas_de_origen(self, origen: str) -> bool:
+        return any(ruta_bajo_origen(f["ruta_origen"], origen)
+                   for f in self._conexion().execute(
+                       "SELECT ruta_origen FROM imagenes WHERE estado = 'fallido'"))
+
+    def fallidas_de_otro_origen(self, origen: str) -> list[str]:
+        """`ruta_origen` de las filas 'fallido' que NO cuelgan de `origen`."""
+        return [f["ruta_origen"] for f in self._conexion().execute(
+            "SELECT ruta_origen FROM imagenes WHERE estado = 'fallido' ORDER BY id")
+            if not ruta_bajo_origen(f["ruta_origen"], origen)]
+
+    def reabrir_fallidas(self, ejecucion_id: int | None = None,
+                         origen: str | None = None) -> int:
+        """Devuelve a 'pendiente' las filas 'fallido' (reintento dirigido, sin
+        reescanear el origen). No toca las 'hecho'. Con `origen` SOLO las que
+        cuelgan de esa carpeta (las de otros orígenes se dejan como están). Con
+        `ejecucion_id` las adopta para ESTE run (así el cierre no las cuenta dos
+        veces). Devuelve cuántas."""
         conexion = self._conexion()
+        if origen is not None:
+            ids = [f["id"] for f in conexion.execute(
+                "SELECT id, ruta_origen FROM imagenes WHERE estado = 'fallido'")
+                if ruta_bajo_origen(f["ruta_origen"], origen)]
+            with conexion:
+                for i in range(0, len(ids), 500):
+                    lote = ids[i:i + 500]
+                    conexion.execute(
+                        "UPDATE imagenes SET estado = 'pendiente', motivo_fallo = NULL, "
+                        "ejecucion_id = COALESCE(?, ejecucion_id) WHERE id IN (%s)"
+                        % ",".join("?" * len(lote)), [ejecucion_id, *lote])
+            return len(ids)
         with conexion:
             cursor = conexion.execute(
                 "UPDATE imagenes SET estado = 'pendiente', motivo_fallo = NULL, "

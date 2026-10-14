@@ -811,9 +811,13 @@ def run_task(
                                   f"fallidas: {_info['error']}")
                     return
                 if not (_info["mismo_origen"] and _info["fallidas"]):
-                    emit("error", "No hay imágenes fallidas que reintentar en "
-                                  f"\"{_out}\" para este origen.")
-                    return
+                    # Las fallidas del manifiesto son de otro origen (p. ej. el
+                    # día anterior en un destino acumulado): no se reintentan ni
+                    # bloquean; se organiza el origen actual con una corrida normal.
+                    emit("log", "[reintento] no hay fallidas de ESTE origen en "
+                                f"\"{_out}\": se hace una corrida normal del origen "
+                                "actual (las fallidas de otros orígenes se ignoran).")
+                    params = {**params, "solo_fallidas": False}
             elif _guard_activo and _restos and not _hay_manifiesto:
                 emit("error", "La carpeta de salida no está vacía: "
                               f"\"{_out}\". Vacíala o elige una carpeta vacía "
