@@ -1323,14 +1323,10 @@ class PipelinePhasesMixin:
                     f"{_formatear_duracion(sum(tiempos.values()))} "
                     f"({desglose}).\n")
                 errores_cierre, avisos_cierre = cierre_mod.separar_problemas(problemas)
-                _pref_coh = cierre_mod.PREFIJO_ERROR + cierre_mod.PREFIJO_COHERENCIA
-                _pref_dup = cierre_mod.PREFIJO_ERROR
-                # Coherencia por vuelo y duplicados en SIN_ORDENAR (ruling)
-                # no salen del manifiesto: se suman al n_fallos del marcador.
-                n_coherencia = sum(
-                    1 for p in errores_cierre
-                    if p.startswith(_pref_coh)
-                    or (p.startswith(_pref_dup) and "en SIN_ORDENAR duplican" in p))
+                # Errores que no salen del manifiesto (coherencia, duplicados,
+                # térmicas pendientes, SIN_ORDENAR...) se suman al n_fallos del
+                # marcador: 1 por línea de problema, no por foto.
+                n_coherencia = cierre_mod.contar_errores_extra(errores_cierre)
                 if errores_cierre:
                     # Imágenes fallidas = ERROR, no aviso. "HA HABIDO ERRORES"
                     # no casa con los regex de `organize._scan_errors`: el
