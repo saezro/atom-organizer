@@ -225,4 +225,20 @@ describe('ProgressModal — fallos por fase', () => {
     expect(container.querySelector('.pm-status.ok')).toBeNull()
     expect(screen.getByText(/689 fallos/)).toBeTruthy()
   })
+
+  it('errors con detalle muestra el resumen real de coherencia', () => {
+    renderModal({
+      finished: { ok: true, warn: true, fail: true, kind: 'errors', errors: 1, elapsed: 5,
+        detalle_errores: ['Incoherente PB1_V1: T 81, tiff 81, meta 79, location 79 (meta != T)'] },
+    })
+    expect(screen.getByText(/Incoherente PB1_V1: T 81/)).toBeTruthy()
+  })
+
+  it('warning ya no muestra el texto fijo de SIN_ORDENAR', () => {
+    const { container } = renderModal({
+      finished: { ok: true, warn: true, kind: 'warning', warnings: 1, elapsed: 5, detalle_avisos: [] },
+    })
+    expect(container.querySelector('.pm-status.warn')).not.toBeNull()
+    expect(container.textContent).not.toMatch(/SIN_ORDENAR/)
+  })
 })
