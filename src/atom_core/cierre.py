@@ -127,7 +127,7 @@ def _carpeta_de(ruta: str) -> str:
     return os.path.dirname(ruta)
 
 
-def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None) -> dict[str, str]:
+def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None, recuentos_csv=None) -> dict[str, str]:
     """Emite `meta.csv`/`location.csv` desde el manifiesto.
 
     Antes reabría TODAS las imágenes de salida (≈300 s en MELINESTI). Ahora la
@@ -188,6 +188,7 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
         return f"{fecha}_" if len(fechas_de_vuelo.get((pb, vuelo), [])) > 1 else ""
 
     rutas_emitidas: dict[str, str] = {}
+    ctx = {"clave": None}  # (pb, vuelo) del grupo en curso; None = no contar (RGB_Extra)
 
     horas: dict = {}  # nombre -> hora de captura del manifiesto (del grupo en curso)
 
@@ -229,6 +230,12 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
     def _emitir_df(df, por_nombre, carpeta, nombre_csv, reordenar):
         meta_location_obj.publicar_csv(df, carpeta, nombre_csv, csv_folder, progress_callback,
                                        reordenar=reordenar)
+        if recuentos_csv is not None and ctx["clave"] is not None:
+            tipo_csv = "meta" if nombre_csv.endswith("meta.csv") else (
+                "location" if nombre_csv.endswith("location.csv") else None)
+            if tipo_csv:
+                acum = recuentos_csv.setdefault(ctx["clave"], {"meta": 0, "location": 0})
+                acum[tipo_csv] += len(df)
         if proyecciones is not None and cfg.calculate_proyected_distance:
             for _indice, linea in df.iterrows():
                 proyecciones[por_nombre[linea["Foto"]]["ruta_salida_original"]] = (
@@ -334,6 +341,7 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
                 pn_t = _por_nombre(grupos.get(("TERMICA", pb, vuelo, fecha), []))
                 pn_w = _por_nombre(grupos.get(("RGB", pb, vuelo, fecha), []))
                 meta_location_obj._ts_externo = dict(horas)
+                ctx["clave"] = (pb, vuelo)
                 _emparejado(pn_t, pn_w, _prefijo(pb, vuelo, fecha))
             except Exception as excepcion_vuelo:  # pragma: no cover - salvaguarda
                 progress_callback.emit(
@@ -345,6 +353,7 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
                 horas.clear()
                 pn_x = _por_nombre(filas)
                 meta_location_obj._ts_externo = dict(horas)
+                ctx["clave"] = None
                 _independiente(pn_x, _prefijo(pb, vuelo, fecha) + "location.csv")
             except Exception as excepcion_vuelo:  # pragma: no cover - salvaguarda
                 progress_callback.emit(
@@ -356,18 +365,21 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None)
     return rutas_emitidas
 
 
-def emitir_csvs(manifiesto, cfg, progress_callback, proyecciones: dict | None = None) -> dict[str, str]:
+def emitir_csvs(manifiesto, cfg, progress_callback, proyecciones: dict | None = None,
+                recuentos_csv: dict | None = None) -> dict[str, str]:
     """Emite todos los CSV de salida del run desde el manifiesto.
 
     Devuelve un diccionario `{clave: ruta}` con lo emitido: si
     `cfg.gen_meta_location`, la entrada `"meta_location"` con la carpeta
     `CSVs/` donde quedaron `meta.csv`/`location.csv`. Si `proyecciones` es un
     dict, se rellena con `{ruta_salida_original: (CalculatedDistance,
-    LatitudFoto, LongitudFoto)}` para el índice Excel.
+    LatitudFoto, LongitudFoto)}` para el índice Excel. Si `recuentos_csv` es un dict,
+    se rellena con `{(pb, vuelo): {"meta": n, "location": n}}` (filas realmente publicadas).
     """
     rutas_emitidas: dict[str, str] = {}
     if cfg.gen_meta_location:
-        rutas_emitidas.update(_emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones))
+        rutas_emitidas.update(_emitir_meta_location(
+            manifiesto, cfg, progress_callback, proyecciones, recuentos_csv))
     return rutas_emitidas
 
 
