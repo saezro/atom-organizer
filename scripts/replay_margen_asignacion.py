@@ -72,8 +72,10 @@ def comparar_asignacion(filas, ventanas_con_margen, ventanas_exactas) -> dict:
                             "timestamp": fila["timestamp_exif"], "destino_margen": d_m,
                             "destino_exacto": d_e, "seg_fuera": fuera})
             transiciones[f"{d_m} -> {d_e}"] += 1
+    # fotos GENERALES (origen o destino) que cambian de destino
+    generales = sum(1 for c in cambian if "FOTOS_GENERALES" in (c["destino_margen"], c["destino_exacto"]))
     return {"total": total, "cambian": cambian, "transiciones": dict(transiciones),
-            "en_borde": en_borde, "incoherentes_con_manifiesto": incoherentes}
+            "generales_cambian": generales, "en_borde": en_borde, "incoherentes_con_manifiesto": incoherentes}
 
 
 def _ventanas_de_estadillo(ruta_estadillo, margen, desfase_h, desfase_m):
@@ -120,6 +122,7 @@ def main(argv=None) -> int:
         r = comparar_asignacion(filas, con_margen, exactas)
         print(f"\n== {db}")
         print(f"fotos con hora: {r['total']} | cambian de destino: {len(r['cambian'])} | "
+              f"GENERALES que cambian: {r['generales_cambian']} | "
               f"en borde exacto: {len(r['en_borde'])} | no reproduce manifiesto: {len(r['incoherentes_con_manifiesto'])}")
         for k, n in sorted(r["transiciones"].items()):
             print(f"  {k}: {n}")

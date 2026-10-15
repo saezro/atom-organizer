@@ -55,3 +55,38 @@ def test_etiqueta_generales():
     assert etiqueta_destino({"pb": "GENERALES", "vuelo": "AT141A"}) == "FOTOS_GENERALES"
     assert etiqueta_destino(None) == "SIN_ORDENAR"
     assert etiqueta_destino({"pb": "2", "vuelo": "3"}) == "PB2_V3"
+
+
+def _ventanas_generales(margen):
+    # solo GENERALES (pb="GENERALES", vuelo=<planta>): franja exacta T0+70..T0+130
+    return [_v("GENERALES", "AT141A", T0 + dt.timedelta(seconds=70), T0 + dt.timedelta(seconds=130), margen)]
+
+
+def _fila_gen(nombre, seg):
+    return _fila(nombre, seg, pb="GENERALES", vuelo="AT141A")
+
+
+def test_generales_en_el_margen_cambia_de_destino():
+    filas = [_fila_gen("margen_gen.jpg", 65)]                     # 5 s antes de la franja exacta
+    r = comparar_asignacion(filas, _ventanas_generales(30), _exactas(_ventanas_generales(30)))
+    assert r["transiciones"] == {"FOTOS_GENERALES -> SIN_ORDENAR": 1}
+    assert r["cambian"][0]["destino_margen"] == "FOTOS_GENERALES"
+    assert r["cambian"][0]["seg_fuera"] == 5
+    assert r["generales_cambian"] == 1
+    assert r["incoherentes_con_manifiesto"] == []                 # _etiqueta_manifiesto reproduce GENERALES
+
+
+def test_generales_dentro_de_franja_exacta_no_cambia():
+    filas = [_fila_gen("dentro_gen.jpg", 100)]
+    r = comparar_asignacion(filas, _ventanas_generales(30), _exactas(_ventanas_generales(30)))
+    assert r["cambian"] == [] and r["generales_cambian"] == 0
+    assert r["incoherentes_con_manifiesto"] == []
+
+
+def test_generales_solapada_con_pb_gana_en_franja_exacta():
+    # PB1 con margen llega a T0+90; GENERALES exacta desde T0+70: la foto en +80 es GENERALES en ambos casos
+    vent = _ventanas(30) + _ventanas_generales(30)
+    filas = [_fila_gen("solape.jpg", 80)]
+    r = comparar_asignacion(filas, vent, _exactas(vent))
+    assert r["cambian"] == [] and r["generales_cambian"] == 0
+    assert r["incoherentes_con_manifiesto"] == []
