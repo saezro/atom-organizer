@@ -167,3 +167,19 @@ def test_gen_folder_struct_solape_lo_gana_el_primer_vuelo_del_estadillo(tmp_path
 
     assert os.listdir(root / "RGB" / "PB9" / "PB9_V2") == ["solapada.jpg"]
     assert os.listdir(root / "RGB" / "PB3" / "PB3_V1") == []
+
+
+def test_gen_folder_struct_ignora_seconds_range_para_asignar(tmp_path):
+    root = tmp_path / "destino"
+    _destino_plano(root, ["dentro.jpg", "justo_fuera.jpg"])
+    estadillo = _estadillo(tmp_path / "est.csv", [("1", "1", "2026:03:17", "10:00:00", "10:05:00")])
+    gsf = _make_gsf(tmp_path)
+    gsf.total_images_number = 4
+    _con_timestamps(gsf, {"dentro.jpg": "10:02:00", "justo_fuera.jpg": "10:05:10"})
+    cb = FakeSignal()
+
+    gsf.gen_folder_struct(estadillo, str(root), str(root), True, 30, 0, 0, cb, cb)
+
+    for sub in ("RGB", "TERMICA"):
+        assert os.listdir(root / sub / "PB1" / "PB1_V1") == ["dentro.jpg"]
+        assert "justo_fuera.jpg" in os.listdir(root / sub)      # sigue suelta: irá a SIN_ORDENAR

@@ -12,7 +12,7 @@ import pytest
 
 import pipeline
 from atom_core import indice
-from atom_core.indice import _asignar_vuelo, _avisar_asignadas_por_margen, _ventanas_por_vuelo
+from atom_core.indice import _asignar_vuelo, _ventanas_por_vuelo
 
 FIX = os.path.join(os.path.dirname(__file__), "fixtures", "estadillos")
 COLS = {"PB": "PB", "Vuelo": "Vuelo", "Fecha": "Fecha", "Hora_de_inicio": "Hora_de_inicio",
@@ -56,24 +56,7 @@ def test_foto_en_ventana_generales_va_a_generales(planta, hora_generales, hora_p
 @pytest.mark.parametrize("planta,hora_hueco", [("AT141A", "13:51:16"), ("AT141B", "13:43:10")])
 def test_foto_en_el_hueco_no_se_asigna_en_silencio(planta, hora_hueco):
     ventanas, _ = _ventanas(planta)
-    dato = _dato(hora_hueco)
-    ventana = _asignar_vuelo(dato, ventanas)
-    mensajes = []
-    cb = types.SimpleNamespace(emit=lambda p=None, *a, **k: mensajes.append(p))
-    _avisar_asignadas_por_margen([(dato, ventana)], cb)
-    assert any("AVISO" in m and "margen" in m for m in mensajes), (
-        "Una foto fuera de toda franja exacta asignada por el margen debe avisar")
-
-
-def test_foto_dentro_de_su_franja_exacta_no_avisa():
-    ventanas, _ = _ventanas("AT141A")
-    for hora in ("13:50:00", "13:52:00"):
-        dato = _dato(hora)
-        mensajes = []
-        _avisar_asignadas_por_margen(
-            [(dato, _asignar_vuelo(dato, ventanas))],
-            types.SimpleNamespace(emit=lambda p=None, *a, **k: mensajes.append(p)))
-        assert mensajes == []
+    assert _asignar_vuelo(_dato(hora_hueco), ventanas) is None
 
 
 def test_sin_margen_la_foto_del_hueco_queda_sin_asignar():
@@ -144,3 +127,53 @@ def test_cierre_emite_csv_de_generales_aparte_del_pb(tmp_path, make_dji_jpeg, lo
     assert "DJI_0036_W" in leer("FOTOS_GENERALES_location.csv")
     assert "DJI_0036" not in leer("PB1_V1_meta.csv") + leer("PB1_V1_location.csv")
     assert "DJI_0001" not in leer("FOTOS_GENERALES_meta.csv") + leer("FOTOS_GENERALES_location.csv")
+
+
+def test_foto_10s_fuera_del_fin_del_pb_queda_sin_asignar_aunque_el_margen_sea_30():
+    t0 = dt.datetime(2026, 10, 6, 10, 0, 0)
+    ventanas = [{"pb": "1", "vuelo": "1", "inicio": t0, "fin": t0 + dt.timedelta(seconds=60),
+                 "inicio_exacto": t0, "fin_exacto": t0 + dt.timedelta(seconds=60)}]
+    assert indice.elegir_ventana(t0 + dt.timedelta(seconds=70), ventanas) is None
+    assert indice.elegir_ventana(t0 + dt.timedelta(seconds=30), ventanas)["pb"] == "1"
+
+
+def test_ventanas_por_vuelo_ignoran_seconds_range():
+    con30, _ = _ventanas("AT141A", margen=30.0)
+    con0, _ = _ventanas("AT141A", margen=0.0)
+    assert [(v["inicio"], v["fin"]) for v in con30] == [(v["inicio"], v["fin"]) for v in con0]
+    assert all(v["inicio"] == v["inicio_exacto"] and v["fin"] == v["fin_exacto"] for v in con30)
+
+
+def test_hueco_con_margen_30_configurado_queda_sin_asignar():
+    ventanas, _ = _ventanas("AT141A", margen=30.0)
+    assert _asignar_vuelo(_dato("13:51:16"), ventanas) is None
+
+
+def test_foto_exactamente_en_el_segundo_de_inicio_entra_borde_inclusivo():
+    ventanas, _ = _ventanas("AT141A", margen=30.0)
+    pb = next(v for v in ventanas if v["pb"] == "1")
+    assert indice.elegir_ventana(pb["inicio_exacto"], ventanas)["pb"] == "1"
+
+
+def test_foto_exactamente_en_el_segundo_de_fin_entra_borde_inclusivo():
+    ventanas, _ = _ventanas("AT141A", margen=30.0)
+    pb = next(v for v in ventanas if v["pb"] == "1")
+    assert indice.elegir_ventana(pb["fin_exacto"], ventanas)["pb"] == "1"
+
+
+def test_segundo_compartido_entre_dos_ventanas_gana_generales_si_es_generales():
+    t = dt.datetime(2026, 10, 6, 10, 0, 10)
+    pb = {"pb": "1", "vuelo": "1", "inicio": t - dt.timedelta(seconds=60), "fin": t}
+    gen = {"pb": "GENERALES", "vuelo": "1", "inicio": t, "fin": t + dt.timedelta(seconds=60)}
+    assert indice.elegir_ventana(t, [pb, gen])["pb"] == "GENERALES"
+    # Sin GENERALES, gana la primera en orden del estadillo.
+    pb2 = {"pb": "2", "vuelo": "1", "inicio": t, "fin": t + dt.timedelta(seconds=60)}
+    assert indice.elegir_ventana(t, [pb, pb2])["pb"] == "1"
+
+
+def test_empate_en_el_borde_compartido_pb_contiguos_gana_el_primero_del_estadillo():
+    t = dt.datetime(2026, 10, 6, 10, 1, 0)
+    a = {"pb": "1", "vuelo": "1", "inicio": t - dt.timedelta(seconds=60), "fin": t}
+    b = {"pb": "2", "vuelo": "1", "inicio": t, "fin": t + dt.timedelta(seconds=60)}
+    assert indice.elegir_ventana(t, [a, b])["pb"] == "1"
+    assert indice.elegir_ventana(t, [b, a])["pb"] == "2"

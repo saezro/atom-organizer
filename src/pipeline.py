@@ -1325,8 +1325,7 @@ class GenStructFolder:
         - input_folder - carpeta de entrada.
         - output_folder - carpeta de salida.
         - organize_images - si está a True, envía cada imagen a su directorio PVX_VX correspondiente. A False, solo genera las carpetas.
-        - seconds_range - Variable para controlar el margen de segundos que se da a la hora de inicio de vuelo y a la hora final. Se resta estos segundos
-        a la hora de inicio marcada por el estadillo y se suman estos segundos a la hora final.
+        - seconds_range - Ignorado para asignar fotos desde 3.4.141 (franja exacta); se conserva por compatibilidad de firma.
         - desfase_horas - Variable que indica el posible desfase entre fecha del estadillo y la fecha de las imágenes medido en horas. Desfase = hora_imagen - hora_estadillo.
         Este valor se le suma a la hora del estadillo para equipararlo a la hora de la imagen. Puede ser un valor negativo si la hora de la imagen va por detrás de la del estadillo.
         - desfase_minutos - Variable que indica el posible desfase entre fecha del estadillo y la fecha de las imágenes medido en minutos. Desfase = hora_imagen - hora_estadillo.
@@ -1484,11 +1483,9 @@ class GenStructFolder:
                         if extra_suffix:
                             destinos["RGB_extra"] = carpeta_generales
                         inicio, fin = self.ventana_horaria_vuelo(
-                            fecha_estadillo, horaInicio, horaFinal, seconds_range,
-                            desfase_horas, desfase_minutos)
-                        inicio_exacto, fin_exacto = self.ventana_horaria_vuelo(
                             fecha_estadillo, horaInicio, horaFinal, 0,
                             desfase_horas, desfase_minutos)
+                        inicio_exacto, fin_exacto = inicio, fin
                         ventanas.append({"inicio": inicio, "fin": fin, "destinos": destinos,
                                          "inicio_exacto": inicio_exacto, "fin_exacto": fin_exacto,
                                          "generales": True})
@@ -1578,7 +1575,7 @@ class GenStructFolder:
                     if extra_suffix:
                         destinos["RGB_extra"] = pathRGB_Extra_PB_vuelo
                     inicio, fin = self.ventana_horaria_vuelo(
-                        fecha_estadillo, horaInicio, horaFinal, seconds_range,
+                        fecha_estadillo, horaInicio, horaFinal, 0,
                         desfase_horas, desfase_minutos)
                     ventanas.append({"inicio": inicio, "fin": fin, "destinos": destinos})
 
@@ -1618,8 +1615,7 @@ class GenStructFolder:
         """
         from rjpeg_a_tiff import EXTS_IMAGEN  # import local: evita ciclo con rjpeg_a_tiff, que hace `import pipeline`
 
-        from atom_core.indice import elegir_ventana, _en_ventana_exacta  # diferido: indice importa utils -> pipeline
-        por_margen = 0
+        from atom_core.indice import elegir_ventana  # diferido: indice importa utils -> pipeline
         subcarpetas = ["TERMICA", "RGB"] + (["RGB_extra"] if extra_suffix else [])
         etiquetas = {"TERMICA": "Térmicas", "RGB": "RGB", "RGB_extra": "RGB Extra"}
 
@@ -1675,8 +1671,6 @@ class GenStructFolder:
                 if ventana_img is None:
                     continue
                 destino = ventana_img["destinos"][sub]
-                if not _en_ventana_exacta(fecha_hora_imagen, ventana_img):
-                    por_margen += 1
                 movimientos.append((origen, almacen.unir(destino, imagen)))
                 por_destino[destino] = por_destino.get(destino, 0) + 1
 
@@ -1685,12 +1679,6 @@ class GenStructFolder:
                     cuantas, etiquetas[sub], destino)
                 self.organizer_logger.logger.info(mensaje)
                 progress_callback.emit(mensaje)
-
-        if por_margen:
-            progress_callback.emit(
-                f"\nAVISO: {por_margen} foto(s) fuera de la franja horaria exacta de su vuelo, "
-                "asignadas solo por el margen de tolerancia (hueco entre vuelos del estadillo). "
-                "Revisa que son del vuelo correcto.\n")
 
         # Contrato con la etapa final (atom_core/esperado): lo que esta tarea se
         # compromete a colocar, anotado ANTES de mover.
