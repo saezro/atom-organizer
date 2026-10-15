@@ -175,3 +175,29 @@ def test_error_en_un_vuelo_no_tumba_los_demas(tmp_path, make_dji_jpeg, logger, m
     # El vuelo bueno (PB1/V1) tiene que haber salido pese al error en PB2/V1.
     assert (raiz / "RGB" / "PB1" / "PB1_V1" / "PB1_V1_location.csv").exists()
     assert (raiz / "TERMICA" / "PB1" / "PB1_V1" / "PB1_V1_meta.csv").exists()
+
+
+def test_recuentos_csv_cuentan_filas_realmente_emitidas(tmp_path, make_dji_jpeg, logger):
+    raiz = tmp_path / "d"
+    _arbol(raiz, make_dji_jpeg)
+    manifiesto = _manifiesto(raiz, logger, con_metadatos=True)
+    recuentos = {}
+    cierre._emitir_meta_location(manifiesto, _cfg(raiz, False), _Cb(), None, recuentos)
+    # 2 pares T/W (0001 y 0002); 0003_W sin pareja queda fuera; RGB_Extra no cuenta.
+    assert recuentos == {("1", "1"): {"meta": 2, "location": 2}}
+
+
+def test_recuentos_csv_se_suman_entre_fechas(tmp_path, make_dji_jpeg, logger):
+    raiz = tmp_path / "d"
+    _arbol(raiz, make_dji_jpeg)
+    manifiesto = _manifiesto(raiz, logger, con_metadatos=True)
+    # Segunda fecha para el mismo (pb, vuelo): filas T/W con timestamp de otro día.
+    for fila in manifiesto.todas():
+        if fila["nombre_original"].endswith(("0002_T.JPG", "0002_W.JPG")):
+            manifiesto._actualizar(fila["id"], timestamp_exif="2026-01-16T10:00:05")
+        else:
+            manifiesto._actualizar(fila["id"], timestamp_exif="2026-01-15T10:00:00")
+    recuentos = {}
+    cierre._emitir_meta_location(manifiesto, _cfg(raiz, False), _Cb(), None, recuentos)
+    assert len(list((raiz / "CSVs").glob("*_meta.csv"))) == 2
+    assert recuentos[("1", "1")] == {"meta": 2, "location": 2}  # 1 fila por fecha, sumadas
