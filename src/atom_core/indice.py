@@ -1085,14 +1085,12 @@ def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
                 f"\nWARNING: No existe hora final en PB {pb} y vuelo {vuelo}\n")
             continue
 
+        # Franja EXACTA del estadillo (+ desfase): ya no hay margen `seconds_range`
+        # (3.4.141). Una foto fuera de toda franja va a SIN_ORDENAR (ERROR).
         inicio, fin = pipeline.ventana_horaria_vuelo(
-            fecha, hora_inicio, hora_final, cfg.seconds_range,
-            cfg.mismatch_hours, cfg.mismatch_minutes)
-        # Ventana EXACTA del estadillo (sin el margen `seconds_range`): decide quién
-        # gana cuando el margen de un vuelo invade a otro (ver `_asignar_vuelo`).
-        inicio_exacto, fin_exacto = pipeline.ventana_horaria_vuelo(
             fecha, hora_inicio, hora_final, 0,
             cfg.mismatch_hours, cfg.mismatch_minutes)
+        inicio_exacto, fin_exacto = inicio, fin
 
         equipo = None
         if col_equipo is not None and col_equipo in estadillo_df.columns:
@@ -1193,31 +1191,29 @@ def _es_ventana_generales(ventana: dict) -> bool:
 
 
 def _en_ventana_exacta(timestamp, ventana: dict) -> bool:
-    """¿`timestamp` cae ESTRICTAMENTE dentro de la ventana del estadillo, sin el
-    margen `seconds_range`? Sin `inicio_exacto/fin_exacto` (ventana construida a
-    mano) se usa la ventana con margen."""
+    """¿`timestamp` cae en la franja EXACTA del estadillo (bordes INCLUSIVOS,
+    `inicio <= ts <= fin`)? Sin `inicio_exacto/fin_exacto` (ventana construida a
+    mano) se usa `inicio/fin`."""
     inicio = ventana.get("inicio_exacto", ventana["inicio"])
     fin = ventana.get("fin_exacto", ventana["fin"])
-    return inicio < timestamp < fin
+    return inicio <= timestamp <= fin
 
 
 def elegir_ventana(timestamp, ventanas: list[dict]) -> dict | None:
-    """Ventana que reclama un timestamp. Regla única del índice y del motor legado:
+    """Ventana que reclama un timestamp. Regla única del índice y del motor legado,
+    sin margen (franja exacta, bordes inclusivos `inicio <= ts <= fin`):
 
-    1. Una ventana GENERALES cuya franja EXACTA contiene el timestamp gana siempre.
-       El margen `seconds_range` (30 s por defecto) de un PB se come el hueco que
-       separa su fin del inicio de GENERALES (en AT141A: 13:51:14 vs 13:51:20), y
-       como el orden del estadillo desempata, las fotos GENERALES acababan en el PB
-       anterior (PB1_V1, unassigned=0) sin crear FOTOS_GENERALES.
-    2. Si no, la primera ventana (orden del estadillo) cuyo `(inicio, fin)` con
-       margen la contiene estrictamente.
+    1. Una ventana GENERALES cuya franja contiene el timestamp gana siempre
+       (prioridad sobre PB en solapes, incluido el segundo compartido).
+    2. Si no, la primera ventana (orden del estadillo) cuya `(inicio, fin)` la
+       contiene.
 
-    `None` si ninguna la reclama."""
+    `None` si ninguna la reclama (hueco entre vuelos: SIN_ORDENAR)."""
     for ventana in ventanas:
         if _es_ventana_generales(ventana) and _en_ventana_exacta(timestamp, ventana):
             return ventana
     for ventana in ventanas:
-        if ventana["inicio"] < timestamp < ventana["fin"]:
+        if ventana["inicio"] <= timestamp <= ventana["fin"]:
             return ventana
     return None
 
@@ -1235,26 +1231,6 @@ def _asignar_vuelo(dato: _MetadatosImagen, ventanas: list[dict]) -> dict | None:
     if dato.timestamp is None:
         return None
     return elegir_ventana(dato.timestamp, ventanas)
-
-
-def _avisar_asignadas_por_margen(asignaciones: list[tuple[_MetadatosImagen, dict | None]],
-                                 progress_callback) -> None:
-    """AVISO visible (sin fallback silencioso) de las fotos que NO caen en la franja
-    exacta de su vuelo y solo entran por el margen `seconds_range`: están en el
-    hueco entre vuelos (o en el solape de dos márgenes) y se asignan por tolerancia."""
-    por_vuelo: dict[str, int] = {}
-    for dato, ventana in asignaciones:
-        if ventana is None or dato.timestamp is None or _en_ventana_exacta(dato.timestamp, ventana):
-            continue
-        etiqueta = (f"{NOMBRE_CARPETA_GENERALES}" if _es_ventana_generales(ventana)
-                    else f"PB{ventana['pb']}/V{ventana['vuelo']}")
-        por_vuelo[etiqueta] = por_vuelo.get(etiqueta, 0) + 1
-    if por_vuelo:
-        detalle = ", ".join(f"{k}: {n}" for k, n in sorted(por_vuelo.items()))
-        progress_callback.emit(
-            f"\nAVISO: {sum(por_vuelo.values())} foto(s) fuera de la franja horaria exacta de su "
-            f"vuelo, asignadas solo por el margen de tolerancia (hueco entre vuelos del "
-            f"estadillo). Revisa que son del vuelo correcto. Por vuelo: {detalle}.\n")
 
 
 def _bajo_carpeta(directorio: str, ruta: str) -> bool:
@@ -2138,7 +2114,6 @@ def construir_indice(
         emisor.progreso(n_asignadas, len(metadatos))
     emisor.progreso(len(metadatos), len(metadatos), forzar=True)
     asignaciones = _heredar_vuelo_por_pareja(asignaciones, progress_callback)
-    _avisar_asignadas_por_margen(asignaciones, progress_callback)
     vuelos_equipo_discrepa = _avisar_equipo(asignaciones, progress_callback)
     reparto_vuelos: dict = {}
     votos_giro: dict = {}

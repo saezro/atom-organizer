@@ -228,12 +228,9 @@ def test_imagen_fuera_de_toda_ventana_queda_unassigned(tmp_path):
     manifiesto.cerrar()
 
 
-def test_la_comparacion_de_ventana_es_estricta(tmp_path):
+def test_la_comparacion_de_ventana_es_inclusiva(tmp_path):
     """Una imagen con timestamp EXACTAMENTE igual al inicio de la ventana
-    queda fuera, igual que `inicio < fecha_hora_imagen < fin` en
-    `obtenerListaImagenesVuelo` (pipeline.py:1498). Una comparación con `<=`
-    aquí sería una diferencia silenciosa de una imagen frente al motor
-    viejo, invisible hasta que alguien cuenta mal un vuelo en producción."""
+    entra (borde inclusivo `inicio <= ts <= fin`, decisión 3.4.141)."""
     _escribir_estadillo(tmp_path / "estadillo.csv", [
         ("1", "1", "2024:06:01", "10:00:00", "10:10:00"),
     ])
@@ -250,7 +247,7 @@ def test_la_comparacion_de_ventana_es_estricta(tmp_path):
     construir_indice(cfg, pipeline, exif, manifiesto, _Signal(), _Signal(), _Signal())
 
     fila = manifiesto.todas()[0]
-    assert fila["unassigned"] == 1
+    assert fila["unassigned"] == 0
     manifiesto.cerrar()
 
 

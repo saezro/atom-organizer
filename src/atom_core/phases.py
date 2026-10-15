@@ -429,8 +429,8 @@ class PipelinePhasesMixin:
             msg = (f"Ninguna de las {apartadas} imágenes encaja en la franja horaria de ningún "
                    f"vuelo del estadillo: todas se han apartado a SIN_ORDENAR y no queda nada que "
                    f"procesar. Revisa que el estadillo sea el de este vuelo (fecha correcta) y el "
-                   f"desfase horario configurado (ahora: {cfg.mismatch_hours} h, {cfg.mismatch_minutes} min; "
-                   f"margen {cfg.seconds_range} s). Las imágenes NO se han perdido: están en "
+                   f"desfase horario configurado (ahora: {cfg.mismatch_hours} h, {cfg.mismatch_minutes} min). "
+                   f"Las imágenes NO se han perdido: están en "
                    f"{os.path.join(cfg.output_folder, 'SIN_ORDENAR')}.")
             progress_callback.emit("ERROR: " + msg + "\n")
             self.organizer_logger_obj.logger.info(msg)
