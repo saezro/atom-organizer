@@ -115,3 +115,73 @@ def test_escribir_indice_falla_sin_openpyxl_si_no_se_importa_al_cargar_phases(mo
             monkeypatch.delitem(sys.modules, nombre, raising=False)
 
     import atom_core.phases  # noqa: F401 - el import en sí es la comprobación
+
+
+def _vuelo_giro(pb="1", vuelo="1", sufijo=""):
+    return {"pb": pb, "vuelo": vuelo, "sufijo": sufijo, "angulo": 90, "n_total": 4, "n_90": 4,
+            "n_270": 0, "n_0": 0, "pct_90": 100.0, "pct_270": 0.0, "pct_0": 0.0,
+            "pct_ganadora": 100.0, "estado": "ok", "motivo": None, "version_algoritmo": "v"}
+
+
+def _rec(pb, vuelo, estado="OK", motivo=""):
+    return {"pb": pb, "vuelo": vuelo, "n_T": 3, "n_tiff": 3, "n_W": 3, "n_crop": 3,
+            "filas_meta": 3, "filas_location": 3, "estado": estado, "motivo": motivo}
+
+
+def test_filas_hoja_vuelos_incluye_vuelo_sin_giro_con_giro_vacio():
+    filas = indice_excel.filas_hoja_vuelos(
+        {("1", "1", None): _vuelo_giro()},
+        {("1", "1"): _rec("1", "1"), ("2", "1"): _rec("2", "1", "ERROR", "meta != T")})
+    assert [f[:2] for f in filas] == [["1", "1"], ["2", "1"]]
+    assert filas[1][3] is None and filas[1][4] is None        # Angulo, NTotal vacíos
+    cabecera = list(indice_excel.COLUMNAS_VUELOS)
+    assert filas[1][cabecera.index("EstadoCoherencia")] == "ERROR"
+    assert filas[1][cabecera.index("MotivoCoherencia")] == "meta != T"
+    assert filas[0][cabecera.index("NT")] == 3 and filas[0][cabecera.index("FilasMeta")] == 3
+
+
+def test_hoja_vuelos_tabla_nativa_y_colores(tmp_path):
+    m, cfg, orig = _preparar(tmp_path)
+    recuentos = {("1", "1"): _rec("1", "1"), ("2", "1"): _rec("2", "1", "ERROR", "T 3, meta 2")}
+    ruta = indice_excel.escribir_indice(m, cfg, {orig: (0.0, 37.1, -5.6)}, _Cb(), recuentos=recuentos)
+
+    ws = load_workbook(ruta)["Vuelos"]
+    assert "TablaVuelos" in ws.tables
+    tabla = ws.tables["TablaVuelos"]
+    assert tabla.ref == f"A1:{ws.cell(row=1, column=len(indice_excel.COLUMNAS_VUELOS)).column_letter}{ws.max_row}"
+    assert [c.name for c in tabla.tableColumns] == list(indice_excel.COLUMNAS_VUELOS)
+    col = list(indice_excel.COLUMNAS_VUELOS).index("EstadoCoherencia") + 1
+    celdas = {ws.cell(row=r, column=col).value: ws.cell(row=r, column=col) for r in (2, 3)}
+    assert celdas["OK"].fill.fgColor.rgb.endswith("C6EFCE")
+    assert celdas["ERROR"].fill.fgColor.rgb.endswith("FFC7CE")
+    assert ws.cell(row=1, column=1).fill.fgColor.rgb.endswith("EE763C")
+
+
+def test_hoja_vuelos_excluido_es_neutro(tmp_path):
+    m, cfg, orig = _preparar(tmp_path)
+    recuentos = {("1", "1"): _rec("1", "1", "EXCLUIDO", "FOTOS_GENERALES fuera de la regla")}
+    ruta = indice_excel.escribir_indice(m, cfg, {orig: (0.0, 37.1, -5.6)}, _Cb(), recuentos=recuentos)
+    ws = load_workbook(ruta)["Vuelos"]
+    col = list(indice_excel.COLUMNAS_VUELOS).index("EstadoCoherencia") + 1
+    celda = ws.cell(row=2, column=col)
+    assert celda.value == "EXCLUIDO"
+    assert not celda.fill.fgColor.rgb.endswith(("C6EFCE", "FFC7CE"))
+    assert celda.fill.fill_type is None
+
+
+def test_hoja_vuelos_sin_recuentos_calcula_desde_el_manifiesto(tmp_path):
+    m, cfg, orig = _preparar(tmp_path)          # 1 RGB hecha en PB1/V1
+    ruta = indice_excel.escribir_indice(m, cfg, {orig: (0.0, 37.1, -5.6)}, _Cb())
+    ws = load_workbook(ruta)["Vuelos"]
+    cab = [c.value for c in ws[1]]
+    fila = {k: v for k, v in zip(cab, [c.value for c in ws[2]])}
+    assert fila["PB"] == "1" and fila["NW"] == 1 and fila["EstadoCoherencia"] == "OK"
+    assert fila["FilasMeta"] is None
+
+
+def test_hoja_vuelos_sin_ningun_vuelo_solo_cabecera_y_tabla_valida(tmp_path):
+    m, cfg, orig = _preparar(tmp_path)
+    ruta = indice_excel.escribir_indice(m, cfg, {}, _Cb(), recuentos={})
+    ws = load_workbook(ruta)["Vuelos"]
+    assert [c.value for c in ws[1]] == list(indice_excel.COLUMNAS_VUELOS)
+    assert "TablaVuelos" in ws.tables

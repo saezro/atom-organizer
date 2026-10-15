@@ -1308,7 +1308,9 @@ class PipelinePhasesMixin:
                 problemas = cierre_mod.verificar(manifiesto, cfg, csv_para_verificar)
                 # El índice Excel es informativo: si falla, se avisa y el cierre sigue.
                 try:
-                    ruta_indice = indice_excel.escribir_indice(manifiesto, cfg, proyecciones, progress_callback)
+                    ruta_indice = indice_excel.escribir_indice(
+                        manifiesto, cfg, proyecciones, progress_callback,
+                        recuentos=cierre_mod.calcular_recuentos(manifiesto, cfg, csv_para_verificar))
                     progress_callback.emit(f"\nÍndice de la planta: {ruta_indice}\n")
                 except Exception as excepcion:  # noqa: BLE001
                     progress_callback.emit(f"\nAVISO: no se pudo generar el índice Excel: {excepcion}\n")

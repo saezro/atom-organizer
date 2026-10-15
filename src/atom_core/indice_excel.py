@@ -27,7 +27,10 @@ COLUMNAS = (
 COLUMNAS_VUELOS = (
     "PB", "Vuelo", "Sufijo", "Angulo", "NTotal", "N90", "N270", "N0",
     "Pct90", "Pct270", "Pct0", "PctGanadora", "Estado", "Motivo", "VersionAlgoritmo",
+    "NT", "NTiff", "NW", "NCrop", "FilasMeta", "FilasLocation",
+    "EstadoCoherencia", "MotivoCoherencia",
 )
+_N_GIRO = 15  # las primeras columnas de COLUMNAS_VUELOS que vienen del consenso de giro
 _CLAVES_VUELOS = ("pb", "vuelo", "sufijo", "angulo", "n_total", "n_90", "n_270", "n_0",
                   "pct_90", "pct_270", "pct_0", "pct_ganadora", "estado", "motivo",
                   "version_algoritmo")
@@ -98,7 +101,27 @@ def _filas(manifiesto, cfg, proyecciones):
         )
 
 
-def escribir_indice(manifiesto, cfg, proyecciones: dict, progress_callback) -> str:
+def filas_hoja_vuelos(vuelos_giro: dict, recuentos: dict) -> list[list]:
+    """Una fila por vuelo del manifiesto (con o sin consenso de giro)."""
+    giro_por_vuelo: dict = {}
+    for (pb, vuelo, sufijo), v in vuelos_giro.items():
+        giro_por_vuelo.setdefault((pb, vuelo), []).append((sufijo or "", v))
+    filas = []
+    for clave in sorted(set(giro_por_vuelo) | set(recuentos)):
+        r = recuentos.get(clave, {})
+        cola = [r.get("n_T"), r.get("n_tiff"), r.get("n_W"), r.get("n_crop"),
+                r.get("filas_meta"), r.get("filas_location"),
+                r.get("estado"), r.get("motivo") or None]
+        for sufijo, v in sorted(giro_por_vuelo.get(clave, [("", None)]), key=lambda t: t[0]):
+            if v is None:
+                giro = [clave[0], clave[1]] + [None] * (_N_GIRO - 2)
+            else:
+                giro = [v[c] if c != "sufijo" else (v[c] or None) for c in _CLAVES_VUELOS]
+            filas.append(giro + cola)
+    return filas
+
+
+def escribir_indice(manifiesto, cfg, proyecciones: dict, progress_callback, recuentos=None) -> str:
     """Escribe el índice y devuelve la ruta final. Si el fichero está abierto
     (Excel en Windows bloquea el `.xlsx`), escribe al lado con marca de hora y
     avisa: un índice bloqueado no puede tumbar el cierre."""
@@ -114,14 +137,48 @@ def escribir_indice(manifiesto, cfg, proyecciones: dict, progress_callback) -> s
         hoja.append(list(fila))
         n_filas += 1
 
+    if recuentos is None:
+        from atom_core.cierre import calcular_recuentos  # noqa: PLC0415 (perezoso: cierre arrastra utils)
+        recuentos = calcular_recuentos(manifiesto, cfg, None)
+    from openpyxl.cell import WriteOnlyCell  # noqa: PLC0415
+    from openpyxl.styles import Font, PatternFill  # noqa: PLC0415
+    from openpyxl.worksheet.table import Table, TableStyleInfo  # noqa: PLC0415
+    import warnings  # noqa: PLC0415
+
     hoja_vuelos = libro.create_sheet("Vuelos")
     hoja_vuelos.freeze_panes = "A2"
-    hoja_vuelos.append(list(COLUMNAS_VUELOS))
+
+    def _celda(valor, fondo=None, color=None, negrita=False):
+        c = WriteOnlyCell(hoja_vuelos, value=valor)
+        if fondo:
+            c.fill = PatternFill("solid", fgColor=fondo)
+        if color or negrita:
+            c.font = Font(color=color, bold=negrita)
+        return c
+
+    hoja_vuelos.append([_celda(n, "EE763C", "FFFFFF", True) for n in COLUMNAS_VUELOS])
+    col_estado = COLUMNAS_VUELOS.index("EstadoCoherencia")
     n_vuelos = 1
-    for v in manifiesto.vuelos().values():
-        hoja_vuelos.append([v[c] if c != "sufijo" else (v[c] or None) for c in _CLAVES_VUELOS])
+    for fila in filas_hoja_vuelos(manifiesto.vuelos(), recuentos):
+        celdas = []
+        for i, v in enumerate(fila):
+            if i == col_estado and v == "OK":
+                celdas.append(_celda(v, "C6EFCE", "006100"))
+            elif i == col_estado and v == "ERROR":
+                celdas.append(_celda(v, "FFC7CE", "9C0006"))
+            else:  # incluye EXCLUIDO: neutro, sin relleno
+                celdas.append(_celda(v))
+        hoja_vuelos.append(celdas)
         n_vuelos += 1
-    hoja_vuelos.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNAS_VUELOS))}{n_vuelos}"
+    tabla = Table(displayName="TablaVuelos",
+                  ref=f"A1:{get_column_letter(len(COLUMNAS_VUELOS))}{max(n_vuelos, 2)}")
+    tabla.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
+    tabla._initialise_columns()
+    for columna, nombre in zip(tabla.tableColumns, COLUMNAS_VUELOS):
+        columna.name = nombre
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # openpyxl avisa SIEMPRE en write-only aunque las columnas estén puestas
+        hoja_vuelos.add_table(tabla)
 
     # Cabecera congelada + autofiltro (spec). `write_only=True` sí soporta
     # `auto_filter.ref` (openpyxl 3.1.5) mientras se fije antes de `save`.
