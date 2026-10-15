@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { formatDuracion } from './formato.js'
+import { textoTerminadoConProblemas } from './textoCierre.js'
 
 // Modal de progreso por fases. Reemplaza la lluvia de "." por un checklist
 // estructurado con el nombre de la planta, la fase en curso + barra %, y el
@@ -343,9 +344,7 @@ export default function ProgressModal({
               : !finished.ok
               ? `✗ ${finished.msg || 'Error'}`
               : finished.warn
-                ? finished.kind === 'warning'
-                  ? `⚠ Terminado con avisos: imágenes fuera del estadillo en SIN_ORDENAR${finished.elapsed != null ? ` · ${fmtDur(finished.elapsed)}` : ''}`
-                  : `✗ Terminado con ${finished.errors} ${finished.errors === 1 ? 'fallo' : 'fallos'}${finished.elapsed != null ? ` · ${fmtDur(finished.elapsed)}` : ''}${finished.csvs && finished.csvs.length ? ` · Lista: ${finished.csvs.join(', ')}` : ''}`
+                ? `${textoTerminadoConProblemas(finished)}${finished.elapsed != null ? ` · ${fmtDur(finished.elapsed)}` : ''}${finished.kind !== 'warning' && finished.csvs && finished.csvs.length ? ` · Lista: ${finished.csvs.join(', ')}` : ''}`
                 : `✓ Proceso terminado${finished.elapsed != null ? ` · ${fmtDur(finished.elapsed)}` : ''}`}
           </p>
         )}

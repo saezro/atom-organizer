@@ -509,6 +509,8 @@ function AppInterna() {
                   kind: info.status,
                   errors: info.errors,
                   warnings: info.warnings,
+                  detalle_errores: info.detalle_errores || [],
+                  detalle_avisos: info.detalle_avisos || [],
                   elapsed: info.elapsed,
                 }
               : { ok: true }
