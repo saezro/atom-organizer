@@ -1,4 +1,5 @@
 """Coherencia de cierre: imágenes == tiff == filas meta/location por vuelo."""
+import dataclasses
 import os
 
 from atom_core.cierre import (PREFIJO_COHERENCIA, PREFIJO_ERROR, calcular_recuentos,
@@ -149,3 +150,42 @@ def test_verificar_sin_recuentos_csv_no_anade_linea_de_coherencia(tmp_path):
     assert not [p for p in problemas if PREFIJO_COHERENCIA in p]
     assert calcular_recuentos(m, _cfg(destino, convert_to_tif=True), None)[("1", "1")]["estado"] == "OK"
     m.cerrar()
+
+
+def _man(tmp_path, filas):
+    m = Manifiesto(tmp_path / "m.db")
+    m.crear_esquema()
+    m.insertar_muchas(filas)
+    return m
+
+
+def test_contar_errores_extra_cuenta_duplicados_y_otras_categorias_no_el_manifiesto(tmp_path, monkeypatch):
+    from atom_core.cierre import contar_errores_extra, separar_problemas
+    destino = tmp_path / "destino"
+    m = _man(tmp_path, [_fila_termica(destino, "/o/A.JPG", "PB1", "V01", angulo_giro=0)])
+    monkeypatch.setattr(m, "duplicados_en_sin_ordenar", lambda: [("a", "b"), ("c", "d")])
+    monkeypatch.setattr(m, "borrados_sin_ordenar_pendientes", lambda: ["x"])
+    errores, _ = separar_problemas(verificar(m, dataclasses.replace(_cfg(destino), input_folder="/o")))
+    # térmica pendiente (1) + duplicados (1 línea, no 2 fotos) + viejos sin borrar (1)
+    assert contar_errores_extra(errores) == 3, errores
+
+
+def test_contar_errores_extra_sin_comprobar_sin_ordenar(tmp_path, monkeypatch):
+    from atom_core.cierre import contar_errores_extra, separar_problemas
+    destino = tmp_path / "destino"
+    m = _man(tmp_path, [_fila_rgb(destino, "/o/A.JPG", "PB1", "V01")])
+
+    def _boom():
+        raise RuntimeError("x")
+    monkeypatch.setattr(m, "duplicados_en_sin_ordenar", _boom)
+    errores, _ = separar_problemas(verificar(m, dataclasses.replace(_cfg(destino), input_folder="/o")))
+    assert contar_errores_extra(errores) == 1, errores
+
+
+def test_contar_errores_extra_no_cuenta_fallidas_ya_contadas_por_manifiesto(tmp_path):
+    from atom_core.cierre import contar_errores_extra, separar_problemas
+    destino = tmp_path / "destino"
+    m = _man(tmp_path, [_fila_rgb(destino, "/o/A.JPG", "PB1", "V01")])
+    m.marcar_fallida(m.todas()[0]["id"], "boom")
+    errores, _ = separar_problemas(verificar(m, dataclasses.replace(_cfg(destino), input_folder="/o")))
+    assert errores and contar_errores_extra(errores) == 0, errores

@@ -388,6 +388,27 @@ def emitir_csvs(manifiesto, cfg, progress_callback, proyecciones: dict | None = 
 PREFIJO_ERROR = "ERROR: "
 
 
+#: Categorías de ERROR que NO salen del manifiesto (no las cuenta `fallido`) y
+#: por eso deben sumarse al n_fallos del marcador de cierre. Cada línea va como
+#: `ERROR: <prefijo><texto>`. La línea de imágenes fallidas NO está aquí: ya la
+#: cuenta el manifiesto. Cuenta 1 por línea, no por foto.
+PREFIJO_TERMICAS_PENDIENTES = "Térmicas pendientes: "
+PREFIJO_DUPLICADOS = "Duplicados SIN_ORDENAR: "
+PREFIJO_SIN_ORDENAR_NO_COMPROBABLE = "SIN_ORDENAR no comprobable: "
+PREFIJO_VIEJOS_SIN_BORRAR = "Viejos SIN_ORDENAR sin borrar: "
+PREFIJO_COHERENCIA_NO_COMPROBABLE = "Coherencia no comprobable: "
+
+
+def contar_errores_extra(errores) -> int:
+    """Nº de líneas ERROR de categorías no contadas por el manifiesto
+    (coherencia incluida): 1 por línea. Ver las constantes PREFIJO_*."""
+    marcas = tuple(PREFIJO_ERROR + m for m in (
+        PREFIJO_COHERENCIA, PREFIJO_TERMICAS_PENDIENTES, PREFIJO_DUPLICADOS,
+        PREFIJO_SIN_ORDENAR_NO_COMPROBABLE, PREFIJO_VIEJOS_SIN_BORRAR,
+        PREFIJO_COHERENCIA_NO_COMPROBABLE))
+    return sum(1 for p in errores if p.startswith(marcas))
+
+
 def separar_problemas(problemas) -> tuple[list[str], list[str]]:
     """`(errores, avisos)`: las imágenes fallidas cuentan como ERROR."""
     errores = [p for p in problemas if p.startswith(PREFIJO_ERROR)]
@@ -534,7 +555,7 @@ def verificar(manifiesto, cfg, recuentos_csv=None) -> list[str]:
         # ERROR (no aviso): térmicas con vuelo asignado sin pasar por la fase T
         # acaban sin girar (incidente WILLKA 2026-10-07).
         problemas.append(
-            f"{PREFIJO_ERROR}{len(termicas_sin_procesar)} térmica(s) con vuelo asignado "
+            f"{PREFIJO_ERROR}{PREFIJO_TERMICAS_PENDIENTES}{len(termicas_sin_procesar)} térmica(s) con vuelo asignado "
             f"siguen 'pendiente'/'en_curso': la fase T no las procesó (sin girar). "
             f"Ejemplo: {termicas_sin_procesar[0]['ruta_origen']}"
         )
@@ -570,16 +591,16 @@ def verificar(manifiesto, cfg, recuentos_csv=None) -> list[str]:
         duplicados = manifiesto.duplicados_en_sin_ordenar()
         pendientes_borrado = manifiesto.borrados_sin_ordenar_pendientes()
     except Exception as exc:  # noqa: BLE001 — la comprobación no se traga
-        problemas.append(f"{PREFIJO_ERROR}no se pudo comprobar SIN_ORDENAR: {exc}")
+        problemas.append(f"{PREFIJO_ERROR}{PREFIJO_SIN_ORDENAR_NO_COMPROBABLE}{exc}")
         duplicados, pendientes_borrado = [], []
     if duplicados:
         ejemplos = "; ".join(f"{a} (ya ordenada en {b})" for a, b in duplicados[:10])
         problemas.append(
-            f"{PREFIJO_ERROR}{len(duplicados)} foto(s) en SIN_ORDENAR duplican una foto "
+            f"{PREFIJO_ERROR}{PREFIJO_DUPLICADOS}{len(duplicados)} foto(s) en SIN_ORDENAR duplican una foto "
             f"ya ordenada en destino (mismo nombre y EXIF). Ejemplos (máx 10): {ejemplos}")
     if pendientes_borrado:
         problemas.append(
-            f"{PREFIJO_ERROR}{len(pendientes_borrado)} fichero(s) viejos de SIN_ORDENAR "
+            f"{PREFIJO_ERROR}{PREFIJO_VIEJOS_SIN_BORRAR}{len(pendientes_borrado)} fichero(s) viejos de SIN_ORDENAR "
             f"no se pudieron borrar (se reintentará en la próxima tanda). Ejemplos "
             f"(máx 10): {'; '.join(pendientes_borrado[:10])}")
 
@@ -644,6 +665,6 @@ def verificar(manifiesto, cfg, recuentos_csv=None) -> list[str]:
                 problemas.append(
                     f"{PREFIJO_ERROR}{PREFIJO_COHERENCIA}{etiqueta_vuelo(pb, vuelo)}: {r['motivo']}")
     except Exception as exc:  # noqa: BLE001 la comprobación no se traga
-        problemas.append(f"{PREFIJO_ERROR}no se pudo comprobar la coherencia por vuelo: {exc}")
+        problemas.append(f"{PREFIJO_ERROR}{PREFIJO_COHERENCIA_NO_COMPROBABLE}{exc}")
 
     return problemas
