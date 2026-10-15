@@ -98,7 +98,6 @@ export const OTROS = [
       { name: 'estad', type: 'file', label: 'Estadillo' },
       { name: 'organize_images', type: 'bool', label: 'Organizar imágenes', default: true },
       { name: 'include_v', type: 'bool', label: 'Incluir V', default: true },
-      { name: 'seconds_range', type: 'number', label: 'Margen segundos', default: '30' },
       { name: 'mismatch_hours', type: 'number', label: 'Desfase horas estadillo→imagen', default: '0' },
       { name: 'mismatch_minutes', type: 'number', label: 'Desfase minutos estadillo→imagen', default: '0' },
     ],
@@ -212,7 +211,6 @@ export const SPLIT_ADVANCED = [
     title: 'Organización por estadillo',
     fields: [
       { name: 'include_v', type: 'bool', label: 'Incluir V', default: true },
-      { name: 'seconds_range', type: 'number', label: 'Margen segundos', default: '30' },
       { name: 'mismatch_hours', type: 'number', label: 'Desfase horas estadillo→imagen', default: '0' },
       { name: 'mismatch_minutes', type: 'number', label: 'Desfase minutos estadillo→imagen', default: '0' },
     ],
