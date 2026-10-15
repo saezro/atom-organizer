@@ -1722,6 +1722,9 @@ def emitir_errores_fase(manifiesto, cfg, progress_callback, fase: str, slug: str
         payload["cierre"] = True
         payload["detalle_errores"] = [str(x) for x in (detalle_errores or [])][:10]
         payload["detalle_avisos"] = [str(x) for x in (detalle_avisos or [])][:10]
+        # Totales reales (el detalle va truncado a 10): para el "+N mas" de la UI.
+        payload["n_detalle_errores"] = len(detalle_errores or [])
+        payload["n_detalle_avisos"] = len(detalle_avisos or [])
     if n_fallos_reales > 0:
         fallidas = manifiesto.fallidas_por_tipos(tipos, ejecucion_id)
         payload["rutas"] = [ruta for ruta, _m in fallidas[:MAX_RUTAS_MARCADOR]]

@@ -29,4 +29,24 @@ describe('textoTerminadoConProblemas', () => {
   it('tolera campos ausentes', () => {
     expect(textoTerminadoConProblemas({ kind: 'warning' })).toBe('⚠ Terminado con avisos')
   })
+
+  it('"+N más" usa el total real aunque el detalle venga truncado', () => {
+    const t = textoTerminadoConProblemas({
+      kind: 'errors', errors: 25, n_detalle_errores: 25,
+      detalle_errores: Array.from({ length: 10 }, (_, i) => `e${i}`),
+    })
+    expect(t).toBe('✗ Terminado con 25 fallos: e0 | e1 | e2 (+22 más)')
+  })
+
+  it('avisos: cuenta y "+N más" salen del total del detalle', () => {
+    const t = textoTerminadoConProblemas({
+      kind: 'warning', warnings: 1, n_detalle_avisos: 12,
+      detalle_avisos: Array.from({ length: 10 }, (_, i) => `w${i}`),
+    })
+    expect(t).toBe('⚠ Terminado con 12 avisos: w0 | w1 | w2 (+9 más)')
+  })
+
+  it('errors undefined se trata como 0', () => {
+    expect(textoTerminadoConProblemas({ kind: 'errors' })).toBe('✗ Terminado con 0 fallos')
+  })
 })

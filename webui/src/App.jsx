@@ -501,8 +501,8 @@ function AppInterna() {
               : info
               ? {
                   ok: true,
-                  // Ámbar tanto para errores no fatales como para avisos (SIN_ORDENAR).
-                  // Rojo cuando hay fallos (status 'errors'); ámbar solo para avisos.
+                  // Rojo cuando hay fallos (status 'errors'; incluye fotos SIN_ORDENAR, que
+                  // desde 3.4.141 son ERROR); ámbar solo para avisos.
                   fail: info.status === 'errors',
                   csvs: info.csvs || [],
                   warn: info.status === 'errors' || info.status === 'warning',
@@ -511,6 +511,8 @@ function AppInterna() {
                   warnings: info.warnings,
                   detalle_errores: info.detalle_errores || [],
                   detalle_avisos: info.detalle_avisos || [],
+                  n_detalle_errores: info.n_detalle_errores,
+                  n_detalle_avisos: info.n_detalle_avisos,
                   elapsed: info.elapsed,
                 }
               : { ok: true }
