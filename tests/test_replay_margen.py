@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from replay_margen_asignacion import comparar_asignacion, etiqueta_destino  # noqa: E402
+from replay_margen_asignacion import aplicar_margen, comparar_asignacion, etiqueta_destino  # noqa: E402
 
 T0 = dt.datetime(2026, 10, 6, 13, 50, 0)
 
@@ -90,3 +90,15 @@ def test_generales_solapada_con_pb_gana_en_franja_exacta():
     r = comparar_asignacion(filas, vent, _exactas(vent))
     assert r["cambian"] == [] and r["generales_cambian"] == 0
     assert r["incoherentes_con_manifiesto"] == []
+
+
+def test_aplicar_margen_ensancha_desde_la_franja_exacta():
+    # _ventanas_por_vuelo (3.4.141) ya devuelve inicio==inicio_exacto: el margen lo pone el replay
+    base = [{"pb": "1", "vuelo": "1", "inicio": T0, "fin": T0 + dt.timedelta(seconds=60),
+             "inicio_exacto": T0, "fin_exacto": T0 + dt.timedelta(seconds=60)}]
+    con, exa = aplicar_margen(base, 30)
+    assert con[0]["inicio"] == T0 - dt.timedelta(seconds=30)
+    assert con[0]["fin"] == T0 + dt.timedelta(seconds=90)
+    assert exa[0]["inicio"] == T0 and exa[0]["fin"] == T0 + dt.timedelta(seconds=60)
+    r = comparar_asignacion([_fila("margen.jpg", 70)], con, exa)
+    assert len(r["cambian"]) == 1

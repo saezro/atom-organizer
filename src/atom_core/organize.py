@@ -943,6 +943,7 @@ def run_task(
               "marcador": None,
               "procesadas": 0, "origen": 0, "csvs": [],
               "detalle_errores": [], "detalle_avisos": [],
+              "n_detalle_errores": 0, "n_detalle_avisos": 0,
               # Duración de CADA fase cerrada, en orden de ejecución
               # (`payload_done["fases"]`): a diferencia de `last` (solo la
               # última), el modal necesita el listado completo para destacar
@@ -1024,6 +1025,8 @@ def run_task(
                 _t["total_errors"] = max(_t["total_errors"], n_fallos)
                 _t["detalle_errores"] = list(datos.get("detalle_errores") or [])
                 _t["detalle_avisos"] = list(datos.get("detalle_avisos") or [])
+                _t["n_detalle_errores"] = int(datos.get("n_detalle_errores") or len(_t["detalle_errores"]))
+                _t["n_detalle_avisos"] = int(datos.get("n_detalle_avisos") or len(_t["detalle_avisos"]))
                 return True
             _t["cur_errors"] += n_fallos
             _t["total_errors"] += n_fallos
@@ -1292,6 +1295,8 @@ def run_task(
             "csvs": _t["csvs"],
             "detalle_errores": _t["detalle_errores"],
             "detalle_avisos": _t["detalle_avisos"],
+            "n_detalle_errores": _t["n_detalle_errores"],
+            "n_detalle_avisos": _t["n_detalle_avisos"],
             "elapsed": elapsed,
             "last": last,
             # Duración de CADA fase, en orden de ejecución -- el modal

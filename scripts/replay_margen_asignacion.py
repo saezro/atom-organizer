@@ -78,6 +78,15 @@ def comparar_asignacion(filas, ventanas_con_margen, ventanas_exactas) -> dict:
             "generales_cambian": generales, "en_borde": en_borde, "incoherentes_con_manifiesto": incoherentes}
 
 
+def aplicar_margen(ventanas, margen):
+    """Desde 3.4.141 `indice._ventanas_por_vuelo` ignora seconds_range y devuelve la
+    franja exacta: el margen del replay se aplica aqui (exacto -/+ margen)."""
+    m = dt.timedelta(seconds=margen)
+    con_margen = [{**v, "inicio": v["inicio_exacto"] - m, "fin": v["fin_exacto"] + m} for v in ventanas]
+    exactas = [{**v, "inicio": v["inicio_exacto"], "fin": v["fin_exacto"]} for v in ventanas]
+    return con_margen, exactas
+
+
 def _ventanas_de_estadillo(ruta_estadillo, margen, desfase_h, desfase_m):
     import pipeline  # noqa: PLC0415
     from atom_core import estadillo as estadillo_mod  # noqa: PLC0415
@@ -86,9 +95,8 @@ def _ventanas_de_estadillo(ruta_estadillo, margen, desfase_h, desfase_m):
     cfg = types.SimpleNamespace(seconds_range=margen, mismatch_hours=desfase_h, mismatch_minutes=desfase_m)
     cb = types.SimpleNamespace(emit=lambda *a, **k: None)
     pipe = types.SimpleNamespace(ventana_horaria_vuelo=lambda *a: pipeline.GenStructFolder.ventana_horaria_vuelo(None, *a))
-    con_margen = indice._ventanas_por_vuelo(df, cols, pipe, cfg, cb)
-    exactas = [{**v, "inicio": v["inicio_exacto"], "fin": v["fin_exacto"]} for v in con_margen]
-    return con_margen, exactas
+    base = indice._ventanas_por_vuelo(df, cols, pipe, cfg, cb)
+    return aplicar_margen(base, margen)
 
 
 def _leer_filas(copia_db):

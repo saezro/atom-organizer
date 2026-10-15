@@ -677,12 +677,13 @@ def test_marcador_cierre_con_detalle_llega_al_done(monkeypatch):
             "fase": "Cierre", "cierre": True, "n_fallos": 1, "n_total": 0, "n_hechas": 0,
             "rutas": [], "rutas_truncadas": False, "csv": None,
             "detalle_errores": ["Incoherente PB1_V1: T 81, tiff 81, meta 79, location 79 (meta != T)"],
-            "detalle_avisos": ["aviso x"]}))
+            "detalle_avisos": ["aviso x"], "n_detalle_errores": 7, "n_detalle_avisos": 3}))
 
     done = _de_tipo(_run_con_acciones(monkeypatch, [_emitir]), "done")[0]
     assert done["status"] == "errors" and done["errors"] == 1
     assert done["detalle_errores"] == ["Incoherente PB1_V1: T 81, tiff 81, meta 79, location 79 (meta != T)"]
     assert done["detalle_avisos"] == ["aviso x"]
+    assert done["n_detalle_errores"] == 7 and done["n_detalle_avisos"] == 3
 
 
 def test_done_sin_marcador_de_cierre_trae_detalles_vacios(monkeypatch):
@@ -701,5 +702,17 @@ def test_emitir_errores_fase_cierre_suma_n_extra_y_lleva_detalle(tmp_path):
                             "CIERRE", None, cierre=True, n_extra=2,
                             detalle_errores=["a", "b"], detalle_avisos=["w"])
     assert p["n_fallos"] == 2 and p["detalle_errores"] == ["a", "b"] and p["detalle_avisos"] == ["w"]
+    assert p["n_detalle_errores"] == 2 and p["n_detalle_avisos"] == 1
     marcador = [l for l in lineas if l.startswith(STATS_ERRORES_PREFIX)]
     assert json.loads(marcador[0][len(STATS_ERRORES_PREFIX):])["n_fallos"] == 2
+
+
+def test_emitir_errores_fase_cierre_trunca_detalle_pero_lleva_total(tmp_path):
+    from atom_core.apply import emitir_errores_fase
+    from types import SimpleNamespace
+    cb = SimpleNamespace(emit=lambda l: None)
+    man = SimpleNamespace(conteo_por_tipos=lambda tipos, ej=None: {}, fallidas_por_tipos=lambda tipos, ej=None: [])
+    p = emitir_errores_fase(man, SimpleNamespace(output_folder=str(tmp_path)), cb, "Cierre", "CIERRE", None,
+                            cierre=True, detalle_errores=[str(i) for i in range(25)],
+                            detalle_avisos=[str(i) for i in range(12)])
+    assert len(p["detalle_errores"]) == 10 and p["n_detalle_errores"] == 25 and p["n_detalle_avisos"] == 12
