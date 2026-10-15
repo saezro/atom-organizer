@@ -400,7 +400,96 @@ def linea_info_ajenas(manifiesto, cfg) -> str | None:
             + "), no de esta tanda.")
 
 
-def verificar(manifiesto, cfg) -> list[str]:
+#: Las líneas de coherencia por vuelo van como `ERROR: Incoherente <vuelo>: ...`.
+PREFIJO_COHERENCIA = "Incoherente "
+
+
+def etiqueta_vuelo(pb: str, vuelo: str) -> str:
+    """`PB1_V1`; el PB GENERALES no es un vuelo: `FOTOS_GENERALES (<planta>)`."""
+    if str(pb).strip().upper() == "GENERALES":
+        return f"FOTOS_GENERALES ({vuelo})"
+    return f"PB{pb}_V{vuelo}"
+
+
+def recuentos_por_vuelo(filas_manifiesto, filas_csv, *, convert_to_tif: bool = False,
+                        cropping_rgb: bool = False) -> "dict[tuple[str, str], dict]":
+    """Recuentos y veredicto de coherencia por (pb, vuelo). PURA: sin I/O.
+
+    Solo filas `hecho` con vuelo asignado (las fallidas/pendientes ya se
+    reportan aparte). `filas_csv`: `{(pb, vuelo): {"meta": n, "location": n}}`
+    con las filas REALES escritas (suma de todas las fechas), o None para no
+    comprobar CSV (gen_meta_location apagado). RGB_Extra queda fuera.
+
+    Reglas ERROR (solo lo que aplique al vuelo):
+    - convert_to_tif y T>0: n_T != n_tiff
+    - cropping_rgb y W>0: n_W != n_crop
+    - CSV (si `filas_csv` no es None): T>0 -> filas_meta == n_T;
+      T>0 y W>0 -> filas_location == filas_meta; solo W -> filas_location == n_W.
+    """
+    acum: "dict[tuple[str, str], dict]" = {}
+    for fila in filas_manifiesto:
+        pb, vuelo = fila["pb"], fila["vuelo"]
+        if fila["estado"] != "hecho" or fila["unassigned"] or not pb or not vuelo:
+            continue
+        r = acum.setdefault((pb, vuelo), {"pb": pb, "vuelo": vuelo, "n_T": 0, "n_tiff": 0,
+                                          "n_W": 0, "n_crop": 0})
+        if fila["tipo"] == "TERMICA":
+            r["n_T"] += 1
+            r["n_tiff"] += 1 if fila["ruta_salida_tiff"] else 0
+        elif fila["tipo"] == "RGB":
+            r["n_W"] += 1
+            r["n_crop"] += 1 if fila["ruta_salida_crop"] else 0
+
+    for clave, r in acum.items():
+        csv = None if filas_csv is None else filas_csv.get(clave, {})
+        r["filas_meta"] = None if csv is None else int(csv.get("meta", 0))
+        r["filas_location"] = None if csv is None else int(csv.get("location", 0))
+        t, w, motivos = r["n_T"], r["n_W"], []
+        if convert_to_tif and t and r["n_T"] != r["n_tiff"]:
+            motivos.append("tiff != T")
+        if cropping_rgb and w and r["n_W"] != r["n_crop"]:
+            motivos.append("crop != W")
+        if csv is not None:
+            if t and r["filas_meta"] != t:
+                motivos.append("meta != T")
+            if t and w and r["filas_location"] != r["filas_meta"]:
+                motivos.append("location != meta")
+            if w and not t and r["filas_location"] != w:
+                motivos.append("location != W")
+        r["estado"] = "ERROR" if motivos else "OK"
+        if str(r["pb"]).strip().upper() == "GENERALES":
+            r["estado"], r["motivo"] = "EXCLUIDO", "FOTOS_GENERALES fuera de la regla"
+            continue
+        if motivos:
+            partes = []
+            if t:
+                partes.append(f"T {t}")
+                if convert_to_tif:
+                    partes.append(f"tiff {r['n_tiff']}")
+            if w:
+                partes.append(f"W {w}")
+                if cropping_rgb:
+                    partes.append(f"crop {r['n_crop']}")
+            if csv is not None:
+                if t:
+                    partes.append(f"meta {r['filas_meta']}")
+                if w:
+                    partes.append(f"location {r['filas_location']}")
+            r["motivo"] = f"{', '.join(partes)} ({'; '.join(motivos)})"
+        else:
+            r["motivo"] = ""
+    return acum
+
+
+def calcular_recuentos(manifiesto, cfg, filas_csv) -> "dict[tuple[str, str], dict]":
+    """`recuentos_por_vuelo` sobre todo el manifiesto con los flags de `cfg`."""
+    return recuentos_por_vuelo(
+        manifiesto.todas(), filas_csv,
+        convert_to_tif=bool(getattr(cfg, "convert_to_tif", False)),
+        cropping_rgb=bool(getattr(cfg, "cropping_rgb", False)))
+
+
+def verificar(manifiesto, cfg, recuentos_csv=None) -> list[str]:
     """Compara el manifiesto contra lo que hay en disco.
 
     Devuelve la lista de problemas encontrados; vacía significa run correcto.
@@ -535,5 +624,14 @@ def verificar(manifiesto, cfg) -> list[str]:
                         f"{pb}/{vuelo}: {crop_count} imágenes recortadas pero "
                         f"{non_crop_count} originales RGB. No coinciden."
                     )
+
+    # 6. Coherencia imágenes == tiff == filas meta/location por vuelo (ERROR, rojo).
+    try:
+        for (pb, vuelo), r in calcular_recuentos(manifiesto, cfg, recuentos_csv).items():
+            if r["estado"] == "ERROR":
+                problemas.append(
+                    f"{PREFIJO_ERROR}{PREFIJO_COHERENCIA}{etiqueta_vuelo(pb, vuelo)}: {r['motivo']}")
+    except Exception as exc:  # noqa: BLE001 la comprobación no se traga
+        problemas.append(f"{PREFIJO_ERROR}no se pudo comprobar la coherencia por vuelo: {exc}")
 
     return problemas
