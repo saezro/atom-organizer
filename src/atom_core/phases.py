@@ -1323,6 +1323,14 @@ class PipelinePhasesMixin:
                     f"{_formatear_duracion(sum(tiempos.values()))} "
                     f"({desglose}).\n")
                 errores_cierre, avisos_cierre = cierre_mod.separar_problemas(problemas)
+                _pref_coh = cierre_mod.PREFIJO_ERROR + cierre_mod.PREFIJO_COHERENCIA
+                _pref_dup = cierre_mod.PREFIJO_ERROR
+                # Coherencia por vuelo y duplicados en SIN_ORDENAR (ruling)
+                # no salen del manifiesto: se suman al n_fallos del marcador.
+                n_coherencia = sum(
+                    1 for p in errores_cierre
+                    if p.startswith(_pref_coh)
+                    or (p.startswith(_pref_dup) and "en SIN_ORDENAR duplican" in p))
                 if errores_cierre:
                     # Imágenes fallidas = ERROR, no aviso. "HA HABIDO ERRORES"
                     # no casa con los regex de `organize._scan_errors`: el
@@ -1352,7 +1360,11 @@ class PipelinePhasesMixin:
                 # run, para que el estado final sea 'errors' aunque no sean RGB/TERMICA.
                 try:
                     emitir_errores_fase(manifiesto, cfg, progress_callback, "Cierre",
-                                        "CIERRE", None, ejecucion_id=ejecucion_id, cierre=True)
+                                        "CIERRE", None, ejecucion_id=ejecucion_id, cierre=True,
+                                        n_extra=n_coherencia,
+                                        detalle_errores=[p[len(cierre_mod.PREFIJO_ERROR):]
+                                                         for p in errores_cierre],
+                                        detalle_avisos=list(avisos_cierre))
                 except Exception as excepcion_marcador:  # noqa: BLE001
                     progress_callback.emit(
                         f"\nERROR no se pudo emitir el marcador de errores del cierre: "

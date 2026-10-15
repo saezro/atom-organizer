@@ -668,3 +668,38 @@ def test_run_con_reintento_que_vuelve_a_fallar_cuenta_una_vez(monkeypatch):
 
     done = _de_tipo(_run_con_acciones(monkeypatch, [_emitir]), "done")[0]
     assert done["errors"] == 1 and done["n_fallos"] == 1
+
+
+def test_marcador_cierre_con_detalle_llega_al_done(monkeypatch):
+    def _emitir(pcb, pbar, psum):
+        psum.emit("---> SUBPROCESO: Cierre")
+        pcb.emit(STATS_ERRORES_PREFIX + json.dumps({
+            "fase": "Cierre", "cierre": True, "n_fallos": 1, "n_total": 0, "n_hechas": 0,
+            "rutas": [], "rutas_truncadas": False, "csv": None,
+            "detalle_errores": ["Incoherente PB1_V1: T 81, tiff 81, meta 79, location 79 (meta != T)"],
+            "detalle_avisos": ["aviso x"]}))
+
+    done = _de_tipo(_run_con_acciones(monkeypatch, [_emitir]), "done")[0]
+    assert done["status"] == "errors" and done["errors"] == 1
+    assert done["detalle_errores"] == ["Incoherente PB1_V1: T 81, tiff 81, meta 79, location 79 (meta != T)"]
+    assert done["detalle_avisos"] == ["aviso x"]
+
+
+def test_done_sin_marcador_de_cierre_trae_detalles_vacios(monkeypatch):
+    done = _de_tipo(_run_con_acciones(monkeypatch, [lambda pcb, pbar, psum: None]), "done")[0]
+    assert done["detalle_errores"] == [] and done["detalle_avisos"] == []
+
+
+def test_emitir_errores_fase_cierre_suma_n_extra_y_lleva_detalle(tmp_path):
+    from atom_core.apply import emitir_errores_fase
+    from types import SimpleNamespace
+    lineas = []
+    cb = SimpleNamespace(emit=lineas.append)
+    man = SimpleNamespace(conteo_por_tipos=lambda tipos, ej=None: {"hecho": 3},
+                          fallidas_por_tipos=lambda tipos, ej=None: [])
+    p = emitir_errores_fase(man, SimpleNamespace(output_folder=str(tmp_path)), cb, "Cierre",
+                            "CIERRE", None, cierre=True, n_extra=2,
+                            detalle_errores=["a", "b"], detalle_avisos=["w"])
+    assert p["n_fallos"] == 2 and p["detalle_errores"] == ["a", "b"] and p["detalle_avisos"] == ["w"]
+    marcador = [l for l in lineas if l.startswith(STATS_ERRORES_PREFIX)]
+    assert json.loads(marcador[0][len(STATS_ERRORES_PREFIX):])["n_fallos"] == 2

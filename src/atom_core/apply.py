@@ -1695,7 +1695,9 @@ def _aplicar_termicas_impl(manifiesto, cfg, pipeline, progress_callback, progres
 
 
 def emitir_errores_fase(manifiesto, cfg, progress_callback, fase: str, slug: str,
-                        tipos, ejecucion_id: int | None = None, cierre: bool = False) -> dict:
+                        tipos, ejecucion_id: int | None = None, cierre: bool = False,
+                        n_extra: int = 0, detalle_errores=None,
+                        detalle_avisos=None) -> dict:
     """Cierre de fase: lee del manifiesto cuántas imágenes de `tipos` fallaron
     (solo las de `ejecucion_id` si se da: nada de arrastrar tandas previas ni
     otros shards), escribe `<destino>/LOGS/ERRORES_<slug>.csv` (ruta, motivo) si
@@ -1711,13 +1713,16 @@ def emitir_errores_fase(manifiesto, cfg, progress_callback, fase: str, slug: str
     conteo = manifiesto.conteo_por_tipos(tipos, ejecucion_id)
     n_total = sum(conteo.values())
     n_fallos = conteo.get("fallido", 0)
-    payload = {"fase": fase, "n_fallos": n_fallos,
+    n_fallos_reales = n_fallos
+    payload = {"fase": fase, "n_fallos": n_fallos_reales + (n_extra if cierre else 0),
                "n_total": 0 if cierre else n_total,
                "n_hechas": 0 if cierre else conteo.get("hecho", 0), "rutas": [],
                "rutas_truncadas": False, "csv": None}
     if cierre:
         payload["cierre"] = True
-    if n_fallos > 0:
+        payload["detalle_errores"] = [str(x) for x in (detalle_errores or [])][:10]
+        payload["detalle_avisos"] = [str(x) for x in (detalle_avisos or [])][:10]
+    if n_fallos_reales > 0:
         fallidas = manifiesto.fallidas_por_tipos(tipos, ejecucion_id)
         payload["rutas"] = [ruta for ruta, _m in fallidas[:MAX_RUTAS_MARCADOR]]
         payload["rutas_truncadas"] = len(fallidas) > MAX_RUTAS_MARCADOR

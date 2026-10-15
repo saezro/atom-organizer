@@ -942,6 +942,7 @@ def run_task(
               # texto solo vale de respaldo si la fase no lo ha emitido.
               "marcador": None,
               "procesadas": 0, "origen": 0, "csvs": [],
+              "detalle_errores": [], "detalle_avisos": [],
               # Duración de CADA fase cerrada, en orden de ejecución
               # (`payload_done["fases"]`): a diferencia de `last` (solo la
               # última), el modal necesita el listado completo para destacar
@@ -1021,6 +1022,8 @@ def run_task(
                 # (nunca se suma: un reintento que vuelve a fallar no se duplica).
                 _t["cur_errors"] = max(_t["cur_errors"], n_fallos)
                 _t["total_errors"] = max(_t["total_errors"], n_fallos)
+                _t["detalle_errores"] = list(datos.get("detalle_errores") or [])
+                _t["detalle_avisos"] = list(datos.get("detalle_avisos") or [])
                 return True
             _t["cur_errors"] += n_fallos
             _t["total_errors"] += n_fallos
@@ -1287,6 +1290,8 @@ def run_task(
             "n_total": _t["origen"],
             "n_procesadas": _t["procesadas"],
             "csvs": _t["csvs"],
+            "detalle_errores": _t["detalle_errores"],
+            "detalle_avisos": _t["detalle_avisos"],
             "elapsed": elapsed,
             "last": last,
             # Duración de CADA fase, en orden de ejecución -- el modal
