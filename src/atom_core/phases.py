@@ -1301,8 +1301,11 @@ class PipelinePhasesMixin:
 
                 progress_summarize.emit("---> SUBPROCESO: Cierre")
                 proyecciones: dict = {}
-                cierre_mod.emitir_csvs(manifiesto, cfg, progress_callback, proyecciones=proyecciones)
-                problemas = cierre_mod.verificar(manifiesto, cfg)
+                recuentos_csv: dict = {}
+                cierre_mod.emitir_csvs(manifiesto, cfg, progress_callback, proyecciones=proyecciones,
+                                       recuentos_csv=recuentos_csv)
+                csv_para_verificar = recuentos_csv if cfg.gen_meta_location else None
+                problemas = cierre_mod.verificar(manifiesto, cfg, csv_para_verificar)
                 # El índice Excel es informativo: si falla, se avisa y el cierre sigue.
                 try:
                     ruta_indice = indice_excel.escribir_indice(manifiesto, cfg, proyecciones, progress_callback)
