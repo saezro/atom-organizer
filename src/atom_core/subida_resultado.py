@@ -65,9 +65,9 @@ def clasificar(rel: str) -> str | None:
         if bajo.endswith("_t.jpg"):
             return NORMAL
     elif top == "RGB" and len(partes) >= 2:
-        if bajo.endswith("_w_crop.jpg"):
+        if bajo.endswith(("_w_crop.jpg", "_v_crop.jpg")):
             return URGENTE
-        if bajo.endswith("_w.jpg"):
+        if bajo.endswith(("_w.jpg", "_v.jpg")):
             return NORMAL
     elif top == "CSVs":
         if len(partes) == 2 and (bajo.endswith("_meta.csv") or bajo.endswith("_location.csv")):

@@ -1446,7 +1446,7 @@ class MetaLocation:
             return
         self._aviso_sin_pareja(progress_callback, sin_pareja, carpeta_t or carpeta_w)
         for n in sin_patron:
-            self._aviso(progress_callback, f"ERROR: {n} sin patrón DJI '_<idx>_T|W'; excluida de meta y location.")
+            self._aviso(progress_callback, f"ERROR: {n} sin patrón DJI '_<idx>_T|W|V'; excluida de meta y location.")
         if not pares:
             self._aviso_sin_pares(progress_callback, carpeta_t or carpeta_w, len(imgs_t))
             return
