@@ -292,7 +292,7 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None,
         meta_location_obj._aviso_sin_pareja(progress_callback, sin_pareja, _carpeta_de(
             (pn_t.get(imgs_t[0]) or pn_w[imgs_w[0]])["ruta_salida_original"]))
         for n in sin_patron:
-            meta_location_obj._aviso(progress_callback, f"ERROR: {n} sin patrón DJI '_<idx>_T|W'; excluida de meta y location.")
+            meta_location_obj._aviso(progress_callback, f"ERROR: {n} sin patrón DJI '_<idx>_T|W|V'; excluida de meta y location.")
         if not pares:
             meta_location_obj._aviso_sin_pares(progress_callback, _carpeta_de(
                 (pn_t.get(imgs_t[0]) or pn_w[imgs_w[0]])["ruta_salida_original"]), len(imgs_t))

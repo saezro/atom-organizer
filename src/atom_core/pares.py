@@ -4,10 +4,10 @@ from __future__ import annotations
 import os
 import re
 
-# Clave única de pareja T/W: idx DJI (contador `_NNNN_`) + sufijo T|W, con `_pointN`
+# Clave única de pareja T/W: idx DJI (contador `_NNNN_`) + sufijo T|W|V (V = RGB Mavic 3T, equivale a W y se normaliza a 'W'), con `_pointN`
 # opcional (H30T). Vale `DJI_<ts>_<idx>_T`, `<fecha>_<hora>_DJI_<idx>_W` y `..._T_point1`.
 # El timestamp NO entra: T y W de un mismo disparo pueden diferir 1 s en el nombre.
-_RE_CLAVE_PAREJA = re.compile(r"_(\d+)_([TW])(?:_point\d+)?$", re.IGNORECASE)
+_RE_CLAVE_PAREJA = re.compile(r"_(\d+)_([TWV])(?:_point\d+)?$", re.IGNORECASE)
 
 
 def clave_pareja(nombre: str) -> "tuple[int, str] | None":
@@ -16,7 +16,10 @@ def clave_pareja(nombre: str) -> "tuple[int, str] | None":
     (`exif.MetaLocation.emparejar_por_idx`). El idx se reinicia entre vuelos, así que
     solo tiene sentido dentro de la lista de UN vuelo."""
     m = _RE_CLAVE_PAREJA.search(os.path.splitext(os.path.basename(str(nombre)))[0])
-    return (int(m.group(1)), m.group(2).upper()) if m else None
+    if not m:
+        return None
+    suf = m.group(2).upper()
+    return (int(m.group(1)), "W" if suf == "V" else suf)
 
 
 def paridad_tw(rutas) -> "tuple[list[str], list[str]]":
