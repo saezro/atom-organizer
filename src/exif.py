@@ -19,6 +19,7 @@ from atom_core import sharding
 from atom_core.almacen import (
     es_uri_gcs, existe_ruta, es_carpeta, listar_subcarpetas, listar_ficheros,
     abrir_para_lectura, publicar_en, unir,
+    es_carpeta_generales, AVISO_GENERALES_SIN_CSV,
 )
 from geopy import distance
 from geopy.point import Point
@@ -1109,6 +1110,9 @@ class MetaLocation:
         - progress_callback - Callback (los signals) que envían, mediante un emit(), información de texto desde el hilo correspondiente.
         - progress_bar - Callback (los signals) que envían, mediante un emit(), el porcentaje actual a la barra de progreso desde el hilo correspondiente.
         """
+        if es_carpeta_generales(input_folder):
+            self._aviso(progress_callback, AVISO_GENERALES_SIN_CSV, error=False)
+            return
         images = self.utils_obj.get_images_from_dir(input_folder, ["_CROP"], solo_fuente=True)
         if len(images) > 0:
             progress_callback.emit("\nProcesando {0} imágenes en directorio {1}".format(len(images), input_folder) + "\n") # Se envía información al iniciar el procesado de un directorio que tenga imágenes.
@@ -1429,6 +1433,9 @@ class MetaLocation:
         Una imagen entra solo si su pareja existe y se pudo leer su EXIF; lo demás se
         reporta por nombre y no entra en ninguno de los dos CSV. Sin patrón DJI en ningún
         nombre se conserva el comportamiento antiguo (independientes) con WARN."""
+        if es_carpeta_generales(carpeta_t) or es_carpeta_generales(carpeta_w):
+            self._aviso(progress_callback, AVISO_GENERALES_SIN_CSV, error=False)
+            return
         imgs_t = self.utils_obj.get_images_from_dir(carpeta_t, ["_CROP"], solo_fuente=True) if carpeta_t else []
         imgs_w = self.utils_obj.get_images_from_dir(carpeta_w, ["_CROP"], solo_fuente=True) if carpeta_w else []
         if not imgs_t and not imgs_w:

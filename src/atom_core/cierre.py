@@ -20,10 +20,10 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 import utils
-from atom_core.almacen import es_uri_gcs, existe_ruta, tamano_de, unir
+from atom_core.almacen import AVISO_GENERALES_SIN_CSV, es_uri_gcs, existe_ruta, tamano_de, unir
 from atom_core import pares as pares_mod
 from atom_core.manifiesto import ruta_bajo_origen
-from atom_core.indice import NOMBRE_CARPETA_RGB_EXTRA, TIPOS_RGB
+from atom_core.indice import NOMBRE_CARPETA_RGB_EXTRA, TIPOS_RGB, _es_pb_generales
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +156,12 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None,
     # (respaldo, contado y avisado); sin ninguna, grupo "SIN_FECHA" (ERROR y no se emite).
     grupos: "dict[tuple[str, str, str, str], list]" = {}
     n_fecha_nombre = 0
+    n_generales = 0
     for fila in manifiesto.todas():
         if fila["estado"] != "hecho" or fila["unassigned"] or not fila["pb"] or not fila["vuelo"]:
+            continue
+        if _es_pb_generales(str(fila["pb"])):  # FOTOS_GENERALES: nunca CSV (fotos de informe)
+            n_generales += 1
             continue
         fecha = _fecha_captura(fila["timestamp_exif"])
         if not fecha:
@@ -165,6 +169,8 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None,
             if t_nombre is not None:
                 fecha, n_fecha_nombre = t_nombre.strftime("%Y%m%d"), n_fecha_nombre + 1
         grupos.setdefault((fila["tipo"], fila["pb"], fila["vuelo"], fecha or _SIN_FECHA), []).append(fila)
+    if n_generales:
+        meta_location_obj._aviso(progress_callback, AVISO_GENERALES_SIN_CSV, error=False)
     meta_location_obj.total_images_number = sum(len(f) for f in grupos.values())
     if n_fecha_nombre:
         meta_location_obj._aviso(

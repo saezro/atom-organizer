@@ -211,6 +211,22 @@ def unir(ruta: str, *partes: str) -> str:
     return os.path.join(ruta, *partes)
 
 
+# Carpeta de fotos de informe (hermana de TERMICA/RGB). Vive aquí (módulo ligero)
+# para que `exif.py` y `cierre.py` compartan UN solo nombre sin import circular.
+NOMBRE_CARPETA_GENERALES = "FOTOS_GENERALES"
+
+#: Línea informativa (no ERROR) cuando se omite el CSV de FOTOS_GENERALES.
+AVISO_GENERALES_SIN_CSV = "FOTOS_GENERALES: sin CSV (fotos de informe)"
+
+
+def es_carpeta_generales(ruta: str | None) -> bool:
+    """¿`ruta` (local o `gs://`) ES la carpeta FOTOS_GENERALES? Decisión de producto:
+    nunca genera meta.csv/location.csv."""
+    if not ruta:
+        return False
+    return str(ruta).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] == NOMBRE_CARPETA_GENERALES
+
+
 @contextmanager
 def abrir_para_lectura(ruta: str):
     """Cede una `Path` LOCAL legible con el contenido de `ruta`.
