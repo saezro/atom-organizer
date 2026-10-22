@@ -58,7 +58,7 @@ NOMBRE_CARPETA_SIN_ORDENAR = "SIN_ORDENAR"
 # subcarpeta PB/vuelo, sin girar (ver `_es_pb_generales`/`_construir_fila`).
 # Formato confirmado en bucket (`gs://<bucket>/<PLANTA>/.../2026/
 # FOTOS_GENERALES/`): exacto, mayúsculas y guion bajo.
-NOMBRE_CARPETA_GENERALES = "FOTOS_GENERALES"
+NOMBRE_CARPETA_GENERALES = almacen.NOMBRE_CARPETA_GENERALES  # definido en almacen (compartido con exif/cierre)
 
 # Variantes de escritura del PB "genérico" que el estadillo puede traer,
 # todas normalizadas (`strip().upper()`) antes de comparar en

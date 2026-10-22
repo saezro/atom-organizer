@@ -74,9 +74,9 @@ def test_motor_legado_tambien_prioriza_generales():
     assert indice.elegir_ventana(_dato("13:50:00").timestamp, legado)["destinos"]["TERMICA"] == "1"
 
 
-def test_cierre_emite_csv_de_generales_aparte_del_pb(tmp_path, make_dji_jpeg, logger):
-    """Emisión (cierre.emitir_csvs/_emitir_meta_location): las fotos GENERALES salen en
-    CSVs/FOTOS_GENERALES_meta.csv (T) y _location.csv (W), y NO en el CSV de PB1_V1."""
+def test_cierre_no_emite_csv_de_generales(tmp_path, make_dji_jpeg, logger):
+    """Emisión (cierre.emitir_csvs/_emitir_meta_location): las fotos GENERALES NO generan CSV
+    (decisión de producto, 3.4.142) y tampoco aparecen en el CSV de PB1_V1."""
     import datetime as dt
     import os
     from types import SimpleNamespace
@@ -123,10 +123,8 @@ def test_cierre_emite_csv_de_generales_aparte_del_pb(tmp_path, make_dji_jpeg, lo
 
     csvs = raiz / "CSVs"
     leer = lambda n: (csvs / n).read_text()  # noqa: E731
-    assert "DJI_0036_T" in leer("FOTOS_GENERALES_meta.csv")
-    assert "DJI_0036_W" in leer("FOTOS_GENERALES_location.csv")
+    assert not list(csvs.glob("FOTOS_GENERALES*"))
     assert "DJI_0036" not in leer("PB1_V1_meta.csv") + leer("PB1_V1_location.csv")
-    assert "DJI_0001" not in leer("FOTOS_GENERALES_meta.csv") + leer("FOTOS_GENERALES_location.csv")
 
 
 def test_foto_10s_fuera_del_fin_del_pb_queda_sin_asignar_aunque_el_margen_sea_30():
