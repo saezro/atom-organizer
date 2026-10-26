@@ -712,11 +712,19 @@ class Manifest:
     """
 
     FILENAME = ".atom-upload.json"
+    FLUSH_CADA_MARCAS = 500
+    FLUSH_CADA_SEGUNDOS = 5.0
 
     def __init__(self, path: Path):
         self.path = path
         self._lock = threading.Lock()
         self._done: dict[str, dict] = {}
+        # Escritura por lotes: `mark` solo ensucia; se vuelca cada
+        # FLUSH_CADA_MARCAS marcas o FLUSH_CADA_SEGUNDOS, y SIEMPRE con `flush()`
+        # final. Reescribir el JSON entero por fichero era O(n²) con decenas de
+        # miles de entradas hidratadas.
+        self._sucio = 0
+        self._ultimo_flush = time.monotonic()
         self._load()
 
     def _load(self) -> None:
@@ -733,11 +741,25 @@ class Manifest:
     def _flush_locked(self) -> None:
         tmp = self.path.with_suffix(".tmp")
         try:
+            # `dumps` (encoder en C) y una sola escritura: `dump` a fichero usa
+            # el encoder Python puro y retiene el GIL.
+            texto = json.dumps({"version": 1, "done": self._done})
             with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump({"version": 1, "done": self._done}, fh)
+                fh.write(texto)
             os.replace(tmp, self.path)
-        except OSError:
-            pass  # el manifiesto es una optimización, no puede tumbar la subida
+        except OSError as exc:
+            # El manifiesto es una optimización, no puede tumbar la subida;
+            # queda sucio para reintentarlo en el siguiente flush.
+            _log.warning("no se pudo escribir el manifiesto %s: %s", self.path, exc)
+            return
+        self._sucio = 0
+        self._ultimo_flush = time.monotonic()
+
+    def flush(self) -> None:
+        """Vuelca a disco lo pendiente (no hace nada si no hay cambios)."""
+        with self._lock:
+            if self._sucio:
+                self._flush_locked()
 
     def is_done(self, item: UploadItem) -> bool:
         rec = self._done.get(item.key)
@@ -771,7 +793,10 @@ class Manifest:
                 "mtime": int(stat.st_mtime),
                 "md5": md5_b64,
             }
-            self._flush_locked()
+            self._sucio += 1
+            if (self._sucio >= self.FLUSH_CADA_MARCAS
+                    or time.monotonic() - self._ultimo_flush >= self.FLUSH_CADA_SEGUNDOS):
+                self._flush_locked()
 
     def hidratar(self, items: Sequence[UploadItem],
                  remotos: dict[str, "RemoteObject"]) -> int:
@@ -783,8 +808,7 @@ class Manifest:
         registro local coherente con la realidad y guarda el MD5 del bucket,
         que en la siguiente pasada permite verificar sin releer nada.
 
-        Se escribe **una sola vez** al final, no por fichero: son cientos de
-        entradas y `mark` reescribe el JSON entero cada vez.
+        Se escribe **una sola vez** al final, no por fichero.
 
         Devuelve cuántas entradas nuevas se anotaron.
         """
@@ -805,6 +829,7 @@ class Manifest:
                 }
                 nuevas += 1
             if nuevas:
+                self._sucio += nuevas
                 self._flush_locked()
         return nuevas
 
@@ -1228,29 +1253,32 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
         except Exception as exc:  # noqa: BLE001 - se reporta, no se traga
             return item, None, f"{type(exc).__name__}: {exc}", False
 
-    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
-        futures = [pool.submit(_one, item) for item in pending]
-        for fut in as_completed(futures):
-            item, md5, err, ya_estaba = fut.result()
-            if ya_estaba:
-                result.skipped += 1
-                result.skipped_precondicion += 1
-            elif err is None and md5 is not None:
-                manifest.mark(item, md5)
-                result.uploaded += 1
-            else:
-                result.failed.append((item.remote, err or "error desconocido"))
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+            futures = [pool.submit(_one, item) for item in pending]
+            for fut in as_completed(futures):
+                item, md5, err, ya_estaba = fut.result()
+                if ya_estaba:
+                    result.skipped += 1
+                    result.skipped_precondicion += 1
+                elif err is None and md5 is not None:
+                    manifest.mark(item, md5)
+                    result.uploaded += 1
+                else:
+                    result.failed.append((item.remote, err or "error desconocido"))
 
-            counter["files"] += 1
-            _avisar()
-            if on_progress is not None and counter["files"] % 25 == 0:
-                done_gb = counter["bytes"] / 1024 ** 3
-                elapsed = max(time.monotonic() - started, 1e-6)
-                speed = (counter["bytes"] * 8) / elapsed / 1_000_000
-                linea = (f"{counter['files']}/{len(pending)} · "
-                         f"{done_gb:.2f} GB · {speed:.0f} Mbps")
-                on_progress(linea)
-                _log.info("%s · %d reintentos acumulados", linea, counter["retries"])
+                counter["files"] += 1
+                _avisar()
+                if on_progress is not None and counter["files"] % 25 == 0:
+                    done_gb = counter["bytes"] / 1024 ** 3
+                    elapsed = max(time.monotonic() - started, 1e-6)
+                    speed = (counter["bytes"] * 8) / elapsed / 1_000_000
+                    linea = (f"{counter['files']}/{len(pending)} · "
+                             f"{done_gb:.2f} GB · {speed:.0f} Mbps")
+                    on_progress(linea)
+                    _log.info("%s · %d reintentos acumulados", linea, counter["retries"])
+    finally:
+        manifest.flush()  # también en cancelación/error
 
     _avisar(forzar=True)
     result.bytes_sent = counter["bytes"]
