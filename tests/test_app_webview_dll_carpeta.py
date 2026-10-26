@@ -235,3 +235,128 @@ def test_precalentar_dialogo_carpeta_en_windows_lanza_hilo_daemon(monkeypatch):
     assert daemon is True
     hilo.join(timeout=5)
     assert not hilo.is_alive()
+
+
+# ---- selector de carpeta: cancelar != fallar ---------------------------------
+
+def _api_windows(monkeypatch, tmp_path, con_dll=True):
+    monkeypatch.setattr(aw.platform, "system", lambda: "Windows")
+    destino = tmp_path / "modern-folder-abc123.dll"
+    if con_dll:
+        destino.write_bytes(b"dll cacheado")
+    monkeypatch.setattr(aw, "_ruta_dll_carpeta", lambda: destino)
+    monkeypatch.setattr(aw, "_dll_carpeta", str(destino) if con_dll else None)
+    monkeypatch.setattr(aw.Api, "_log_picker", lambda self, msg: None)
+    api = aw.Api()
+    empujados = []
+    monkeypatch.setattr(api, "_push", lambda ev: empujados.append(ev))
+    return api, empujados
+
+
+def test_pick_folder_fallo_sin_dll_empuja_error(monkeypatch, tmp_path):
+    """Sin DLL y con rc != 0 en todos los escalones: el operario debe ver un error."""
+    api, empujados = _api_windows(monkeypatch, tmp_path, con_dll=False)
+    monkeypatch.setattr(aw, "_dll_carpeta_moderna", lambda log=None, espera=None: None)
+
+    def dialog_falla(self, ps_body):
+        self._rc_dialogo = 1
+        return None
+
+    monkeypatch.setattr(aw.Api, "_win_dialog", dialog_falla)
+
+    assert api.pick_folder() is None
+    assert len(empujados) == 1
+    assert empujados[0]["kind"] == "error"
+    assert "atom-picker.log" in empujados[0]["text"]
+
+
+def test_pick_folder_cancelar_no_empuja_error(monkeypatch, tmp_path):
+    api, empujados = _api_windows(monkeypatch, tmp_path, con_dll=True)
+    llamadas = []
+
+    def dialog_cancela(self, ps_body):
+        llamadas.append(ps_body)
+        self._rc_dialogo = 0
+        return None
+
+    monkeypatch.setattr(aw.Api, "_win_dialog", dialog_cancela)
+
+    assert api.pick_folder() is None
+    assert empujados == []
+    assert len(llamadas) == 1  # ni inline ni FolderBrowserDialog tras cancelar
+
+
+def test_win_dialog_excepcion_se_marca_como_fallo(monkeypatch, tmp_path):
+    api, _ = _api_windows(monkeypatch, tmp_path)
+
+    def run_timeout(*a, **k):
+        raise aw.subprocess.TimeoutExpired("powershell", 600)
+
+    monkeypatch.setattr(aw.subprocess, "run", run_timeout)
+    assert api._win_dialog("x") is None
+    assert api._rc_dialogo not in (0, None)
+
+
+def test_win_dialog_rc0_stdout_vacio_es_cancelacion(monkeypatch, tmp_path):
+    import types
+    api, _ = _api_windows(monkeypatch, tmp_path)
+    monkeypatch.setattr(aw.subprocess, "run",
+                        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="", stderr=""))
+    assert api._win_dialog("x") is None
+    assert api._rc_dialogo == 0
+
+
+def test_win_pick_folder_cae_a_folderbrowserdialog(monkeypatch, tmp_path):
+    """DLL inservible + inline falla: tercer escalón FolderBrowserDialog."""
+    api, empujados = _api_windows(monkeypatch, tmp_path, con_dll=True)
+    llamadas = []
+
+    def dialog_espia(self, ps_body):
+        llamadas.append(ps_body)
+        if len(llamadas) < 3:
+            self._rc_dialogo = 1
+            return None
+        self._rc_dialogo = 0
+        return "C:\\ruta\\elegida"
+
+    monkeypatch.setattr(aw.Api, "_win_dialog", dialog_espia)
+
+    assert api.pick_folder() == "C:\\ruta\\elegida"
+    assert len(llamadas) == 3
+    assert "Add-Type -Path" in llamadas[0]
+    assert aw._MODERN_FOLDER_CS in llamadas[1]
+    assert "FolderBrowserDialog" in llamadas[2]
+    assert empujados == []
+
+
+def test_dll_carpeta_moderna_candado_ocupado_no_espera_mas_del_timeout(monkeypatch):
+    monkeypatch.setattr(aw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(aw, "_dll_carpeta", None)
+    aw._candado_dll_carpeta.acquire()
+    try:
+        t0 = time.monotonic()
+        assert aw._dll_carpeta_moderna(espera=0.2) is None
+        assert time.monotonic() - t0 < 2
+    finally:
+        aw._candado_dll_carpeta.release()
+
+
+def test_win_pick_folder_candado_ocupado_salta_a_inline(monkeypatch, tmp_path):
+    api, _ = _api_windows(monkeypatch, tmp_path, con_dll=False)
+    monkeypatch.setattr(aw, "_ESPERA_CANDADO_DLL_CLIC", 0.2)
+    llamadas = []
+
+    def dialog_ok(self, ps_body):
+        llamadas.append(ps_body)
+        self._rc_dialogo = 0
+        return "C:\\x"
+
+    monkeypatch.setattr(aw.Api, "_win_dialog", dialog_ok)
+    aw._candado_dll_carpeta.acquire()
+    try:
+        t0 = time.monotonic()
+        assert api._win_pick_folder() == "C:\\x"
+        assert time.monotonic() - t0 < 2
+    finally:
+        aw._candado_dll_carpeta.release()
+    assert aw._MODERN_FOLDER_CS in llamadas[0]
