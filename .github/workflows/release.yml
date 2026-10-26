@@ -108,10 +108,28 @@ jobs:
       # tests/test_smoke.py comprueba que exiftool y ffmpeg están en el PATH
       # porque el pipeline los invoca como subproceso. El runner no los trae:
       # sin esto la puerta falla siempre, aunque el código esté bien.
+      # Sin `apt-get update` (era lo lento): los .deb (con dependencias) se
+      # cachean en un dir propio y se instalan desde ahí. Key estable por lista
+      # de paquetes + SO. Si el install falla (índices viejos del runner / deb
+      # retirado del mirror), SOLO entonces se hace `apt-get update` y se reintenta.
+      - name: Cache .deb de binarios externos
+        id: cache-apt
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/apt-debs
+          key: checks-apt-${{ runner.os }}-ubuntu24.04-exiftool-ffmpeg-v1
       - name: Binarios externos del pipeline
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libimage-exiftool-perl ffmpeg
+          set -euo pipefail
+          PKGS="libimage-exiftool-perl ffmpeg"
+          DEBS="$HOME/apt-debs"
+          mkdir -p "$DEBS/partial"
+          APT="-o Dir::Cache::archives=$DEBS -o Debug::NoLocking=1"
+          inst() { sudo apt-get install -y --no-install-recommends $APT $PKGS; }
+          inst || { echo "install falló: apt-get update y reintento"; sudo apt-get update -qq; inst; }
+          sudo chown -R "$(id -u):$(id -g)" "$DEBS"
+          rm -f "$DEBS/lock"
       # Cachea el ENTORNO instalado (venv), no solo las descargas de pip
       # (eso ya lo hacía `cache: 'pip'` de setup-python, quitado arriba: es
       # redundante si el venv entero está en caché). Key por requirements
@@ -243,12 +261,18 @@ jobs:
       # Venv cacheado (site-packages COMPLETO, no solo la descarga de pip):
       # en hit se salta por entero el `pip install` de Qt/PySide6/numpy/pandas
       # (los ~174s de "Python deps"). Key con requirements + build_gpu.
-      - name: Cache venv Python
+      # restore + save SEPARADOS: `actions/cache` a secas guarda en el post-step
+      # solo si TODO el job acaba en verde. Un fallo posterior (PyInstaller,
+      # Inno Setup…) tiraba el venv recién instalado y cada reintento
+      # reinstalaba los ~174s. Aquí se guarda justo tras `pip install`.
+      # Ojo: las caches están acotadas por ref; un tag nuevo solo lee las de
+      # su propio ref o de la rama por defecto.
+      - name: Restaurar venv Python
         id: cache-venv
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .venv
-          key: build-windows-venv-${{ runner.os }}-py3.11-gpu${{ inputs.build_gpu }}-${{ hashFiles('packaging/requirements/requirements.txt', 'packaging/requirements/requirements-webview.txt', 'packaging/requirements/requirements-gpu.txt') }}
+          key: build-windows-venv-${{ runner.os }}-py3.11-gpu${{ inputs.build_gpu || 'false' }}-${{ hashFiles('packaging/requirements/requirements.txt', 'packaging/requirements/requirements-webview.txt', 'packaging/requirements/requirements-gpu.txt') }}
       - name: Crear venv
         if: steps.cache-venv.outputs.cache-hit != 'true'
         run: python -m venv .venv
@@ -279,6 +303,12 @@ jobs:
           # anteriores a numpy 2.x: no recogian las DLL de numpy.libs, asi que
           # el .exe petaba con "DLL load failed while importing
           # _multiarray_umath" en cuanto el pipeline importaba numpy (v3.4.73).
+      - name: Guardar venv Python
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .venv
+          key: build-windows-venv-${{ runner.os }}-py3.11-gpu${{ inputs.build_gpu || 'false' }}-${{ hashFiles('packaging/requirements/requirements.txt', 'packaging/requirements/requirements-webview.txt', 'packaging/requirements/requirements-gpu.txt') }}
       # De aquí en adelante `python`/`pip`/`pyinstaller` resuelven al venv
       # (cacheado o recién creado), sin tocar el resto de los pasos.
       - name: Activar venv
@@ -314,18 +344,16 @@ jobs:
         run: .venv\Scripts\pyinstaller.exe --clean --noconfirm packaging\atom_organizer_webview.spec
       # Solo para builds de validación (publicar=false): Inno Setup 6.7.0 no lo
       # abre ningún extractor, así que sin esto no hay forma de probar el .exe
-      # sin instalar. Se sube el onedir crudo (dist/ATOM-Organizer) comprimido.
-      - name: Comprimir onedir (build de validación)
-        if: inputs.publicar == false
-        shell: pwsh
-        run: Compress-Archive -Path dist\ATOM-Organizer -DestinationPath windows-onedir.zip
+      # sin instalar. Se sube el onedir crudo (upload-artifact ya lo comprime;
+      # sin Compress-Archive previo).
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: inputs.publicar == false
         with:
           name: windows-onedir
-          path: windows-onedir.zip
+          path: dist/ATOM-Organizer
           if-no-files-found: error
           retention-days: 7
+          compression-level: 1
       - name: Construir instalador (Inno Setup)
         shell: pwsh
         env:
