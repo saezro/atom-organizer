@@ -384,12 +384,6 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
     proveedor = proveedor or ProveedorResultado(auth, inspeccion_id)
     prefijo = proveedor.prefijo_destino()
     sel = seleccionar(destino, prefijo)
-    try:
-        remotos = proveedor.listar_remotos(prefijo)
-    except cu.ListadoTruncado as exc:
-        raise SubidaResultadoError(f"{exc}: no se sube nada.") from exc
-    if remotos is None:
-        raise SubidaResultadoError("No se pudo consultar el contenido del bucket: no se sube nada.")
     (destino / NOMBRE_CARPETA_MANIFIESTO).mkdir(parents=True, exist_ok=True)
     manifest = cu.Manifest(destino / NOMBRE_CARPETA_MANIFIESTO / NOMBRE_MANIFIESTO_SUBIDA)
 
@@ -397,6 +391,10 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
                                sin_clasificar=sel.sin_clasificar, simulado=simular)
     resumen.urgentes.total = len(sel.urgentes)
     resumen.resto.total = len(sel.resto)
+
+    bytes_total = sum(it.size for it in sel.urgentes) + (
+        sum(it.size for it in sel.resto) if modo == MODO_NORMAL else 0)
+    bytes_ya = [0]  # bytes ya presentes en el bucket (grupos particionados)
 
     def emitir(fase: str, s: dict | None = None, comprobando: tuple | None = None) -> None:
         if on_estado is None:
@@ -408,7 +406,21 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
             "urgentes": {"hechos": resumen.urgentes.hechos, "total": resumen.urgentes.total},
             "resto": {"hechos": resumen.resto.hechos, "total": resumen.resto.total},
             "mbps": (s or {}).get("mbps"), "eta": (s or {}).get("eta"),
+            "files_per_s": (s or {}).get("files_per_s"),
+            # Bytes de TODO lo del modo (ya en el bucket + lo que se va subiendo).
+            "bytes_done": bytes_ya[0] + int((s or {}).get("bytes_done", 0)),
+            "bytes_total": bytes_total,
+            # Destino real (se conoce antes de listar): la UI lo enseña desde el principio.
+            "prefix": prefijo,
         })
+
+    emitir("listando")
+    try:
+        remotos = proveedor.listar_remotos(prefijo)
+    except cu.ListadoTruncado as exc:
+        raise SubidaResultadoError(f"{exc}: no se sube nada.") from exc
+    if remotos is None:
+        raise SubidaResultadoError("No se pudo consultar el contenido del bucket: no se sube nada.")
 
     grupos = [("urgentes", sel.urgentes)]
     if modo == MODO_NORMAL:
@@ -425,6 +437,7 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
             cont.hechos = len(part.hechos)
             cont.pendientes = len(part.pendientes)
             resumen.conflictos += part.conflictos
+            bytes_ya[0] += sum(it.size for it in part.hechos)
             emitir(nombre)
             if simular or not part.pendientes:
                 continue

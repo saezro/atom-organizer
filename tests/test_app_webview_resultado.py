@@ -171,3 +171,51 @@ def test_error_de_red_se_encola_para_reintento(api, monkeypatch, tmp_path):
     api.resultado_subir(str(tmp_path), 7)
     assert any(e["kind"] == "error" and "reintentará" in e["text"] for e in api.eventos)
     assert len(cola_subidas.pendientes()) == 1
+
+
+class _ReporterFalso:
+    activo = True
+
+    def __init__(self, falla=False):
+        self.llamadas, self.falla = [], falla
+
+    def progreso(self, s):
+        if self.falla:
+            raise RuntimeError("suite caida")
+        self.llamadas.append(s)
+
+    def fin(self, **kw):
+        pass
+
+
+def _estado(**extra):
+    return {"fase": "urgentes", "urgentes": {"hechos": 2, "total": 5}, "resto": {"hechos": 1, "total": 3},
+            "mbps": 9.0, "prefix": "P/", "bytes_done": 100, "bytes_total": 900, "eta": 42.0, **extra}
+
+
+def test_progreso_del_resultado_va_a_la_telemetria_con_totales_y_eta(api, monkeypatch, tmp_path):
+    rep = _ReporterFalso()
+    monkeypatch.setattr(api, "_telemetria_resultado_iniciar", lambda i, f: rep)
+
+    def falso(destino, iid, modo, auth, on_estado=None, **kw):
+        on_estado(_estado())
+        return _resumen(modo)
+
+    monkeypatch.setattr(sr, "subir_resultado", falso)
+    api.resultado_subir(str(tmp_path), 7, "urgencia", False)
+    assert rep.llamadas == [{"files_done": 3, "files_total": 8, "bytes_done": 100,
+                             "bytes_total": 900, "eta": 42.0}]
+    assert any(e["kind"] == "estado" and e["prefix"] == "P/" for e in api.eventos)
+
+
+def test_fallo_de_telemetria_no_rompe_la_subida(api, monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "_telemetria_resultado_iniciar", lambda i, f: _ReporterFalso(falla=True))
+
+    def falso(destino, iid, modo, auth, on_estado=None, **kw):
+        on_estado(_estado())
+        return _resumen(modo)
+
+    monkeypatch.setattr(sr, "subir_resultado", falso)
+    api.resultado_subir(str(tmp_path), 7, "urgencia", False)
+    assert [e["kind"] for e in api.eventos].count("done") == 1
+    assert not [e for e in api.eventos if e["kind"] == "error"]
