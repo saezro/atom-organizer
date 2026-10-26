@@ -4,6 +4,7 @@ import PasoInspeccion from './PasoInspeccion'
 import PasoEstadillo from './PasoEstadillo'
 import PanelOrganizar from './PanelOrganizar'
 import PanelSubida from './PanelSubida'
+import PanelResultado from './PanelResultado'
 import useEstadilloAuto from './useEstadilloAuto'
 
 const ESTADILLO_OMITIDO = { rutas: [], listo: true, subiendo: false, subir: async () => {} }
@@ -39,6 +40,9 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
   // elegida (cambiar de valor basta, no importa a qué).
   const [inspeccionReloadToken, setInspeccionReloadToken] = useState(0)
 
+  // Flujo mínimo «Subir ya organizado»: solo carpeta final + inspección.
+  const [yaOrganizado, setYaOrganizado] = useState(false)
+
   const ocupado = running || subidaOcupada
   // Sin módulo estadillos no hay paso de estadillo: se trata como «subir sin
   // estadillo» (listo, sin ficheros).
@@ -47,8 +51,37 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
   const auto = useEstadilloAuto(carpeta, !verEstadillos)
   const est = verEstadillos ? estadillo : { ...ESTADILLO_OMITIDO, rutas: auto.rutas }
 
+  if (yaOrganizado) {
+    return (
+      <div className="card">
+        <div className="field-row">
+          <button type="button" className="btn-ghost" onClick={() => setYaOrganizado(false)}>Volver</button>
+        </div>
+        <PasoCarpeta label="Carpeta final (ya organizada)" value={carpeta} onChange={setCarpeta} disabled={ocupado} />
+        <PasoInspeccion
+          ready={ready}
+          prefijo={prefijo}
+          carpeta={carpeta}
+          estadilloRutas={[]}
+          onChange={(p, e) => {
+            setPrefijo(p)
+            setElegida(e)
+          }}
+          disabled={ocupado}
+          reloadToken={inspeccionReloadToken}
+        />
+        <PanelResultado carpeta={carpeta} inspeccionId={elegida?.id ?? null} ready={ready} variante="ya-organizado" />
+      </div>
+    )
+  }
+
   return (
     <div className="card">
+      {verOrganizer && (
+        <div className="field-row">
+          <button type="button" className="btn-ghost" onClick={() => setYaOrganizado(true)} disabled={ocupado}>Subir ya organizado</button>
+        </div>
+      )}
       <PasoCarpeta label="Carpeta del vuelo" value={carpeta} onChange={setCarpeta} disabled={ocupado} />
       <PasoInspeccion
         ready={ready}

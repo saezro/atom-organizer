@@ -99,7 +99,7 @@ def sin_ordenar_ultima_ejecucion(destino: Path) -> tuple[set[str], list[str]]:
         return set(), ["Sin manifiesto del organizado: no se pueden subir las imágenes sin asignar."]
     filas: list = []
     try:
-        con = sqlite3.connect(f"{ruta.as_uri()}?mode=ro", uri=True, timeout=5.0)
+        con = sqlite3.connect(f"{ruta.as_uri()}?mode=ro&immutable=1", uri=True, timeout=5.0)
         try:
             filas = con.execute(
                 "SELECT ruta_salida_original, ruta_salida_crop, ruta_salida_tiff FROM imagenes "
@@ -260,6 +260,30 @@ def particionar(items, remotos: dict, manifest: cu.Manifest, prefijo: str, *,
     return p
 
 
+MOTIVO_SIN_CREDENCIAL = ("Subir el resultado al bucket exige entrar con Google o con usuario "
+                         "y contraseña de ATOM Suite.")
+MOTIVO_SIN_CREDENCIAL_BROKER = ("Subir el resultado no se puede hacer con el emparejamiento de la Pi/broker: "
+                                "entra con Google o con usuario y contraseña de ATOM Suite.")
+
+
+def credencial_resultado(auth) -> dict:
+    """`{ok, tipo:'google'|'password'|None, usuario, reason}`. Sin red."""
+    if auth is None:
+        return {"ok": False, "tipo": None, "usuario": None,
+                "reason": "No hay sesión iniciada: entra con Google o con usuario y contraseña."}
+    if getattr(auth, "es_password", False):
+        tipo = "password"
+    elif getattr(auth, "es_google", False):
+        tipo = "google"
+    else:
+        reason = (MOTIVO_SIN_CREDENCIAL_BROKER if getattr(auth, "es_broker", False)
+                  else "No hay sesión iniciada: entra con Google o con usuario y contraseña.")
+        return {"ok": False, "tipo": None, "usuario": None, "reason": reason}
+    ident = getattr(auth, "identity", None)
+    usuario = getattr(ident, "email", None) or getattr(ident, "nombre", None)
+    return {"ok": True, "tipo": tipo, "usuario": usuario, "reason": ""}
+
+
 class ProveedorResultado(cu.GcsOAuthProvider):
     """`GcsOAuthProvider` hacia `plantas_pv_nl` con el token `ambito:'resultado'`.
 
@@ -271,9 +295,9 @@ class ProveedorResultado(cu.GcsOAuthProvider):
     solo_crear = False
 
     def __init__(self, auth, inspeccion_id: int):
-        if not getattr(auth, "es_password", False):
-            raise SubidaResultadoError(
-                "Subir el resultado al bucket exige entrar con usuario y contraseña de ATOM Suite.")
+        if not (getattr(auth, "es_password", False) or getattr(auth, "es_google", False)):
+            raise SubidaResultadoError(MOTIVO_SIN_CREDENCIAL_BROKER if getattr(auth, "es_broker", False)
+                                       else MOTIVO_SIN_CREDENCIAL)
         super().__init__(BUCKET_RESULTADO, auth, inspeccion_id=int(inspeccion_id), ambito=AMBITO_RESULTADO)
 
     def listar_remotos(self, prefix: str):
@@ -484,6 +508,46 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
         else:
             resumen.faltantes = cu.faltantes_en_remoto(todos, frescos)
     return resumen
+
+
+def inspeccionar_destino(destino, inspeccion_id: int, auth, *, proveedor=None) -> dict:
+    """Qué hay ya en el prefijo destino del bucket (solo LIST: sin MD5, sin escrituras).
+
+    `sobrescribe` = rutas relativas (`CSVs/`, `ESTADILLOS/`, `INDICE_*`) que la salida local
+    subiría y que ya existen en el bucket (candidatas a sobrescribirse). Un error de red o
+    de credencial NO se silencia: `ok=False` con `error`.
+    """
+    base = {"ok": True, "existe": False, "n_objetos": 0, "bytes": 0, "sobrescribe": [],
+            "prefijo": None, "error": None, "detalle": ""}
+    try:
+        proveedor = proveedor or ProveedorResultado(auth, inspeccion_id)
+        prefijo = proveedor.prefijo_destino()
+        base["prefijo"] = prefijo
+        remotos = proveedor.listar_remotos(prefijo)
+        if remotos is None:
+            raise SubidaResultadoError("No se pudo consultar el contenido del bucket.")
+        pref = prefijo.strip("/") + "/"
+        base["n_objetos"] = len(remotos)
+        base["bytes"] = sum(max(0, r.size) for r in remotos.values())
+        base["existe"] = bool(remotos)
+        sobre: list[str] = []
+        destino = Path(destino)
+        if remotos and destino.is_dir():
+            sel = seleccionar(destino, prefijo)
+            for it in [*sel.urgentes, *sel.resto]:
+                rel = it.remote[len(pref):] if it.remote.startswith(pref) else it.remote
+                if it.remote in remotos and es_sobrescribible(rel):
+                    sobre.append(rel)
+        base["sobrescribe"] = sorted(sobre)
+        base["detalle"] = (f"El destino {prefijo} ya tiene {base['n_objetos']} objeto(s) "
+                           f"({base['bytes']} bytes); {len(sobre)} se sobrescribirían."
+                           if remotos else f"El destino {prefijo} está vacío.")
+    except cu.ListadoTruncado as exc:
+        base.update(ok=False, existe=None, error=str(exc), detalle=f"No verificable: {exc}")
+    except Exception as exc:  # noqa: BLE001 - estado visible, nunca silencioso
+        base.update(ok=False, existe=None, error=f"{type(exc).__name__}: {exc}",
+                    detalle=f"No se pudo inspeccionar el destino: {exc}")
+    return base
 
 
 def decidir_automatica(task: str, params: dict, done: dict | None) -> tuple[bool, str]:

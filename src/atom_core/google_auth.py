@@ -37,6 +37,7 @@ import base64
 import hashlib
 import http.server
 import json
+import re
 import logging
 import os
 import secrets
@@ -109,7 +110,7 @@ _MENSAJES_RESULTADO = {
     "planta-nombre-invalido": ("El nombre de la planta tiene caracteres no permitidos para una "
                                "carpeta del bucket: corrígelo en ATOM Suite."),
     "inspeccion-no-encontrada": "La inspección no existe en ATOM Suite.",
-    "solo-sesion": "Subir el resultado exige entrar con usuario y contraseña (no con Google ni QR).",
+    "solo-sesion": "ATOM Suite no aceptó esta sesión para subir el resultado: entra con Google o con usuario y contraseña (no con QR/Pi).",
 }
 
 TIMEOUT = 30
@@ -491,6 +492,15 @@ class GoogleAuth:
         return self._modo == MODO_PASSWORD
 
     @property
+    def es_google(self) -> bool:
+        """¿Hay un login Google de usuario (no broker/Pi, no password)?"""
+        return self._modo == MODO_GOOGLE and bool(self._refresh_token)
+
+    @property
+    def es_broker(self) -> bool:
+        return self._modo == MODO_BROKER
+
+    @property
     def sesion_token(self) -> str | None:
         """`sesion` de la Suite, solo en modo password y mientras no caduque."""
         if (self._modo == MODO_PASSWORD and self._refresh_token
@@ -792,6 +802,14 @@ class GoogleAuth:
             if self._modo == MODO_PASSWORD and self._refresh_token:
                 return self._gcs_token_password(prefix, inspeccion_id, force_refresh,
                                                 planta_id=planta_id, ambito=ambito)
+            if ambito == "resultado":
+                # Login Google del Organizer: token GCS `resultado` pedido a la Suite
+                # con Bearer id_token. Broker/Pi NO (la Suite lo rechaza): error claro.
+                if self._modo == MODO_GOOGLE and self._refresh_token:
+                    return self._gcs_token_password(prefix, inspeccion_id, force_refresh,
+                                                    planta_id=planta_id, ambito=ambito)
+                raise AuthError("Subir el resultado exige entrar con Google o con usuario "
+                                "y contraseña (no con el emparejamiento de la Pi).")
             vigente = (self._access_token
                        and time.time() < self._expires_at - EXPIRY_MARGIN)
             if vigente and not force_refresh:
@@ -927,7 +945,8 @@ class GoogleAuth:
                 raise AuthError("Falta el prefijo para pedir acceso a GCS")
             clave = prefix
             cuerpo_req = {"inspeccion_id": inspeccion_id, "prefix": prefix}
-        if self.sesion_token is None:
+        google = self._modo == MODO_GOOGLE
+        if not google and self.sesion_token is None:
             self._olvidar_local()
             raise AuthError("Sesión caducada, vuelve a entrar con tu usuario")
         margen = RENOVAR_ANTES_RESULTADO_S if ambito == "resultado" else EXPIRY_MARGIN
@@ -936,16 +955,24 @@ class GoogleAuth:
                 and time.time() < en_cache[1] - margen
                 and (not ambito or clave in self._gcs_prefijos)):
             return en_cache[0]
+        # Google: Bearer id_token (se renueva solo); password: la `sesion` opaca.
+        bearer = self.id_token() if google else self._refresh_token
         req = urllib.request.Request(
             GCS_TOKEN_URI, method="POST",
             data=json.dumps(cuerpo_req).encode(),
-            headers={"Authorization": f"Bearer {self._refresh_token}",
+            headers={"Authorization": f"Bearer {bearer}",
                      "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
                 cuerpo = resp.read().decode()
         except urllib.error.HTTPError as exc:
             detalle = _mensaje_de_error(exc)
+            if exc.code == 401 and google:
+                # Informa, NO borra la sesión Google: el 401 es de la Suite, no de Google.
+                logger.warning("gcs-token: la Suite rechazó el login de Google (401): %s", _sanear_log(detalle))
+                raise AuthError(
+                    f"ATOM Suite no aceptó tu login de Google para subir el resultado ({detalle}). "
+                    "Entra con usuario y contraseña o contacta con un administrador.") from exc
             if exc.code == 401:
                 logger.warning("gcs-token: la Suite devolvió 401 (sesión caducada).")
                 self._olvidar_local()
@@ -1042,6 +1069,13 @@ def _mensaje_de_error(exc: urllib.error.HTTPError) -> str:
         return data.get("error_description") or data.get("error") or str(exc.code)
     except Exception:  # noqa: BLE001
         return str(exc.code)
+
+
+def _sanear_log(texto, limite: int = 120) -> str:
+    """Para logs: sin tokens (JWT / cadenas largas opacas) y truncado."""
+    t = re.sub(r"eyJ[\w-]+\.[\w-]+\.[\w-]+", "[jwt]", str(texto))
+    t = re.sub(r"[A-Za-z0-9_\-\.]{40,}", "[token]", t)
+    return t[:limite]
 
 
 def _codigo_de_error(exc: urllib.error.HTTPError) -> str:

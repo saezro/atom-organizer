@@ -412,6 +412,13 @@ export const api = {
   resultadoSubir: (folder, inspeccionId, modo, seguirEnNormal) =>
     call('resultado_subir', folder, inspeccionId ?? null, modo ?? 'urgencia', seguirEnNormal ?? false),
   resultadoCancelar: () => call('resultado_cancelar'),
+  // Credencial de subida: {ok, reason?}. Sin ok no se puede publicar (se muestra reason).
+  resultadoCredencial: () => call('resultado_credencial'),
+  // Checks previos a subir: [{id, titulo, estado:'ok'|'aviso'|'error'|'no_comprobable', detalle}].
+  resultadoPrechequeo: (destino) => call('resultado_prechequeo', destino),
+  // Qué hay ya en el bucket para esa inspección: {existe, n_objetos, bytes, sobrescribe[], detalle}.
+  resultadoInspeccionarDestino: (destino, inspeccionId) =>
+    call('resultado_inspeccionar_destino', destino, inspeccionId ?? null),
   // Encadenada tras una subida al bucket completada con éxito, solo en el
   // destino «nube» (Task cablear PanelSubida): lanza la organización del lado
   // servidor. Fail-open: {ok:false, error} NO significa que la subida haya

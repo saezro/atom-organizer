@@ -32,13 +32,30 @@ export function textoProgreso(e) {
 // Subida del resultado organizado al bucket de plantas. Se dispara sola al terminar
 // cada run (urgencia y, después, normal en segundo plano); este panel es el botón
 // manual, el selector de modo y el estado.
-export default function PanelResultado({ carpeta, inspeccionId, ready }) {
+export function textoBytes(b) {
+  if (b == null || !Number.isFinite(b)) return ''
+  if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB`
+  if (b >= 1e6) return `${(b / 1e6).toFixed(1)} MB`
+  return `${Math.round(b / 1e3)} KB`
+}
+
+const ETIQ_ESTADO = { ok: 'OK', aviso: 'Aviso', error: 'Error', no_comprobable: 'No comprobable' }
+
+// `variante`: 'tras-organizar' (por defecto, dentro de PanelOrganizar) o
+// 'ya-organizado' (flujo «Subir ya organizado» de TrabajoScreen). Mismo panel,
+// solo cambia el texto de ayuda.
+export default function PanelResultado({ carpeta, inspeccionId, ready, variante = 'tras-organizar' }) {
   const [modo, setModo] = useState('urgencia')
   const [subiendo, setSubiendo] = useState(false)
   const [estado, setEstado] = useState(null)
   const [resumen, setResumen] = useState(null)
   const [error, setError] = useState('')
   const [aviso, setAviso] = useState('')
+  // Credencial de subida ({ok, reason}); null = aún sin comprobar.
+  const [cred, setCred] = useState(null)
+  // Aviso pre-subida: null | {cargando} | {checks, destino, error?}
+  const [previa, setPrevia] = useState(null)
+  const [igualmente, setIgualmente] = useState(false)
 
   useEffect(
     () =>
@@ -66,9 +83,61 @@ export default function PanelResultado({ carpeta, inspeccionId, ready }) {
     []
   )
 
-  const puede = ready && carpeta && inspeccionId && !subiendo
+  async function comprobarCred() {
+    try {
+      if (typeof api.resultadoCredencial !== 'function') throw new Error('método resultadoCredencial no disponible')
+      const r = await api.resultadoCredencial()
+      return r && typeof r.ok === 'boolean' ? r : { ok: false, reason: 'No se pudo comprobar el login: respuesta vacía' }
+    } catch (e) {
+      return { ok: false, reason: `No se pudo comprobar el login: ${String(e?.message || e)}` }
+    }
+  }
+
+  // Al cambiar el destino y al volver el foco a la ventana (el login puede
+  // haber caducado o hacerse fuera mientras tanto).
+  useEffect(() => {
+    let vivo = true
+    setPrevia(null)
+    setIgualmente(false)
+    const refrescar = async () => {
+      const r = await comprobarCred()
+      if (vivo) setCred(r)
+    }
+    refrescar()
+    window.addEventListener('focus', refrescar)
+    return () => { vivo = false; window.removeEventListener('focus', refrescar) }
+  }, [carpeta])
+
+  const sinCred = !cred || cred.ok === false
+  const puede = ready && carpeta && inspeccionId && !subiendo && !sinCred
+
+  async function revisar() {
+    setError('')
+    setIgualmente(false)
+    setPrevia({ cargando: true })
+    const c = await comprobarCred()
+    setCred(c)
+    if (!c.ok) { setPrevia(null); return }
+    try {
+      const [pre, destino] = await Promise.all([
+        api.resultadoPrechequeo(carpeta),
+        api.resultadoInspeccionarDestino(carpeta, inspeccionId),
+      ])
+      if (!pre || typeof pre !== 'object' || !Array.isArray(pre.checks)) {
+        throw new Error('Respuesta inesperada del prechequeo de la subida')
+      }
+      if (!destino || typeof destino !== 'object') {
+        throw new Error('Respuesta inesperada al inspeccionar el destino')
+      }
+      setPrevia({ checks: pre.checks, okPre: pre.ok !== false, destino })
+    } catch (e) {
+      setPrevia(null)
+      setError(String(e?.message || e))
+    }
+  }
 
   async function lanzar() {
+    setPrevia(null)
     setError('')
     try {
       const r = await api.resultadoSubir(carpeta, inspeccionId, modo, false)
@@ -93,13 +162,53 @@ export default function PanelResultado({ carpeta, inspeccionId, ready }) {
           </label>
         ))}
       </div>
+      {variante === 'ya-organizado' && (
+        <span className="field-hint">Se sube tal cual la carpeta ya organizada, sin volver a organizar.</span>
+      )}
       <span className="field-hint">
         Urgencia sube lo necesario para el análisis. Normal sube además el resto, sin repetir lo ya subido.
       </span>
       <div className="field-row">
-        <button type="button" className="btn-ghost" onClick={lanzar} disabled={!puede}>Publicar resultado</button>
+        <button type="button" className="btn-ghost" onClick={revisar} disabled={!puede || Boolean(previa)}>Publicar resultado</button>
         {subiendo && <button type="button" className="btn-ghost" onClick={() => api.resultadoCancelar()}>Cancelar</button>}
       </div>
+      {cred && sinCred && <span className="field-hint hint-warn" role="alert">{cred.reason || 'No hay credencial para publicar.'}</span>}
+      {previa?.cargando && <span className="field-hint" aria-live="polite">Revisando antes de subir…</span>}
+      {previa && !previa.cargando && (() => {
+        const hayError = previa.checks.some((c) => c.estado === 'error') || !previa.okPre || previa.destino?.ok === false
+        const d = previa.destino
+        return (
+          <div className="field" role="group" aria-label="Aviso antes de subir">
+            <span className="field-label">Antes de subir</span>
+            {previa.checks.map((c) => (
+              <span key={c.id} className={`field-hint ${c.estado === 'ok' ? 'hint-ok' : c.estado === 'no_comprobable' ? '' : 'hint-warn'}`}>
+                <strong>{ETIQ_ESTADO[c.estado] || c.estado}</strong> · {c.titulo}{c.detalle ? `: ${c.detalle}` : ''}
+              </span>
+            ))}
+            {d?.ok === false && (
+              <span className="field-hint hint-warn" role="alert">{d.error || 'No se pudo inspeccionar el destino en el bucket.'}</span>
+            )}
+            {d?.existe && (
+              <span className="field-hint hint-warn">
+                Ya hay {d.n_objetos} objetos / {textoBytes(d.bytes)} en el bucket
+                {d.sobrescribe?.length ? `; se sobrescriben: ${d.sobrescribe.join(', ')}` : ''}
+                {d.detalle ? `. ${d.detalle}` : ''}
+              </span>
+            )}
+            {d && !d.existe && d.detalle && <span className="field-hint">{d.detalle}</span>}
+            {hayError && (
+              <label className="check">
+                <input type="checkbox" checked={igualmente} onChange={(e) => setIgualmente(e.target.checked)} />
+                <span>Subir igualmente</span>
+              </label>
+            )}
+            <div className="field-row">
+              <button type="button" className="btn-run" onClick={lanzar} disabled={hayError && !igualmente}>Confirmar y subir</button>
+              <button type="button" className="btn-ghost" onClick={() => setPrevia(null)}>Cancelar aviso</button>
+            </div>
+          </div>
+        )
+      })()}
       {!(carpeta && inspeccionId) && <span className="field-hint">Elige la inspección y la carpeta de salida para poder publicar.</span>}
       {subiendo && !estado && <span className="field-hint" aria-live="polite">Calculando…</span>}
       {estado?.prefix && <span className="field-hint hint-destino"><strong>Destino: gs://plantas_pv_nl/{estado.prefix.replace(/^\/+|\/+$/g, '')}/</strong></span>}

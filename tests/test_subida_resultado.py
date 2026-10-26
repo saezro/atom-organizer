@@ -130,6 +130,16 @@ def test_sin_ordenar_con_filas_fuera_del_destino_avisa(tmp_path):
     assert len(avisos) == 1 and "destino" in avisos[0].lower()
 
 
+def test_sin_ordenar_no_crea_shm_ni_wal_junto_al_manifiesto(tmp_path):
+    salida = tmp_path / "salida"
+    _arbol(salida, {"SIN_ORDENAR/RGB/A_W.JPG": b"x"})
+    _manifiesto_con_sin_ordenar(salida)
+    db = salida / NOMBRE_CARPETA_MANIFIESTO / NOMBRE_FICHERO_MANIFIESTO
+    sr.sin_ordenar_ultima_ejecucion(salida)
+    assert not Path(f"{db}-shm").exists()
+    assert not Path(f"{db}-wal").exists()
+
+
 def test_sin_manifiesto_avisa_y_no_selecciona_nada(tmp_path):
     rels, avisos = sr.sin_ordenar_ultima_ejecucion(tmp_path)
     assert rels == set()
@@ -397,6 +407,52 @@ def test_proveedor_exige_modo_password():
         es_password = False
     with pytest.raises(sr.SubidaResultadoError, match="usuario y contraseña"):
         sr.ProveedorResultado(AuthGoogle(), 7)
+
+
+def test_proveedor_acepta_google_y_rechaza_pi_con_motivo():
+    class AuthG:
+        es_password = False
+        es_google = True
+    assert sr.ProveedorResultado(AuthG(), 7).solo_crear is False
+
+    class AuthPi:
+        es_password = False
+        es_google = False
+        es_broker = True
+    with pytest.raises(sr.SubidaResultadoError, match="Pi/broker"):
+        sr.ProveedorResultado(AuthPi(), 7)
+
+
+def test_inspeccionar_destino_lista_y_marca_sobrescribibles(tmp_path):
+    _arbol(tmp_path, {"CSVs/a_meta.csv": b"x", "ESTADILLOS/e.xlsx": b"y", "INDICE_1.xlsx": b"z",
+                      "TERMICA/a_T.tiff": b"t"})
+    remotos = dict([_remoto("CSVs/a_meta.csv", b"viejo"), _remoto("TERMICA/a_T.tiff", b"t"),
+                    _remoto("OTRO/x.bin", b"1")])
+    r = sr.inspeccionar_destino(tmp_path, 7, None, proveedor=ProveedorFalso(remotos))
+    assert r["ok"] and r["existe"] and r["n_objetos"] == 3 and r["bytes"] == 5 + 1 + 1
+    assert r["sobrescribe"] == ["CSVs/a_meta.csv"]
+
+
+def test_inspeccionar_destino_vacio_y_errores_visibles(tmp_path):
+    _arbol(tmp_path, {"CSVs/a_meta.csv": b"x"})
+    r = sr.inspeccionar_destino(tmp_path, 7, None, proveedor=ProveedorFalso({}))
+    assert r["ok"] and r["existe"] is False and r["n_objetos"] == 0 and r["sobrescribe"] == []
+    r = sr.inspeccionar_destino(tmp_path, 7, None, proveedor=ProveedorFalso(None))
+    assert r["ok"] is False and r["error"] and r["existe"] is None
+
+    class Roto(ProveedorFalso):
+        def listar_remotos(self, prefix):
+            raise OSError("red caida")
+    r = sr.inspeccionar_destino(tmp_path, 7, None, proveedor=Roto())
+    assert r["ok"] is False and "red caida" in r["error"]
+
+
+def test_credencial_resultado_tipos():
+    class G:
+        es_password = False
+        es_google = True
+    assert sr.credencial_resultado(G())["tipo"] == "google"
+    assert sr.credencial_resultado(None)["ok"] is False
 
 
 def test_proveedor_puede_sobrescribir_y_pide_ambito_resultado():

@@ -264,7 +264,8 @@ def token_gcs(auth, prefix: str | None = None, *,
     kw: dict = {}
     if force_refresh:
         kw["force_refresh"] = True
-    if getattr(auth, "es_password", False) and ambito:
+    if (getattr(auth, "es_password", False) or (
+            getattr(auth, "es_google", False) and ambito == "resultado")) and ambito:
         # Ámbito estadillos: sin prefijo (lo decide la Suite), pero con la
         # planta y la inspección concreta (la Suite valida visibilidad y
         # vigencia de esa inspección; sin ella responde 400).

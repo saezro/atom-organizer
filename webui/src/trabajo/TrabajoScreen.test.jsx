@@ -14,6 +14,9 @@ vi.mock('../bridge', () => ({
     analisisReset: vi.fn().mockResolvedValue({ ok: true }),
     analisisCancel: vi.fn().mockResolvedValue({ ok: true }),
     estadillosDetectar: vi.fn().mockResolvedValue({ rutas: [] }),
+    resultadoCredencial: vi.fn().mockResolvedValue({ ok: true }),
+    resultadoPrechequeo: vi.fn().mockResolvedValue({ ok: true, checks: [] }),
+    resultadoInspeccionarDestino: vi.fn().mockResolvedValue({ existe: false }),
   },
   onCloud: (h) => {
     const w = (e) => h(e.detail)
@@ -284,5 +287,15 @@ describe('TrabajoScreen', () => {
       expect(screen.queryByText(/viejo\.csv/)).toBeNull()
       expect(screen.getByText(/Estadillo: nuevo\.csv/)).toBeTruthy()
     })
+  })
+
+  it('«Subir ya organizado» abre el flujo mínimo con PanelResultado ya-organizado', async () => {
+    render(<TrabajoScreen ready running={false} onRun={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Subir ya organizado' }))
+    expect(await screen.findByText(/ya organizada, sin volver a organizar/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Publicar resultado' })).toBeTruthy()
+    expect(screen.queryByText(/Organizar en este ordenador/i)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Volver' }))
+    expect(await screen.findByText(/Organizar en este ordenador/i)).toBeTruthy()
   })
 })

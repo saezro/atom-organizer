@@ -3618,7 +3618,8 @@ class Api:
                     break
                 # «Ya hay una subida en curso» (busy) no es un intento fallido:
                 # el job queda en cola, sin sumar, para el siguiente drenado.
-                if not r.get("busy"):
+                # Sin credencial (sin login / Pi) tampoco: no es culpa del job.
+                if not (r.get("busy") or r.get("sin_credencial")):
                     n = cola_subidas.marcar_intento(job["id"], str(r.get("reason", "")))
                     if n >= MAX_INTENTOS_RESULTADO:
                         cola_subidas.descartar(job["id"])
@@ -3653,6 +3654,38 @@ class Api:
         self._cancel_resultado = True
         return {"ok": True}
 
+    def resultado_credencial(self) -> dict:
+        """`{ok, tipo:'google'|'password'|None, usuario, reason}`. Sin red, sin efectos."""
+        from atom_core import subida_resultado as sr
+        try:
+            return sr.credencial_resultado(self._get_auth())
+        except Exception as exc:  # noqa: BLE001 - visible, no silencioso
+            return {"ok": False, "tipo": None, "usuario": None, "reason": f"{type(exc).__name__}: {exc}"}
+
+    def resultado_prechequeo(self, destino: str) -> dict:
+        """Prechequeo de la carpeta de salida antes de subir (`prechequeo_resultado.prechequear`)."""
+        try:
+            from atom_core import prechequeo_resultado
+            return prechequeo_resultado.prechequear(destino)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "checks": [{"id": "prechequeo", "titulo": "Prechequeo",
+                                             "estado": "error", "detalle": str(exc)}]}
+
+    def resultado_inspeccionar_destino(self, destino: str, inspeccion_id: int | None) -> dict:
+        """Qué hay ya en el destino del bucket (solo lista). Exige credencial válida."""
+        from atom_core import subida_resultado as sr
+        vacio = {"ok": False, "existe": None, "n_objetos": 0, "bytes": 0, "sobrescribe": []}
+        if not inspeccion_id:
+            return {**vacio, "error": "Elige una inspección.", "detalle": "Elige una inspección."}
+        try:
+            auth = self._get_auth()
+            cred = sr.credencial_resultado(auth)
+            if not cred["ok"]:
+                return {**vacio, "error": cred["reason"], "detalle": cred["reason"]}
+            return sr.inspeccionar_destino(destino, int(inspeccion_id), auth)
+        except Exception as exc:  # noqa: BLE001
+            return {**vacio, "error": f"{type(exc).__name__}: {exc}", "detalle": str(exc)}
+
     def resultado_subir(self, folder: str, inspeccion_id: int | None, modo: str = "urgencia",
                         seguir_en_normal: bool = False) -> dict:
         """Sube la salida organizada a `plantas_pv_nl`. Progreso por `atom:resultado`.
@@ -3671,6 +3704,14 @@ class Api:
             return {"started": False, "reason": "Elige una inspección: sin ella no hay destino en el bucket."}
         if not Path(folder or "").is_dir():
             return {"started": False, "reason": "La carpeta de salida no existe."}
+        # Credencial ANTES de abrir run/efectos: sin login no se crea nada.
+        try:
+            auth = self._get_auth()
+            cred = sr.credencial_resultado(auth)
+        except Exception as exc:  # noqa: BLE001
+            cred = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+        if not cred["ok"]:
+            return {"started": False, "sin_credencial": True, "reason": cred["reason"]}
         with self._resultado_lock:
             if self._subiendo_resultado:
                 return {"started": False, "busy": True,
@@ -3683,7 +3724,6 @@ class Api:
             reporter = None
             modos = [sr.MODO_URGENCIA, sr.MODO_NORMAL] if (modo == sr.MODO_URGENCIA and seguir_en_normal) else [modo]
             try:
-                auth = self._get_auth()
                 self._push_resultado({"kind": "start", "modo": modo})
                 reporter = self._telemetria_resultado_iniciar(inspeccion_id, folder)
                 for i, m in enumerate(modos):
@@ -3797,7 +3837,9 @@ class Api:
                 self._push_resultado({"kind": "aviso", "text": motivo})
             return
         destino = (params.get("destino") or params.get("output_folder") or "").strip()
-        self.resultado_subir(destino, params.get("inspeccion_id"), sr.MODO_URGENCIA, True)
+        r = self.resultado_subir(destino, params.get("inspeccion_id"), sr.MODO_URGENCIA, True)
+        if not r.get("started") and not r.get("busy"):
+            self._push_resultado({"kind": "aviso", "text": f"No se sube el resultado al bucket: {r.get('reason')}"})
 
     def _push_analisis(self, detail: dict) -> None:
         if not self._sink:
