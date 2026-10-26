@@ -13,7 +13,7 @@ vi.mock('../bridge', () => ({
   },
 }))
 import { api } from '../bridge'
-import PanelResultado, { textoProgreso } from './PanelResultado'
+import PanelResultado, { textoProgreso, textoVelocidad, textoEta } from './PanelResultado'
 
 const emitir = (detail) => act(() => { window.dispatchEvent(new CustomEvent('atom:resultado', { detail })) })
 
@@ -25,6 +25,29 @@ describe('textoProgreso', () => {
       .toBe('urgentes 3/10 · resto 0/25')
   })
   it('vacío sin datos', () => { expect(textoProgreso(null)).toBe('') })
+  it('fase listando: «Leyendo el bucket…»', () => {
+    expect(textoProgreso({ fase: 'listando', urgentes: { hechos: 0, total: 1 }, resto: { hechos: 0, total: 1 } }))
+      .toBe('Leyendo el bucket…')
+  })
+  it('fase comprobando: «Comprobando ficheros X/Y…» en vez del contador', () => {
+    expect(textoProgreso({ comprobando: { hechos: 4, total: 9 }, urgentes: { hechos: 0, total: 10 }, resto: { hechos: 0, total: 25 } }))
+      .toBe('Comprobando ficheros 4/9…')
+  })
+})
+
+describe('textoVelocidad / textoEta', () => {
+  it('convierte megabits a MB/s y añade img/s y ETA', () => {
+    expect(textoVelocidad({ fase: 'urgentes', mbps: 80, files_per_s: 2.5, eta: 125 }))
+      .toBe('10.0 MB/s · 2.5 img/s · ETA ~02:05')
+  })
+  it('sin ETA (primeros segundos) no la pinta; ETA larga en h:mm', () => {
+    expect(textoVelocidad({ fase: 'urgentes', mbps: 8, files_per_s: 1, eta: null })).toBe('1.0 MB/s · 1.0 img/s')
+    expect(textoEta(3 * 3600 + 5 * 60)).toBe('3:05')
+  })
+  it('nada mientras lista o comprueba', () => {
+    expect(textoVelocidad({ fase: 'listando', mbps: null })).toBe('')
+    expect(textoVelocidad({ fase: 'urgentes', mbps: 8, comprobando: { hechos: 1, total: 2 } })).toBe('')
+  })
 })
 
 describe('PanelResultado', () => {
@@ -55,6 +78,16 @@ describe('PanelResultado', () => {
     expect(await screen.findByText('urgentes 3/10 · resto 0/25')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Publicar resultado' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Cancelar' })).toBeInTheDocument()
+  })
+
+  it('enseña el destino real desde el primer evento y la velocidad', async () => {
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    emitir({ kind: 'start', modo: 'urgencia' })
+    emitir({ kind: 'estado', fase: 'listando', prefix: 'CASTRUM/INSPECCIONES/TERMICA_MODULOS/2026_2/', urgentes: { hechos: 0, total: 10 }, resto: { hechos: 0, total: 0 } })
+    expect(await screen.findByText('Destino: gs://plantas_pv_nl/CASTRUM/INSPECCIONES/TERMICA_MODULOS/2026_2/')).toBeInTheDocument()
+    expect(screen.getByText('Leyendo el bucket…')).toBeInTheDocument()
+    emitir({ kind: 'estado', fase: 'urgentes', prefix: 'CASTRUM/INSPECCIONES/TERMICA_MODULOS/2026_2/', mbps: 16, files_per_s: 3, eta: 60, urgentes: { hechos: 3, total: 10 }, resto: { hechos: 0, total: 0 } })
+    expect(await screen.findByText('2.0 MB/s · 3.0 img/s · ETA ~01:00')).toBeInTheDocument()
   })
 
   it('muestra conflictos y fallidas y permite reintentar', async () => {

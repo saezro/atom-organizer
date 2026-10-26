@@ -510,3 +510,27 @@ def test_motivo_distingue_fallidos_de_sin_intentar(tmp_path):
                             faltantes=[("P/a", "x"), ("P/b", "x"), ("P/c", "x")])
     m = r.motivo_incompleto()
     assert "3 objetos sin subir" in m and "1 fallidos, 2 sin intentar" in m
+
+
+def test_estados_llevan_prefix_desde_el_primero_y_fase_comprobando(tmp_path, gcs):
+    _arbol(tmp_path, SALIDA_PEQUENA)
+    nombre, ro = _remoto("CSVs/V1_meta.csv", b"meta")  # mismo tamaño+md5: obliga a comprobar
+    prov = ProveedorFalso({nombre: ro})
+    estados = []
+    sr.subir_resultado(tmp_path, 7, sr.MODO_URGENCIA, auth=None, proveedor=prov,
+                       concurrency=1, on_estado=estados.append)
+    assert estados[0]["fase"] == "listando"
+    assert all(e["prefix"] == PREFIJO for e in estados)
+    comp = [e["comprobando"] for e in estados if e["comprobando"]]
+    assert comp and comp[-1] == {"hechos": 1, "total": 1}
+    assert "files_per_s" in estados[-1]
+
+
+def test_upload_plan_stats_trae_files_per_s(tmp_path, gcs):
+    _arbol(tmp_path, SALIDA_PEQUENA)
+    prov = ProveedorFalso()
+    visto = []
+    sr.subir_resultado(tmp_path, 7, sr.MODO_URGENCIA, auth=None, proveedor=prov,
+                       concurrency=1, on_estado=visto.append)
+    con_vel = [e for e in visto if e["files_per_s"] is not None]
+    assert con_vel and con_vel[-1]["files_per_s"] > 0

@@ -1,7 +1,30 @@
 import { useEffect, useState } from 'react'
 import { api, onResultado } from '../bridge'
 
+// mm:ss (o h:mm si pasa de la hora); '' si aún no hay estimación.
+export function textoEta(seg) {
+  if (seg == null || !Number.isFinite(seg) || seg < 0) return ''
+  const t = Math.round(seg)
+  const h = Math.floor(t / 3600)
+  const m = Math.floor((t % 3600) / 60)
+  const s = t % 60
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}`
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+}
+
+// `mbps` del backend son megabITS/s; al operario se le enseñan MB/s (megabytes).
+export function textoVelocidad(e) {
+  if (!e || e.mbps == null || e.fase === 'listando' || e.comprobando) return ''
+  const partes = [`${(e.mbps / 8).toFixed(1)} MB/s`]
+  if (e.files_per_s != null) partes.push(`${e.files_per_s.toFixed(1)} img/s`)
+  const eta = textoEta(e.eta)
+  if (eta) partes.push(`ETA ~${eta}`)
+  return partes.join(' · ')
+}
+
 export function textoProgreso(e) {
+  if (e && e.fase === 'listando') return 'Leyendo el bucket…'
+  if (e && e.comprobando) return `Comprobando ficheros ${e.comprobando.hechos}/${e.comprobando.total}…`
   if (!e || !e.urgentes || !e.resto) return ''
   return `urgentes ${e.urgentes.hechos}/${e.urgentes.total} · resto ${e.resto.hechos}/${e.resto.total}`
 }
@@ -79,7 +102,9 @@ export default function PanelResultado({ carpeta, inspeccionId, ready }) {
       </div>
       {!(carpeta && inspeccionId) && <span className="field-hint">Elige la inspección y la carpeta de salida para poder publicar.</span>}
       {subiendo && !estado && <span className="field-hint" aria-live="polite">Calculando…</span>}
+      {estado?.prefix && <span className="field-hint hint-destino"><strong>Destino: gs://plantas_pv_nl/{estado.prefix.replace(/^\/+|\/+$/g, '')}/</strong></span>}
       {estado && <span className="field-hint" aria-live="polite">{textoProgreso(estado)}</span>}
+      {estado && textoVelocidad(estado) && <span className="field-hint">{textoVelocidad(estado)}</span>}
       {completa && <span className="field-hint hint-ok">Subida completa</span>}
       {resumen?.cancelled && <span className="field-hint hint-warn">Subida cancelada. Lo ya subido se conserva.</span>}
       {nConf > 0 && <span className="field-hint hint-warn">{nConf} en conflicto (existen con otro contenido y no se pisan)</span>}

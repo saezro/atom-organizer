@@ -3495,6 +3495,26 @@ class Api:
         if reporter is not None:
             reporter.progreso(s)
 
+    def _on_estado_resultado(self, reporter, e: dict) -> None:
+        """`on_estado` de la subida del resultado: repinta el panel y late hacia la Suite.
+
+        Telemetría: solo `files_*`, `bytes_*` y `eta` (suma urgentes+resto). Sin `mbps`
+        ni `prefix` (la Suite los descarta). Un fallo aquí nunca frena la subida."""
+        self._push_resultado({"kind": "estado", **e})
+        if reporter is None:
+            return
+        try:
+            urg, resto = e.get("urgentes") or {}, e.get("resto") or {}
+            reporter.progreso({
+                "files_done": urg.get("hechos", 0) + resto.get("hechos", 0),
+                "files_total": urg.get("total", 0) + resto.get("total", 0),
+                "bytes_done": e.get("bytes_done", 0),
+                "bytes_total": e.get("bytes_total", 0),
+                "eta": e.get("eta"),
+            })
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            logger.debug("telemetria subida resultado (progreso) falló: %s", exc)
+
     def _cerrar_run(self, reporter, *, ok: bool, error: str | None = None) -> None:
         """Cierra el run de progreso, si lo hubo. Sin `reporter` es no-op.
 
@@ -3668,7 +3688,7 @@ class Api:
                 reporter = self._telemetria_resultado_iniciar(inspeccion_id, folder)
                 for i, m in enumerate(modos):
                     resumen = sr.subir_resultado(
-                        folder, int(inspeccion_id), m, auth, on_estado=lambda e: self._push_resultado({"kind": "estado", **e}),
+                        folder, int(inspeccion_id), m, auth, on_estado=lambda e: self._on_estado_resultado(reporter, e),
                         should_stop=lambda: self._cancel_resultado)
                     sigue = resumen.ok and i < len(modos) - 1
                     self._push_resultado({"kind": "done", "continua": sigue, **resumen.a_dict()})

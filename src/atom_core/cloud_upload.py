@@ -1197,7 +1197,8 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
             # hasta tener 3 s de muestra: al principio la media oscila tanto que
             # el número saltaría de «2 min» a «4 horas» y no serviría de nada.
             "eta": (restantes / bps) if (bps > 0 and elapsed > 3) else None,
-            "mbps": bps * 8 / 1_000_000,
+            "mbps": bps * 8 / 1_000_000,  # megabITS/s (bytes*8), no MB/s
+            "files_per_s": counter["files"] / elapsed,
             "retries": counter["retries"],
             "final": final,
         }
