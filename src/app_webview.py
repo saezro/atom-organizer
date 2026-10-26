@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
+import contextlib
 import datetime
 import glob
 import hashlib
@@ -388,16 +389,38 @@ def _invalidar_dll_carpeta(log=None) -> None:
                 log("_invalidar_dll_carpeta: no se pudo borrar el DLL cacheado")
 
 
-def _dll_carpeta_moderna(log=None) -> str | None:
+# Espera máxima del CLIC en el selector por el candado del DLL: si el precalentado
+# sigue compilando (hasta 120 s), el clic no se queda colgado y salta al C# inline.
+_ESPERA_CANDADO_DLL_CLIC = 2.0
+
+
+@contextlib.contextmanager
+def _tomar_candado_dll(espera: float | None):
+    """Toma `_candado_dll_carpeta` (espera=None: sin límite). Cede True/False."""
+    ok = (_candado_dll_carpeta.acquire() if espera is None
+          else _candado_dll_carpeta.acquire(timeout=espera))
+    try:
+        yield ok
+    finally:
+        if ok:
+            _candado_dll_carpeta.release()
+
+
+def _dll_carpeta_moderna(log=None, espera: float | None = None) -> str | None:
     """Ruta del DLL con el diálogo moderno, compilándolo la primera vez.
 
-    Devuelve None si no se pudo compilar; el llamante debe recurrir entonces al
-    camino antiguo (compilar en caliente dentro del propio diálogo).
+    Devuelve None si no se pudo compilar (o, con `espera`, si el candado sigue
+    ocupado pasado ese plazo); el llamante debe recurrir entonces al camino
+    antiguo (compilar en caliente dentro del propio diálogo).
     """
     global _dll_carpeta
     if platform.system() != "Windows":
         return None
-    with _candado_dll_carpeta:
+    with _tomar_candado_dll(espera) as tomado:
+        if not tomado:
+            if log:
+                log("_dll_carpeta_moderna: candado ocupado, se omite el DLL")
+            return None
         if _dll_carpeta:
             return _dll_carpeta
         destino = _ruta_dll_carpeta()
@@ -706,7 +729,8 @@ class Api:
             out = (proc.stdout or "").strip()
             return out or None
         except Exception:
-            self._rc_dialogo = None
+            # -1 = fallo (timeout, powershell ausente...), distinto de cancelar (0).
+            self._rc_dialogo = -1
             import traceback
             self._log_picker("_win_dialog EXC:\n" + traceback.format_exc())
             return None
@@ -718,19 +742,31 @@ class Api:
             "$p=[ModernFolder]::Pick($o.Handle,'Selecciona la carpeta');"
             "if($p){[Console]::Out.Write($p)}"
         )
-        dll = _dll_carpeta_moderna(self._log_picker)
+        dll = _dll_carpeta_moderna(self._log_picker, espera=_ESPERA_CANDADO_DLL_CLIC)
         # Con el DLL cacheado nos ahorramos compilar el C# en cada apertura.
         prefijo = f"Add-Type -Path '{_lit_ps(dll)}';" if dll else _MODERN_FOLDER_CS
         self._rc_dialogo = 0
         elegido = self._win_dialog(prefijo + cuerpo)
-        if elegido is None and dll and self._rc_dialogo not in (0, None):
+        if elegido is None and self._rc_dialogo not in (0, None) and dll:
             # PowerShell abortó: lo más probable es un DLL ilegible (borrado a
             # medias, antivirus, disco lleno). Se tira la caché y se reintenta por
             # el camino antiguo, que compila en caliente, para no dejar al usuario
             # sin selector de carpeta.
             self._log_picker("selector: DLL cacheado inservible, se invalida y se reintenta")
             _invalidar_dll_carpeta(self._log_picker)
-            return self._win_dialog(_MODERN_FOLDER_CS + cuerpo)
+            self._rc_dialogo = 0
+            elegido = self._win_dialog(_MODERN_FOLDER_CS + cuerpo)
+        if elegido is None and self._rc_dialogo not in (0, None):
+            # Tercer escalón, solo tras fallo (nunca tras cancelar): el diálogo
+            # clásico de WinForms, sin C# ni DLL.
+            self._log_picker("selector: moderno falló, se usa FolderBrowserDialog")
+            self._rc_dialogo = 0
+            elegido = self._win_dialog(
+                "$d=New-Object System.Windows.Forms.FolderBrowserDialog;"
+                "$d.Description='Selecciona la carpeta';"
+                "if($d.ShowDialog($o) -eq [System.Windows.Forms.DialogResult]::OK)"
+                "{[Console]::Out.Write($d.SelectedPath)}"
+            )
         return elegido
 
     def _win_pick_file(self, filtro: str | None = None) -> str | None:
@@ -752,7 +788,13 @@ class Api:
     def pick_folder(self) -> str | None:
         try:
             if platform.system() == "Windows":
-                return self._win_pick_folder()
+                elegido = self._win_pick_folder()
+                if elegido is None and self._rc_dialogo not in (0, None):
+                    # Fallo (no cancelación) tras todos los escalones: avisar.
+                    self._log_picker("pick_folder: todos los escalones fallaron")
+                    self._push({"kind": "error",
+                                "text": "No se pudo abrir el selector de carpetas. Escribe la ruta a mano o reinicia la app. Detalle en atom-picker.log"})
+                return elegido
             webview = _import_webview()
             res = self._window.create_file_dialog(webview.FOLDER_DIALOG)
             return res[0] if res else None
