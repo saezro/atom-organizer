@@ -92,3 +92,58 @@ def test_ambito_desconocido_sigue_rechazado(auth, suite):
     auth.login_password("ana", PWD)
     with pytest.raises(ga.AuthError, match="Ámbito de GCS no soportado"):
         auth.access_token(inspeccion_id=9, ambito="otro")
+
+
+# ---- login Google: Bearer id_token ----------------------------------------------
+def _como_google(auth, monkeypatch):
+    import time as _t
+    auth._modo = ga.MODO_GOOGLE
+    auth._refresh_token = "rt"
+    auth._id_token = "IDTOK"
+    auth._access_token = "at"
+    auth._expires_at = _t.time() + 3600
+    return auth
+
+
+def test_google_pide_token_resultado_con_bearer_id_token(auth, suite, monkeypatch):
+    _suite_resultado(suite, monkeypatch)
+    _como_google(auth, monkeypatch)
+    assert auth.es_google and not auth.es_password
+    assert auth.access_token(inspeccion_id=9, ambito="resultado") == "res-1"
+    req = suite.de(ga.GCS_TOKEN_URI)[0]
+    assert req.get_header("Authorization") == "Bearer IDTOK"
+    assert auth.prefijo_resultado(9) == PREFIJO
+
+
+def test_google_401_no_borra_la_sesion(auth, suite, monkeypatch):
+    import io
+    import urllib.error
+
+    def urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 401, "no", {}, io.BytesIO(b'{"error":"solo-sesion"}'))
+    monkeypatch.setattr(ga.urllib.request, "urlopen", urlopen)
+    _como_google(auth, monkeypatch)
+    with pytest.raises(ga.AuthError, match="login de Google"):
+        auth.access_token(inspeccion_id=9, ambito="resultado")
+    assert auth.is_logged_in() and auth.es_google
+
+
+def test_broker_rechazado_para_resultado(auth):
+    auth._modo = ga.MODO_BROKER
+    auth._refresh_token = "dev"
+    with pytest.raises(ga.AuthError, match="Pi"):
+        auth.access_token(inspeccion_id=9, ambito="resultado")
+
+
+def test_token_gcs_con_google_usa_gcs_token_de_la_suite_no_el_oauth_crudo(auth, suite, monkeypatch):
+    from atom_core import cloud_upload as cu
+    _suite_resultado(suite, monkeypatch)
+    _como_google(auth, monkeypatch)
+    tok = cu.token_gcs(auth, None, inspeccion_id=9, ambito="resultado")
+    assert tok == "res-1" and tok != "at"
+    assert suite.de(ga.GCS_TOKEN_URI)[0].get_header("Authorization") == "Bearer IDTOK"
+
+
+def test_sanear_log_oculta_jwt_y_tokens_largos():
+    t = ga._sanear_log("fallo eyJabc.def.ghi y " + "A" * 60)
+    assert "eyJ" not in t and "AAAA" not in t

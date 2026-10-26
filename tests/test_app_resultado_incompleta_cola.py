@@ -29,7 +29,7 @@ def _api(monkeypatch, tmp_path, resumen):
     rep = _Rep()
     errores = []
     monkeypatch.setattr(api, "_reporter_actual", lambda tipo="subida": rep)
-    monkeypatch.setattr(api, "_get_auth", lambda: None)
+    monkeypatch.setattr(api, "_get_auth", lambda **k: types.SimpleNamespace(es_password=True, es_google=False, identity=None))
     monkeypatch.setattr(api, "_push_resultado",
                         lambda d: errores.append(d["text"]) if d.get("kind") == "error" else None)
     monkeypatch.setattr(sr, "subir_resultado", lambda *a, **k: resumen)

@@ -143,15 +143,13 @@ def test_cloud_drenar_ignora_jobs_de_resultado_y_los_lanza_aparte(api, monkeypat
     assert llamadas["crudo"] == 0 and llamadas["resultado"] == [(str(tmp_path), 7, "urgencia", True)]
 
 
-def test_get_auth_que_lanza_libera_la_bandera_y_es_visible(api, monkeypatch, tmp_path):
+def test_get_auth_que_lanza_no_arranca_ni_deja_la_bandera(api, monkeypatch, tmp_path):
     def boom(**k):
         raise RuntimeError("sin credencial")
     monkeypatch.setattr(api, "_get_auth", boom)
-    api.resultado_subir(str(tmp_path), 7)
-    assert any(e["kind"] == "error" and "sin credencial" in e["text"] for e in api.eventos)
-    assert api._subiendo_resultado is False
     r = api.resultado_subir(str(tmp_path), 7)
-    assert "en curso" not in (r.get("reason") or "")
+    assert r["started"] is False and "sin credencial" in r["reason"]
+    assert api._subiendo_resultado is False
 
 
 def test_oserror_local_no_se_encola_y_es_visible(api, monkeypatch, tmp_path):
@@ -219,3 +217,84 @@ def test_fallo_de_telemetria_no_rompe_la_subida(api, monkeypatch, tmp_path):
     api.resultado_subir(str(tmp_path), 7, "urgencia", False)
     assert [e["kind"] for e in api.eventos].count("done") == 1
     assert not [e for e in api.eventos if e["kind"] == "error"]
+
+
+# ---- credencial (Google / password / Pi / sin login) -------------------------------
+class _AuthGoogle:
+    es_password = False
+    es_google = True
+
+    class identity:  # noqa: N801
+        email = "u@aerotools.es"
+
+
+class _AuthPi:
+    es_password = False
+    es_google = False
+    es_broker = True
+
+
+def test_credencial_password_y_google_ok(api, monkeypatch):
+    assert api.resultado_credencial() == {"ok": True, "tipo": "password", "usuario": None, "reason": ""}
+    monkeypatch.setattr(api, "_get_auth", lambda **k: _AuthGoogle())
+    r = api.resultado_credencial()
+    assert r["ok"] and r["tipo"] == "google" and r["usuario"] == "u@aerotools.es"
+
+
+def test_credencial_pi_rechazada_y_sin_login(api, monkeypatch):
+    monkeypatch.setattr(api, "_get_auth", lambda **k: _AuthPi())
+    r = api.resultado_credencial()
+    assert not r["ok"] and r["tipo"] is None and "Pi" in r["reason"]
+    monkeypatch.setattr(api, "_get_auth", lambda **k: None)
+    r = api.resultado_credencial()
+    assert not r["ok"] and "sesión" in r["reason"]
+
+
+def test_subir_con_google_arranca(api, monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "_get_auth", lambda **k: _AuthGoogle())
+    monkeypatch.setattr(sr, "subir_resultado", lambda d, i, modo, a, **kw: _resumen(modo))
+    assert api.resultado_subir(str(tmp_path), 7, "urgencia", False) == {"started": True}
+
+
+def test_subir_sin_login_o_pi_no_crea_run_ni_cola(api, monkeypatch, tmp_path):
+    iniciados = []
+    monkeypatch.setattr(api, "_telemetria_resultado_iniciar", lambda *a: iniciados.append(a))
+    for auth in (None, _AuthPi()):
+        monkeypatch.setattr(api, "_get_auth", lambda auth=auth, **k: auth)
+        r = api.resultado_subir(str(tmp_path), 7)
+        assert r["started"] is False and r["reason"]
+    assert iniciados == [] and api.eventos == [] and cola_subidas.pendientes() == []
+    assert api._subiendo_resultado is False
+
+
+def test_inspeccionar_destino_bridge_exige_credencial(api, monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "_get_auth", lambda **k: None)
+    r = api.resultado_inspeccionar_destino(str(tmp_path), 7)
+    assert r["ok"] is False and r["error"]
+
+
+def test_prechequeo_bridge_delega_y_captura_errores(api, monkeypatch, tmp_path):
+    from atom_core import prechequeo_resultado as pr
+    monkeypatch.setattr(pr, "prechequear", lambda d: {"ok": True, "checks": []})
+    assert api.resultado_prechequeo(str(tmp_path)) == {"ok": True, "checks": []}
+
+    def boom(d):
+        raise ValueError("roto")
+    monkeypatch.setattr(pr, "prechequear", boom)
+    r = api.resultado_prechequeo(str(tmp_path))
+    assert r["ok"] is False and r["checks"][0]["estado"] == "error" and r["checks"][0]["detalle"] == "roto"
+
+
+def test_drenar_sin_credencial_no_suma_intento_ni_descarta(api, monkeypatch, tmp_path):
+    from atom_core.credencial import ESTADO_OK
+    monkeypatch.setattr(api._credencial, "actual", lambda: {"estado": ESTADO_OK})
+    monkeypatch.setattr(api, "_get_auth", lambda **k: None)
+    cola_subidas.encolar(str(tmp_path), "@resultado", 7, tipo="resultado")
+    for _ in range(sr_max()):
+        assert api.cloud_drenar() == {"lanzados": 0}
+    pend = cola_subidas.pendientes()
+    assert len(pend) == 1 and not pend[0].get("intentos")
+
+
+def sr_max():
+    return aw.MAX_INTENTOS_RESULTADO + 1

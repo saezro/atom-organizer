@@ -11,6 +11,9 @@ vi.mock('../bridge', () => ({
     analisisCancel: vi.fn().mockResolvedValue({ ok: true }),
     resultadoSubir: vi.fn().mockResolvedValue({ started: true }),
     resultadoCancelar: vi.fn().mockResolvedValue({ ok: true }),
+    resultadoCredencial: vi.fn().mockResolvedValue({ ok: true }),
+    resultadoPrechequeo: vi.fn().mockResolvedValue({ ok: true, checks: [] }),
+    resultadoInspeccionarDestino: vi.fn().mockResolvedValue({ existe: false }),
   },
   onResultado: () => () => {},
   onAnalisis: (h) => {

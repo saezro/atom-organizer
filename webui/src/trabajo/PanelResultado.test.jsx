@@ -5,6 +5,9 @@ vi.mock('../bridge', () => ({
   api: {
     resultadoSubir: vi.fn().mockResolvedValue({ started: true }),
     resultadoCancelar: vi.fn().mockResolvedValue({ ok: true }),
+    resultadoCredencial: vi.fn().mockResolvedValue({ ok: true }),
+    resultadoPrechequeo: vi.fn().mockResolvedValue({ ok: true, checks: [] }),
+    resultadoInspeccionarDestino: vi.fn().mockResolvedValue({ existe: false, n_objetos: 0, bytes: 0, sobrescribe: [] }),
   },
   onResultado: (h) => {
     const w = (e) => h(e.detail)
@@ -17,7 +20,22 @@ import PanelResultado, { textoProgreso, textoVelocidad, textoEta } from './Panel
 
 const emitir = (detail) => act(() => { window.dispatchEvent(new CustomEvent('atom:resultado', { detail })) })
 
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.clearAllMocks()
+  api.resultadoCredencial.mockResolvedValue({ ok: true })
+  api.resultadoPrechequeo.mockResolvedValue({ ok: true, checks: [] })
+  api.resultadoInspeccionarDestino.mockResolvedValue({ existe: false, n_objetos: 0, bytes: 0, sobrescribe: [] })
+})
+
+// Publicar ahora pasa por el aviso pre-subida: pulsar y confirmar.
+async function pulsarPublicar() {
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Publicar resultado' })).not.toBeDisabled())
+  fireEvent.click(screen.getByRole('button', { name: 'Publicar resultado' }))
+}
+async function publicar() {
+  await pulsarPublicar()
+  fireEvent.click(await screen.findByRole('button', { name: 'Confirmar y subir' }))
+}
 
 describe('textoProgreso', () => {
   it('formatea «urgentes X/Y · resto X/Y»', () => {
@@ -54,14 +72,14 @@ describe('PanelResultado', () => {
   it('con Urgencia por defecto, el botón lanza resultadoSubir(carpeta, id, urgencia, false)', async () => {
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     expect(screen.getByRole('radio', { name: 'Urgencia' })).toBeChecked()
-    fireEvent.click(screen.getByRole('button', { name: 'Publicar resultado' }))
+    await publicar()
     await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalledWith('/salida', 7, 'urgencia', false))
   })
 
   it('modo Normal manda «normal»', async () => {
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     fireEvent.click(screen.getByRole('radio', { name: 'Normal' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Publicar resultado' }))
+    await publicar()
     await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalledWith('/salida', 7, 'normal', false))
   })
 
@@ -132,7 +150,106 @@ describe('PanelResultado', () => {
   it('si resultadoSubir rechaza (kiosco sin el método) el error se ve', async () => {
     api.resultadoSubir.mockRejectedValueOnce(new Error('método no expuesto'))
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
-    fireEvent.click(screen.getByRole('button', { name: 'Publicar resultado' }))
+    await publicar()
     expect(await screen.findByText(/método no expuesto/)).toBeInTheDocument()
+  })
+
+  it('sin credencial el botón queda deshabilitado y se ve el motivo', async () => {
+    api.resultadoCredencial.mockResolvedValue({ ok: false, reason: 'Inicia sesión en la Suite' })
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    expect(await screen.findByText('Inicia sesión en la Suite')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Publicar resultado' })).toBeDisabled()
+  })
+
+  it('Publicar enseña el aviso con los checks y no sube hasta confirmar', async () => {
+    api.resultadoPrechequeo.mockResolvedValue({ ok: true, checks: [
+      { id: 'a', titulo: 'Carpeta con imágenes', estado: 'ok', detalle: '' },
+      { id: 'b', titulo: 'Metadatos', estado: 'aviso', detalle: 'faltan 2' },
+    ] })
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    await pulsarPublicar()
+    expect(await screen.findByText(/Carpeta con imágenes/)).toBeInTheDocument()
+    expect(screen.getByText(/faltan 2/)).toBeInTheDocument()
+    expect(api.resultadoPrechequeo).toHaveBeenCalledWith('/salida')
+    expect(api.resultadoInspeccionarDestino).toHaveBeenCalledWith('/salida', 7)
+    expect(api.resultadoSubir).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar y subir' }))
+    await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalled())
+  })
+
+  it('con un check en error hace falta la casilla «subir igualmente»', async () => {
+    api.resultadoPrechequeo.mockResolvedValue({ ok: false, checks: [{ id: 'x', titulo: 'Planta', estado: 'error', detalle: 'no coincide' }] })
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    await pulsarPublicar()
+    const confirmar = await screen.findByRole('button', { name: 'Confirmar y subir' })
+    expect(confirmar).toBeDisabled()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Subir igualmente' }))
+    expect(confirmar).not.toBeDisabled()
+    fireEvent.click(confirmar)
+    await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalled())
+  })
+
+  it('muestra la sobrescritura si el destino ya existe', async () => {
+    api.resultadoInspeccionarDestino.mockResolvedValue({
+      existe: true, n_objetos: 120, bytes: 2.5e9, sobrescribe: ['TERMICA', 'RGB'], detalle: '' })
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    await pulsarPublicar()
+    expect(await screen.findByText(/Ya hay 120 objetos \/ 2\.5 GB en el bucket; se sobrescriben: TERMICA, RGB/)).toBeInTheDocument()
+  })
+
+  it('started:false muestra el reason', async () => {
+    api.resultadoSubir.mockResolvedValueOnce({ started: false, reason: 'Ya hay una subida en curso' })
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    await publicar()
+    expect(await screen.findByText('Ya hay una subida en curso')).toBeInTheDocument()
+  })
+
+  it('variante ya-organizado se indica en el panel', () => {
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready variante="ya-organizado" />)
+    expect(screen.getByText(/ya organizada, sin volver a organizar/)).toBeInTheDocument()
+  })
+
+  it('si resultadoCredencial lanza, no se asume ok: botón deshabilitado y motivo visible', async () => {
+    api.resultadoCredencial.mockRejectedValue(new Error('sin red'))
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    expect(await screen.findByText('No se pudo comprobar el login: sin red')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Publicar resultado' })).toBeDisabled()
+  })
+
+  it('prechequeo con forma inesperada: error visible, sin aviso ni subida', async () => {
+    api.resultadoPrechequeo.mockResolvedValue([])
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    await pulsarPublicar()
+    expect(await screen.findByText(/Respuesta inesperada del prechequeo/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Confirmar y subir' })).toBeNull()
+  })
+
+  it('inspeccionar destino con ok:false muestra el error y exige «subir igualmente»', async () => {
+    api.resultadoInspeccionarDestino.mockResolvedValue({ ok: false, error: 'bucket inaccesible', existe: false })
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    await pulsarPublicar()
+    expect(await screen.findByText('bucket inaccesible')).toBeInTheDocument()
+    const confirmar = screen.getByRole('button', { name: 'Confirmar y subir' })
+    expect(confirmar).toBeDisabled()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Subir igualmente' }))
+    expect(confirmar).not.toBeDisabled()
+  })
+
+  it('recomprueba la credencial al pulsar Publicar y no continúa si caducó', async () => {
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Publicar resultado' })).not.toBeDisabled())
+    api.resultadoCredencial.mockResolvedValue({ ok: false, reason: 'Sesión caducada' })
+    fireEvent.click(screen.getByRole('button', { name: 'Publicar resultado' }))
+    expect(await screen.findByText('Sesión caducada')).toBeInTheDocument()
+    expect(api.resultadoPrechequeo).not.toHaveBeenCalled()
+  })
+
+  it('recomprueba la credencial al volver el foco a la ventana', async () => {
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Publicar resultado' })).not.toBeDisabled())
+    api.resultadoCredencial.mockResolvedValue({ ok: false, reason: 'Login perdido' })
+    act(() => { window.dispatchEvent(new Event('focus')) })
+    expect(await screen.findByText('Login perdido')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Publicar resultado' })).toBeDisabled()
   })
 })
