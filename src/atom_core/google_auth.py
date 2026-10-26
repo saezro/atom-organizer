@@ -121,6 +121,14 @@ class AuthError(RuntimeError):
     """Fallo de autenticación que el usuario puede entender y corregir."""
 
 
+class RateLimitAuthError(AuthError):
+    """La Suite limitó la petición (429). `retry_after` en segundos (o None)."""
+
+    def __init__(self, msg: str, retry_after: float | None = None) -> None:
+        super().__init__(msg)
+        self.retry_after = retry_after
+
+
 @dataclass
 class Identity:
     email: str
@@ -986,6 +994,14 @@ class GoogleAuth:
                         detalle, f"ATOM Suite rechazó la petición ({exc.code}): {detalle}")) from exc
             if exc.code == 403:
                 raise AuthError(f"Acceso denegado a GCS: {detalle}") from exc
+            if exc.code == 429:
+                try:
+                    espera = float(exc.headers.get("Retry-After") or 60)
+                except (TypeError, ValueError, AttributeError):
+                    espera = 60.0
+                raise RateLimitAuthError(
+                    f"ATOM Suite limita las peticiones de token (429): {detalle}",
+                    retry_after=espera) from exc
             if exc.code == 404 and ambito:
                 raise AuthError(f"Planta no encontrada: {detalle}") from exc
             if exc.code == 400 and ambito:

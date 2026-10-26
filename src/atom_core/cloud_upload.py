@@ -108,6 +108,20 @@ DEFAULT_CONCURRENCY = 16
 
 TIMEOUT = 60
 MAX_RETRIES = 5
+# Ficheros seguidos con 403 persistente (tras refrescar el token) a partir de
+# los cuales se aborta toda la subida en vez de reintentar los miles restantes.
+MAX_403_CONSECUTIVOS = 3
+# Un refresco de token hecho hace menos de esto se reutiliza (ver
+# `GcsOAuthProvider.recover_auth`): N hilos con 403 = 1 petición a la Suite.
+REFRESCO_REUTILIZAR_S = 30.0
+# La Suite limita gcs-token (60/min): tras un 429 no se vuelve a pedir antes.
+ESPERA_429_MIN_S = 60.0
+# Tras un refresco fallido (no 429), los demás hilos no repiten la llamada
+# hasta pasado este backoff.
+REFRESCO_FALLO_BACKOFF_S = 5.0
+# Parámetros de query que NO son credencial y se pueden loguear.
+_QUERY_LOGUEABLE = {"ifgenerationmatch", "uploadtype", "name"}
+BODY_LOG_MAX = 500
 USER_AGENT = "ATOM-Organizer-Uploader"
 
 # Extensiones que forman parte de un vuelo. El resto (temporales del sistema,
@@ -133,6 +147,22 @@ class YaExiste(Exception):
 
     def __reduce__(self):  # picklable (pool de procesos)
         return (type(self), (self.remote,))
+
+
+class GcsRechazado(RuntimeError):
+    """GCS sigue contestando 403 tras refrescar el token: no es caducidad.
+
+    Es un permiso que falta (IAM del bucket / token acotado a otro prefijo).
+    No se reintenta; `upload_plan` corta la subida entera tras
+    `MAX_403_CONSECUTIVOS` ficheros así (ver ahí).
+    """
+
+    def __init__(self, motivo: str) -> None:
+        super().__init__(f"GCS rechaza la escritura (403): {motivo}")
+        self.motivo = motivo
+
+    def __reduce__(self):  # picklable (pool de procesos)
+        return (type(self), (self.motivo,))
 
 
 # --------------------------------------------------------------------------
@@ -620,6 +650,19 @@ class GcsOAuthProvider(UrlProvider):
         self.planta_id = planta_id
         self.ambito = ambito
         self.base = (base or self.BASE).rstrip("/")
+        # Refresco deduplicado entre hilos (ver `recover_auth`).
+        self._refresh_lock = threading.Lock()
+        self._ultimo_refresco = -1e9   # time.monotonic() del último refresco
+        self._sin_pedir_hasta = 0.0    # time.monotonic(): cooldown tras 429
+        # Generación del token: sube con cada refresco real. Cada hilo apunta
+        # la que usó en su última petición (`headers`) para que `recover_auth`
+        # sepa si el token reutilizable es más nuevo que el que dio el 403.
+        self._generacion = 0
+        self._tl = threading.local()
+        # Último refresco fallido (no 429): los hilos en espera no repiten la
+        # llamada en serie hasta pasado `_fallo_hasta`.
+        self._fallo_hasta = 0.0
+        self._fallo_exc: Exception | None = None
 
     @property
     def solo_crear(self) -> bool:
@@ -641,6 +684,7 @@ class GcsOAuthProvider(UrlProvider):
         return url
 
     def headers(self) -> dict[str, str]:
+        self._tl.generacion = self._generacion
         return {"Authorization": "Bearer " + token_gcs(
             self.auth, self.prefix, inspeccion_id=self.inspeccion_id,
             planta_id=self.planta_id, ambito=self.ambito)}
@@ -648,9 +692,46 @@ class GcsOAuthProvider(UrlProvider):
     def recover_auth(self) -> bool:
         # Fuerza el refresco; si el usuario revocó el acceso, `access_token`
         # levanta AuthError y la subida falla con un mensaje que se entiende.
-        token_gcs(self.auth, self.prefix, inspeccion_id=self.inspeccion_id,
-                  planta_id=self.planta_id, ambito=self.ambito,
-                  force_refresh=True)
+        #
+        # Con 16 hilos y un 403 general, cada uno pedía un token nuevo y la
+        # Suite (60/min) devolvía 429 en cascada. Ahora el refresco va bajo
+        # lock: quien llega y ve que otro hilo refrescó hace <30 s reutiliza
+        # ese token en vez de pedir otro. Tras un 429 de la Suite no se vuelve
+        # a pedir hasta pasada la espera (>=60 s o Retry-After): el hilo
+        # espera (bajo el lock, los demás también) y luego refresca de verdad,
+        # para no reintentar con el token caducado.
+        # El atajo de reutilizar solo vale si el token refrescado es más nuevo
+        # que el que usó este hilo en la petición que dio el 403.
+        with self._refresh_lock:
+            usada = getattr(self._tl, "generacion", 0)
+            ahora = time.monotonic()
+            if ahora < self._fallo_hasta and self._fallo_exc is not None:
+                raise self._fallo_exc
+            if ahora < self._sin_pedir_hasta:
+                time.sleep(self._sin_pedir_hasta - ahora)
+            elif (self._generacion > usada
+                    and ahora - self._ultimo_refresco < REFRESCO_REUTILIZAR_S):
+                return True
+            try:
+                token_gcs(self.auth, self.prefix,
+                          inspeccion_id=self.inspeccion_id,
+                          planta_id=self.planta_id, ambito=self.ambito,
+                          force_refresh=True)
+            except Exception as exc:
+                espera = getattr(exc, "retry_after", None)
+                if espera is not None:
+                    espera = max(float(espera), ESPERA_429_MIN_S)
+                    self._sin_pedir_hasta = time.monotonic() + espera
+                    _log.warning("la Suite limita gcs-token (429): no pido "
+                                 "otro token en %.0fs", espera)
+                else:
+                    self._fallo_hasta = time.monotonic() + REFRESCO_FALLO_BACKOFF_S
+                    self._fallo_exc = exc
+                raise
+            self._ultimo_refresco = time.monotonic()
+            self._generacion += 1
+            self._fallo_exc = None
+            self._tl.generacion = self._generacion
         return True
 
     def listar_remotos(self, prefix: str) -> dict[str, RemoteObject] | None:
@@ -839,6 +920,46 @@ class Manifest:
 # Subida de un fichero (protocolo resumable de GCS)
 # --------------------------------------------------------------------------
 
+def _url_sin_credenciales(url: str) -> str:
+    """URL para log: objeto + solo los parámetros que no son firma/token."""
+    parts = urllib.parse.urlsplit(url)
+    query = urllib.parse.urlencode(
+        [(k, v) for k, v in urllib.parse.parse_qsl(parts.query)
+         if k.lower() in _QUERY_LOGUEABLE])
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path,
+                                    query, ""))
+
+
+def _body_de_error(exc: urllib.error.HTTPError) -> str:
+    """Primeros `BODY_LOG_MAX` caracteres del body de la respuesta (cacheado).
+
+    GCS da ahí el motivo real («does not have storage.objects.create access»);
+    `HTTPError.__str__` solo dice «HTTP Error 403: Forbidden».
+    """
+    cached = getattr(exc, "gcs_body", None)
+    if cached is not None:
+        return cached
+    try:
+        texto = exc.read(BODY_LOG_MAX * 4).decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 - diagnóstico, nunca debe fallar
+        texto = ""
+    texto = " ".join(texto.split())[:BODY_LOG_MAX]
+    try:
+        exc.gcs_body = texto  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        pass
+    return texto
+
+
+def _log_http_error(method: str, url: str, exc: urllib.error.HTTPError) -> None:
+    """Deja en el log qué petición falló y por qué. Nunca el Bearer."""
+    if exc.code in (308, 412):  # protocolo normal, no son fallos
+        return
+    _log.error("GCS %s %s -> %d %s | body: %s", method,
+               _url_sin_credenciales(url), exc.code, exc.reason,
+               _body_de_error(exc))
+
+
 def _open_session(url: str, extra: dict[str, str] | None = None,
                   content_type: str = "application/octet-stream") -> str:
     """Inicia la sesión resumable y devuelve la URI de sesión."""
@@ -854,8 +975,12 @@ def _open_session(url: str, extra: dict[str, str] | None = None,
             **(extra or {}),
         },
     )
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-        location = resp.headers.get("Location")
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            location = resp.headers.get("Location")
+    except urllib.error.HTTPError as exc:
+        _log_http_error("POST", url, exc)
+        raise
     if not location:
         raise RuntimeError("GCS no devolvió Location al abrir la sesión resumable")
     return location
@@ -922,6 +1047,7 @@ def _put_chunk(session_uri: str, chunk: bytes, start: int, total: int,
     except urllib.error.HTTPError as exc:
         if exc.code == 308:
             return False  # aceptado, faltan trozos
+        _log_http_error("PUT", session_uri, exc)
         raise
 
 
@@ -978,6 +1104,7 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
     session_uri: str | None = None
     delay = 1.0
     empezado = time.monotonic()
+    refrescado_403 = False
 
     for attempt in range(MAX_RETRIES):
         try:
@@ -1017,6 +1144,9 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
                     # GB el token puede caducar entre el primero y el último.
                     _put_chunk(session_uri, chunk, offset, total, provider.headers())
                     offset += len(chunk)
+                    # Trozo aceptado: el token funciona; un 403 posterior
+                    # (caducidad en ficheros de horas) vuelve a poder refrescar.
+                    refrescado_403 = False
                     if on_bytes is not None:
                         on_bytes(len(chunk))
 
@@ -1029,6 +1159,12 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
         except (InterruptedError, YaExiste):
             raise
         except Exception as exc:  # noqa: BLE001 - se reclasifica justo debajo
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 403:
+                if refrescado_403:
+                    # Ya se refrescó el token y GCS sigue diciendo 403: no es
+                    # caducidad sino un permiso que falta. Reintentar no sirve.
+                    raise GcsRechazado(_body_de_error(exc) or str(exc)) from exc
+                refrescado_403 = True
             if attempt == MAX_RETRIES - 1 or not _is_retryable(exc):
                 _log.error("%s FALLA definitivamente tras %d intento(s): %s: %s",
                            item.remote, attempt + 1, type(exc).__name__, exc)
@@ -1053,6 +1189,8 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
                                   item.remote)
                 except Exception as exc2:  # noqa: BLE001 - el error original manda
                     session_uri = None
+                    # El refresco no llegó a hacerse: este 403 no es definitivo.
+                    refrescado_403 = False
                     _log.warning("%s: no se pudo recuperar la autorización (%s)",
                                  item.remote, exc2)
             time.sleep(delay)
@@ -1086,6 +1224,9 @@ class UploadResult:
     # Si se pudo consultar el bucket. False = se subió a ciegas, fiándose solo
     # del manifiesto local, y por tanto el `skipped` puede quedarse corto.
     reconciliado: bool = False
+    # Mensaje si la subida se cortó entera por 403 persistente de GCS
+    # (`MAX_403_CONSECUTIVOS`); None si no hubo corte.
+    abortado: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -1238,14 +1379,32 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
         with sent_lock:
             counter["retries"] += 1
 
+    # Circuit breaker: 403 persistente (tras refrescar) en K ficheros seguidos.
+    cb = {"seguidos": 0, "motivo": None}
+
+    def _parar() -> bool:
+        return cb["motivo"] is not None or bool(should_stop and should_stop())
+
     def _one(item: UploadItem) -> tuple[UploadItem, str | None, str | None, bool]:
+        if cb["motivo"] is not None:
+            return item, None, "cancelado", False
         try:
             md5 = upload_file(item, provider, on_bytes=_bump,
-                              should_stop=should_stop, on_retry=_retry)
+                              should_stop=_parar, on_retry=_retry)
+            with sent_lock:
+                cb["seguidos"] = 0
             return item, md5, None, False
+        except GcsRechazado as exc:
+            with sent_lock:
+                cb["seguidos"] += 1
+                if cb["seguidos"] >= MAX_403_CONSECUTIVOS and cb["motivo"] is None:
+                    cb["motivo"] = str(exc)
+            return item, None, f"{type(exc).__name__}: {exc}", False
         except InterruptedError:
             return item, None, "cancelado", False
         except YaExiste:
+            with sent_lock:
+                cb["seguidos"] = 0
             # Ya estaba en el destino: ni error ni subida. No se toca el
             # manifiesto porque no se ha visto el MD5 del objeto remoto, y
             # apuntar el local haría pasar por verificado algo que no lo está;
@@ -1253,6 +1412,8 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
             _log.info("%s ya estaba en el bucket (412), lo salto", item.remote)
             return item, None, None, True
         except Exception as exc:  # noqa: BLE001 - se reporta, no se traga
+            with sent_lock:
+                cb["seguidos"] = 0
             return item, None, f"{type(exc).__name__}: {exc}", False
 
     try:
@@ -1260,6 +1421,8 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
             futures = [pool.submit(_one, item) for item in pending]
             for fut in as_completed(futures):
                 item, md5, err, ya_estaba = fut.result()
+                if cb["motivo"] is not None and err == "cancelado":
+                    continue  # víctima del corte, no un fallo propio
                 if ya_estaba:
                     result.skipped += 1
                     result.skipped_precondicion += 1
@@ -1271,6 +1434,15 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
 
                 counter["files"] += 1
                 _avisar()
+                if cb["motivo"] is not None and result.abortado is None:
+                    result.abortado = (f"{cb['motivo']} · subida abortada tras "
+                                       f"{MAX_403_CONSECUTIVOS} ficheros seguidos")
+                    _log.error("ABORTO: %s", result.abortado)
+                    # No se cancelan los futures pendientes: `_one` ya devuelve
+                    # «cancelado» al ver `cb["motivo"]`, y `fut.result()` de un
+                    # future cancelado lanzaría CancelledError.
+                    if on_progress is not None:
+                        on_progress(f"ERROR: {result.abortado}")
                 if on_progress is not None and counter["files"] % 25 == 0:
                     done_gb = counter["bytes"] / 1024 ** 3
                     elapsed = max(time.monotonic() - started, 1e-6)
