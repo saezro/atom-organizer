@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
@@ -177,36 +179,79 @@ class Particion:
     conflictos: list = field(default_factory=list)  # [(remote, motivo)]
 
 
-def _mismo_contenido(item: cu.UploadItem, remoto: cu.RemoteObject, manifest: cu.Manifest) -> bool:
+def _necesita_md5(item: cu.UploadItem, remoto: cu.RemoteObject, manifest: cu.Manifest) -> bool:
+    """¿Hace falta leer el fichero del disco para decidir «mismo contenido»?"""
+    if remoto.size != item.size or not remoto.md5:
+        return False
+    return not (manifest.is_done(item) and manifest.md5_de(item) == remoto.md5)
+
+
+def _mismo_contenido(item: cu.UploadItem, remoto: cu.RemoteObject, manifest: cu.Manifest,
+                     md5_local: str | None = None) -> bool:
     """¿El objeto del bucket ES este fichero? Tamaño primero (gratis), luego MD5.
 
     Evita releer el disco: si el manifiesto recuerda el MD5 de cuando se subió y el
     fichero no ha cambiado (tamaño+mtime), basta compararlo con el del bucket. Un
-    objeto sin `md5Hash` (compuesto) solo se puede comparar por tamaño."""
+    objeto sin `md5Hash` (compuesto) solo se puede comparar por tamaño.
+    `md5_local` es el MD5 ya calculado (en paralelo) por `particionar`."""
     if remoto.size != item.size:
         return False
     if not remoto.md5:
         return True
     if manifest.is_done(item) and manifest.md5_de(item) == remoto.md5:
         return True
-    return cu._file_md5_b64(item.local) == remoto.md5
+    if md5_local is None:
+        md5_local = cu._file_md5_b64(item.local)
+    return md5_local == remoto.md5
 
 
-def particionar(items, remotos: dict, manifest: cu.Manifest, prefijo: str) -> Particion:
+def _calcular_md5s(items, remotos: dict, manifest: cu.Manifest, concurrency: int,
+                   on_progreso: Callable[[int, int], None] | None) -> dict:
+    """MD5 en paralelo de los ficheros que lo necesitan. Clave: `item.remote`.
+
+    Un error de lectura se propaga (no se da por «distinto» ni «igual» en silencio).
+    El progreso se emite como mucho una vez por segundo y siempre al terminar."""
+    todo = [it for it in items
+            if (r := remotos.get(it.remote)) is not None and _necesita_md5(it, r, manifest)]
+    md5s: dict[str, str] = {}
+    if not todo:
+        return md5s
+    total = len(todo)
+    ultimo = 0.0
+    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+        for n, (it, md5) in enumerate(
+                zip(todo, pool.map(lambda i: cu._file_md5_b64(i.local), todo)), 1):
+            md5s[it.remote] = md5
+            if on_progreso is not None:
+                ahora = time.monotonic()
+                if n == total or ahora - ultimo >= 1.0:
+                    ultimo = ahora
+                    on_progreso(n, total)
+    return md5s
+
+
+def particionar(items, remotos: dict, manifest: cu.Manifest, prefijo: str, *,
+                concurrency: int = cu.DEFAULT_CONCURRENCY,
+                on_progreso: Callable[[int, int], None] | None = None) -> Particion:
     """Parte `items` en pendientes / hechos / conflictos cruzando local y bucket.
 
     - No existe en el bucket → pendiente.
     - Mismo contenido → hecho (no se resube nada).
     - Contenido distinto: si es sobrescribible (`CSVs/`, `ESTADILLOS/`, `INDICE_*`) →
       pendiente con `sobrescribir=True`; si no → CONFLICTO, nunca se pisa.
+
+    Los MD5 que haga falta calcular se calculan en paralelo (`concurrency` hilos);
+    `on_progreso(hechos, total)` se llama durante esa fase (≤1/s).
     """
+    items = list(items)
     pref = prefijo.strip("/") + "/"
     p = Particion()
+    md5s = _calcular_md5s(items, remotos, manifest, concurrency, on_progreso)
     for it in items:
         remoto = remotos.get(it.remote)
         if remoto is None:
             p.pendientes.append(it)
-        elif _mismo_contenido(it, remoto, manifest):
+        elif _mismo_contenido(it, remoto, manifest, md5s.get(it.remote)):
             p.hechos.append(it)
         elif es_sobrescribible(it.remote[len(pref):]):
             p.pendientes.append(replace(it, sobrescribir=True))
@@ -353,10 +398,12 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
     resumen.urgentes.total = len(sel.urgentes)
     resumen.resto.total = len(sel.resto)
 
-    def emitir(fase: str, s: dict | None = None) -> None:
+    def emitir(fase: str, s: dict | None = None, comprobando: tuple | None = None) -> None:
         if on_estado is None:
             return
         on_estado({
+            "comprobando": ({"hechos": comprobando[0], "total": comprobando[1]}
+                            if comprobando else None),
             "modo": modo, "fase": fase,
             "urgentes": {"hechos": resumen.urgentes.hechos, "total": resumen.urgentes.total},
             "resto": {"hechos": resumen.resto.hechos, "total": resumen.resto.total},
@@ -366,39 +413,45 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
     grupos = [("urgentes", sel.urgentes)]
     if modo == MODO_NORMAL:
         grupos.append(("resto", sel.resto))
-    for nombre, items in grupos:
-        if should_stop is not None and should_stop():
-            resumen.cancelado = True
-            break
-        cont = getattr(resumen, nombre)
-        part = particionar(items, remotos, manifest, prefijo)
-        cont.hechos = len(part.hechos)
-        cont.pendientes = len(part.pendientes)
-        resumen.conflictos += part.conflictos
-        emitir(nombre)
-        if simular or not part.pendientes:
-            continue
-        base = cont.hechos
-        plan = cu.UploadPlan(root=destino, items=part.pendientes, prefix=prefijo.strip("/"))
+    try:
+        for nombre, items in grupos:
+            if should_stop is not None and should_stop():
+                resumen.cancelado = True
+                break
+            cont = getattr(resumen, nombre)
+            part = particionar(
+                items, remotos, manifest, prefijo, concurrency=concurrency,
+                on_progreso=lambda h, t, nombre=nombre: emitir(nombre, None, (h, t)))
+            cont.hechos = len(part.hechos)
+            cont.pendientes = len(part.pendientes)
+            resumen.conflictos += part.conflictos
+            emitir(nombre)
+            if simular or not part.pendientes:
+                continue
+            base = cont.hechos
+            plan = cu.UploadPlan(root=destino, items=part.pendientes, prefix=prefijo.strip("/"))
 
-        def _stats(s: dict, cont=cont, base=base, nombre=nombre) -> None:
-            cont.hechos = base + int(s.get("files_done", 0))
-            emitir(nombre, s)
+            def _stats(s: dict, cont=cont, base=base, nombre=nombre) -> None:
+                cont.hechos = base + int(s.get("files_done", 0))
+                emitir(nombre, s)
 
-        # `remotos={}`: la partición ya cruzó local y bucket. Con {} `reconciliar` deja los
-        # items tal cual (conserva `sobrescribir`) y no vuelve a listar.
-        res = subir(plan, proveedor, concurrency=concurrency, manifest=manifest,
-                    on_stats=_stats, should_stop=should_stop, remotos={})
-        cont.hechos = base + res.uploaded + res.skipped
-        resumen.fallidas += [f for f in res.failed if f[1] != "cancelado"]
-        if should_stop is not None and should_stop():
-            resumen.cancelado = True
-        else:
-            # Cortada sin que nadie lo pidiera: antes se filtraban y quedaba ok.
-            resumen.cancelados += [f[0] for f in res.failed if f[1] == "cancelado"]
-        emitir(nombre)
-        if resumen.cancelado or resumen.fallidas:
-            break
+            # `remotos={}`: la partición ya cruzó local y bucket. Con {} `reconciliar` deja los
+            # items tal cual (conserva `sobrescribir`) y no vuelve a listar.
+            res = subir(plan, proveedor, concurrency=concurrency, manifest=manifest,
+                        on_stats=_stats, should_stop=should_stop, remotos={})
+            cont.hechos = base + res.uploaded + res.skipped
+            resumen.fallidas += [f for f in res.failed if f[1] != "cancelado"]
+            if should_stop is not None and should_stop():
+                resumen.cancelado = True
+            else:
+                # Cortada sin que nadie lo pidiera: antes se filtraban y quedaba ok.
+                resumen.cancelados += [f[0] for f in res.failed if f[1] == "cancelado"]
+            emitir(nombre)
+            if resumen.cancelado or resumen.fallidas:
+                break
+    finally:
+        manifest.flush()  # `subir` puede ser ajeno a `upload_plan`: flush final siempre
+
     # Verificación FRESCA contra el bucket: un `res.ok` solo dice que no hubo
     # excepciones. Se cruzan todos los items de los grupos de este modo (menos los
     # conflictos, que ya hacen la subida no-ok y a propósito no se suben).

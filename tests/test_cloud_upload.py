@@ -263,7 +263,8 @@ def test_manifiesto_da_por_subido_lo_marcado(tmp_path):
     assert not man.is_done(item)
     man.mark(item, "md5==")
     assert man.is_done(item)
-    # Y sobrevive al cierre de la app: se relee del disco.
+    # Y sobrevive al cierre de la app: se relee del disco (tras el flush final).
+    man.flush()
     assert cu.Manifest(root / cu.Manifest.FILENAME).is_done(item)
 
 
