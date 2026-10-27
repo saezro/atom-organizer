@@ -73,6 +73,8 @@ const api = {
 // plan desde los tests que dependen de `plan?.ok`.
 vi.mock('../bridge', () => ({
   api,
+  // La pestaña «Subir resultado» (PanelResultado) está siempre montada en Trabajo.
+  onResultado: () => () => {},
   whenBridgeReady: () => Promise.resolve(),
   onProgress: () => () => {},
   onCloud: () => () => {},

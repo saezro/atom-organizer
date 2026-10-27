@@ -27,6 +27,8 @@ let handlerControlCarpeta = null
 
 vi.mock('./bridge', () => ({
   api,
+  // La pestaña «Subir resultado» (PanelResultado) está siempre montada en Trabajo.
+  onResultado: () => () => {},
   whenBridgeReady: () => Promise.resolve(),
   onProgress: () => () => {},
   onCloud: () => () => {},

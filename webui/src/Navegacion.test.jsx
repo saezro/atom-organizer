@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { SECTIONS } from './schema'
 
 const api = {
@@ -14,6 +14,8 @@ const api = {
 
 vi.mock('./bridge', () => ({
   api,
+  // La pestaña «Subir resultado» (PanelResultado) está siempre montada en Trabajo.
+  onResultado: () => () => {},
   whenBridgeReady: () => Promise.resolve(),
   onProgress: () => () => {},
   onCloud: () => () => {},
@@ -30,8 +32,9 @@ const App = (await import('./App')).default
 describe('Navegación', () => {
   it('tiene exactamente tres pestañas', async () => {
     render(<App />)
-    const tabs = await screen.findAllByRole('tab')
-    expect(tabs).toHaveLength(3)
+    // Solo la navegación principal; Trabajo trae además sus pestañas internas (Organizar | Subir resultado).
+    const nav = await screen.findByRole('tablist', { name: 'Secciones' })
+    expect(within(nav).getAllByRole('tab')).toHaveLength(3)
   })
 
   it('arranca en Trabajo', async () => {

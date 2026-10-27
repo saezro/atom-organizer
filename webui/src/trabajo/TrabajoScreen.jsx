@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import PasoCarpeta from './PasoCarpeta'
 import PasoInspeccion from './PasoInspeccion'
 import PasoEstadillo from './PasoEstadillo'
@@ -40,8 +40,22 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
   // elegida (cambiar de valor basta, no importa a qué).
   const [inspeccionReloadToken, setInspeccionReloadToken] = useState(0)
 
-  // Flujo mínimo «Subir ya organizado»: solo carpeta final + inspección.
-  const [yaOrganizado, setYaOrganizado] = useState(false)
+  // Pestañas: «Organizar» (carpeta → inspección → estadillo → destino) y «Subir resultado»
+  // (subir al bucket la carpeta ya organizada, venga de organizar aquí o de antes).
+  const [pestana, setPestana] = useState('organizar')
+  // Carpeta organizada que ofrece la pestaña Organizar (su «Carpeta final») y la que el
+  // usuario fije a mano en Subir resultado (manda sobre la anterior).
+  const [destinoOrganizado, setDestinoOrganizado] = useState('')
+  const [carpetaSalida, setCarpetaSalida] = useState('')
+  // Inspección de la pestaña Subir: sigue a la elegida en Organizar mientras nadie la toque aquí;
+  // si el usuario la elige en esta pestaña manda la suya (subir algo ya organizado antes, sin
+  // pasar por Organizar).
+  const [inspSub, setInspSub] = useState(null) // null | {prefijo, elegida} elegida a mano en Subir
+  const nuevoDestino = useCallback((d) => { setDestinoOrganizado(d); setCarpetaSalida('') }, [])
+  // Actividad de la subida del resultado, para el punto/porcentaje de la pestaña.
+  const [actividad, setActividad] = useState({ subiendo: false, pct: 0, error: false })
+
+  const irASubir = () => setPestana('subir')
 
   const ocupado = running || subidaOcupada
   // Sin módulo estadillos no hay paso de estadillo: se trata como «subir sin
@@ -51,37 +65,35 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
   const auto = useEstadilloAuto(carpeta, !verEstadillos)
   const est = verEstadillos ? estadillo : { ...ESTADILLO_OMITIDO, rutas: auto.rutas }
 
-  if (yaOrganizado) {
-    return (
-      <div className="card">
-        <div className="field-row">
-          <button type="button" className="btn-ghost" onClick={() => setYaOrganizado(false)}>Volver</button>
-        </div>
-        <PasoCarpeta label="Carpeta final (ya organizada)" value={carpeta} onChange={setCarpeta} disabled={ocupado} />
-        <PasoInspeccion
-          ready={ready}
-          prefijo={prefijo}
-          carpeta={carpeta}
-          estadilloRutas={[]}
-          onChange={(p, e) => {
-            setPrefijo(p)
-            setElegida(e)
-          }}
-          disabled={ocupado}
-          reloadToken={inspeccionReloadToken}
-        />
-        <PanelResultado carpeta={carpeta} inspeccionId={elegida?.id ?? null} ready={ready} variante="ya-organizado" />
-      </div>
-    )
-  }
+  const carpetaResultado = carpetaSalida || destinoOrganizado
+  const inspResultado = inspSub ? inspSub.elegida : elegida
+  const subiendoResultado = actividad.subiendo
 
   return (
     <div className="card">
       {verOrganizer && (
-        <div className="field-row">
-          <button type="button" className="btn-ghost" onClick={() => setYaOrganizado(true)} disabled={ocupado}>Subir ya organizado</button>
-        </div>
+        <nav className="seg seg-sub" role="tablist" aria-label="Trabajo">
+          <button type="button" role="tab" id="tab-organizar" aria-controls="panel-organizar"
+            aria-selected={pestana === 'organizar'} className={'seg-btn' + (pestana === 'organizar' ? ' active' : '')}
+            onClick={() => setPestana('organizar')}>
+            Organizar
+          </button>
+          <button type="button" role="tab" id="tab-subir" aria-controls="panel-subir"
+            aria-selected={pestana === 'subir'} className={'seg-btn' + (pestana === 'subir' ? ' active' : '')}
+            onClick={irASubir}>
+            Subir resultado
+            {subiendoResultado && (
+              <>
+                <span className="seg-punto" aria-hidden="true" />
+                <span className="seg-pct" aria-label={`Subiendo, ${actividad.pct} por ciento`}>{actividad.pct} %</span>
+              </>
+            )}
+            {!subiendoResultado && actividad.error && <span className="seg-punto seg-punto-error" role="img" aria-label="Error en la última subida" />}
+          </button>
+        </nav>
       )}
+
+      <div role="tabpanel" id="panel-organizar" aria-labelledby="tab-organizar" hidden={verOrganizer && pestana !== 'organizar'} className="trabajo-panel">
       <PasoCarpeta label="Carpeta del vuelo" value={carpeta} onChange={setCarpeta} disabled={ocupado} />
       <PasoInspeccion
         ready={ready}
@@ -145,7 +157,10 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
       </div>
 
       {carpeta && destino === 'local' && (
-        <PanelOrganizar origen={carpeta} estadillos={est.rutas} inspeccion={elegida} ready={ready} running={running} onRun={onRun} />
+        <PanelOrganizar
+          origen={carpeta} estadillos={est.rutas} inspeccion={elegida} ready={ready} running={running} onRun={onRun}
+          onDestino={nuevoDestino} onVerSubida={irASubir}
+        />
       )}
 
       {carpeta && destino === 'bucket' && (
@@ -176,6 +191,35 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
         />
       )}
       </>)}
+      </div>
+
+      {/* Siempre montada (oculta si no es su pestaña): conserva la gráfica y recibe la subida
+          automática que se lanza al terminar de organizar aunque no se haya abierto. */}
+      {verOrganizer && (
+        <div role="tabpanel" id="panel-subir" aria-labelledby="tab-subir" hidden={pestana !== 'subir'} className="trabajo-panel">
+          {pestana === 'subir' && (
+            <>
+              <PasoCarpeta label="Carpeta del resultado organizado" value={carpetaResultado} onChange={setCarpetaSalida} disabled={ocupado || subiendoResultado} />
+              <PasoInspeccion
+                ready={ready}
+                prefijo={inspSub ? inspSub.prefijo : prefijo}
+                carpeta={carpetaResultado}
+                estadilloRutas={[]}
+                onChange={(p, e) => setInspSub({ prefijo: p, elegida: e })}
+                disabled={ocupado || subiendoResultado}
+                reloadToken={inspeccionReloadToken}
+              />
+            </>
+          )}
+          <PanelResultado
+            carpeta={carpetaResultado}
+            inspeccionId={inspResultado?.id ?? null}
+            ready={ready}
+            variante={destinoOrganizado && carpetaResultado === destinoOrganizado ? 'tras-organizar' : 'ya-organizado'}
+            onActividad={setActividad}
+          />
+        </div>
+      )}
     </div>
   )
 }

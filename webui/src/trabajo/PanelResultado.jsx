@@ -1,5 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api, onResultado } from '../bridge'
+import GraficaSubida from './GraficaSubida'
+import { añadirMuestra, diagnosticarCuello, estadisticasSerie } from './subidaMedicion'
+
+const nf = (n, d = 1) => Number(n).toLocaleString('es-ES', { minimumFractionDigits: d, maximumFractionDigits: d })
+const miles = (n) => Number(n || 0).toLocaleString('es-ES')
 
 // mm:ss (o h:mm si pasa de la hora); '' si aún no hay estimación.
 export function textoEta(seg) {
@@ -15,8 +20,8 @@ export function textoEta(seg) {
 // `mbps` del backend son megabITS/s; al operario se le enseñan MB/s (megabytes).
 export function textoVelocidad(e) {
   if (!e || e.mbps == null || e.fase === 'listando' || e.comprobando) return ''
-  const partes = [`${(e.mbps / 8).toFixed(1)} MB/s`]
-  if (e.files_per_s != null) partes.push(`${e.files_per_s.toFixed(1)} img/s`)
+  const partes = [`${nf(e.mbps / 8)} MB/s`]
+  if (e.files_per_s != null) partes.push(`${nf(e.files_per_s)} img/s`)
   const eta = textoEta(e.eta)
   if (eta) partes.push(`ETA ~${eta}`)
   return partes.join(' · ')
@@ -29,13 +34,10 @@ export function textoProgreso(e) {
   return `urgentes ${e.urgentes.hechos}/${e.urgentes.total} · resto ${e.resto.hechos}/${e.resto.total}`
 }
 
-// Subida del resultado organizado al bucket de plantas. Se dispara sola al terminar
-// cada run (urgencia y, después, normal en segundo plano); este panel es el botón
-// manual, el selector de modo y el estado.
 export function textoBytes(b) {
   if (b == null || !Number.isFinite(b)) return ''
-  if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB`
-  if (b >= 1e6) return `${(b / 1e6).toFixed(1)} MB`
+  if (b >= 1e9) return `${nf(b / 1e9)} GB`
+  if (b >= 1e6) return `${nf(b / 1e6)} MB`
   return `${Math.round(b / 1e3)} KB`
 }
 
@@ -56,31 +58,89 @@ export function textoDuracion(seg) {
 }
 
 const ETIQ_TIPO = { tiff_termica: 'TIFF térmica', termica_jpg: 'Térmica JPG', rgb_crops: 'RGB crops', rgb: 'RGB', csv: 'CSV', estadillos: 'Estadillos', otros: 'Otros' }
-const miles = (n) => Number(n || 0).toLocaleString('es-ES')
+const ETIQ_ESTADO = { ok: 'OK', aviso: 'Aviso', error: 'Error', no_comprobable: 'No comprobable' }
+
+const sumaDesgloses = (grupos, clave) => {
+  const out = {}
+  for (const [, g] of grupos) {
+    for (const [k, v] of Object.entries(g[clave] || {})) {
+      const d = out[k] || (out[k] = { ficheros: 0, bytes: 0 })
+      d.ficheros += v.ficheros || 0
+      d.bytes += v.bytes || 0
+    }
+  }
+  return out
+}
 
 // Resumen de una pasada a partir de `metricas` del backend. Urgentes y resto por separado.
+// `titulo` = «12.122 ficheros · 23,7 GB · 17 min 32 s · 22,6 MB/s · 28 vuelos».
 export function resumenMetricas(m) {
   if (!m) return null
   const grupos = ['urgentes', 'resto'].map((k) => (m[k] ? [k, m[k]] : null)).filter(Boolean)
   if (!grupos.length) return null
   const subidos = grupos.reduce((a, [, g]) => a + (g.subidos || 0), 0)
   const bytes = grupos.reduce((a, [, g]) => a + (g.bytes_subidos || 0), 0)
-  const vuelos = Math.max(0, ...grupos.map(([, g]) => g.vuelos || 0))
+  const porTipo = sumaDesgloses(grupos, 'subidos_por_tipo')
+  const porVuelo = sumaDesgloses(grupos, 'subidos_por_vuelo')
+  // Con desglose de lo subido, vuelos = los que tuvieron ficheros subidos; sin él (backend
+  // antiguo) solo se sabe el máximo de las dos selecciones.
+  const vuelos = Object.keys(porVuelo).length || Math.max(0, ...grupos.map(([, g]) => g.vuelos || 0))
   const dur = m.duracion_s
   const mbs = dur > 0 ? bytes / 1e6 / dur : null
   const partes = [`${miles(subidos)} ficheros`, textoBytes(bytes)]
   if (dur != null) partes.push(textoDuracion(dur))
-  if (mbs != null) partes.push(`${mbs.toFixed(1)} MB/s`)
+  if (mbs != null) partes.push(`${nf(mbs)} MB/s`)
   if (vuelos) partes.push(`${vuelos} vuelos`)
-  return { titulo: partes.join(' · '), grupos }
+  return { titulo: partes.join(' · '), grupos, subidos, bytes, dur, mbs, vuelos, porTipo, porVuelo }
 }
 
-const ETIQ_ESTADO = { ok: 'OK', aviso: 'Aviso', error: 'Error', no_comprobable: 'No comprobable' }
+function Kpi({ etiqueta, valor, sub }) {
+  return (
+    <div className="sub-kpi">
+      <span className="sub-kpi-etq">{etiqueta}</span>
+      <span className="sub-kpi-val">{valor}</span>
+      {sub && <span className="sub-kpi-sub">{sub}</span>}
+    </div>
+  )
+}
 
-// `variante`: 'tras-organizar' (por defecto, dentro de PanelOrganizar) o
-// 'ya-organizado' (flujo «Subir ya organizado» de TrabajoScreen). Mismo panel,
-// solo cambia el texto de ayuda.
-export default function PanelResultado({ carpeta, inspeccionId, ready, variante = 'tras-organizar' }) {
+function Barra({ pct }) {
+  const p = Math.max(0, Math.min(100, pct))
+  return (
+    <div className="sub-barra" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(p)} aria-label="Progreso de la subida">
+      <div className="sub-barra-relleno" style={{ width: `${p}%` }} />
+    </div>
+  )
+}
+
+function Cuello({ diag }) {
+  if (!diag) return null
+  const visibles = diag.partes.filter((p) => p.pct >= 0.5)
+  return (
+    <div className={`sub-cuello sub-cuello-${diag.clave}`} role="group" aria-label="Cuello de botella">
+      <div className="sub-cuello-cab">
+        <span className="sub-cuello-etq">Cuello de botella</span>
+        <strong className="sub-cuello-titulo">{diag.titulo}</strong>
+      </div>
+      <span className="sub-cuello-detalle">{diag.detalle}</span>
+      {visibles.length > 0 && diag.clave !== 'medir' && (
+        <>
+          <div className="sub-reparto" aria-hidden="true">
+            {visibles.map((p) => <span key={p.clave} className={`sub-reparto-${p.clave}`} style={{ width: `${p.pct}%` }} title={`${p.label}: ${nf(p.pct, 0)} %`} />)}
+          </div>
+          <ul className="sub-reparto-leyenda">
+            {visibles.map((p) => <li key={p.clave}><i className={`sub-reparto-${p.clave}`} />{p.label} {nf(p.pct, 0)} %</li>)}
+          </ul>
+        </>
+      )}
+      <span className="sub-cuello-nota">{diag.advertencia}</span>
+    </div>
+  )
+}
+
+// `onActividad({subiendo, pct, error})` avisa a quien pinta la pestaña (punto de actividad).
+// El panel se queda montado aunque su pestaña no esté a la vista para no perder la gráfica.
+export default function PanelResultado({ carpeta, inspeccionId, ready, variante = 'tras-organizar', onActividad }) {
   const [modo, setModo] = useState('urgencia')
   const [subiendo, setSubiendo] = useState(false)
   const [estado, setEstado] = useState(null)
@@ -95,21 +155,21 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
   // Desglose del destino (derivado del bucket, sobrevive a reiniciar la app).
   const [desglose, setDesglose] = useState(null)
   const [tick, setTick] = useState(0)
-  // Cronómetro y velocidad media de la subida en curso.
+  // Cronómetro de la subida en curso y serie para la gráfica.
   const [inicio, setInicio] = useState(null)
   const [ahora, setAhora] = useState(0)
-  const [muestras, setMuestras] = useState([])
+  const [serie, setSerie] = useState([])
 
   useEffect(
     () =>
       onResultado((d) => {
         switch (d.kind) {
           case 'start':
-            setSubiendo(true); setError(''); setAviso(''); setResumen(null); setInicio(Date.now()); setAhora(Date.now()); setMuestras([])
+            setSubiendo(true); setError(''); setAviso(''); setResumen(null); setEstado(null); setInicio(Date.now()); setAhora(Date.now()); setSerie([])
             break
           case 'estado':
             setSubiendo(true); setEstado(d)
-            if (d.mbps != null) setMuestras((m) => [...m.slice(-199), d.mbps])
+            setSerie((s) => añadirMuestra(s, d))
             break
           case 'done':
             setEstado(d)
@@ -172,7 +232,8 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
   }, [ready, carpeta, inspeccionId, sinCred, subiendo, tick])
   const puede = ready && carpeta && inspeccionId && !subiendo && !sinCred
 
-  async function revisar() {
+  async function revisar(m = 'urgencia') {
+    setModo(m)
     setError('')
     setIgualmente(false)
     setPrevia({ cargando: true })
@@ -214,47 +275,99 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
   const rest = desglose?.resto
   const nResto = rest ? rest.pendientes + rest.distintos : 0
   const card = resumen ? resumenMetricas(resumen.metricas) : null
-  const mediaMBs = muestras.length ? muestras.reduce((a, b) => a + b, 0) / muestras.length / 8 : null
   const completa = resumen && resumen.ok && !resumen.cancelled
+  const est = useMemo(() => estadisticasSerie(serie), [serie])
+
+  // Progreso del modo en curso (urgencia = solo urgentes; normal = ambos).
+  const enNormal = estado?.modo === 'normal'
+  const fHechos = estado ? (estado.urgentes?.hechos || 0) + (enNormal ? estado.resto?.hechos || 0 : 0) : 0
+  const fTotal = estado ? (estado.urgentes?.total || 0) + (enNormal ? estado.resto?.total || 0 : 0) : 0
+  const pct = estado?.bytes_total > 0 ? (estado.bytes_done / estado.bytes_total) * 100 : fTotal > 0 ? (fHechos / fTotal) * 100 : 0
+  const preparando = estado && (estado.fase === 'listando' || estado.comprobando)
+
+  // Diagnóstico: en vivo con el último evento; al terminar, con las métricas finales.
+  const medidasDiag = resumen?.metricas?.medidas || estado?.medidas
+  const diag = useMemo(() => {
+    if (!medidasDiag) return null
+    const bytes = resumen?.metricas?.bytes_enviados ?? estado?.bytes_enviados ?? 0
+    return diagnosticarCuello({
+      medidas: medidasDiag, bytes,
+      mbpsMedio: est.media != null ? est.media * 8 : null,
+      ficheros: resumen?.metricas ? card?.subidos : estado?.ficheros_subidos,
+      hilosMax: resumen?.metricas?.hilos_max ?? estado?.hilos_max,
+    })
+  }, [medidasDiag, resumen, estado, est.media, card])
+
+  useEffect(() => {
+    if (onActividad) onActividad({ subiendo, pct: Math.round(pct), error: Boolean(error) })
+  }, [onActividad, subiendo, pct, error])
+
+  const bucketCol = (titulo, d) => (
+    <div className="sub-estado-col">
+      <span className="sub-estado-tit">{titulo}</span>
+      {d ? (
+        <>
+          <span className="sub-estado-num"><strong>{miles(d.en_bucket)}</strong> / {miles(d.total)} en bucket</span>
+          <span className={'sub-estado-sub' + (d.pendientes ? ' sub-pend' : '')}>
+            {d.pendientes ? `${miles(d.pendientes)} pendientes · ${textoBytes(d.bytes_pendientes)}` : 'Nada pendiente'}
+          </span>
+          {d.distintos > 0 && <span className="sub-estado-sub sub-aviso">{miles(d.distintos)} con otro tamaño en el bucket</span>}
+        </>
+      ) : <span className="sub-estado-sub">—</span>}
+    </div>
+  )
 
   return (
-    <div className="field">
-      <span className="field-label">Resultado en el bucket</span>
-      <div role="radiogroup" aria-label="Modo de subida" className="field-row">
-        {[['urgencia', 'Urgencia'], ['normal', 'Normal']].map(([v, t]) => (
-          <label key={v} className="check">
-            <input type="radio" name="modo-resultado" checked={modo === v} onChange={() => setModo(v)} disabled={subiendo} aria-label={t} />
-            <span>{t}</span>
-          </label>
-        ))}
-      </div>
-      {variante === 'ya-organizado' && (
-        <span className="field-hint">Se sube tal cual la carpeta ya organizada, sin volver a organizar.</span>
-      )}
-      <span className="field-hint">
-        Urgencia sube lo necesario para el análisis. Normal sube además el resto, sin repetir lo ya subido.
-      </span>
-      <div className="field-row">
-        <button type="button" className="btn-ghost" onClick={revisar} disabled={!puede || Boolean(previa)}>Publicar resultado</button>
-        {subiendo && <button type="button" className="btn-ghost" onClick={() => api.resultadoCancelar()}>Cancelar</button>}
-      </div>
-      {desglose && !subiendo && <span className="field-hint">{textoDesglose(desglose)}</span>}
-      {nResto > 0 && !subiendo && (
-        <div className="field-row">
-          <button type="button" className="btn-run" onClick={() => { setModo('normal'); lanzar('normal') }} disabled={!puede}>
-            Subir el resto ({nResto} ficheros · {textoBytes(rest.bytes_pendientes)})
-          </button>
-          <span className="field-hint">Modo normal: se omite lo que ya está en el bucket.</span>
+    <div className="sub" data-variante={variante}>
+      <header className="sub-cab">
+        <div className="sub-cab-tit">
+          <h3 className="sub-titulo">Resultado en el bucket</h3>
+          {estado?.prefix || previa?.destino?.prefijo ? (
+            <span className="sub-destino"><strong>Destino: gs://plantas_pv_nl/{(estado?.prefix || previa.destino.prefijo).replace(/^\/+|\/+$/g, '')}/</strong></span>
+          ) : (
+            <span className="sub-destino-vacio">
+              {variante === 'ya-organizado'
+                ? 'Se sube tal cual la carpeta ya organizada, sin volver a organizar.'
+                : 'Sube la carpeta organizada al bucket de la inspección.'}
+            </span>
+          )}
         </div>
-      )}
+        {!subiendo && puede && (
+          <button type="button" className="btn-ghost sub-actualizar" onClick={() => setTick((n) => n + 1)}>Actualizar estado</button>
+        )}
+      </header>
+
+      <div className="sub-estado" aria-label="Estado del bucket">
+        {bucketCol('Urgentes', desglose?.urgentes)}
+        {bucketCol('Resto', desglose?.resto)}
+        <div className="sub-estado-col">
+          <span className="sub-estado-tit">Conflictos</span>
+          <span className={'sub-estado-num' + (nConf ? ' sub-aviso' : '')}><strong>{resumen ? nConf : '—'}</strong>{resumen ? ' en la última pasada' : ''}</span>
+          <span className="sub-estado-sub">Existen con otro contenido; no se pisan.</span>
+        </div>
+      </div>
+      {desglose && <span className="sr-only">{textoDesglose(desglose)}</span>}
+
+      <div className="sub-acciones">
+        <button type="button" className="btn-run" onClick={() => revisar('urgencia')} disabled={!puede || Boolean(previa)}>Publicar urgentes</button>
+        <button type="button" className="btn-ghost" onClick={() => { setModo('normal'); lanzar('normal') }} disabled={!puede || !nResto}>
+          Subir el resto{nResto > 0 ? ` (${miles(nResto)} · ${textoBytes(rest.bytes_pendientes)})` : ''}
+        </button>
+        <button type="button" className="btn-ghost" onClick={() => revisar('normal')} disabled={!puede || Boolean(previa)}>Subir todo</button>
+        {subiendo && <button type="button" className="btn-ghost sub-cancelar" onClick={() => api.resultadoCancelar()}>Cancelar</button>}
+      </div>
+      <span className="field-hint">
+        Urgentes = lo necesario para el análisis. El resto se omite si ya está en el bucket; «Subir todo» hace ambos sin repetir.
+      </span>
+
       {cred && sinCred && <span className="field-hint hint-warn" role="alert">{cred.reason || 'No hay credencial para publicar.'}</span>}
       {previa?.cargando && <span className="field-hint" aria-live="polite">Revisando antes de subir…</span>}
       {previa && !previa.cargando && (() => {
         const hayError = previa.checks.some((c) => c.estado === 'error') || !previa.okPre || previa.destino?.ok === false
         const d = previa.destino
         return (
-          <div className="field" role="group" aria-label="Aviso antes de subir">
-            <span className="field-label">Antes de subir</span>
+          <div className="sub-previa" role="group" aria-label="Aviso antes de subir">
+            <span className="field-label">Antes de subir ({modo === 'normal' ? 'urgentes y resto' : 'solo urgentes'})</span>
             {previa.checks.map((c) => (
               <span key={c.id} className={`field-hint ${c.estado === 'ok' ? 'hint-ok' : c.estado === 'no_comprobable' ? '' : 'hint-warn'}`}>
                 <strong>{ETIQ_ESTADO[c.estado] || c.estado}</strong> · {c.titulo}{c.detalle ? `: ${c.detalle}` : ''}
@@ -286,32 +399,83 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
         )
       })()}
       {!(carpeta && inspeccionId) && <span className="field-hint">Elige la inspección y la carpeta de salida para poder publicar.</span>}
-      {subiendo && !estado && <span className="field-hint" aria-live="polite">Calculando…</span>}
-      {estado?.prefix && <span className="field-hint hint-destino"><strong>Destino: gs://plantas_pv_nl/{estado.prefix.replace(/^\/+|\/+$/g, '')}/</strong></span>}
-      {estado && <span className="field-hint" aria-live="polite">{textoProgreso(estado)}</span>}
-      {subiendo && inicio && (
-        <span className="field-hint" aria-live="off">
-          Transcurrido {textoDuracion((ahora - inicio) / 1000)}
-          {mediaMBs != null ? ` · velocidad media ${mediaMBs.toFixed(1)} MB/s` : ''}
-          {estado?.bytes_total ? ` · ${textoBytes(estado.bytes_done)} / ${textoBytes(estado.bytes_total)}` : ''}
-        </span>
+
+      {(subiendo || (estado && !resumen)) && (
+        <section className="sub-progreso" aria-label="Subida en curso">
+          <div className="sub-progreso-cab">
+            <span className="sub-pct">{preparando ? '…' : `${Math.floor(pct)} %`}</span>
+            <span className="sub-fase" aria-live="polite">
+              {estado ? textoProgreso(estado) : 'Calculando…'}
+            </span>
+          </div>
+          <Barra pct={preparando ? 0 : pct} />
+          {estado && !preparando && (
+            <div className="sub-kpis">
+              <Kpi etiqueta="Datos" valor={`${textoBytes(estado.bytes_done)} / ${textoBytes(estado.bytes_total)}`}
+                sub={estado.bytes_enviados != null ? `${textoBytes(estado.bytes_enviados)} enviados ahora` : null} />
+              <Kpi etiqueta="Ficheros" valor={`${miles(fHechos)} / ${miles(fTotal)}`}
+                sub={estado.files_per_s != null ? `${nf(estado.files_per_s)} img/s` : null} />
+              <Kpi etiqueta="Transcurrido" valor={textoDuracion(inicio ? (ahora - inicio) / 1000 : estado.t)} />
+              <Kpi etiqueta="Tiempo restante" valor={estado.eta != null ? `~${textoEta(estado.eta)}` : '—'} />
+              <Kpi etiqueta="Velocidad ahora" valor={est.actual != null ? `${nf(est.actual)} MB/s` : '—'} />
+              <Kpi etiqueta="Velocidad media" valor={est.media != null ? `${nf(est.media)} MB/s` : '—'}
+                sub={estado.hilos_max ? `${estado.hilos_activos ?? 0}/${estado.hilos_max} hilos activos` : null} />
+            </div>
+          )}
+          <GraficaSubida serie={serie} />
+          <Cuello diag={diag} />
+        </section>
       )}
-      {estado && textoVelocidad(estado) && <span className="field-hint">{textoVelocidad(estado)}</span>}
+
       {completa && <span className="field-hint hint-ok">Subida completa</span>}
       {card && (
-        <div className="field" role="group" aria-label="Resumen de la subida">
-          <span className="field-label">Resumen</span>
-          <span className="field-hint hint-ok"><strong>{card.titulo}</strong></span>
-          {card.grupos.map(([k, g]) => (
-            <span key={k} className="field-hint">
-              {k === 'urgentes' ? 'Urgentes' : 'Resto'}: {miles(g.subidos)} subidos ({textoBytes(g.bytes_subidos)}) · {miles(g.omitidos)} ya en bucket ({textoBytes(g.bytes_omitidos)}) · {miles(g.pendientes - g.subidos)} sin subir
-              {resumen.metricas.conflictos_n ? ` · ${resumen.metricas.conflictos_n} conflictos` : ''}
-              {' · '}{Object.entries(g.por_tipo || {}).map(([t, v]) => `${ETIQ_TIPO[t] || t} ${miles(v.ficheros)}`).join(', ')}
-              {g.vuelos ? ` · ${g.vuelos} vuelos` : ''}
-            </span>
-          ))}
-        </div>
+        <section className="sub-resumen" role="group" aria-label="Resumen de la subida">
+          <span className="sub-resumen-etq">Resumen</span>
+          <strong className="sub-resumen-titulo">{card.titulo}</strong>
+          <div className="sub-resumen-grupos">
+            {card.grupos.map(([k, g]) => (
+              <span key={k} className="field-hint">
+                {k === 'urgentes' ? 'Urgentes' : 'Resto'}: {miles(g.subidos)} subidos ({textoBytes(g.bytes_subidos)}) · {miles(g.omitidos)} ya en bucket ({textoBytes(g.bytes_omitidos)}) · {miles(g.pendientes - g.subidos)} sin subir
+                {resumen.metricas.conflictos_n ? ` · ${resumen.metricas.conflictos_n} conflictos` : ''}
+              </span>
+            ))}
+          </div>
+          <div className="sub-resumen-desgloses">
+            {Object.keys(card.porTipo).length > 0 && (
+              <table className="sub-tabla" aria-label="Subido por tipo">
+                <thead><tr><th scope="col">Tipo</th><th scope="col">Ficheros</th><th scope="col">Tamaño</th></tr></thead>
+                <tbody>
+                  {Object.entries(card.porTipo).sort((a, b) => b[1].bytes - a[1].bytes).map(([t, v]) => (
+                    <tr key={t}><th scope="row">{ETIQ_TIPO[t] || t}</th><td>{miles(v.ficheros)}</td><td>{textoBytes(v.bytes)}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {Object.keys(card.porVuelo).length > 0 && (() => {
+              const filas = Object.entries(card.porVuelo).sort((a, b) => a[0].localeCompare(b[0], 'es', { numeric: true }))
+              const maxB = Math.max(...filas.map(([, v]) => v.bytes), 1)
+              return (
+                <div className="sub-vuelos" role="table" aria-label="Subido por vuelo">
+                  {filas.map(([v, d]) => (
+                    <div className="sub-vuelo" role="row" key={v}>
+                      <span className="sub-vuelo-n" role="rowheader">{v}</span>
+                      <span className="sub-vuelo-b" aria-hidden="true"><i style={{ width: `${(d.bytes / maxB) * 100}%` }} /></span>
+                      <span className="sub-vuelo-v" role="cell">{miles(d.ficheros)} · {textoBytes(d.bytes)}</span>
+                    </div>
+                  ))}
+                </div>
+              )
+            })()}
+          </div>
+        </section>
       )}
+      {resumen && !subiendo && serie.length >= 2 && (
+        <section className="sub-resumen-grafica" aria-label="Gráfica de la subida">
+          <GraficaSubida serie={serie} />
+          {!card && <Cuello diag={diag} />}
+        </section>
+      )}
+      {resumen && !subiendo && card && <Cuello diag={diag} />}
       {resumen?.cancelled && <span className="field-hint hint-warn">Subida cancelada. Lo ya subido se conserva.</span>}
       {nConf > 0 && <span className="field-hint hint-warn">{nConf} en conflicto (existen con otro contenido y no se pisan)</span>}
       {nFall > 0 && (

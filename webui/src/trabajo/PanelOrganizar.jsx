@@ -3,12 +3,13 @@ import { api, onAnalisis } from '../bridge'
 import { SPLIT_ADVANCED } from '../schema'
 import { Field, initialState, buildParams } from '../TaskBlock'
 import PasoCarpeta from './PasoCarpeta'
-import PanelResultado from './PanelResultado'
 
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
 const ADV_FIELDS = SPLIT_ADVANCED.flatMap((s) => s.fields)
 
-export default function PanelOrganizar({ origen, estadillos = [], inspeccion, ready, running, onRun }) {
+// `onDestino(carpeta)` publica la «Carpeta final» (la ofrece la pestaña «Subir resultado»);
+// `onVerSubida()` lleva a esa pestaña. La subida del resultado ya no vive aquí.
+export default function PanelOrganizar({ origen, estadillos = [], inspeccion, ready, running, onRun, onDestino, onVerSubida }) {
   const [destino, setDestino] = useState('')
   const [destinoFull, setDestinoFull] = useState(null) // {count} si la salida no está vacía NI es un destino organizado
   const [destinoOrganizado, setDestinoOrganizado] = useState(false) // destino con manifiesto válido: se añade otra tanda
@@ -19,6 +20,8 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
   const [adv, setAdv] = useState(() => initialState(ADV_FIELDS))
   const [detected, setDetected] = useState(null)
   const [escaneados, setEscaneados] = useState(0)
+
+  useEffect(() => { if (onDestino && destino) onDestino(destino) }, [destino, onDestino])
 
   const setAdvField = (name, value) => setAdv((s) => ({ ...s, [name]: value }))
 
@@ -226,7 +229,12 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
           </button>
         </>
       )}
-      {destino && <PanelResultado carpeta={destino} inspeccionId={inspeccion?.id ?? null} ready={ready} />}
+      {destino && onVerSubida && (
+        <div className="field-row">
+          <button type="button" className="btn-ghost" onClick={onVerSubida}>Ir a «Subir resultado»</button>
+          <span className="field-hint">Al terminar de organizar, el resultado se sube desde esa pestaña.</span>
+        </div>
+      )}
     </div>
   )
 }

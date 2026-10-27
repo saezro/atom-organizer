@@ -590,3 +590,48 @@ def test_upload_plan_stats_trae_files_per_s(tmp_path, gcs):
                        concurrency=1, on_estado=visto.append)
     con_vel = [e for e in visto if e["files_per_s"] is not None]
     assert con_vel and con_vel[-1]["files_per_s"] > 0
+
+
+# --- medición para la gráfica y el diagnóstico --------------------------------------
+
+def test_estado_lleva_t_bytes_enviados_y_medidas_y_metricas_el_desglose_por_vuelo(tmp_path, gcs):
+    _arbol(tmp_path, {
+        "TERMICA/PB1_V1/A_T.tiff": b"t" * 100,
+        "TERMICA/PB1_V2/B_T.tiff": b"u" * 50,
+        "RGB/PB1_V1/A_W_CROP.JPG": b"c" * 80,
+        "CSVs/PB1_V1_meta.csv": b"meta",
+        "ESTADILLOS/e.xlsx": b"est",
+    })
+    eventos: list[dict] = []
+    r = sr.subir_resultado(tmp_path, 7, sr.MODO_URGENCIA, auth=None, proveedor=ProveedorFalso(),
+                           concurrency=1, on_estado=eventos.append)
+    assert all("t" in e and "medidas" in e and "hilos_max" in e for e in eventos)
+    ts = [e["t"] for e in eventos]
+    assert ts == sorted(ts)                          # eje X monótono
+    assert eventos[-1]["bytes_enviados"] == r.metricas["bytes_enviados"] > 0
+    assert eventos[-1]["ficheros_subidos"] == r.metricas["urgentes"]["subidos"] > 0
+    assert eventos[-1]["medidas"]["red_s"] > 0
+    m = r.metricas
+    assert m["medidas"]["red_s"] > 0 and m["hilos_max"] == 1
+    up = m["urgentes"]
+    # Solo lo subido, por vuelo (ESTADILLOS no pertenece a ningún vuelo).
+    assert up["subidos_por_vuelo"] == {"PB1_V1": {"ficheros": 3, "bytes": 184},
+                                       "PB1_V2": {"ficheros": 1, "bytes": 50}}
+    assert up["subidos_por_tipo"]["tiff_termica"]["ficheros"] == 2
+    assert sum(v["ficheros"] for v in up["subidos_por_tipo"].values()) == up["subidos"] == 5
+
+
+def test_medidas_se_acumulan_entre_urgentes_y_resto(tmp_path, gcs):
+    _arbol(tmp_path, SALIDA_PEQUENA)
+    llamadas = []
+
+    def subir(plan, provider, **kw):
+        m = cu.medidas_vacias(); m["red_s"] = 1.5; m["reintentos"]["429"] = 2
+        llamadas.append(len(plan.items))
+        return cu.UploadResult(uploaded=len(plan.items), bytes_sent=len(plan.items) * 10, medidas=m)
+
+    r = sr.subir_resultado(tmp_path, 7, sr.MODO_NORMAL, auth=None, proveedor=ProveedorFalso(), subir=subir)
+    assert len(llamadas) == 2
+    assert r.metricas["medidas"]["red_s"] == 3.0
+    assert r.metricas["medidas"]["reintentos"]["429"] == 4
+    assert r.metricas["bytes_enviados"] == sum(llamadas) * 10

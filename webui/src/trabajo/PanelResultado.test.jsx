@@ -16,7 +16,7 @@ vi.mock('../bridge', () => ({
   },
 }))
 import { api } from '../bridge'
-import PanelResultado, { textoProgreso, textoVelocidad, textoEta } from './PanelResultado'
+import PanelResultado, { textoProgreso, textoVelocidad, textoEta, resumenMetricas } from './PanelResultado'
 
 const emitir = (detail) => act(() => { window.dispatchEvent(new CustomEvent('atom:resultado', { detail })) })
 
@@ -29,8 +29,8 @@ beforeEach(() => {
 
 // Publicar ahora pasa por el aviso pre-subida: pulsar y confirmar.
 async function pulsarPublicar() {
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Publicar resultado' })).not.toBeDisabled())
-  fireEvent.click(screen.getByRole('button', { name: 'Publicar resultado' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Publicar urgentes' })).not.toBeDisabled())
+  fireEvent.click(screen.getByRole('button', { name: 'Publicar urgentes' }))
 }
 async function publicar() {
   await pulsarPublicar()
@@ -56,10 +56,10 @@ describe('textoProgreso', () => {
 describe('textoVelocidad / textoEta', () => {
   it('convierte megabits a MB/s y añade img/s y ETA', () => {
     expect(textoVelocidad({ fase: 'urgentes', mbps: 80, files_per_s: 2.5, eta: 125 }))
-      .toBe('10.0 MB/s · 2.5 img/s · ETA ~02:05')
+      .toBe('10,0 MB/s · 2,5 img/s · ETA ~02:05')
   })
   it('sin ETA (primeros segundos) no la pinta; ETA larga en h:mm', () => {
-    expect(textoVelocidad({ fase: 'urgentes', mbps: 8, files_per_s: 1, eta: null })).toBe('1.0 MB/s · 1.0 img/s')
+    expect(textoVelocidad({ fase: 'urgentes', mbps: 8, files_per_s: 1, eta: null })).toBe('1,0 MB/s · 1,0 img/s')
     expect(textoEta(3 * 3600 + 5 * 60)).toBe('3:05')
   })
   it('nada mientras lista o comprueba', () => {
@@ -71,21 +71,21 @@ describe('textoVelocidad / textoEta', () => {
 describe('PanelResultado', () => {
   it('con Urgencia por defecto, el botón lanza resultadoSubir(carpeta, id, urgencia, false)', async () => {
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
-    expect(screen.getByRole('radio', { name: 'Urgencia' })).toBeChecked()
     await publicar()
     await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalledWith('/salida', 7, 'urgencia', false))
   })
 
-  it('modo Normal manda «normal»', async () => {
+  it('«Subir todo» pasa por el aviso y manda «normal»', async () => {
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
-    fireEvent.click(screen.getByRole('radio', { name: 'Normal' }))
-    await publicar()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Subir todo' })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Subir todo' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar y subir' }))
     await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalledWith('/salida', 7, 'normal', false))
   })
 
   it('sin carpeta o sin inspección el botón está deshabilitado y lo explica', () => {
     render(<PanelResultado carpeta="" inspeccionId={null} ready />)
-    expect(screen.getByRole('button', { name: 'Publicar resultado' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Publicar urgentes' })).toBeDisabled()
     expect(screen.getByText(/Elige la inspección/)).toBeInTheDocument()
   })
 
@@ -94,7 +94,7 @@ describe('PanelResultado', () => {
     emitir({ kind: 'start', modo: 'urgencia' })
     emitir({ kind: 'estado', fase: 'urgentes', urgentes: { hechos: 3, total: 10 }, resto: { hechos: 0, total: 25 } })
     expect(await screen.findByText('urgentes 3/10 · resto 0/25')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Publicar resultado' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Publicar urgentes' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Cancelar' })).toBeInTheDocument()
   })
 
@@ -105,7 +105,8 @@ describe('PanelResultado', () => {
     expect(await screen.findByText('Destino: gs://plantas_pv_nl/CASTRUM/INSPECCIONES/TERMICA_MODULOS/2026_2/')).toBeInTheDocument()
     expect(screen.getByText('Leyendo el bucket…')).toBeInTheDocument()
     emitir({ kind: 'estado', fase: 'urgentes', prefix: 'CASTRUM/INSPECCIONES/TERMICA_MODULOS/2026_2/', mbps: 16, files_per_s: 3, eta: 60, urgentes: { hechos: 3, total: 10 }, resto: { hechos: 0, total: 0 } })
-    expect(await screen.findByText('2.0 MB/s · 3.0 img/s · ETA ~01:00')).toBeInTheDocument()
+    expect(await screen.findByText('3,0 img/s')).toBeInTheDocument()
+    expect(screen.getByText('~01:00')).toBeInTheDocument()
   })
 
   it('muestra conflictos y fallidas y permite reintentar', async () => {
@@ -126,10 +127,10 @@ describe('PanelResultado', () => {
     emitir({ kind: 'start', modo: 'urgencia' })
     emitir({ kind: 'done', ok: true, modo: 'urgencia', continua: true,
       urgentes: { hechos: 5, total: 5 }, resto: { hechos: 0, total: 3 }, conflictos: [], fallidas: [], avisos: [] })
-    expect(screen.getByRole('button', { name: 'Publicar resultado' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Publicar urgentes' })).toBeDisabled()
     emitir({ kind: 'done', ok: true, modo: 'normal', continua: false,
       urgentes: { hechos: 5, total: 5 }, resto: { hechos: 3, total: 3 }, conflictos: [], fallidas: [], avisos: [] })
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Publicar resultado' })).not.toBeDisabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Publicar urgentes' })).not.toBeDisabled())
     expect(screen.getByText('Subida completa')).toBeInTheDocument()
   })
 
@@ -158,7 +159,7 @@ describe('PanelResultado', () => {
     api.resultadoCredencial.mockResolvedValue({ ok: false, reason: 'Inicia sesión en la Suite' })
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     expect(await screen.findByText('Inicia sesión en la Suite')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Publicar resultado' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Publicar urgentes' })).toBeDisabled()
   })
 
   it('Publicar enseña el aviso con los checks y no sube hasta confirmar', async () => {
@@ -194,7 +195,7 @@ describe('PanelResultado', () => {
       existe: true, n_objetos: 120, bytes: 2.5e9, sobrescribe: ['TERMICA', 'RGB'], detalle: '' })
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     await pulsarPublicar()
-    expect(await screen.findByText(/Ya hay 120 objetos \/ 2\.5 GB en el bucket; se sobrescriben: TERMICA, RGB/)).toBeInTheDocument()
+    expect(await screen.findByText(/Ya hay 120 objetos \/ 2,5 GB en el bucket; se sobrescriben: TERMICA, RGB/)).toBeInTheDocument()
   })
 
   it('started:false muestra el reason', async () => {
@@ -213,7 +214,7 @@ describe('PanelResultado', () => {
     api.resultadoCredencial.mockRejectedValue(new Error('sin red'))
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     expect(await screen.findByText('No se pudo comprobar el login: sin red')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Publicar resultado' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Publicar urgentes' })).toBeDisabled()
   })
 
   it('prechequeo con forma inesperada: error visible, sin aviso ni subida', async () => {
@@ -237,19 +238,112 @@ describe('PanelResultado', () => {
 
   it('recomprueba la credencial al pulsar Publicar y no continúa si caducó', async () => {
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Publicar resultado' })).not.toBeDisabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Publicar urgentes' })).not.toBeDisabled())
     api.resultadoCredencial.mockResolvedValue({ ok: false, reason: 'Sesión caducada' })
-    fireEvent.click(screen.getByRole('button', { name: 'Publicar resultado' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Publicar urgentes' }))
     expect(await screen.findByText('Sesión caducada')).toBeInTheDocument()
     expect(api.resultadoPrechequeo).not.toHaveBeenCalled()
   })
 
   it('recomprueba la credencial al volver el foco a la ventana', async () => {
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Publicar resultado' })).not.toBeDisabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Publicar urgentes' })).not.toBeDisabled())
     api.resultadoCredencial.mockResolvedValue({ ok: false, reason: 'Login perdido' })
     act(() => { window.dispatchEvent(new Event('focus')) })
     expect(await screen.findByText('Login perdido')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Publicar resultado' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Publicar urgentes' })).toBeDisabled()
   })
 })
+
+const med = (o = {}) => ({ disco_s: 0, red_s: 0, sesion_s: 0, espera_s: 0, token_s: 0, reintentos: { '429': 0, '5xx': 0, auth: 0, http: 0, red: 0 }, ...o })
+const estadoBase = { kind: 'estado', fase: 'urgentes', modo: 'normal', prefix: 'P/', urgentes: { hechos: 5, total: 10 }, resto: { hechos: 0, total: 30 },
+  bytes_done: 3e9, bytes_total: 12e9, hilos_activos: 12, hilos_max: 16, eta: 90 }
+
+describe('PanelResultado: progreso, gráfica y cuello de botella', () => {
+  it('pinta el % grande, los KPI y la gráfica con la serie en vivo', async () => {
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    emitir({ kind: 'start', modo: 'normal' })
+    emitir({ ...estadoBase, t: 1, bytes_enviados: 0, medidas: med() })
+    emitir({ ...estadoBase, t: 11, bytes_enviados: 200e6, medidas: med({ red_s: 100 }) })
+    expect(await screen.findByText('25 %')).toBeInTheDocument()
+    expect(screen.getByRole('progressbar', { name: 'Progreso de la subida' })).toHaveAttribute('aria-valuenow', '25')
+    expect(screen.getByText('3,0 GB / 12,0 GB')).toBeInTheDocument()
+    expect(screen.getByText('5 / 40')).toBeInTheDocument()
+    expect(screen.getByText('~01:30')).toBeInTheDocument()
+    expect(screen.getByText('12/16 hilos activos')).toBeInTheDocument()
+    expect(screen.getAllByText('20,0 MB/s', { selector: '.sub-kpi-val' })).toHaveLength(2)  // ahora y media: 200 MB en 10 s
+    expect(screen.getByTestId('grafica-subida')).toBeInTheDocument()
+  })
+
+  it('enseña el veredicto del cuello solo con lo medido, y «Midiendo…» antes de tener muestra', async () => {
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    emitir({ kind: 'start', modo: 'normal' })
+    emitir({ ...estadoBase, t: 2, bytes_enviados: 1e6, medidas: med({ red_s: 1 }) })
+    expect(await screen.findByText('Midiendo…')).toBeInTheDocument()
+    emitir({ ...estadoBase, t: 60, bytes_enviados: 900e6, mbps: 120, medidas: med({ red_s: 90, disco_s: 5, sesion_s: 5 }) })
+    expect(await screen.findByText('Limitado por red (120 Mbps)')).toBeInTheDocument()
+  })
+
+  it('un backend sin medición no inventa veredicto ni gráfica', async () => {
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    emitir({ kind: 'start', modo: 'urgencia' })
+    emitir({ kind: 'estado', fase: 'urgentes', urgentes: { hechos: 1, total: 4 }, resto: { hechos: 0, total: 0 } })
+    expect(screen.queryByText(/Limitado por/)).toBeNull()
+    expect(screen.getByTestId('grafica-vacia')).toBeInTheDocument()
+  })
+
+  it('al terminar deja el resumen con la tarjeta, el desglose por tipo y vuelo y la gráfica', async () => {
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    emitir({ kind: 'start', modo: 'normal' })
+    emitir({ ...estadoBase, t: 1, bytes_enviados: 0, medidas: med() })
+    emitir({ ...estadoBase, t: 30, bytes_enviados: 600e6, medidas: med({ red_s: 100 }) })
+    const g = { omitidos: 0, pendientes: 2, bytes_omitidos: 0, por_tipo: {}, vuelos: 2 }
+    emitir({ kind: 'done', ok: true, modo: 'normal', continua: false,
+      urgentes: { hechos: 2, total: 2 }, resto: { hechos: 0, total: 0 }, conflictos: [], fallidas: [], avisos: [],
+      metricas: {
+        duracion_s: 1052, bytes_enviados: 23.7e9, hilos_max: 16, conflictos_n: 0,
+        medidas: med({ red_s: 900, disco_s: 20, sesion_s: 30 }),
+        urgentes: { ...g, subidos: 12122, bytes_subidos: 23.7e9,
+          subidos_por_tipo: { tiff_termica: { ficheros: 12000, bytes: 23e9 }, csv: { ficheros: 122, bytes: 7e8 } },
+          subidos_por_vuelo: { PB1_V1: { ficheros: 6000, bytes: 12e9 }, PB1_V2: { ficheros: 6122, bytes: 11.7e9 } } },
+      } })
+    expect(await screen.findByText('12.122 ficheros · 23,7 GB · 17 min 32 s · 22,5 MB/s · 2 vuelos')).toBeInTheDocument()
+    expect(screen.getByRole('table', { name: 'Subido por tipo' })).toBeInTheDocument()
+    expect(screen.getByText('TIFF térmica')).toBeInTheDocument()
+    expect(screen.getByRole('table', { name: 'Subido por vuelo' })).toBeInTheDocument()
+    expect(screen.getByText('PB1_V2')).toBeInTheDocument()
+    expect(screen.getByTestId('grafica-subida')).toBeInTheDocument()   // la gráfica se queda
+    expect(screen.getByText(/Limitado por red/)).toBeInTheDocument()   // veredicto final con métricas finales
+    expect(screen.getByText('Subida completa')).toBeInTheDocument()
+  })
+
+  it('«Subir el resto» solo se habilita con pendientes y no pide aviso previo', async () => {
+    api.resultadoInspeccionarDestino.mockResolvedValue({ ok: true, existe: true, n_objetos: 10, bytes: 1e9, sobrescribe: [],
+      desglose: { urgentes: { total: 10, en_bucket: 10, pendientes: 0, distintos: 0, bytes_pendientes: 0 },
+        resto: { total: 50, en_bucket: 20, pendientes: 30, distintos: 0, bytes_pendientes: 3e9 } } })
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    expect(await screen.findByText('20', { selector: 'strong' })).toBeInTheDocument()   // «20 / 50 en bucket»
+    const btn = await screen.findByRole('button', { name: /Subir el resto \(30 · 3,0 GB\)/ })
+    expect(btn).not.toBeDisabled()
+    fireEvent.click(btn)
+    await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalledWith('/salida', 7, 'normal', false))
+  })
+
+  it('avisa del estado de actividad a la pestaña', async () => {
+    const onActividad = vi.fn()
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready onActividad={onActividad} />)
+    emitir({ kind: 'start', modo: 'urgencia' })
+    emitir({ ...estadoBase, modo: 'urgencia', t: 5, bytes_enviados: 1e6, medidas: med() })
+    await waitFor(() => expect(onActividad).toHaveBeenLastCalledWith({ subiendo: true, pct: 25, error: false }))
+    emitir({ kind: 'error', text: 'boom' })
+    await waitFor(() => expect(onActividad).toHaveBeenLastCalledWith(expect.objectContaining({ subiendo: false, error: true })))
+  })
+})
+
+describe('resumenMetricas', () => {
+  it('sin desglose de lo subido (backend antiguo) usa el máximo de vuelos de las selecciones', () => {
+    const r = resumenMetricas({ duracion_s: 100, urgentes: { subidos: 10, bytes_subidos: 1e9, vuelos: 3 }, resto: { subidos: 5, bytes_subidos: 1e9, vuelos: 7 } })
+    expect(r.titulo).toBe('15 ficheros · 2,0 GB · 1 min 40 s · 20,0 MB/s · 7 vuelos')
+  })
+})
+

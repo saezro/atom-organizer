@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 vi.mock('../bridge', () => ({
   api: {
@@ -24,7 +24,11 @@ vi.mock('../bridge', () => ({
     return () => window.removeEventListener('atom:cloud', w)
   },
   onAnalisis: () => () => {},
-  onResultado: () => () => {},
+  onResultado: (h) => {
+    const w = (e) => h(e.detail)
+    window.addEventListener('atom:resultado', w)
+    return () => window.removeEventListener('atom:resultado', w)
+  },
   isServerMode: () => false,
 }))
 import { act } from '@testing-library/react'
@@ -289,13 +293,36 @@ describe('TrabajoScreen', () => {
     })
   })
 
-  it('«Subir ya organizado» abre el flujo mínimo con PanelResultado ya-organizado', async () => {
-    render(<TrabajoScreen ready running={false} onRun={() => {}} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Subir ya organizado' }))
-    expect(await screen.findByText(/ya organizada, sin volver a organizar/)).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Publicar resultado' })).toBeTruthy()
-    expect(screen.queryByText(/Organizar en este ordenador/i)).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Volver' }))
-    expect(await screen.findByText(/Organizar en este ordenador/i)).toBeTruthy()
+  describe('pestañas Organizar | Subir resultado', () => {
+    it('arranca en Organizar y «Subir resultado» muestra su propia pestaña con carpeta, inspección y CTAs', async () => {
+      render(<TrabajoScreen ready running={false} onRun={() => {}} />)
+      expect(screen.getByRole('tab', { name: 'Organizar' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.queryByRole('button', { name: 'Publicar urgentes' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Subir ya organizado' })).toBeNull()
+      fireEvent.click(screen.getByRole('tab', { name: /Subir resultado/ }))
+      expect(screen.getByRole('tab', { name: /Subir resultado/ })).toHaveAttribute('aria-selected', 'true')
+      expect(await screen.findByText('Carpeta del resultado organizado')).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Publicar urgentes' })).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Subir el resto' })).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Subir todo' })).toBeTruthy()
+      fireEvent.click(screen.getByRole('tab', { name: 'Organizar' }))
+      expect(await screen.findByText(/Organizar en este ordenador/i)).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Publicar urgentes' })).toBeNull()
+    })
+
+    it('sin acceso a Organizer no hay pestañas ni subida del resultado', () => {
+      render(<TrabajoScreen ready running={false} onRun={() => {}} acceso={{ organizer: false, estadillos: false }} />)
+      expect(screen.queryByRole('tab')).toBeNull()
+      expect(screen.queryByText(/Subir resultado/)).toBeNull()
+    })
+
+    it('la pestaña muestra el avance mientras sube aunque no esté a la vista', async () => {
+      render(<TrabajoScreen ready running={false} onRun={() => {}} />)
+      emitir('atom:resultado', { kind: 'start', modo: 'urgencia' })
+      emitir('atom:resultado', { kind: 'estado', fase: 'urgentes', modo: 'urgencia', t: 5, bytes_enviados: 4e6,
+        bytes_done: 4e6, bytes_total: 10e6, urgentes: { hechos: 2, total: 5 }, resto: { hechos: 0, total: 0 } })
+      const tab = screen.getByRole('tab', { name: /Subir resultado/ })
+      expect(await within(tab).findByText('40 %')).toBeTruthy()
+    })
   })
 })

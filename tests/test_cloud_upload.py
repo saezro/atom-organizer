@@ -713,6 +713,63 @@ def test_los_reintentos_por_corte_de_red_se_cuentan(tmp_path, monkeypatch):
     assert res.retries == 1       # y quedó constancia
 
 
+def test_medidas_separan_disco_red_y_reintentos_por_causa(tmp_path, monkeypatch):
+    """El diagnóstico del cuello de botella solo afirma lo que aquí se mide."""
+    server = FakeGCS(fail_at_byte=500)
+    monkeypatch.setattr(cu.urllib.request, "urlopen", server.urlopen)
+    monkeypatch.setattr(cu, "CHUNK_SIZE", 256)
+    monkeypatch.setattr(cu.time, "sleep", lambda _s: None)
+    root = _vuelo(tmp_path, {"a.jpg": b"a" * 2000})
+    plan = cu.build_plan(root, prefix="v")
+    fotos: list[dict] = []
+
+    res = cu.upload_plan(plan, StaticProvider(), on_stats=fotos.append)
+
+    m = res.medidas
+    assert m["red_s"] > 0 and m["disco_s"] > 0 and m["sesion_s"] >= 0
+    assert m["reintentos"]["red"] == 1 and m["reintentos"]["429"] == 0
+    assert sum(m["reintentos"].values()) == res.retries
+    # La foto en vivo lleva lo mismo y los hilos activos / máximo.
+    assert fotos[-1]["medidas"]["reintentos"]["red"] == 1
+    assert fotos[-1]["hilos_max"] == cu.DEFAULT_CONCURRENCY
+    assert fotos[-1]["hilos_activos"] == 0   # al final no queda nadie subiendo
+
+
+def test_causa_de_reintento_distingue_429_5xx_auth_y_red():
+    assert cu._causa_retry(_http_error(429)) == "429"
+    assert cu._causa_retry(_http_error(503)) == "5xx"
+    assert cu._causa_retry(_http_error(403)) == "auth"
+    assert cu._causa_retry(_http_error(408)) == "http"
+    assert cu._causa_retry(OSError("corte")) == "red"
+
+
+def test_red_s_se_mide_tambien_cuando_el_put_falla(tmp_path, monkeypatch):
+    """Un PUT que falla (timeout/corte) consume tiempo de red y debe contarse."""
+    monkeypatch.setattr(cu.urllib.request, "urlopen", FakeGCS().urlopen)
+    monkeypatch.setattr(cu.time, "sleep", lambda _s: None)
+    reloj = iter(range(0, 1000, 5))
+    monkeypatch.setattr(cu.time, "monotonic", lambda: float(next(reloj)))
+
+    def _falla(*_a, **_k):
+        raise TimeoutError("timeout")
+    monkeypatch.setattr(cu, "_put_chunk", _falla)
+    root = _vuelo(tmp_path, {"a.jpg": b"a" * 100})
+    plan = cu.build_plan(root, prefix="v")
+
+    res = cu.upload_plan(plan, StaticProvider())
+
+    assert res.uploaded == 0
+    assert res.medidas["red_s"] > 0
+
+
+def test_sumar_medidas_acumula_grupos_y_tolera_none():
+    a = cu.medidas_vacias(); a["red_s"] = 2.0; a["reintentos"]["429"] = 1
+    b = cu.medidas_vacias(); b["red_s"] = 3.0; b["disco_s"] = 1.0; b["reintentos"]["429"] = 2
+    t = cu.sumar_medidas(a, b)
+    assert t["red_s"] == 5.0 and t["disco_s"] == 1.0 and t["reintentos"]["429"] == 3
+    assert cu.sumar_medidas(None, None) == cu.medidas_vacias()
+
+
 def test_on_stats_informa_del_progreso_para_poder_pintarlo(tmp_path, gcs):
     root = _vuelo(tmp_path, {"a.jpg": b"a" * 4000, "b.jpg": b"b" * 4000})
     plan = cu.build_plan(root, prefix="v")
