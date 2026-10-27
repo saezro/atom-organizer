@@ -154,6 +154,26 @@ describe('bridge en modo pywebview (Windows)', () => {
     }
   })
 
+  // Inspección del destino: el resultado llega por evento. Si el backend nunca
+  // contesta, la promesa rechaza con error visible tras TIMEOUT_DESTINO_MS y
+  // el listener `atom:resultado` se quita (sin fugas).
+  it('resultadoInspeccionarDestino rechaza tras TIMEOUT_DESTINO_MS y quita el listener', async () => {
+    window.pywebview = { api: { resultado_inspeccionar_destino_start: vi.fn(async () => ({ started: true })) } }
+    const { api, TIMEOUT_DESTINO_MS } = await import('./bridge.js')
+    const quitar = vi.spyOn(window, 'removeEventListener')
+    vi.useFakeTimers()
+    try {
+      const pendiente = expect(api.resultadoInspeccionarDestino('D:/x', 1)).rejects.toThrow(/no respondió a la inspección del destino/)
+      await vi.advanceTimersByTimeAsync(TIMEOUT_DESTINO_MS - 1)
+      await vi.advanceTimersByTimeAsync(1)
+      await pendiente
+      expect(quitar).toHaveBeenCalledWith('atom:resultado', expect.any(Function))
+    } finally {
+      vi.useRealTimers()
+      quitar.mockRestore()
+    }
+  })
+
   // `pick_folder`/`pick_file` son diálogo NATIVO: el usuario puede tardar
   // minutos eligiendo carpeta, así que están excluidos del plazo por
   // defecto (ver `TIMEOUTS_METODO`, bridge.js).
