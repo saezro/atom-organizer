@@ -270,6 +270,29 @@ def test_particionar_casos(tmp_path):
     assert marcados == {"CSVs/V1_meta.csv": True, "INDICE_KL05.xlsx": True, "TERMICA/PB1/V1/N_T.tiff": False}
 
 
+def test_particionar_forzar_manda_todo_a_pendientes(tmp_path, monkeypatch):
+    _arbol(tmp_path, {
+        "TERMICA/PB1/V1/N_T.tiff": b"nuevo",
+        "TERMICA/PB1/V1/I_T.tiff": b"igual",
+        "TERMICA/PB1/V1/C_T.tiff": b"cambiado-local",
+        "CSVs/V1_meta.csv": b"csv-nuevo-contenido",
+    })
+    sel = sr.seleccionar(tmp_path, PREFIJO)
+    items = sel.urgentes + sel.resto
+    remotos = dict([
+        _remoto("TERMICA/PB1/V1/I_T.tiff", b"igual"),
+        _remoto("TERMICA/PB1/V1/C_T.tiff", b"otro-contenido-en-bucket"),
+        _remoto("CSVs/V1_meta.csv", b"csv-viejo"),
+    ])
+    monkeypatch.setattr(cu, "_file_md5_b64", lambda _p: pytest.fail("forzar no compara MD5"))
+    p = sr.particionar(items, remotos, _manifest(tmp_path), PREFIJO, forzar=True)
+    assert not p.hechos and not p.conflictos
+    marcados = {i.remote.removeprefix(PREFIJO): i.sobrescribir for i in p.pendientes}
+    # Los que ya existen se pisan (sin ifGenerationMatch=0); el nuevo conserva la precondicion.
+    assert marcados == {"TERMICA/PB1/V1/N_T.tiff": False, "TERMICA/PB1/V1/I_T.tiff": True,
+                        "TERMICA/PB1/V1/C_T.tiff": True, "CSVs/V1_meta.csv": True}
+
+
 def test_particionar_usa_manifiesto_para_no_releer(tmp_path, monkeypatch):
     _arbol(tmp_path, {"TERMICA/PB1/V1/I_T.tiff": b"igual"})
     sel = sr.seleccionar(tmp_path, PREFIJO)
@@ -580,6 +603,22 @@ def test_estados_llevan_prefix_desde_el_primero_y_fase_comprobando(tmp_path, gcs
     comp = [e["comprobando"] for e in estados if e["comprobando"]]
     assert comp and comp[-1] == {"hechos": 1, "total": 1}
     assert "files_per_s" in estados[-1]
+
+
+def test_estados_llevan_etapa_verificando_grupo_y_fallidas(tmp_path, gcs):
+    _arbol(tmp_path, SALIDA_PEQUENA)
+    prov = ProveedorFalso()
+    estados = []
+    sr.subir_resultado(tmp_path, 7, sr.MODO_URGENCIA, auth=None, proveedor=prov,
+                       concurrency=1, on_estado=estados.append)
+    etapas = [e["etapa"] for e in estados]
+    assert etapas[0] == "listando" and "urgentes" in etapas
+    assert etapas[-1] == "verificando" and estados[-1]["fase"] == "verificando"
+    assert etapas.index("urgentes") < etapas.index("verificando")
+    g = [e["grupo"] for e in estados if e["grupo"] and e["grupo"]["bytes_total"]]
+    assert g and g[-1]["nombre"] == "urgentes" and g[-1]["bytes_done"] == g[-1]["bytes_total"]
+    assert all("fallidas" in e and "fichero_actual" in e for e in estados)
+    assert estados[-1]["fallidas"] == 0
 
 
 def test_upload_plan_stats_trae_files_per_s(tmp_path, gcs):

@@ -525,4 +525,44 @@ describe('PanelResultado: estado automático', () => {
     unmount()
     expect(señal.aborted).toBe(true)
   })
+
+  describe('Sobrescribir todo (forzar resubida)', () => {
+    const grupo = (total, bytes) => ({ total, en_bucket: total - 1, pendientes: 1, distintos: 0, bytes_pendientes: 1, bytes_total: bytes })
+    beforeEach(() => {
+      api.resultadoInspeccionarDestino.mockResolvedValue({
+        existe: true, n_objetos: 5, bytes: 10, sobrescribe: [],
+        desglose: { urgentes: grupo(10, 2e9), resto: grupo(30, 3e9) },
+      })
+    })
+
+    it('la casilla sale desmarcada y sin marcarla no se manda el flag', async () => {
+      render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+      await pulsarPublicar()
+      expect(await screen.findByLabelText('Sobrescribir todo (forzar resubida)')).not.toBeChecked()
+      fireEvent.click(screen.getByRole('button', { name: 'Confirmar y subir' }))
+      await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalled())
+      expect(api.resultadoSubir.mock.calls[0]).toHaveLength(4)
+    })
+
+    it('marcada: pide confirmación con ficheros y GB, y al aceptar manda forzar=true', async () => {
+      render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+      await pulsarPublicar()
+      fireEvent.click(await screen.findByLabelText('Sobrescribir todo (forzar resubida)'))
+      fireEvent.click(screen.getByRole('button', { name: 'Confirmar y subir' }))
+      expect(await screen.findByText(/40 ficheros \(5,0 GB\)/)).toBeInTheDocument()
+      expect(screen.getByText(/incluidos los que están en conflicto/)).toBeInTheDocument()
+      expect(api.resultadoSubir).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: 'Sí' }))
+      await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalledWith('/salida', 7, 'urgencia', true, true))
+    })
+
+    it('marcada y rechazada la confirmación: no sube', async () => {
+      render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+      await pulsarPublicar()
+      fireEvent.click(await screen.findByLabelText('Sobrescribir todo (forzar resubida)'))
+      fireEvent.click(screen.getByRole('button', { name: 'Confirmar y subir' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'No' }))
+      expect(api.resultadoSubir).not.toHaveBeenCalled()
+    })
+  })
 })

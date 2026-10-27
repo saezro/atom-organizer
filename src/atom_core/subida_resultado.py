@@ -298,7 +298,8 @@ def _calcular_md5s(items, remotos: dict, manifest: cu.Manifest, concurrency: int
 
 def particionar(items, remotos: dict, manifest: cu.Manifest, prefijo: str, *,
                 concurrency: int = cu.DEFAULT_CONCURRENCY,
-                on_progreso: Callable[[int, int], None] | None = None) -> Particion:
+                on_progreso: Callable[[int, int], None] | None = None,
+                forzar: bool = False) -> Particion:
     """Parte `items` en pendientes / hechos / conflictos cruzando local y bucket.
 
     - No existe en el bucket → pendiente.
@@ -308,10 +309,18 @@ def particionar(items, remotos: dict, manifest: cu.Manifest, prefijo: str, *,
 
     Los MD5 que haga falta calcular se calculan en paralelo (`concurrency` hilos);
     `on_progreso(hechos, total)` se llama durante esa fase (≤1/s).
+
+    `forzar=True` («Sobrescribir todo»): TODO va a pendientes, sin comparar MD5 ni marcar
+    conflictos; los que ya existen en el bucket llevan `sobrescribir=True` (sin
+    `ifGenerationMatch=0`). Sin el flag el comportamiento es el de siempre.
     """
     items = list(items)
     pref = prefijo.strip("/") + "/"
     p = Particion()
+    if forzar:
+        for it in items:
+            p.pendientes.append(replace(it, sobrescribir=True) if remotos.get(it.remote) is not None else it)
+        return p
     md5s = _calcular_md5s(items, remotos, manifest, concurrency, on_progreso)
     for it in items:
         remoto = remotos.get(it.remote)
@@ -523,12 +532,15 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
                     on_estado: Callable[[dict], None] | None = None,
                     should_stop: Callable[[], bool] | None = None,
                     concurrency: int = cu.DEFAULT_CONCURRENCY, simular: bool = False,
-                    subir=cu.upload_plan) -> ResumenResultado:
+                    subir=cu.upload_plan, forzar: bool = False) -> ResumenResultado:
     """Sube la salida organizada. Urgencia = solo urgentes; normal = urgentes y luego resto.
 
     Una sola cola: urgentes primero. Lo que el bucket ya tiene (mismo contenido) se
     salta, así que «normal» tras «urgencia» no resube nada. Si los urgentes tienen
     fallidas el resto NO se intenta (mejor un fallo claro que horas de reintentos).
+
+    `forzar=True` = «Sobrescribir todo (forzar resubida)»: no se salta nada ni se marcan
+    conflictos; se pisan en el bucket los objetos existentes (ver `particionar`).
     """
     if modo not in MODOS:
         raise ValueError(f"modo desconocido: {modo!r}")
@@ -560,7 +572,22 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
     def emitir(fase: str, s: dict | None = None, comprobando: tuple | None = None) -> None:
         if on_estado is None:
             return
+        # `etapa` = fase explícita para la UI (listando|comprobando|urgentes|resto|verificando);
+        # `fase` se mantiene como siempre (listando|urgentes|resto) más `verificando`.
+        etapa = "comprobando" if comprobando else fase
+        grupo = None
+        if fase in ("urgentes", "resto"):
+            grupo = {"nombre": fase,
+                     "bytes_done": int((s or {}).get("bytes_done", 0)),
+                     "bytes_total": int((s or {}).get("bytes_total", 0)),
+                     "eta": (s or {}).get("eta"),
+                     "ficheros_hechos": int((s or {}).get("files_done", 0)),
+                     "ficheros_total": int((s or {}).get("files_total", 0))}
         on_estado({
+            "etapa": etapa, "grupo": grupo,
+            "fichero_actual": (s or {}).get("fichero_actual") or "",
+            # Fallidas en vivo = cerradas de grupos anteriores + las de la pasada en curso.
+            "fallidas": len(resumen.fallidas) + int((s or {}).get("fallidas", 0)),
             "comprobando": ({"hechos": comprobando[0], "total": comprobando[1]}
                             if comprobando else None),
             "modo": modo, "fase": fase,
@@ -604,7 +631,8 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
             cont = getattr(resumen, nombre)
             part = particionar(
                 items, remotos, manifest, prefijo, concurrency=concurrency,
-                on_progreso=lambda h, t, nombre=nombre: emitir(nombre, None, (h, t)))
+                on_progreso=lambda h, t, nombre=nombre: emitir(nombre, None, (h, t)),
+                forzar=forzar)
             cont.hechos = len(part.hechos)
             cont.pendientes = len(part.pendientes)
             resumen.conflictos += part.conflictos
@@ -666,6 +694,7 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
     # excepciones. Se cruzan todos los items de los grupos de este modo (menos los
     # conflictos, que ya hacen la subida no-ok y a propósito no se suben).
     if not simular and not resumen.cancelado:
+        emitir("verificando")
         conflictivos = {c[0] for c in resumen.conflictos}
         todos = [it for _n, items in grupos for it in items if it.remote not in conflictivos]
         try:

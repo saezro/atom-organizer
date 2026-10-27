@@ -1392,7 +1392,8 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
         return result
 
     sent_lock = threading.Lock()
-    counter = {"bytes": 0, "files": 0, "retries": 0, "ultimo_aviso": 0.0, "activos": 0}
+    counter = {"bytes": 0, "files": 0, "retries": 0, "ultimo_aviso": 0.0, "activos": 0,
+               "actual": "", "fallidas": 0}
     medidas = medidas_vacias()
     started = time.monotonic()
 
@@ -1418,6 +1419,9 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
             # Hilos subiendo AHORA frente al máximo configurado: si hay pocos
             # activos con muchos ficheros pendientes, el cuello no es el ancho.
             "hilos_activos": counter["activos"],
+            # Último fichero que arrancó (nombre relativo al destino) y fallidas en vivo.
+            "fichero_actual": counter["actual"],
+            "fallidas": counter["fallidas"],
             "hilos_max": max(1, concurrency),
             "medidas": {**{k: medidas[k] for k in MEDIDAS_SEGUNDOS},
                         "reintentos": dict(medidas["reintentos"])},
@@ -1476,6 +1480,7 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
             return item, None, "cancelado", False
         with sent_lock:
             counter["activos"] += 1
+            counter["actual"] = item.remote.rsplit("/", 1)[-1]
         try:
             md5 = upload_file(item, provider, on_bytes=_bump,
                               should_stop=_parar, on_retry=_retry, on_medida=_medir)
@@ -1522,6 +1527,8 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
                     result.uploaded += 1
                 else:
                     result.failed.append((item.remote, err or "error desconocido"))
+                    if err != "cancelado":
+                        counter["fallidas"] += 1
 
                 counter["files"] += 1
                 _avisar()

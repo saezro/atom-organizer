@@ -3733,8 +3733,11 @@ class Api:
         return {"started": True}
 
     def resultado_subir(self, folder: str, inspeccion_id: int | None, modo: str = "urgencia",
-                        seguir_en_normal: bool = False) -> dict:
+                        seguir_en_normal: bool = False, forzar: bool = False) -> dict:
         """Sube la salida organizada a `plantas_pv_nl`. Progreso por `atom:resultado`.
+
+        `forzar=True` («Sobrescribir todo»): resube y pisa todo, conflictos incluidos.
+        Solo lo manda el panel tras confirmación; la cola de reintentos NO lo conserva.
 
         `modo='urgencia'` sube solo lo imprescindible para el análisis; con
         `seguir_en_normal` encadena después el modo normal (completa el resto sin resubir
@@ -3775,11 +3778,14 @@ class Api:
             modos = [sr.MODO_URGENCIA, sr.MODO_NORMAL] if (modo == sr.MODO_URGENCIA and seguir_en_normal) else [modo]
             try:
                 self._push_resultado({"kind": "start", "modo": modo, "resto": len(modos) > 1})
+                if forzar:
+                    self._log_subida("subida resultado: modo: sobrescribir todo (forzar resubida) · %s · inspeccion %s",
+                                     folder, inspeccion_id)
                 reporter = self._telemetria_resultado_iniciar(inspeccion_id, folder)
                 for i, m in enumerate(modos):
                     resumen = sr.subir_resultado(
                         folder, int(inspeccion_id), m, auth, on_estado=lambda e: self._on_estado_resultado(reporter, e),
-                        should_stop=lambda: self._cancel_resultado)
+                        should_stop=lambda: self._cancel_resultado, forzar=bool(forzar))
                     sigue, motivo_resto = False, ""
                     if i < len(modos) - 1:
                         sigue, motivo_resto = sr.decidir_resto(resumen, self._encadenar_resto)
