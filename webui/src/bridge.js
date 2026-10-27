@@ -412,8 +412,9 @@ export const api = {
   cloudCancel: () => call('cloud_cancel'),
   // Subida del RESULTADO organizado a plantas_pv_nl (atom_core/subida_resultado.py).
   // Progreso por el canal propio `atom:resultado` (onResultado), nunca por `atom:cloud`.
-  resultadoSubir: (folder, inspeccionId, modo, seguirEnNormal) =>
-    call('resultado_subir', folder, inspeccionId ?? null, modo ?? 'urgencia', seguirEnNormal ?? false),
+  resultadoSubir: (folder, inspeccionId, modo, seguirEnNormal, forzar) =>
+    call('resultado_subir', folder, inspeccionId ?? null, modo ?? 'urgencia', seguirEnNormal ?? false,
+      ...(forzar ? [true] : [])),
   resultadoCancelar: () => call('resultado_cancelar'),
   resultadoEncadenar: (activo) => call('resultado_encadenar', Boolean(activo)),
   // Credencial de subida: {ok, reason?}. Sin ok no se puede publicar (se muestra reason).

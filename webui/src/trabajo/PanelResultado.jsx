@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, onResultado } from '../bridge'
 import GraficaSubida from './GraficaSubida'
+import ProgresoSubida from './ProgresoSubida'
+import useConfirmar from './useConfirmar'
 import { añadirMuestra, diagnosticarCuello, estadisticasSerie } from './subidaMedicion'
 
 const nf = (n, d = 1) => Number(n).toLocaleString('es-ES', { minimumFractionDigits: d, maximumFractionDigits: d })
@@ -29,6 +31,7 @@ export function textoVelocidad(e) {
 
 export function textoProgreso(e) {
   if (e && e.fase === 'listando') return 'Leyendo el bucket…'
+  if (e && e.fase === 'verificando') return 'Verificando en el bucket…'
   if (e && e.comprobando) return `Comprobando ficheros ${e.comprobando.hechos}/${e.comprobando.total}…`
   if (!e || !e.urgentes || !e.resto) return ''
   return `urgentes ${e.urgentes.hechos}/${e.urgentes.total} · resto ${e.resto.hechos}/${e.resto.total}`
@@ -107,25 +110,6 @@ function Spinner({ tam = '1rem' }) {
 // Espera antes de recalcular si la selección cambia seguida (carpeta/inspección).
 export const DEBOUNCE_ESTADO_MS = 300
 
-function Kpi({ etiqueta, valor, sub }) {
-  return (
-    <div className="sub-kpi">
-      <span className="sub-kpi-etq">{etiqueta}</span>
-      <span className="sub-kpi-val">{valor}</span>
-      {sub && <span className="sub-kpi-sub">{sub}</span>}
-    </div>
-  )
-}
-
-function Barra({ pct }) {
-  const p = Math.max(0, Math.min(100, pct))
-  return (
-    <div className="sub-barra" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(p)} aria-label="Progreso de la subida">
-      <div className="sub-barra-relleno" style={{ width: `${p}%` }} />
-    </div>
-  )
-}
-
 function Cuello({ diag }) {
   if (!diag) return null
   const visibles = diag.partes.filter((p) => p.pct >= 0.5)
@@ -157,6 +141,8 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
   const [modo, setModo] = useState('urgencia')
   const [subiendo, setSubiendo] = useState(false)
   const [estado, setEstado] = useState(null)
+  // Último evento `estado` de progreso (el `done` pisa `estado` con el resumen).
+  const [ultimo, setUltimo] = useState(null)
   const [resumen, setResumen] = useState(null)
   const [error, setError] = useState('')
   const [aviso, setAviso] = useState('')
@@ -165,6 +151,9 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
   // Aviso pre-subida: null | {cargando} | {checks, destino, error?}
   const [previa, setPrevia] = useState(null)
   const [igualmente, setIgualmente] = useState(false)
+  // «Sobrescribir todo (forzar resubida)»: SIEMPRE desmarcada al abrir el aviso, nunca persistida.
+  const [forzar, setForzar] = useState(false)
+  const [confirmar, dialogoConfirmar] = useConfirmar()
   // Desglose del destino (derivado del bucket, sobrevive a reiniciar la app).
   const [desglose, setDesglose] = useState(null)
   const [tick, setTick] = useState(0)
@@ -197,10 +186,10 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
             if (d.resto && encadenarRef.current === false && typeof api.resultadoEncadenar === 'function') {
               Promise.resolve(api.resultadoEncadenar(false)).catch((e) => setError(String(e?.message || e)))
             }
-            setSubiendo(true); setAviso(''); setResumen(null); setEstado(null); setInicio(Date.now()); setAhora(Date.now()); setSerie([])
+            setSubiendo(true); setAviso(''); setResumen(null); setEstado(null); setUltimo(null); setInicio(Date.now()); setAhora(Date.now()); setSerie([])
             break
           case 'estado':
-            setSubiendo(true); setEstado(d)
+            setSubiendo(true); setEstado(d); setUltimo(d)
             setSerie((s) => añadirMuestra(s, d))
             break
           case 'done':
@@ -305,6 +294,7 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
     setModo(m)
     setError('')
     setIgualmente(false)
+    setForzar(false)
     setPrevia({ cargando: true })
     const c = await comprobarCred()
     setCred(c)
@@ -337,17 +327,36 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
     }
   }
 
-  async function lanzar(modoForzado) {
+  async function lanzar(modoForzado, sobrescribirTodo = false) {
     const m = typeof modoForzado === 'string' ? modoForzado : modo
     setPrevia(null)
+    setForzar(false)
     setError('')
     try {
-      const seguir = m === 'urgencia' && encadenar && !(desglose?.resto && nResto === 0)
-      const r = await api.resultadoSubir(carpeta, inspeccionId, m, seguir)
+      const seguir = m === 'urgencia' && encadenar && !(!sobrescribirTodo && desglose?.resto && nResto === 0)
+      const r = sobrescribirTodo
+        ? await api.resultadoSubir(carpeta, inspeccionId, m, seguir, true)
+        : await api.resultadoSubir(carpeta, inspeccionId, m, seguir)
       if (r && r.started === false) setError(r.reason || 'No se pudo iniciar la subida.')
     } catch (e) {
       setError(String(e?.message || e))
     }
+  }
+
+  // «Confirmar y subir» del aviso previo. Con «Sobrescribir todo» marcada pide una segunda
+  // confirmación con los totales del grupo (urgentes y, si se sube, resto).
+  async function confirmarYSubir(d) {
+    if (!forzar) { lanzar(); return }
+    const g = d?.desglose || desglose
+    const conResto = modo === 'normal' || (encadenar && (g?.resto?.total || 0) > 0)
+    const grupos = [g?.urgentes, conResto ? g?.resto : null].filter(Boolean)
+    const n = grupos.reduce((a, x) => a + (x.total || 0), 0)
+    const bytes = grupos.reduce((a, x) => a + (x.bytes_total || 0), 0)
+    const ok = await confirmar(
+      `Se van a resubir ${miles(n)} ficheros (${textoBytes(bytes)}). ` +
+      'Esto pisará en el bucket los que ya existen, incluidos los que están en conflicto. ¿Continuar?'
+    )
+    if (ok) lanzar(modo, true)
   }
 
   const nConf = resumen?.conflictos?.length || 0
@@ -361,15 +370,13 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
   const todoSubido = Boolean(urg && rest) && nUrg === 0 && nResto === 0 && nSin === 0
   const restoEnCola = subiendo && hayResto && encadenar && modo === 'urgencia' && estado?.modo !== 'normal'
   const card = resumen ? resumenMetricas(resumen.metricas) : null
-  const completa = resumen && resumen.ok && !resumen.cancelled && nSin === 0
   const est = useMemo(() => estadisticasSerie(serie), [serie])
 
   // Progreso del modo en curso (urgencia = solo urgentes; normal = ambos).
-  const enNormal = estado?.modo === 'normal'
-  const fHechos = estado ? (estado.urgentes?.hechos || 0) + (enNormal ? estado.resto?.hechos || 0 : 0) : 0
-  const fTotal = estado ? (estado.urgentes?.total || 0) + (enNormal ? estado.resto?.total || 0 : 0) : 0
-  const pct = estado?.bytes_total > 0 ? (estado.bytes_done / estado.bytes_total) * 100 : fTotal > 0 ? (fHechos / fTotal) * 100 : 0
-  const preparando = estado && (estado.fase === 'listando' || estado.comprobando)
+  const enNormal = ultimo?.modo === 'normal'
+  const fHechos = ultimo ? (ultimo.urgentes?.hechos || 0) + (enNormal ? ultimo.resto?.hechos || 0 : 0) : 0
+  const fTotal = ultimo ? (ultimo.urgentes?.total || 0) + (enNormal ? ultimo.resto?.total || 0 : 0) : 0
+  const pct = ultimo?.bytes_total > 0 ? (ultimo.bytes_done / ultimo.bytes_total) * 100 : fTotal > 0 ? (fHechos / fTotal) * 100 : 0
 
   // Diagnóstico: en vivo con el último evento; al terminar, con las métricas finales.
   const medidasDiag = resumen?.metricas?.medidas || estado?.medidas
@@ -383,6 +390,9 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
       hilosMax: resumen?.metricas?.hilos_max ?? estado?.hilos_max,
     })
   }, [medidasDiag, resumen, estado, est.media, card])
+
+  // «Midiendo…» es una espera: tras el FIN (o durante la verificación) ya no tiene sentido enseñarlo.
+  const ocultarCuello = diag?.clave === 'medir' && (Boolean(resumen && !subiendo) || estado?.fase === 'verificando')
 
   useEffect(() => {
     if (onActividad) onActividad({ subiendo, pct: Math.round(pct), error: Boolean(error) })
@@ -405,6 +415,7 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
 
   return (
     <div className="sub" data-variante={variante}>
+      {dialogoConfirmar}
       <header className="sub-cab">
         <div className="sub-cab-tit">
           <h3 className="sub-titulo">Resultado en el bucket</h3>
@@ -512,8 +523,12 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
                 <span>Subir igualmente</span>
               </label>
             )}
+            <label className="check">
+              <input type="checkbox" checked={forzar} onChange={(e) => setForzar(e.target.checked)} />
+              <span>Sobrescribir todo (forzar resubida)</span>
+            </label>
             <div className="field-row">
-              <button type="button" className="btn-run" onClick={lanzar} disabled={hayError && !igualmente}>Confirmar y subir</button>
+              <button type="button" className="btn-run" onClick={() => confirmarYSubir(d)} disabled={hayError && !igualmente}>Confirmar y subir</button>
               <button type="button" className="btn-ghost" onClick={() => setPrevia(null)}>Cancelar aviso</button>
             </div>
           </div>
@@ -521,37 +536,19 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
       })()}
       {!(carpeta && inspeccionId) && <span className="field-hint">Elige la inspección y la carpeta de salida para poder publicar.</span>}
 
+      {(subiendo || ultimo || resumen || (error && inicio)) && (
+        <ProgresoSubida
+          ultimo={ultimo} resumen={resumen} card={card} subiendo={subiendo} error={error}
+          inicio={inicio} ahora={ahora} pct={pct} est={est} hayResto={hayResto} modo={modo}
+          nSin={resumen ? nSin : 0} fallidasN={nFall} conflictosN={nConf} />
+      )}
       {(subiendo || (estado && !resumen)) && (
         <section className="sub-progreso" aria-label="Subida en curso">
-          <div className="sub-progreso-cab">
-            <span className="sub-pct">{preparando ? '…' : `${Math.floor(pct)} %`}</span>
-            <span className="sub-fase" aria-live="polite">
-              {estado ? textoProgreso(estado) : 'Calculando…'}
-            </span>
-          </div>
-          <Barra pct={preparando ? 0 : pct} />
-          {estado && !preparando && (
-            <div className="sub-kpis">
-              <Kpi etiqueta="Datos" valor={`${textoBytes(estado.bytes_done)} / ${textoBytes(estado.bytes_total)}`}
-                sub={estado.bytes_enviados != null ? `${textoBytes(estado.bytes_enviados)} enviados ahora` : null} />
-              <Kpi etiqueta="Ficheros" valor={`${miles(fHechos)} / ${miles(fTotal)}`}
-                sub={estado.files_per_s != null ? `${nf(estado.files_per_s)} img/s` : null} />
-              <Kpi etiqueta="Transcurrido" valor={textoDuracion(inicio ? (ahora - inicio) / 1000 : estado.t)} />
-              <Kpi etiqueta="Tiempo restante" valor={estado.eta != null ? `~${textoEta(estado.eta)}` : '—'} />
-              <Kpi etiqueta="Velocidad ahora" valor={est.actual != null ? `${nf(est.actual)} MB/s` : '—'} />
-              <Kpi etiqueta="Velocidad media" valor={est.media != null ? `${nf(est.media)} MB/s` : '—'}
-                sub={estado.hilos_max ? `${estado.hilos_activos ?? 0}/${estado.hilos_max} hilos activos` : null} />
-            </div>
-          )}
           <GraficaSubida serie={serie} />
-          <Cuello diag={diag} />
+          {!ocultarCuello && <Cuello diag={diag} />}
         </section>
       )}
 
-      {completa && <span className="field-hint hint-ok">Subida completa</span>}
-      {resumen && resumen.ok && !resumen.cancelled && nSin > 0 && (
-        <span className="field-hint hint-warn">Subida incompleta: hay ficheros sin clasificar</span>
-      )}
       {card && (
         <section className="sub-resumen" role="group" aria-label="Resumen de la subida">
           <span className="sub-resumen-etq">Resumen</span>
@@ -596,10 +593,10 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
       {resumen && !subiendo && serie.length >= 2 && (
         <section className="sub-resumen-grafica" aria-label="Gráfica de la subida">
           <GraficaSubida serie={serie} />
-          {!card && <Cuello diag={diag} />}
+          {!card && !ocultarCuello && <Cuello diag={diag} />}
         </section>
       )}
-      {resumen && !subiendo && card && <Cuello diag={diag} />}
+      {resumen && !subiendo && card && !ocultarCuello && <Cuello diag={diag} />}
       {resumen?.cancelled && <span className="field-hint hint-warn">Subida cancelada. Lo ya subido se conserva.</span>}
       {nConf > 0 && <span className="field-hint hint-warn">{nConf} en conflicto (existen con otro contenido y no se pisan)</span>}
       {nFall > 0 && (
