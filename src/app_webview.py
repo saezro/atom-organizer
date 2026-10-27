@@ -543,6 +543,7 @@ class Api:
         self._encadenar_resto = False
         self._hay_resto = False  # la subida en curso tiene fase de resto
         self._resultado_lock = threading.Lock()
+        self._destino_token_ultimo = None  # última consulta de `resultado_inspeccionar_destino_start`
         # `estadillo_subir` no tenía mutex propio (a diferencia de
         # `cloud_upload`/`self._uploading`): dos clicks seguidos (doble-tap
         # del tactil resistivo, o un `call()` del bridge que reintenta tras
@@ -3702,6 +3703,34 @@ class Api:
             return sr.inspeccionar_destino(destino, int(inspeccion_id), auth)
         except Exception as exc:  # noqa: BLE001
             return {**vacio, "error": f"{type(exc).__name__}: {exc}", "detalle": str(exc)}
+
+    def resultado_inspeccionar_destino_start(self, destino: str, inspeccion_id: int | None,
+                                             token: str) -> dict:
+        """Igual que `resultado_inspeccionar_destino` pero en un hilo: listar un bucket grande
+        tarda y bloqueaba la UI («El programa tardó demasiado en responder»). El resultado llega
+        por `atom:resultado` como `{kind:'destino', token, ...}`; `token` lo pone la UI para
+        descartar respuestas de selecciones anteriores. Solo cuenta la última consulta: un hilo
+        cuyo token ya no es el último sale sin consultar el bucket ni empujar nada."""
+        if not token:
+            return {"started": False, "reason": "Falta el token de la consulta."}
+        self._destino_token_ultimo = token
+
+        def worker() -> None:
+            if self._destino_token_ultimo != token:
+                return
+            try:
+                r = self.resultado_inspeccionar_destino(destino, inspeccion_id)
+            except Exception as exc:  # noqa: BLE001 - llega a la UI como error visible
+                r = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            if self._destino_token_ultimo != token:
+                return
+            try:
+                self._push_resultado({**r, "kind": "destino", "token": token})
+            except Exception:  # noqa: BLE001 - el hilo no debe morir en silencio
+                logger.exception("resultado_inspeccionar_destino_start: no se pudo empujar el resultado (token=%s)", token)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"started": True}
 
     def resultado_subir(self, folder: str, inspeccion_id: int | None, modo: str = "urgencia",
                         seguir_en_normal: bool = False) -> dict:

@@ -33,8 +33,15 @@ const respuestas = {
     },
   },
 }
+// Inspección de destino en hilo: devuelve {started} y empuja el resultado por atom:resultado con el token.
+const inspeccionarStart = async (_destino, _inspeccionId, token) => {
+  setTimeout(() => window.dispatchEvent(new CustomEvent('atom:resultado', {
+    detail: { ...respuestas.resultado_inspeccionar_destino, kind: 'destino', token },
+  })), 150)
+  return { started: true }
+}
 window.pywebview = {
-  api: new Proxy({ __vivo: () => true }, {
+  api: new Proxy({ __vivo: () => true, resultado_inspeccionar_destino_start: inspeccionarStart }, {
     get: (t, k) => (k in t ? t[k] : async () => (k in respuestas ? respuestas[k] : { ok: true })),
   }),
 }

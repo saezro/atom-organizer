@@ -354,3 +354,92 @@ def test_drenar_sin_credencial_no_suma_intento_ni_descarta(api, monkeypatch, tmp
 
 def sr_max():
     return aw.MAX_INTENTOS_RESULTADO + 1
+
+
+def test_inspeccionar_destino_start_corre_en_hilo_y_empuja_con_token(api, monkeypatch, tmp_path):
+    import threading
+    llamadas = []
+
+    def lento(destino, inspeccion_id):
+        llamadas.append((destino, inspeccion_id))
+        return {"ok": True, "existe": False, "n_objetos": 0, "bytes": 0, "sobrescribe": []}
+
+    monkeypatch.setattr(api, "resultado_inspeccionar_destino", lento)
+    r = api.resultado_inspeccionar_destino_start(str(tmp_path), 7, "t1")
+    assert r == {"started": True}
+    for _ in range(200):
+        if api.eventos:
+            break
+        threading.Event().wait(0.01)
+    ev = api.eventos[0]
+    assert ev["kind"] == "destino" and ev["token"] == "t1" and ev["ok"] is True
+    assert llamadas == [(str(tmp_path), 7)]
+
+
+def test_inspeccionar_destino_start_error_llega_visible_y_sin_token_se_rechaza(api, monkeypatch, tmp_path):
+    import threading
+
+    def roto(destino, inspeccion_id):
+        raise RuntimeError("bucket caído")
+
+    monkeypatch.setattr(api, "resultado_inspeccionar_destino", roto)
+    assert api.resultado_inspeccionar_destino_start(str(tmp_path), 7, "")["started"] is False
+    api.resultado_inspeccionar_destino_start(str(tmp_path), 7, "t2")
+    for _ in range(200):
+        if api.eventos:
+            break
+        threading.Event().wait(0.01)
+    assert api.eventos[0]["ok"] is False and "bucket caído" in api.eventos[0]["error"]
+
+
+def test_inspeccionar_destino_carpeta_inexistente_error_visible_y_log(api, monkeypatch, tmp_path, caplog):
+    import logging
+    monkeypatch.setattr(api, "_get_auth", lambda **k: None)
+    monkeypatch.setattr(sr, "credencial_resultado", lambda auth: {"ok": True})
+    falsa = str(tmp_path / "CASTRUM_ORG")
+    with caplog.at_level(logging.INFO):
+        r = api.resultado_inspeccionar_destino(falsa, 7)
+    assert r["ok"] is False
+    assert r["error"] == f"La carpeta {falsa} no existe o no es accesible"
+    assert any("inspeccionar_destino" in m and "FALLO" in m for m in caplog.messages)
+
+
+def test_inspeccionar_destino_start_esta_en_la_allowlist_del_modo_server():
+    from atom_core.webserver import METODOS_EXPUESTOS
+    assert "resultado_inspeccionar_destino_start" in METODOS_EXPUESTOS
+    assert callable(getattr(aw.Api, "resultado_inspeccionar_destino_start"))
+
+
+def test_inspeccionar_destino_start_hilo_con_token_viejo_no_consulta_ni_empuja(api, monkeypatch, tmp_path):
+    llamadas = []
+    monkeypatch.setattr(api, "resultado_inspeccionar_destino",
+                        lambda d, i: llamadas.append(d) or {"ok": True})
+    captura = []
+
+    class _HiloDiferido:
+        def __init__(self, target=None, **_):
+            self._t = target
+
+        def start(self):
+            captura.append(self._t)
+
+    monkeypatch.setattr(aw.threading, "Thread", _HiloDiferido)
+    api.resultado_inspeccionar_destino_start(str(tmp_path), 7, "viejo")
+    api.resultado_inspeccionar_destino_start(str(tmp_path), 7, "nuevo")
+    for w in captura:
+        w()
+    assert llamadas == [str(tmp_path)]
+    assert [e["token"] for e in api.eventos] == ["nuevo"]
+
+
+def test_inspeccionar_destino_start_push_con_excepcion_no_rompe_el_hilo(api, monkeypatch, tmp_path, caplog):
+    import logging
+    monkeypatch.setattr(api, "resultado_inspeccionar_destino", lambda d, i: {"ok": True})
+
+    def roto(detail):
+        raise RuntimeError("sink caído")
+
+    monkeypatch.setattr(api, "_push_resultado", roto)
+    with caplog.at_level(logging.ERROR):
+        assert api.resultado_inspeccionar_destino_start(str(tmp_path), 7, "t9") == {"started": True}
+    assert any("no se pudo empujar" in m for m in caplog.messages)

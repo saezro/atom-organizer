@@ -708,3 +708,13 @@ def test_decidir_resto_ok_fallos_cancelado_y_desmarcado():
     canc = sr.ResumenResultado(modo="urgencia", prefijo="P/", cancelado=True)
     lanzar, aviso = sr.decidir_resto(canc, True)
     assert lanzar is False and "cancelada" in aviso
+
+
+def test_inspeccionar_destino_carpeta_inexistente_y_log(tmp_path, caplog):
+    import logging
+    falsa = tmp_path / "NO_EXISTE"
+    with caplog.at_level(logging.INFO):
+        r = sr.inspeccionar_destino(falsa, 7, None, proveedor=ProveedorFalso({}))
+    assert r["ok"] is False and r["error"] == f"La carpeta {falsa} no existe o no es accesible"
+    msgs = " | ".join(caplog.messages)
+    assert "inspeccionar_destino: inicio" in msgs and "inspeccionar_destino: FALLO" in msgs
