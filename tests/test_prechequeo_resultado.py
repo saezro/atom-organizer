@@ -159,3 +159,29 @@ def test_check_que_lanza_no_tumba_prechequear(tmp_path, monkeypatch):
     assert "RuntimeError" in giro["detalle"] and "boom" in giro["detalle"]
     assert res["ok"] is False
     assert _estado(res, "horas_csv")["estado"] == "ok"  # los demás siguen
+
+
+def test_cierre_origen_no_accesible_es_aviso_sin_listar_rutas(tmp_path):
+    destino = _destino(tmp_path)
+    c = _estado(pre.prechequear(str(destino)), "cierre")
+    assert c["estado"] == "aviso"
+    assert c["detalle"].startswith("Carpeta de origen no accesible (/origen);")
+    assert "se valida contra la salida organizada" in c["detalle"]
+    assert "no existe en disco" not in c["detalle"]
+
+
+def test_cierre_error_si_falta_en_la_salida_organizada(tmp_path):
+    destino = _destino(tmp_path)
+    next(destino.rglob("*_T.JPG")).unlink()
+    c = _estado(pre.prechequear(str(destino)), "cierre")
+    assert c["estado"] == "error"
+    assert "no existe en disco" in c["detalle"]
+
+
+def test_cierre_origen_no_accesible_y_error_real_emite_ambos(tmp_path):
+    destino = _destino(tmp_path)
+    next(destino.rglob("*_T.JPG")).unlink()
+    c = _estado(pre.prechequear(str(destino)), "cierre")
+    assert c["estado"] == "error"
+    assert "no existe en disco" in c["detalle"]
+    assert "Carpeta de origen no accesible (/origen)" in c["detalle"]

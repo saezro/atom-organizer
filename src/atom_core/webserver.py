@@ -42,7 +42,7 @@ METODOS_EXPUESTOS = frozenset({
     "cloud_pair_start", "cloud_pair_poll",
     "cloud_inspecciones", "cloud_prepare", "cloud_prepare_start", "cloud_upload", "cloud_organizar",
     "cloud_cancel",
-    "resultado_subir", "resultado_cancelar", "resultado_credencial",
+    "resultado_subir", "resultado_cancelar", "resultado_encadenar", "resultado_credencial",
     "resultado_prechequeo", "resultado_inspeccionar_destino",
     "cloud_comprobar", "cloud_asegurar_estado", "cloud_pendientes", "cloud_drenar",
     "listar_perfiles", "activar_perfil", "borrar_perfil",

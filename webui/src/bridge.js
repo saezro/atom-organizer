@@ -412,6 +412,7 @@ export const api = {
   resultadoSubir: (folder, inspeccionId, modo, seguirEnNormal) =>
     call('resultado_subir', folder, inspeccionId ?? null, modo ?? 'urgencia', seguirEnNormal ?? false),
   resultadoCancelar: () => call('resultado_cancelar'),
+  resultadoEncadenar: (activo) => call('resultado_encadenar', Boolean(activo)),
   // Credencial de subida: {ok, reason?}. Sin ok no se puede publicar (se muestra reason).
   resultadoCredencial: () => call('resultado_credencial'),
   // Checks previos a subir: [{id, titulo, estado:'ok'|'aviso'|'error'|'no_comprobable', detalle}].

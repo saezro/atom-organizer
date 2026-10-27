@@ -635,3 +635,76 @@ def test_medidas_se_acumulan_entre_urgentes_y_resto(tmp_path, gcs):
     assert r.metricas["medidas"]["red_s"] == 3.0
     assert r.metricas["medidas"]["reintentos"]["429"] == 4
     assert r.metricas["bytes_enviados"] == sum(llamadas) * 10
+
+
+# ---- 3.4.150: FOTOS_GENERALES urgentes, duplicados omitidos, lista de sin clasificar ----
+
+def test_fotos_generales_son_urgentes_con_destino_bajo_el_prefijo(tmp_path):
+    salida = tmp_path / "salida"
+    nombres = ["G_W.JPG", "G_W_CROP.JPG", "G_T.JPG", "G_T.tiff", "g.jpeg", "h.TIF"]
+    _arbol(salida, {f"FOTOS_GENERALES/{n}": b"x" for n in nombres})
+    for n in nombres:
+        assert sr.clasificar(f"FOTOS_GENERALES/{n}") == sr.URGENTE
+    sel = sr.seleccionar(salida, PREFIJO)
+    assert sorted(i.remote for i in sel.urgentes) == sorted(f"{PREFIJO}FOTOS_GENERALES/{n}" for n in nombres)
+    assert sel.sin_clasificar == 0 and sel.resto == []
+
+
+def test_fotos_generales_solo_planas_de_imagen_y_no_ocultas(tmp_path):
+    salida = tmp_path / "salida"
+    _arbol(salida, {"FOTOS_GENERALES/notas.txt": b"x", "FOTOS_GENERALES/.oculta.jpg": b"x",
+                    "FOTOS_GENERALES/sub/a.jpg": b"x", "FOTOS_GENERALES/ok.jpg": b"x"})
+    sel = sr.seleccionar(salida, PREFIJO)
+    assert [i.remote for i in sel.urgentes] == [f"{PREFIJO}FOTOS_GENERALES/ok.jpg"]
+    motivos = {x["ruta"]: x["motivo"] for x in sel.sin_clasificar_lista}
+    assert set(motivos) == {"FOTOS_GENERALES/notas.txt", "FOTOS_GENERALES/.oculta.jpg", "FOTOS_GENERALES/sub/a.jpg"}
+    assert "extensión" in motivos["FOTOS_GENERALES/notas.txt"]
+    assert "oculto" in motivos["FOTOS_GENERALES/.oculta.jpg"]
+    assert "plana" in motivos["FOTOS_GENERALES/sub/a.jpg"]
+
+
+def test_duplicado_sin_gemelo_en_csvs_es_sin_clasificar(tmp_path):
+    salida = tmp_path / "salida"
+    _arbol(salida, {"RGB/PB1/V1/B_meta.csv": b"1", "CSVs/A_meta.csv": b"m", "RGB/PB1/V1/A_meta.csv": b"1"})
+    sel = sr.seleccionar(salida, PREFIJO)
+    assert sel.omitidos_duplicado == 1
+    assert sel.sin_clasificar_lista == [{"ruta": "RGB/PB1/V1/B_meta.csv", "motivo": "CSV sin copia en CSVs/"}]
+
+
+def test_location_meta_fuera_de_csvs_se_omiten_como_duplicado(tmp_path, caplog):
+    salida = tmp_path / "salida"
+    _arbol(salida, {"RGB/PB1/PB1_V1/V1_location.csv": b"1", "TERMICA/PB1/PB1_V1/V1_meta.csv": b"2",
+                    "CSVs/V1_meta.csv": b"m", "CSVs/V1_location.csv": b"l"})
+    gem = {"CSVs/V1_location.csv", "CSVs/V1_meta.csv"}
+    assert sr.clasificar("RGB/PB1/PB1_V1/V1_location.csv", gem) == sr.OMITIDO_DUPLICADO
+    assert sr.clasificar("TERMICA/PB1/PB1_V1/V1_meta.csv", gem) == sr.OMITIDO_DUPLICADO
+    assert sr.clasificar("TERMICA/PB1/PB1_V1/V1_meta.csv") is None
+    with caplog.at_level("INFO", logger=sr.logger.name):
+        sel = sr.seleccionar(salida, PREFIJO)
+    assert sel.omitidos_duplicado == 2 and sel.sin_clasificar == 0 and sel.sin_clasificar_lista == []
+    assert sorted(i.remote.removeprefix(PREFIJO) for i in sel.urgentes) == ["CSVs/V1_location.csv", "CSVs/V1_meta.csv"]
+    lineas = [r for r in caplog.records if "omitidos" in r.getMessage()]
+    assert len(lineas) == 1 and "2" in lineas[0].getMessage()
+
+
+def test_sin_clasificar_devuelve_lista_ruta_motivo_y_llega_al_resumen(tmp_path):
+    salida = tmp_path / "salida"
+    _arbol(salida, {**SALIDA_TIPICA})
+    sel = sr.seleccionar(salida, PREFIJO)
+    assert {x["ruta"] for x in sel.sin_clasificar_lista} == {"CSVs/otro.csv", "RGB_Extra/PB1/V1/X.JPG"}
+    assert all(x["motivo"] for x in sel.sin_clasificar_lista)
+    r = sr.ResumenResultado(modo="urgencia", prefijo="P/", sin_clasificar=2,
+                            sin_clasificar_lista=sel.sin_clasificar_lista)
+    d = r.a_dict()
+    assert d["sin_clasificar"] == 2 and d["sin_clasificar_lista"] == sel.sin_clasificar_lista
+
+
+def test_decidir_resto_ok_fallos_cancelado_y_desmarcado():
+    ok = sr.ResumenResultado(modo="urgencia", prefijo="P/")
+    assert sr.decidir_resto(ok, True) == (True, "")
+    assert sr.decidir_resto(ok, False)[0] is False
+    mal = sr.ResumenResultado(modo="urgencia", prefijo="P/", fallidas=[("a", "x"), ("b", "y")])
+    assert sr.decidir_resto(mal, True) == (False, "Resto no lanzado: urgentes con 2 fallos")
+    canc = sr.ResumenResultado(modo="urgencia", prefijo="P/", cancelado=True)
+    lanzar, aviso = sr.decidir_resto(canc, True)
+    assert lanzar is False and "cancelada" in aviso

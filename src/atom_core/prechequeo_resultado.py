@@ -176,12 +176,45 @@ def _chk_manifiesto(ctx):
     return _res(OK, f"{len(filas)} imagen(es) registradas.")
 
 
+_RE_AUSENTE = re.compile(r"^(?P<origen>.*): 'hecho' en el manifiesto pero (?P<ruta>.*) no existe en disco\.$")
+
+
+def _raiz_origen(filas) -> str:
+    """Carpeta común de los `ruta_origen` del manifiesto ('' si no hay)."""
+    import ntpath  # noqa: PLC0415
+    import os  # noqa: PLC0415
+    rutas = [str(f["ruta_origen"]) for f in filas if f["ruta_origen"]]
+    if not rutas:
+        return ""
+    mod = ntpath if any("\\" in r or re.match(r"^[A-Za-z]:", r) for r in rutas) else os.path
+    try:
+        return mod.commonpath([mod.dirname(r) for r in rutas])
+    except ValueError:
+        return mod.dirname(rutas[0])
+
+
 def _chk_cierre(ctx):
+    import os  # noqa: PLC0415
     cfg = SimpleNamespace(input_folder="", convert_to_tif=False, cropping_rgb=False)
     problemas = cierre.verificar(ctx["manifiesto"], cfg, None)
     nota = " (Sin carpeta de origen: todo lo registrado cuenta como de esta tanda.)"
-    if problemas:
-        return _res(ERROR, f"{len(problemas)} problema(s): {_ejemplos(problemas)}.{nota}")
+    # Lo que falta en la SALIDA organizada es error; que la carpeta de ORIGEN (tarjeta SD)
+    # ya no esté montada NO lo es: se avisa una vez, sin listar miles de rutas.
+    ausentes, otros = [], []
+    for p in problemas:
+        m = _RE_AUSENTE.match(p)
+        (ausentes if m else otros).append(p)
+    origen = _raiz_origen(ctx["filas"])
+    origen_ausente = bool(origen) and not os.path.exists(origen)
+    # Todo lo ausente de la SALIDA organizada es error (la ruta del manifiesto es de salida).
+    errores = list(otros) + list(ausentes)
+    aviso_origen = (f"Carpeta de origen no accesible ({origen}); se valida contra la salida organizada."
+                    if origen_ausente else "")
+    if errores:
+        extra = f" Aviso: {aviso_origen}" if aviso_origen else ""
+        return _res(ERROR, f"{len(errores)} problema(s): {_ejemplos(errores)}.{nota}{extra}")
+    if origen_ausente:
+        return _res(AVISO, aviso_origen)
     return _res(OK, "Sin pendientes, fallidas, duplicados ni ficheros ausentes." + nota)
 
 
