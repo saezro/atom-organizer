@@ -796,7 +796,8 @@ class GoogleAuth:
                      prefix: str | None = None,
                      inspeccion_id: int | None = None,
                      planta_id: int | None = None,
-                     ambito: str | None = None) -> str:
+                     ambito: str | None = None,
+                     forzar: bool = False) -> str:
         """Token válido para llamar a la API de Cloud Storage.
 
         Se refresca solo. Es lo que hace viable una subida de horas: el token
@@ -809,13 +810,15 @@ class GoogleAuth:
         with self._lock:
             if self._modo == MODO_PASSWORD and self._refresh_token:
                 return self._gcs_token_password(prefix, inspeccion_id, force_refresh,
-                                                planta_id=planta_id, ambito=ambito)
+                                                planta_id=planta_id, ambito=ambito,
+                                                forzar=forzar)
             if ambito == "resultado":
                 # Login Google del Organizer: token GCS `resultado` pedido a la Suite
                 # con Bearer id_token. Broker/Pi NO (la Suite lo rechaza): error claro.
                 if self._modo == MODO_GOOGLE and self._refresh_token:
                     return self._gcs_token_password(prefix, inspeccion_id, force_refresh,
-                                                    planta_id=planta_id, ambito=ambito)
+                                                    planta_id=planta_id, ambito=ambito,
+                                                    forzar=forzar)
                 raise AuthError("Subir el resultado exige entrar con Google o con usuario "
                                 "y contraseña (no con el emparejamiento de la Pi).")
             vigente = (self._access_token
@@ -912,15 +915,17 @@ class GoogleAuth:
                               ambito="estadillos")
             return self._gcs_prefijos[f"@estadillos:{planta_id}:{inspeccion_id}"]
 
-    def prefijo_resultado(self, inspeccion_id: int | None) -> str:
+    def prefijo_resultado(self, inspeccion_id: int | None, forzar: bool = False) -> str:
         """Prefijo de destino del resultado (`<PLANTA>/INSPECCIONES/<TIPO>/<AÑO>/`),
         decidido por la Suite (modo password). Pide el token si aún no se conoce."""
         with self._lock:
-            self.access_token(inspeccion_id=inspeccion_id, ambito="resultado")
-            return self._gcs_prefijos[f"@resultado:{inspeccion_id}"]
+            self.access_token(inspeccion_id=inspeccion_id, ambito="resultado",
+                              forzar=forzar)
+            sufijo = ":forzar" if forzar else ""
+            return self._gcs_prefijos[f"@resultado:{inspeccion_id}{sufijo}"]
 
     def _gcs_token_password(self, prefix, inspeccion_id, force_refresh, *,
-                            planta_id=None, ambito=None) -> str:
+                            planta_id=None, ambito=None, forzar=False) -> str:
         """Token de GCS por prefijo, pedido a la Suite con la `sesion` (Bearer).
 
         Con `ambito="estadillos"` se pide por `planta_id` + `inspeccion_id`
@@ -934,6 +939,11 @@ class GoogleAuth:
                         "elige la inspección en la lista.")
                 clave = f"@resultado:{inspeccion_id}"
                 cuerpo_req = {"inspeccion_id": inspeccion_id, "ambito": ambito}
+                if forzar:
+                    # Token con objectAdmin sobre todo el prefijo: caché aparte para
+                    # no reutilizar uno sin admin (ni al revés).
+                    clave += ":forzar"
+                    cuerpo_req["forzar"] = True
             elif ambito == "estadillos":
                 if planta_id is None:
                     raise AuthError(

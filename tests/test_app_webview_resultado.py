@@ -249,7 +249,7 @@ def _estado(**extra):
 
 def test_progreso_del_resultado_va_a_la_telemetria_con_totales_y_eta(api, monkeypatch, tmp_path):
     rep = _ReporterFalso()
-    monkeypatch.setattr(api, "_telemetria_resultado_iniciar", lambda i, f: rep)
+    monkeypatch.setattr(api, "_telemetria_resultado_iniciar", lambda i, f, *a: rep)
 
     def falso(destino, iid, modo, auth, on_estado=None, **kw):
         on_estado(_estado())
@@ -263,7 +263,7 @@ def test_progreso_del_resultado_va_a_la_telemetria_con_totales_y_eta(api, monkey
 
 
 def test_fallo_de_telemetria_no_rompe_la_subida(api, monkeypatch, tmp_path):
-    monkeypatch.setattr(api, "_telemetria_resultado_iniciar", lambda i, f: _ReporterFalso(falla=True))
+    monkeypatch.setattr(api, "_telemetria_resultado_iniciar", lambda i, f, *a: _ReporterFalso(falla=True))
 
     def falso(destino, iid, modo, auth, on_estado=None, **kw):
         on_estado(_estado())
@@ -443,3 +443,24 @@ def test_inspeccionar_destino_start_push_con_excepcion_no_rompe_el_hilo(api, mon
     with caplog.at_level(logging.ERROR):
         assert api.resultado_inspeccionar_destino_start(str(tmp_path), 7, "t9") == {"started": True}
     assert any("no se pudo empujar" in m for m in caplog.messages)
+
+
+def test_iniciar_del_run_resultado_lleva_items_y_bytes_total(api, monkeypatch, tmp_path):
+    (tmp_path / "FOTOS_GENERALES").mkdir()
+    (tmp_path / "FOTOS_GENERALES" / "a.jpg").write_bytes(b"x" * 10)
+
+    class _Rep:
+        activo = True
+
+        def __init__(self):
+            self.kw = None
+
+        def iniciar(self, **kw):
+            self.kw = kw
+
+    rep = _Rep()
+    monkeypatch.setattr(api, "_reporter_actual", lambda: rep)
+    r = api._telemetria_resultado_iniciar(7, str(tmp_path), sr.MODO_NORMAL)
+    assert r is rep
+    assert rep.kw["etapa"] == "subida" and rep.kw["inspeccion_id"] == 7
+    assert rep.kw["items_total"] == 1 and rep.kw["bytes_total"] == 10

@@ -286,7 +286,8 @@ def token_gcs(auth, prefix: str | None = None, *,
               inspeccion_id: int | None = None,
               planta_id: int | None = None,
               ambito: str | None = None,
-              force_refresh: bool = False) -> str:
+              force_refresh: bool = False,
+              forzar: bool = False) -> str:
     """`auth.access_token(...)` pasando `prefix`/`inspeccion_id` solo en modo
     password (token de GCS acotado a un prefijo). En Google/broker la llamada
     es la de siempre. Sin prefijo en modo password, `access_token` falla con un
@@ -302,6 +303,8 @@ def token_gcs(auth, prefix: str | None = None, *,
         kw["planta_id"] = planta_id
         kw["inspeccion_id"] = inspeccion_id
         kw["ambito"] = ambito
+        if forzar and ambito == "resultado":
+            kw["forzar"] = True
     elif getattr(auth, "es_password", False):
         if inspeccion_id is None:
             # La Suite exige `inspeccion_id` (400 inspeccion-id-requerido):
@@ -638,7 +641,8 @@ class GcsOAuthProvider(UrlProvider):
 
     def __init__(self, bucket: str, auth, *, base: str | None = None,
                  prefix: str | None = None, inspeccion_id: int | None = None,
-                 planta_id: int | None = None, ambito: str | None = None):
+                 planta_id: int | None = None, ambito: str | None = None,
+                 forzar: bool = False):
         if not bucket:
             raise ValueError("falta el nombre del bucket")
         self.bucket = bucket
@@ -649,6 +653,8 @@ class GcsOAuthProvider(UrlProvider):
         # Ámbito por planta (estadillos, modo password): sin prefijo/inspección.
         self.planta_id = planta_id
         self.ambito = ambito
+        # «Sobrescribir todo»: token resultado con objectAdmin (solo ámbito resultado).
+        self.forzar = forzar
         self.base = (base or self.BASE).rstrip("/")
         # Refresco deduplicado entre hilos (ver `recover_auth`).
         self._refresh_lock = threading.Lock()
@@ -687,7 +693,8 @@ class GcsOAuthProvider(UrlProvider):
         self._tl.generacion = self._generacion
         return {"Authorization": "Bearer " + token_gcs(
             self.auth, self.prefix, inspeccion_id=self.inspeccion_id,
-            planta_id=self.planta_id, ambito=self.ambito)}
+            planta_id=self.planta_id, ambito=self.ambito,
+            forzar=self.forzar)}
 
     def recover_auth(self) -> bool:
         # Fuerza el refresco; si el usuario revocó el acceso, `access_token`
@@ -716,7 +723,7 @@ class GcsOAuthProvider(UrlProvider):
                 token_gcs(self.auth, self.prefix,
                           inspeccion_id=self.inspeccion_id,
                           planta_id=self.planta_id, ambito=self.ambito,
-                          force_refresh=True)
+                          force_refresh=True, forzar=self.forzar)
             except Exception as exc:
                 espera = getattr(exc, "retry_after", None)
                 if espera is not None:

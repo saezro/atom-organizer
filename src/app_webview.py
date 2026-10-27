@@ -3781,7 +3781,7 @@ class Api:
                 if forzar:
                     self._log_subida("subida resultado: modo: sobrescribir todo (forzar resubida) · %s · inspeccion %s",
                                      folder, inspeccion_id)
-                reporter = self._telemetria_resultado_iniciar(inspeccion_id, folder)
+                reporter = self._telemetria_resultado_iniciar(inspeccion_id, folder, modos[0])
                 for i, m in enumerate(modos):
                     resumen = sr.subir_resultado(
                         folder, int(inspeccion_id), m, auth, on_estado=lambda e: self._on_estado_resultado(reporter, e),
@@ -3862,14 +3862,27 @@ class Api:
             return {"started": False, "reason": msg}
         return {"started": True}
 
-    def _telemetria_resultado_iniciar(self, inspeccion_id, folder):
-        """Run `etapa="subida"` de la subida del resultado. `None` si no aplica. Fail-open."""
+    def _telemetria_resultado_iniciar(self, inspeccion_id, folder, modo=None):
+        """Run `etapa="subida"` de la subida del resultado. `None` si no aplica. Fail-open.
+
+        `items_total`/`bytes_total` salen de la selección LOCAL (`sr.seleccionar`, sin red:
+        los tamaños no dependen del prefijo) del primer modo; urgencia = solo urgentes,
+        normal = urgentes + resto. Si no se pueden calcular, `iniciar` va sin totales y
+        el primer latido los trae."""
         try:
             reporter = self._reporter_actual()
             if reporter is None:
                 return None
+            totales: dict = {}
+            try:
+                from atom_core import subida_resultado as sr
+                sel = sr.seleccionar(folder, "")
+                items = list(sel.urgentes) + (list(sel.resto) if modo == sr.MODO_NORMAL else [])
+                totales = {"items_total": len(items), "bytes_total": sum(it.size for it in items)}
+            except Exception as exc:  # noqa: BLE001 - los totales son accesorios
+                logger.debug("telemetria subida resultado: sin totales en iniciar: %s", exc)
             reporter.iniciar(inspeccion=os.path.basename(str(folder).rstrip("/\\")) or None,
-                             etapa="subida", inspeccion_id=inspeccion_id)
+                             etapa="subida", inspeccion_id=inspeccion_id, **totales)
             return reporter if reporter.activo else None
         except Exception as exc:  # noqa: BLE001 - fail-open
             logger.warning("telemetria subida resultado (inicio) falló: %s", exc)

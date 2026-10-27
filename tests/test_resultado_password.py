@@ -147,3 +147,33 @@ def test_token_gcs_con_google_usa_gcs_token_de_la_suite_no_el_oauth_crudo(auth, 
 def test_sanear_log_oculta_jwt_y_tokens_largos():
     t = ga._sanear_log("fallo eyJabc.def.ghi y " + "A" * 60)
     assert "eyJ" not in t and "AAAA" not in t
+
+
+def test_forzar_manda_forzar_true_y_usa_clave_cache_distinta(auth, suite, monkeypatch):
+    _suite_resultado(suite, monkeypatch)
+    auth.login_password("ana", PWD)
+    assert auth.access_token(inspeccion_id=9, ambito="resultado") == "res-1"
+    assert auth.access_token(inspeccion_id=9, ambito="resultado", forzar=True) == "res-2"
+    reqs = suite.de(ga.GCS_TOKEN_URI)
+    assert json.loads(reqs[0].data) == {"inspeccion_id": 9, "ambito": "resultado"}
+    assert json.loads(reqs[1].data) == {"inspeccion_id": 9, "ambito": "resultado", "forzar": True}
+    assert json.loads(reqs[1].data)["forzar"] is True
+    assert "@resultado:9" in auth._gcs_cache and "@resultado:9:forzar" in auth._gcs_cache
+    # Cada uno se cachea por separado: no se reutiliza uno sin admin ni al revés.
+    assert auth.access_token(inspeccion_id=9, ambito="resultado") == "res-1"
+    assert auth.access_token(inspeccion_id=9, ambito="resultado", forzar=True) == "res-2"
+    assert len(suite.de(ga.GCS_TOKEN_URI)) == 2
+    assert auth.prefijo_resultado(9, forzar=True) == PREFIJO
+
+
+def test_proveedor_resultado_propaga_forzar_a_la_peticion(auth, suite, monkeypatch):
+    from atom_core import subida_resultado as sr
+    _suite_resultado(suite, monkeypatch)
+    auth.login_password("ana", PWD)
+    prov = sr.ProveedorResultado(auth, 9, forzar=True)
+    assert prov.prefijo_destino() == PREFIJO
+    assert prov.headers()["Authorization"] == "Bearer res-1"
+    assert json.loads(suite.de(ga.GCS_TOKEN_URI)[0].data)["forzar"] is True
+    sin = sr.ProveedorResultado(auth, 9)
+    sin.prefijo_destino()
+    assert "forzar" not in json.loads(suite.de(ga.GCS_TOKEN_URI)[1].data)
