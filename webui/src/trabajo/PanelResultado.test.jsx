@@ -286,7 +286,7 @@ describe('PanelResultado: progreso, gráfica y cuello de botella', () => {
     expect(screen.getByText('5 / 40')).toBeInTheDocument()
     expect(screen.getByText('~01:30')).toBeInTheDocument()
     expect(screen.getByText('12/16 hilos activos')).toBeInTheDocument()
-    expect(screen.getAllByText('20,0 MB/s', { selector: '.sub-kpi-val' })).toHaveLength(2)  // ahora y media: 200 MB en 10 s
+    expect(screen.getAllByText('20,0 MB/s', { selector: '.pu-chip-val' })).toHaveLength(2)  // ahora y media: 200 MB en 10 s
     expect(screen.getByTestId('grafica-subida')).toBeInTheDocument()
   })
 
