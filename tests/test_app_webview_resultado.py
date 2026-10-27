@@ -68,6 +68,62 @@ def test_si_urgencia_falla_no_sigue_en_normal(api, monkeypatch, tmp_path):
     assert [e for e in api.eventos if e["kind"] == "done"][0]["continua"] is False
 
 
+def test_encadenado_ok_lanza_resto_y_loguea(api, monkeypatch, tmp_path, caplog):
+    modos = []
+    monkeypatch.setattr(sr, "subir_resultado", lambda d, i, modo, a, **kw: modos.append(modo) or _resumen(modo))
+    with caplog.at_level("INFO"):
+        api.resultado_subir(str(tmp_path), 7, "urgencia", True)
+    assert modos == ["urgencia", "normal"]
+    msgs = [r.getMessage() for r in caplog.records]
+    assert sum("resto en cola" in m for m in msgs) == 1 and sum("arranca el resto" in m for m in msgs) == 1
+    assert api._subiendo_resultado is False  # una sola subida a la vez, liberada al final
+
+
+def test_encadenado_con_fallos_no_lanza_resto_y_avisa(api, monkeypatch, tmp_path):
+    modos = []
+    monkeypatch.setattr(sr, "subir_resultado", lambda d, i, modo, a, **kw: modos.append(modo) or _resumen(modo, ok=False))
+    api.resultado_subir(str(tmp_path), 7, "urgencia", True)
+    assert modos == ["urgencia"]
+    assert {"kind": "aviso", "text": "Resto no lanzado: urgentes con 1 fallos"} in api.eventos
+
+
+def test_encadenado_cancelado_no_lanza_resto(api, monkeypatch, tmp_path):
+    modos = []
+    monkeypatch.setattr(sr, "subir_resultado", lambda d, i, modo, a, **kw: modos.append(modo) or _resumen(modo, cancelado=True))
+    api.resultado_subir(str(tmp_path), 7, "urgencia", True)
+    assert modos == ["urgencia"]
+    assert any(e["kind"] == "aviso" and "Resto no lanzado" in e["text"] for e in api.eventos)
+
+
+def test_desmarcar_el_resto_durante_urgentes_no_lo_lanza(api, monkeypatch, tmp_path):
+    modos = []
+
+    def sube(d, i, modo, a, **kw):
+        modos.append(modo)
+        assert api.resultado_encadenar(False) == {"ok": True, "activo": False}
+        return _resumen(modo)
+    monkeypatch.setattr(sr, "subir_resultado", sube)
+    api.resultado_subir(str(tmp_path), 7, "urgencia", True)
+    assert modos == ["urgencia"]
+    assert api.resultado_encadenar(True)["ok"] is False  # sin subida en curso
+
+
+def test_encadenar_sin_fase_de_resto_devuelve_ok_false_y_no_hace_push(api, monkeypatch, tmp_path):
+    res = []
+
+    def sube(d, i, modo, a, **kw):
+        n = len(api.eventos)
+        res.append((api.resultado_encadenar(False), len(api.eventos) - n))
+        return _resumen(modo)
+    monkeypatch.setattr(sr, "subir_resultado", sube)
+    api.resultado_subir(str(tmp_path), 7, "urgencia", False)
+    assert res[0][0]["ok"] is False and res[0][1] == 0
+    assert [e for e in api.eventos if e["kind"] == "start"][0]["resto"] is False
+    api.eventos.clear()
+    api.resultado_subir(str(tmp_path), 7, "urgencia", True)
+    assert [e for e in api.eventos if e["kind"] == "start"][0]["resto"] is True
+
+
 def test_rechaza_modo_inspeccion_o_carpeta_invalidos(api, tmp_path):
     assert api.resultado_subir(str(tmp_path), 7, "rapido")["started"] is False
     assert "inspección" in api.resultado_subir(str(tmp_path), None)["reason"]

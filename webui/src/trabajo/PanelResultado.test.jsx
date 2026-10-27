@@ -5,6 +5,7 @@ vi.mock('../bridge', () => ({
   api: {
     resultadoSubir: vi.fn().mockResolvedValue({ started: true }),
     resultadoCancelar: vi.fn().mockResolvedValue({ ok: true }),
+    resultadoEncadenar: vi.fn().mockResolvedValue({ ok: true }),
     resultadoCredencial: vi.fn().mockResolvedValue({ ok: true }),
     resultadoPrechequeo: vi.fn().mockResolvedValue({ ok: true, checks: [] }),
     resultadoInspeccionarDestino: vi.fn().mockResolvedValue({ existe: false, n_objetos: 0, bytes: 0, sobrescribe: [] }),
@@ -69,10 +70,10 @@ describe('textoVelocidad / textoEta', () => {
 })
 
 describe('PanelResultado', () => {
-  it('con Urgencia por defecto, el botón lanza resultadoSubir(carpeta, id, urgencia, false)', async () => {
+  it('con Urgencia por defecto, el botón lanza resultadoSubir(carpeta, id, urgencia, seguir=true con la casilla por defecto)', async () => {
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     await publicar()
-    await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalledWith('/salida', 7, 'urgencia', false))
+    await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalledWith('/salida', 7, 'urgencia', true))
   })
 
   it('«Subir todo» pasa por el aviso y manda «normal»', async () => {
@@ -119,7 +120,7 @@ describe('PanelResultado', () => {
     expect(screen.getByText(/1 fallida/)).toBeInTheDocument()
     expect(screen.getByText(/sin clasificar/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Resubir fallidas' }))
-    await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalledWith('/salida', 7, 'urgencia', false))
+    await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalledWith('/salida', 7, 'urgencia', true))
   })
 
   it('un done con continua:true no cierra el estado «subiendo»', async () => {
@@ -195,7 +196,21 @@ describe('PanelResultado', () => {
       existe: true, n_objetos: 120, bytes: 2.5e9, sobrescribe: ['TERMICA', 'RGB'], detalle: '' })
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     await pulsarPublicar()
-    expect(await screen.findByText(/Ya hay 120 objetos \/ 2,5 GB en el bucket; se sobrescriben: TERMICA, RGB/)).toBeInTheDocument()
+    expect(await screen.findByText(/Destino completo: 120 objetos \/ 2,5 GB/)).toBeInTheDocument()
+    expect(screen.getByText(/2 ficheros pequeños \(CSV, estadillos, índice\) que se sobrescriben — ver lista/)).toBeInTheDocument()
+    expect(screen.getByText('TERMICA, RGB')).toBeInTheDocument()
+  })
+
+  it('con 0 pendientes los botones quedan desactivados con «Todo subido»', async () => {
+    const g = { total: 5, en_bucket: 5, pendientes: 0, distintos: 0, bytes_pendientes: 0, bytes_total: 3e9 }
+    api.resultadoInspeccionarDestino.mockResolvedValue({ existe: true, n_objetos: 10, bytes: 1e9, sobrescribe: [],
+      detalle: '', desglose: { urgentes: g, resto: g } })
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    const b = await screen.findByRole('button', { name: 'Publicar urgentes' })
+    await waitFor(() => expect(b).toBeDisabled())
+    expect(b).toHaveAttribute('title', 'Todo subido')
+    expect(screen.getByRole('button', { name: 'Subir todo' })).toBeDisabled()
+    expect(screen.getAllByText(/3(,0)? GB del grupo/).length).toBeGreaterThan(0)
   })
 
   it('started:false muestra el reason', async () => {
@@ -344,6 +359,67 @@ describe('resumenMetricas', () => {
   it('sin desglose de lo subido (backend antiguo) usa el máximo de vuelos de las selecciones', () => {
     const r = resumenMetricas({ duracion_s: 100, urgentes: { subidos: 10, bytes_subidos: 1e9, vuelos: 3 }, resto: { subidos: 5, bytes_subidos: 1e9, vuelos: 7 } })
     expect(r.titulo).toBe('15 ficheros · 2,0 GB · 1 min 40 s · 20,0 MB/s · 7 vuelos')
+  })
+
+  it('sin clasificar: lista ruta+motivo, aviso visible y nunca «Todo subido»/«Nada pendiente»', async () => {
+    const g = { total: 5, en_bucket: 5, pendientes: 0, distintos: 0, bytes_pendientes: 0, bytes_total: 3e9 }
+    api.resultadoInspeccionarDestino.mockResolvedValue({ existe: true, n_objetos: 10, bytes: 1e9, sobrescribe: [], detalle: '',
+      desglose: { urgentes: g, resto: g }, sin_clasificar: 2,
+      sin_clasificar_lista: [{ ruta: 'CSVs/otro.csv', motivo: 'CSV fuera de CSVs' }, { ruta: 'X/y.bin', motivo: 'carpeta X/ no reconocida' }] })
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    expect(await screen.findByText('2 fichero(s) sin clasificar, no se subirán')).toBeInTheDocument()
+    expect(screen.getByText(/CSVs\/otro\.csv — CSV fuera de CSVs/)).toBeInTheDocument()
+    expect(screen.getByText(/X\/y\.bin — carpeta X\/ no reconocida/)).toBeInTheDocument()
+    expect(screen.queryByText('Nada pendiente')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Subir todo' })).not.toHaveAttribute('title', 'Todo subido')
+    emitir({ kind: 'done', ok: true, modo: 'normal', continua: false, urgentes: { hechos: 5, total: 5 }, resto: { hechos: 5, total: 5 },
+      conflictos: [], fallidas: [], avisos: [], sin_clasificar: 2, sin_clasificar_lista: [{ ruta: 'a', motivo: 'm' }] })
+    expect(screen.queryByText('Subida completa')).toBeNull()
+    expect(await screen.findByText(/Subida incompleta: hay ficheros sin clasificar/)).toBeInTheDocument()
+  })
+
+  it('casilla «Al terminar, subir el resto»: marcada, se envía y se puede quitar en curso', async () => {
+    const g = { total: 5, en_bucket: 0, pendientes: 5, distintos: 0, bytes_pendientes: 10, bytes_total: 10 }
+    api.resultadoInspeccionarDestino.mockResolvedValue({ existe: false, n_objetos: 0, bytes: 0, sobrescribe: [], detalle: '',
+      desglose: { urgentes: g, resto: g } })
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    const cb = await screen.findByRole('checkbox', { name: 'Al terminar, subir el resto' })
+    expect(cb).toBeChecked()
+    await publicar()
+    await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalledWith('/salida', 7, 'urgencia', true))
+    emitir({ kind: 'start', modo: 'urgencia', resto: true })
+    expect(await screen.findByText('Resto en cola')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Al terminar, subir el resto' }))
+    expect(api.resultadoEncadenar).toHaveBeenCalledWith(false)
+    await waitFor(() => expect(screen.queryByText('Resto en cola')).toBeNull())
+  })
+
+  it('casilla desactivada si el resto no tiene pendientes', async () => {
+    const u = { total: 5, en_bucket: 0, pendientes: 5, distintos: 0, bytes_pendientes: 10, bytes_total: 10 }
+    const r0 = { total: 5, en_bucket: 5, pendientes: 0, distintos: 0, bytes_pendientes: 0, bytes_total: 10 }
+    api.resultadoInspeccionarDestino.mockResolvedValue({ existe: false, n_objetos: 0, bytes: 0, sobrescribe: [], detalle: '',
+      desglose: { urgentes: u, resto: r0 } })
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Al terminar, subir el resto' })).toBeDisabled())
+    await publicar()
+    await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalledWith('/salida', 7, 'urgencia', false))
+  })
+
+  it('«Resto en cola» solo si el backend confirma fase de resto', async () => {
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    emitir({ kind: 'start', modo: 'urgencia', resto: false })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancelar' })).toBeInTheDocument())
+    expect(screen.queryByText('Resto en cola')).toBeNull()
+  })
+
+  it('casilla desmarcada antes de arrancar: al recibir start se reenvía al backend', async () => {
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    const cb = await screen.findByRole('checkbox', { name: 'Al terminar, subir el resto' })
+    fireEvent.click(cb)
+    expect(api.resultadoEncadenar).not.toHaveBeenCalled()
+    emitir({ kind: 'start', modo: 'urgencia', resto: true })
+    await waitFor(() => expect(api.resultadoEncadenar).toHaveBeenCalledWith(false))
+    expect(screen.queryByText('Resto en cola')).toBeNull()
   })
 })
 

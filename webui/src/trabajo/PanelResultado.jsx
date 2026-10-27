@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, onResultado } from '../bridge'
 import GraficaSubida from './GraficaSubida'
 import { añadirMuestra, diagnosticarCuello, estadisticasSerie } from './subidaMedicion'
@@ -155,6 +155,13 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
   // Desglose del destino (derivado del bucket, sobrevive a reiniciar la app).
   const [desglose, setDesglose] = useState(null)
   const [tick, setTick] = useState(0)
+  // «Al terminar, subir el resto»: lo ejecuta el backend al acabar urgentes (marcada por defecto).
+  const [encadenar, setEncadenar] = useState(true)
+  const encadenarRef = useRef(true)
+  // El backend confirmó que esta subida tiene fase de resto (evento `start`).
+  const [hayResto, setHayResto] = useState(false)
+  // Ficheros que el Organizer no sabe clasificar (no se suben): [{ruta, motivo}] o null = sin consultar.
+  const [sinClasDestino, setSinClasDestino] = useState(null)
   // Cronómetro de la subida en curso y serie para la gráfica.
   const [inicio, setInicio] = useState(null)
   const [ahora, setAhora] = useState(0)
@@ -165,6 +172,11 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
       onResultado((d) => {
         switch (d.kind) {
           case 'start':
+            setHayResto(Boolean(d.resto))
+            // Casilla desmarcada entre pulsar y arrancar (aún sin subida en curso): se reenvía.
+            if (d.resto && encadenarRef.current === false && typeof api.resultadoEncadenar === 'function') {
+              Promise.resolve(api.resultadoEncadenar(false)).catch(() => {})
+            }
             setSubiendo(true); setError(''); setAviso(''); setResumen(null); setEstado(null); setInicio(Date.now()); setAhora(Date.now()); setSerie([])
             break
           case 'estado':
@@ -174,6 +186,9 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
           case 'done':
             setEstado(d)
             if (!d.continua) { setSubiendo(false); setResumen(d); setTick((n) => n + 1) }
+            break
+          case 'encadenar':
+            setEncadenar(Boolean(d.activo)); encadenarRef.current = Boolean(d.activo)
             break
           case 'aviso':
             setAviso(d.text || '')
@@ -224,10 +239,15 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
   useEffect(() => {
     let vivo = true
     setDesglose(null)
+    setSinClasDestino(null)
     if (!(ready && carpeta && inspeccionId) || sinCred || subiendo || typeof api.resultadoInspeccionarDestino !== 'function') return undefined
     api.resultadoInspeccionarDestino(carpeta, inspeccionId)
-      .then((d) => { if (vivo) setDesglose(d && d.ok !== false ? d.desglose || null : null) })
-      .catch(() => { if (vivo) setDesglose(null) })
+      .then((d) => {
+        if (!vivo) return
+        setDesglose(d && d.ok !== false ? d.desglose || null : null)
+        setSinClasDestino(d && d.ok !== false && Array.isArray(d.sin_clasificar_lista) ? d.sin_clasificar_lista : null)
+      })
+      .catch(() => { if (vivo) { setDesglose(null); setSinClasDestino(null) } })
     return () => { vivo = false }
   }, [ready, carpeta, inspeccionId, sinCred, subiendo, tick])
   const puede = ready && carpeta && inspeccionId && !subiendo && !sinCred
@@ -258,12 +278,23 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
     }
   }
 
+  function cambiarEncadenar(v) {
+    setEncadenar(v)
+    encadenarRef.current = v
+    if (subiendo && typeof api.resultadoEncadenar === 'function') {
+      Promise.resolve(api.resultadoEncadenar(v))
+        .then((r) => { if (r && r.ok === false) setHayResto(false) })
+        .catch((e) => setError(String(e?.message || e)))
+    }
+  }
+
   async function lanzar(modoForzado) {
     const m = typeof modoForzado === 'string' ? modoForzado : modo
     setPrevia(null)
     setError('')
     try {
-      const r = await api.resultadoSubir(carpeta, inspeccionId, m, false)
+      const seguir = m === 'urgencia' && encadenar && !(desglose?.resto && nResto === 0)
+      const r = await api.resultadoSubir(carpeta, inspeccionId, m, seguir)
       if (r && r.started === false) setError(r.reason || 'No se pudo iniciar la subida.')
     } catch (e) {
       setError(String(e?.message || e))
@@ -274,8 +305,14 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
   const nFall = resumen?.fallidas?.length || 0
   const rest = desglose?.resto
   const nResto = rest ? rest.pendientes + rest.distintos : 0
+  const urg = desglose?.urgentes
+  const nUrg = urg ? urg.pendientes + urg.distintos : 0
+  const sinClas = sinClasDestino ?? resumen?.sin_clasificar_lista ?? []
+  const nSin = sinClas.length
+  const todoSubido = Boolean(urg && rest) && nUrg === 0 && nResto === 0 && nSin === 0
+  const restoEnCola = subiendo && hayResto && encadenar && modo === 'urgencia' && estado?.modo !== 'normal'
   const card = resumen ? resumenMetricas(resumen.metricas) : null
-  const completa = resumen && resumen.ok && !resumen.cancelled
+  const completa = resumen && resumen.ok && !resumen.cancelled && nSin === 0
   const est = useMemo(() => estadisticasSerie(serie), [serie])
 
   // Progreso del modo en curso (urgencia = solo urgentes; normal = ambos).
@@ -307,9 +344,9 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
       <span className="sub-estado-tit">{titulo}</span>
       {d ? (
         <>
-          <span className="sub-estado-num"><strong>{miles(d.en_bucket)}</strong> / {miles(d.total)} en bucket</span>
+          <span className="sub-estado-num"><strong>{miles(d.en_bucket)}</strong> / {miles(d.total)} ficheros en bucket{d.bytes_total != null ? ` · ${textoBytes(d.bytes_total)} del grupo` : ''}</span>
           <span className={'sub-estado-sub' + (d.pendientes ? ' sub-pend' : '')}>
-            {d.pendientes ? `${miles(d.pendientes)} pendientes · ${textoBytes(d.bytes_pendientes)}` : 'Nada pendiente'}
+            {d.pendientes ? `${miles(d.pendientes)} pendientes · ${textoBytes(d.bytes_pendientes)}` : nSin > 0 ? `Sin pendientes subibles · ${miles(nSin)} sin clasificar` : 'Nada pendiente'}
           </span>
           {d.distintos > 0 && <span className="sub-estado-sub sub-aviso">{miles(d.distintos)} con otro tamaño en el bucket</span>}
         </>
@@ -346,14 +383,33 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
           <span className="sub-estado-sub">Existen con otro contenido; no se pisan.</span>
         </div>
       </div>
+      {nSin > 0 && (
+        <div className="field-hint hint-warn sub-sin-clasificar" role="alert">
+          <strong>{miles(nSin)} fichero(s) sin clasificar, no se subirán</strong>
+          <details>
+            <summary>{miles(nSin)} fichero(s) sin clasificar — ver lista</summary>
+            <ul>
+              {sinClas.map((x) => <li key={x.ruta}>{x.ruta} — {x.motivo}</li>)}
+            </ul>
+          </details>
+        </div>
+      )}
       {desglose && <span className="sr-only">{textoDesglose(desglose)}</span>}
 
       <div className="sub-acciones">
-        <button type="button" className="btn-run" onClick={() => revisar('urgencia')} disabled={!puede || Boolean(previa)}>Publicar urgentes</button>
-        <button type="button" className="btn-ghost" onClick={() => { setModo('normal'); lanzar('normal') }} disabled={!puede || !nResto}>
+        <button type="button" className="btn-run" onClick={() => revisar('urgencia')} disabled={!puede || Boolean(previa) || (Boolean(urg) && nUrg === 0)}
+          title={urg && nUrg === 0 ? (nSin ? 'Sin urgentes pendientes' : 'Todo subido') : undefined}>Publicar urgentes</button>
+        <label className="check sub-encadenar">
+          <input type="checkbox" checked={encadenar && !(!subiendo && rest && nResto === 0)} disabled={!subiendo && Boolean(rest) && nResto === 0}
+            onChange={(e) => cambiarEncadenar(e.target.checked)} />
+          <span>Al terminar, subir el resto</span>
+        </label>
+        {restoEnCola && <span className="sub-resto-cola" aria-live="polite">Resto en cola</span>}
+        <button type="button" className="btn-ghost" onClick={() => { setModo('normal'); lanzar('normal') }} disabled={!puede || !nResto} title={rest && !nResto ? (nSin ? 'Sin resto pendiente' : 'Todo subido') : undefined}>
           Subir el resto{nResto > 0 ? ` (${miles(nResto)} · ${textoBytes(rest.bytes_pendientes)})` : ''}
         </button>
-        <button type="button" className="btn-ghost" onClick={() => revisar('normal')} disabled={!puede || Boolean(previa)}>Subir todo</button>
+        <button type="button" className="btn-ghost" onClick={() => revisar('normal')} disabled={!puede || Boolean(previa) || todoSubido}
+          title={todoSubido ? 'Todo subido' : undefined}>Subir todo</button>
         {subiendo && <button type="button" className="btn-ghost sub-cancelar" onClick={() => api.resultadoCancelar()}>Cancelar</button>}
       </div>
       <span className="field-hint">
@@ -378,11 +434,16 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
             )}
             {d?.desglose && <span className="field-hint">{textoDesglose(d.desglose)}</span>}
             {d?.existe && (
-              <span className="field-hint hint-warn">
-                Ya hay {d.n_objetos} objetos / {textoBytes(d.bytes)} en el bucket
-                {d.sobrescribe?.length ? `; se sobrescriben: ${d.sobrescribe.join(', ')}` : ''}
-                {d.detalle ? `. ${d.detalle}` : ''}
-              </span>
+              <div className="field-hint hint-warn sub-destino-total">
+                <strong>Destino completo: {miles(d.n_objetos)} objetos / {textoBytes(d.bytes)}</strong>
+                {' '}(total de todo lo que hay en el bucket, no de esta subida)
+                {d.sobrescribe?.length ? (
+                  <details>
+                    <summary>{miles(d.sobrescribe.length)} ficheros pequeños (CSV, estadillos, índice) que se sobrescriben — ver lista</summary>
+                    <span>{d.sobrescribe.join(', ')}</span>
+                  </details>
+                ) : null}
+              </div>
             )}
             {d && !d.existe && d.detalle && <span className="field-hint">{d.detalle}</span>}
             {hayError && (
@@ -428,6 +489,9 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
       )}
 
       {completa && <span className="field-hint hint-ok">Subida completa</span>}
+      {resumen && resumen.ok && !resumen.cancelled && nSin > 0 && (
+        <span className="field-hint hint-warn">Subida incompleta: hay ficheros sin clasificar</span>
+      )}
       {card && (
         <section className="sub-resumen" role="group" aria-label="Resumen de la subida">
           <span className="sub-resumen-etq">Resumen</span>

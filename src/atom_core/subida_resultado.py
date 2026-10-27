@@ -35,12 +35,17 @@ MODOS = (MODO_URGENCIA, MODO_NORMAL)
 
 URGENTE = "urgente"
 NORMAL = "normal"
+# `*_location.csv` / `*_meta.csv` fuera de `CSVs/`: copia de lo que ya sube `CSVs/`.
+# Categoría explícita: ni se sube ni cuenta como «sin clasificar».
+OMITIDO_DUPLICADO = "omitido_duplicado"
 
 NOMBRE_SIN_ORDENAR = "SIN_ORDENAR"
 NOMBRE_MANIFIESTO_SUBIDA = "subida_resultado.json"
 
 # Carpetas que nunca se suben ni cuentan como «sin clasificar».
 _EXCLUIDAS = {NOMBRE_CARPETA_MANIFIESTO.lower(), "logs"}
+
+_EXT_FOTO_GENERAL = (".jpg", ".jpeg", ".tif", ".tiff")
 
 # Prefijos (relativos a la salida) donde SE PUEDE sobrescribir. Igual que la Suite.
 _SOBRESCRIBIBLES = ("CSVs/", "ESTADILLOS/", "INDICE_")
@@ -50,18 +55,28 @@ def es_sobrescribible(rel: str) -> bool:
     return rel.startswith(_SOBRESCRIBIBLES)
 
 
-def clasificar(rel: str) -> str | None:
-    """`URGENTE` / `NORMAL` / `None` para una ruta relativa POSIX de la salida.
+def clasificar(rel: str, rels: frozenset | set = frozenset()) -> str | None:
+    """`URGENTE` / `NORMAL` / `OMITIDO_DUPLICADO` / `None` para una ruta relativa POSIX de la salida.
 
     `None` = ni se sube ni se ignora en silencio: `seleccionar` lo cuenta como
     «sin clasificar» y lo avisa. Los `SIN_ORDENAR/` seleccionados por manifiesto
-    NO pasan por aquí (los trata `seleccionar`).
+    NO pasan por aquí (los trata `seleccionar`). `rels` = todas las rutas de la salida: un
+    `*_meta|location.csv` fuera de `CSVs/` solo es duplicado si su gemelo está en `CSVs/`.
     """
     partes = rel.split("/")
     top, nombre = partes[0], partes[-1]
     bajo = nombre.lower()
     if top.lower() in _EXCLUIDAS:
         return None
+    if top == "FOTOS_GENERALES":
+        # Fotos de informe, planas y de imagen: urgentes. Destino
+        # `<prefijo>FOTOS_GENERALES/<nombre>` (hermana de TERMICA/RGB/CSVs).
+        if len(partes) == 2 and not nombre.startswith(".") and bajo.endswith(_EXT_FOTO_GENERAL):
+            return URGENTE
+        return None
+    if top in ("RGB", "TERMICA") and len(partes) >= 2 and bajo.endswith(("_location.csv", "_meta.csv")):
+        # Duplicado de CSVs/ SOLO si el gemelo existe; si no, no se pierde en silencio.
+        return OMITIDO_DUPLICADO if f"CSVs/{nombre}" in rels else None
     if top == "TERMICA" and len(partes) >= 2:
         if bajo.endswith("_t.tiff"):
             return URGENTE
@@ -82,6 +97,47 @@ def clasificar(rel: str) -> str | None:
     elif len(partes) == 1 and nombre.startswith("INDICE_") and bajo.endswith(".xlsx"):
         return NORMAL
     return None
+
+
+def nombre_oculto(nombre: str) -> bool:
+    return nombre.startswith(".")
+
+
+def motivo_sin_clasificar(rel: str) -> str:
+    """Por qué `clasificar` no reconoce `rel` (texto para la UI y el log)."""
+    partes = rel.split("/")
+    top = partes[0]
+    if top == "FOTOS_GENERALES":
+        if len(partes) != 2:
+            return "subcarpeta dentro de FOTOS_GENERALES/ (debe ser plana)"
+        if nombre_oculto(partes[-1]):
+            return "fichero oculto en FOTOS_GENERALES/"
+        return "extensión no válida en FOTOS_GENERALES/ (solo jpg/jpeg/tif/tiff)"
+    if top in ("RGB", "TERMICA") and partes[-1].lower().endswith(("_location.csv", "_meta.csv")):
+        return "CSV sin copia en CSVs/"
+    if top in ("RGB", "TERMICA"):
+        return f"extensión o nombre no reconocido bajo {top}/"
+    if top == "CSVs":
+        return "CSV fuera de CSVs/<vuelo>_meta|location.csv y CSVs/_criterio/"
+    if top == "ESTADILLOS":
+        return "subcarpeta dentro de ESTADILLOS/"
+    if len(partes) == 1:
+        return "fichero suelto en la raíz que no es INDICE_*.xlsx"
+    return f"carpeta {top}/ no reconocida"
+
+
+def decidir_resto(resumen, encadenar: bool) -> tuple[bool, str]:
+    """Tras la pasada de urgentes: `(lanzar_resto, aviso)`. Solo se lanza con urgentes OK y
+    la casilla marcada; si no, el aviso dice por qué (nunca silencioso)."""
+    if resumen.cancelado:
+        return False, "Resto no lanzado: subida cancelada."
+    if resumen.fallidas:
+        return False, f"Resto no lanzado: urgentes con {len(resumen.fallidas)} fallos"
+    if not resumen.ok:
+        return False, f"Resto no lanzado: urgentes incompletas ({resumen.motivo_incompleto()})"
+    if not encadenar:
+        return False, "Resto no lanzado: desmarcado por el usuario."
+    return True, ""
 
 
 def sin_ordenar_ultima_ejecucion(destino: Path) -> tuple[set[str], list[str]]:
@@ -132,6 +188,8 @@ class Seleccion:
     urgentes: list = field(default_factory=list)
     resto: list = field(default_factory=list)
     sin_clasificar: int = 0
+    sin_clasificar_lista: list = field(default_factory=list)  # [{ruta, motivo}]
+    omitidos_duplicado: int = 0
     avisos: list = field(default_factory=list)
 
 
@@ -141,6 +199,7 @@ def seleccionar(destino, prefijo: str) -> Seleccion:
     plan = cu.build_plan(destino, prefijo, suffixes=())  # () = sin filtro; ya salta `.organizado`
     sin_ord, avisos = sin_ordenar_ultima_ejecucion(destino)
     sel = Seleccion(avisos=list(avisos))
+    rels = frozenset(i.local.relative_to(destino).as_posix() for i in plan.items)
     for item in plan.items:
         rel = item.local.relative_to(destino).as_posix()
         top = rel.split("/")[0]
@@ -149,14 +208,20 @@ def seleccionar(destino, prefijo: str) -> Seleccion:
             continue
         if top.lower() in _EXCLUIDAS or top == NOMBRE_SIN_ORDENAR:
             continue
-        clase = clasificar(rel)
+        clase = clasificar(rel, rels)
         if clase == URGENTE:
             sel.urgentes.append(item)
         elif clase == NORMAL:
             sel.resto.append(item)
+        elif clase == OMITIDO_DUPLICADO:
+            sel.omitidos_duplicado += 1
         else:
             sel.sin_clasificar += 1
+            sel.sin_clasificar_lista.append({"ruta": rel, "motivo": motivo_sin_clasificar(rel)})
             logger.warning("resultado: sin clasificar %s", rel)
+    if sel.omitidos_duplicado:
+        logger.info("resultado: %d *_location/_meta.csv fuera de CSVs/ omitidos (duplicados de CSVs/)",
+                    sel.omitidos_duplicado)
     if sel.sin_clasificar:
         sel.avisos.append(f"{sel.sin_clasificar} fichero(s) sin clasificar: no se suben (ver log).")
     return sel
@@ -390,6 +455,7 @@ class ResumenResultado:
     fallidas: list = field(default_factory=list)
     avisos: list = field(default_factory=list)
     sin_clasificar: int = 0
+    sin_clasificar_lista: list = field(default_factory=list)  # [{ruta, motivo}]
     cancelado: bool = False
     simulado: bool = False
     # Objetos que `upload_plan` devolvió como "cancelado" SIN que `should_stop`
@@ -445,6 +511,7 @@ class ResumenResultado:
             "conflictos": [list(c) for c in self.conflictos],
             "fallidas": [list(f) for f in self.fallidas],
             "avisos": list(self.avisos), "sin_clasificar": self.sin_clasificar,
+            "sin_clasificar_lista": [dict(x) for x in self.sin_clasificar_lista],
             "faltantes": len({f[0] for f in self.faltantes} | set(self.cancelados)),
             "faltantes_ejemplos": [list(f) for f in self.faltantes[:5]],
             "verificado": self.verificado, "truncado": self.truncado,
@@ -475,7 +542,8 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
     manifest = cu.Manifest(destino / NOMBRE_CARPETA_MANIFIESTO / NOMBRE_MANIFIESTO_SUBIDA)
 
     resumen = ResumenResultado(modo=modo, prefijo=prefijo, avisos=list(sel.avisos),
-                               sin_clasificar=sel.sin_clasificar, simulado=simular)
+                               sin_clasificar=sel.sin_clasificar,
+                               sin_clasificar_lista=list(sel.sin_clasificar_lista), simulado=simular)
     resumen.urgentes.total = len(sel.urgentes)
     resumen.resto.total = len(sel.resto)
 
@@ -619,9 +687,11 @@ def _desglose_barato(items, remotos: dict) -> dict:
     """Desglose por clave+tamaño (sin MD5, sin leer disco): `en_bucket` = existe con el
     mismo tamaño; `pendientes` = no existe; `distintos` = existe con otro tamaño
     (sobrescribible o conflicto, lo decide `particionar` al subir)."""
-    d = {"total": 0, "en_bucket": 0, "pendientes": 0, "distintos": 0, "bytes_pendientes": 0}
+    d = {"total": 0, "en_bucket": 0, "pendientes": 0, "distintos": 0, "bytes_pendientes": 0,
+         "bytes_total": 0}
     for it in items:
         d["total"] += 1
+        d["bytes_total"] += max(0, it.size)
         r = remotos.get(it.remote)
         if r is None:
             d["pendientes"] += 1
@@ -660,6 +730,8 @@ def inspeccionar_destino(destino, inspeccion_id: int, auth, *, proveedor=None) -
             sel = seleccionar(destino, prefijo)
             base["desglose"] = {"urgentes": _desglose_barato(sel.urgentes, remotos),
                                 "resto": _desglose_barato(sel.resto, remotos)}
+            base["sin_clasificar"] = sel.sin_clasificar
+            base["sin_clasificar_lista"] = list(sel.sin_clasificar_lista)
             for it in ([*sel.urgentes, *sel.resto] if remotos else []):
                 rel = it.remote[len(pref):] if it.remote.startswith(pref) else it.remote
                 if it.remote in remotos and es_sobrescribible(rel):

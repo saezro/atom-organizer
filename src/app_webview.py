@@ -540,6 +540,8 @@ class Api:
         # propios: no compiten con `_uploading` (subida «en crudo» a datos_para_organizar).
         self._subiendo_resultado = False
         self._cancel_resultado = False
+        self._encadenar_resto = False
+        self._hay_resto = False  # la subida en curso tiene fase de resto
         self._resultado_lock = threading.Lock()
         # `estadillo_subir` no tenía mutex propio (a diferencia de
         # `cloud_upload`/`self._uploading`): dos clicks seguidos (doble-tap
@@ -3656,6 +3658,19 @@ class Api:
         self._cancel_resultado = True
         return {"ok": True}
 
+    def resultado_encadenar(self, activo: bool) -> dict:
+        """Marca/desmarca «al terminar urgentes, subir el resto» de la subida EN CURSO.
+        Vive en el backend: la decisión se lee al acabar urgentes, con o sin ventana."""
+        with self._resultado_lock:
+            if not self._subiendo_resultado:
+                return {"ok": False, "reason": "No hay subida del resultado en curso."}
+            if not self._hay_resto:
+                return {"ok": False, "reason": "Esta subida no tiene fase de resto."}
+            self._encadenar_resto = bool(activo)
+        logger.info("resultado_subir: resto %s", "en cola" if activo else "quitado de la cola")
+        self._push_resultado({"kind": "encadenar", "activo": bool(activo)})
+        return {"ok": True, "activo": bool(activo)}
+
     def resultado_credencial(self) -> dict:
         """`{ok, tipo:'google'|'password'|None, usuario, reason}`. Sin red, sin efectos."""
         from atom_core import subida_resultado as sr
@@ -3719,21 +3734,32 @@ class Api:
                 return {"started": False, "busy": True,
                         "reason": "Ya hay una subida del resultado en curso."}
             self._subiendo_resultado = True
+            self._hay_resto = bool(seguir_en_normal) and modo == sr.MODO_URGENCIA
+            self._encadenar_resto = self._hay_resto
         self._cancel_resultado = False
+        if self._encadenar_resto:
+            logger.info("resultado_subir: resto en cola tras urgentes (%s)", folder)
 
         def worker() -> None:
             resumen = None
             reporter = None
             modos = [sr.MODO_URGENCIA, sr.MODO_NORMAL] if (modo == sr.MODO_URGENCIA and seguir_en_normal) else [modo]
             try:
-                self._push_resultado({"kind": "start", "modo": modo})
+                self._push_resultado({"kind": "start", "modo": modo, "resto": len(modos) > 1})
                 reporter = self._telemetria_resultado_iniciar(inspeccion_id, folder)
                 for i, m in enumerate(modos):
                     resumen = sr.subir_resultado(
                         folder, int(inspeccion_id), m, auth, on_estado=lambda e: self._on_estado_resultado(reporter, e),
                         should_stop=lambda: self._cancel_resultado)
-                    sigue = resumen.ok and i < len(modos) - 1
+                    sigue, motivo_resto = False, ""
+                    if i < len(modos) - 1:
+                        sigue, motivo_resto = sr.decidir_resto(resumen, self._encadenar_resto)
                     self._push_resultado({"kind": "done", "continua": sigue, **resumen.a_dict()})
+                    if motivo_resto:
+                        logger.warning("resultado_subir: %s", motivo_resto)
+                        self._push_resultado({"kind": "aviso", "text": motivo_resto})
+                    if sigue:
+                        logger.info("resultado_subir: arranca el resto tras urgentes")
                     if not sigue:
                         break
                 incompleta = resumen is not None and resumen.incompleta
