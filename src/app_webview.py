@@ -3505,9 +3505,11 @@ class Api:
             return
         try:
             urg, resto = e.get("urgentes") or {}, e.get("resto") or {}
+            # Denominador según el modo: urgencia solo sube urgentes; normal, ambos.
+            en_urgencia = e.get("modo") == "urgencia"
             reporter.progreso({
-                "files_done": urg.get("hechos", 0) + resto.get("hechos", 0),
-                "files_total": urg.get("total", 0) + resto.get("total", 0),
+                "files_done": urg.get("hechos", 0) + (0 if en_urgencia else resto.get("hechos", 0)),
+                "files_total": urg.get("total", 0) + (0 if en_urgencia else resto.get("total", 0)),
                 "bytes_done": e.get("bytes_done", 0),
                 "bytes_total": e.get("bytes_total", 0),
                 "eta": e.get("eta"),

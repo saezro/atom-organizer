@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -314,6 +315,40 @@ class ProveedorResultado(cu.GcsOAuthProvider):
         return self.auth.prefijo_resultado(self.inspeccion_id)
 
 
+_RE_VUELO = re.compile(r"^PB\d+_V\d+", re.IGNORECASE)
+
+
+def tipo_de(rel: str) -> str:
+    """Tipo legible de un fichero del resultado (para las métricas de la subida)."""
+    partes = rel.split("/")
+    top, bajo = partes[0], partes[-1].lower()
+    if top == "TERMICA":
+        return "tiff_termica" if bajo.endswith(".tiff") else "termica_jpg"
+    if top == "RGB":
+        return "rgb_crops" if "_crop" in bajo else "rgb"
+    if top == "CSVs":
+        return "csv"
+    if top == "ESTADILLOS":
+        return "estadillos"
+    return "otros"
+
+
+def _vuelos_de(rels) -> set:
+    return {p for r in rels for p in r.split("/") if _RE_VUELO.match(p)}
+
+
+def _metricas_grupo(items, prefijo: str) -> dict:
+    """Ficheros/bytes por tipo y nº de vuelos (carpetas PBx_Vy) de una lista de items."""
+    pref = prefijo.strip("/") + "/"
+    rels = [it.remote[len(pref):] if it.remote.startswith(pref) else it.remote for it in items]
+    por_tipo: dict = {}
+    for r, it in zip(rels, items):
+        d = por_tipo.setdefault(tipo_de(r), {"ficheros": 0, "bytes": 0})
+        d["ficheros"] += 1
+        d["bytes"] += max(0, it.size)
+    return {"por_tipo": por_tipo, "vuelos": len(_vuelos_de(rels))}
+
+
 @dataclass
 class Contador:
     total: int = 0
@@ -342,6 +377,9 @@ class ResumenResultado:
     verificado: bool = True
     # El listado del bucket no cabió (truncado): ni ok ni re-encolable.
     truncado: bool = False
+    # Métricas de la pasada: {duracion_s, urgentes|resto: {subidos, omitidos, pendientes,
+    # bytes_subidos, bytes_omitidos, por_tipo, vuelos}, conflictos_n}.
+    metricas: dict = field(default_factory=dict)
 
     @property
     def incompleta(self) -> bool:
@@ -386,6 +424,7 @@ class ResumenResultado:
             "faltantes": len({f[0] for f in self.faltantes} | set(self.cancelados)),
             "faltantes_ejemplos": [list(f) for f in self.faltantes[:5]],
             "verificado": self.verificado, "truncado": self.truncado,
+            "metricas": self.metricas,
         }
 
 
@@ -418,6 +457,7 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
 
     bytes_total = sum(it.size for it in sel.urgentes) + (
         sum(it.size for it in sel.resto) if modo == MODO_NORMAL else 0)
+    t0 = time.monotonic()
     bytes_ya = [0]  # bytes ya presentes en el bucket (grupos particionados)
 
     def emitir(fase: str, s: dict | None = None, comprobando: tuple | None = None) -> None:
@@ -462,6 +502,13 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
             cont.pendientes = len(part.pendientes)
             resumen.conflictos += part.conflictos
             bytes_ya[0] += sum(it.size for it in part.hechos)
+            resumen.metricas[nombre] = {
+                "omitidos": len(part.hechos), "pendientes": len(part.pendientes),
+                "bytes_omitidos": sum(it.size for it in part.hechos),
+                "bytes_pendientes": sum(it.size for it in part.pendientes),
+                "subidos": 0, "bytes_subidos": 0,
+                **_metricas_grupo(items, prefijo),
+            }
             emitir(nombre)
             if simular or not part.pendientes:
                 continue
@@ -477,6 +524,12 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
             res = subir(plan, proveedor, concurrency=concurrency, manifest=manifest,
                         on_stats=_stats, should_stop=should_stop, remotos={})
             cont.hechos = base + res.uploaded + res.skipped
+            fall = {f[0] for f in res.failed}
+            ok_items = [it for it in part.pendientes if it.remote not in fall]
+            if res.uploaded or not fall:
+                resumen.metricas[nombre]["subidos"] = int(res.uploaded)
+                resumen.metricas[nombre]["bytes_subidos"] = int(getattr(res, "bytes_sent", 0) or
+                                                               sum(it.size for it in ok_items))
             resumen.fallidas += [f for f in res.failed if f[1] != "cancelado"]
             if should_stop is not None and should_stop():
                 resumen.cancelado = True
@@ -487,6 +540,8 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
             if resumen.cancelado or resumen.fallidas:
                 break
     finally:
+        resumen.metricas["duracion_s"] = round(time.monotonic() - t0, 1)
+        resumen.metricas["conflictos_n"] = len(resumen.conflictos)
         manifest.flush()  # `subir` puede ser ajeno a `upload_plan`: flush final siempre
 
     # Verificación FRESCA contra el bucket: un `res.ok` solo dice que no hubo
@@ -508,6 +563,25 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
         else:
             resumen.faltantes = cu.faltantes_en_remoto(todos, frescos)
     return resumen
+
+
+def _desglose_barato(items, remotos: dict) -> dict:
+    """Desglose por clave+tamaño (sin MD5, sin leer disco): `en_bucket` = existe con el
+    mismo tamaño; `pendientes` = no existe; `distintos` = existe con otro tamaño
+    (sobrescribible o conflicto, lo decide `particionar` al subir)."""
+    d = {"total": 0, "en_bucket": 0, "pendientes": 0, "distintos": 0, "bytes_pendientes": 0}
+    for it in items:
+        d["total"] += 1
+        r = remotos.get(it.remote)
+        if r is None:
+            d["pendientes"] += 1
+            d["bytes_pendientes"] += max(0, it.size)
+        elif r.size == it.size:
+            d["en_bucket"] += 1
+        else:
+            d["distintos"] += 1
+            d["bytes_pendientes"] += max(0, it.size)
+    return d
 
 
 def inspeccionar_destino(destino, inspeccion_id: int, auth, *, proveedor=None) -> dict:
@@ -532,9 +606,11 @@ def inspeccionar_destino(destino, inspeccion_id: int, auth, *, proveedor=None) -
         base["existe"] = bool(remotos)
         sobre: list[str] = []
         destino = Path(destino)
-        if remotos and destino.is_dir():
+        if destino.is_dir():
             sel = seleccionar(destino, prefijo)
-            for it in [*sel.urgentes, *sel.resto]:
+            base["desglose"] = {"urgentes": _desglose_barato(sel.urgentes, remotos),
+                                "resto": _desglose_barato(sel.resto, remotos)}
+            for it in ([*sel.urgentes, *sel.resto] if remotos else []):
                 rel = it.remote[len(pref):] if it.remote.startswith(pref) else it.remote
                 if it.remote in remotos and es_sobrescribible(rel):
                     sobre.append(rel)
