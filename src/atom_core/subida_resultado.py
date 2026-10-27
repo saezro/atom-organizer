@@ -369,11 +369,12 @@ class ProveedorResultado(cu.GcsOAuthProvider):
 
     solo_crear = False
 
-    def __init__(self, auth, inspeccion_id: int):
+    def __init__(self, auth, inspeccion_id: int, forzar: bool = False):
         if not (getattr(auth, "es_password", False) or getattr(auth, "es_google", False)):
             raise SubidaResultadoError(MOTIVO_SIN_CREDENCIAL_BROKER if getattr(auth, "es_broker", False)
                                        else MOTIVO_SIN_CREDENCIAL)
-        super().__init__(BUCKET_RESULTADO, auth, inspeccion_id=int(inspeccion_id), ambito=AMBITO_RESULTADO)
+        super().__init__(BUCKET_RESULTADO, auth, inspeccion_id=int(inspeccion_id), ambito=AMBITO_RESULTADO,
+                         forzar=bool(forzar))
 
     def listar_remotos(self, prefix: str):
         """Inventario SIN el tope de 50.000 de los crudos: 2.000 páginas (2 M de
@@ -386,7 +387,7 @@ class ProveedorResultado(cu.GcsOAuthProvider):
 
     def prefijo_destino(self) -> str:
         """Prefijo decidido por la Suite (pide el token si aún no lo hay)."""
-        return self.auth.prefijo_resultado(self.inspeccion_id)
+        return self.auth.prefijo_resultado(self.inspeccion_id, forzar=self.forzar)
 
 
 _RE_VUELO = re.compile(r"^PB\d+_V\d+", re.IGNORECASE)
@@ -547,7 +548,7 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
     destino = Path(destino)
     if not destino.is_dir():
         raise SubidaResultadoError("La carpeta de salida no existe.")
-    proveedor = proveedor or ProveedorResultado(auth, inspeccion_id)
+    proveedor = proveedor or ProveedorResultado(auth, inspeccion_id, forzar=forzar)
     prefijo = proveedor.prefijo_destino()
     sel = seleccionar(destino, prefijo)
     (destino / NOMBRE_CARPETA_MANIFIESTO).mkdir(parents=True, exist_ok=True)

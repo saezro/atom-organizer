@@ -481,7 +481,7 @@ def test_credencial_resultado_tipos():
 def test_proveedor_puede_sobrescribir_y_pide_ambito_resultado():
     class AuthPwd:
         es_password = True
-        def prefijo_resultado(self, inspeccion_id):
+        def prefijo_resultado(self, inspeccion_id, forzar=False):
             return PREFIJO
     p = sr.ProveedorResultado(AuthPwd(), 7)
     assert p.solo_crear is False
