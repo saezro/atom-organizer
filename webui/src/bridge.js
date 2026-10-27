@@ -276,6 +276,9 @@ async function pick(mode, method, ...args) {
   return call(method, ...args)
 }
 
+let _tokenDestino = 0
+export const TIMEOUT_DESTINO_MS = 75000
+
 export const api = {
   ping: (who) => call('ping', who),
   pickFolder: () => pick('folder', 'pick_folder'),
@@ -418,8 +421,48 @@ export const api = {
   // Checks previos a subir: [{id, titulo, estado:'ok'|'aviso'|'error'|'no_comprobable', detalle}].
   resultadoPrechequeo: (destino) => call('resultado_prechequeo', destino),
   // Qué hay ya en el bucket para esa inspección: {existe, n_objetos, bytes, sobrescribe[], detalle}.
-  resultadoInspeccionarDestino: (destino, inspeccionId) =>
-    call('resultado_inspeccionar_destino', destino, inspeccionId ?? null),
+  // Corre en un hilo del backend (el listado del bucket puede tardar y bloqueaba la UI); el
+  // resultado llega por `atom:resultado` {kind:'destino', token, ...} y aquí se resuelve la promesa.
+  // `signal` (AbortSignal, opcional) cancela la espera: quita el listener y rechaza con AbortError.
+  // Sin respuesta en TIMEOUT_DESTINO_MS también se quita el listener y se rechaza (error visible).
+  resultadoInspeccionarDestino: (destino, inspeccionId, signal) =>
+    new Promise((resolve, reject) => {
+      const token = `${Date.now()}-${++_tokenDestino}`
+      let timer = null
+      const quitar = () => {
+        window.removeEventListener('atom:resultado', escucha)
+        if (timer) clearTimeout(timer)
+        if (signal) signal.removeEventListener('abort', abortar)
+      }
+      function escucha(e) {
+        const d = e.detail
+        if (!d || d.kind !== 'destino' || d.token !== token) return
+        quitar()
+        const { kind: _k, token: _t, ...resto } = d
+        resolve(resto)
+      }
+      function abortar() {
+        quitar()
+        const err = new Error('Inspección del destino cancelada.')
+        err.name = 'AbortError'
+        reject(err)
+      }
+      if (signal?.aborted) return abortar()
+      if (signal) signal.addEventListener('abort', abortar)
+      window.addEventListener('atom:resultado', escucha)
+      timer = setTimeout(() => {
+        quitar()
+        reject(new Error(`El backend no respondió a la inspección del destino en ${TIMEOUT_DESTINO_MS / 1000} s.`))
+      }, TIMEOUT_DESTINO_MS)
+      call('resultado_inspeccionar_destino_start', destino, inspeccionId ?? null, token)
+        .then((r) => {
+          if (!r || r.started === false) {
+            quitar()
+            reject(new Error((r && r.reason) || 'No se pudo iniciar la inspección del destino.'))
+          }
+        })
+        .catch((err) => { quitar(); reject(err) })
+    }),
   // Encadenada tras una subida al bucket completada con éxito, solo en el
   // destino «nube» (Task cablear PanelSubida): lanza la organización del lado
   // servidor. Fail-open: {ok:false, error} NO significa que la subida haya

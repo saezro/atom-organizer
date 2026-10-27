@@ -4357,6 +4357,29 @@ html.kiosk-modo body * {
 .sub-aviso {
   color: #f0b866;
 }
+.sub-calculando {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.sub-skeleton {
+  display: block;
+  width: 70%;
+  height: 1.1rem;
+  border-radius: 0.35rem;
+  background: rgba(255, 255, 255, 0.1);
+  animation: pm-pulse 1.2s ease-in-out infinite;
+}
+.sub-skeleton-corto {
+  display: inline-block;
+  width: 2rem;
+  vertical-align: middle;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sub-skeleton {
+    animation: none;
+  }
+}
 .sub-acciones {
   display: flex;
   flex-wrap: wrap;

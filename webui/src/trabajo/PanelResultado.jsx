@@ -94,6 +94,19 @@ export function resumenMetricas(m) {
   return { titulo: partes.join(' · '), grupos, subidos, bytes, dur, mbs, vuelos, porTipo, porVuelo }
 }
 
+// Spinner reutilizado de EsperaEstadillo (clase `espera-spinner`, ya definida en App.css).
+function Spinner({ tam = '1rem' }) {
+  return (
+    <svg className="espera-spinner" viewBox="0 0 24 24" width={tam} height={tam} fill="none"
+         stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+      <path d="M12 3a9 9 0 1 1-9 9" />
+    </svg>
+  )
+}
+
+// Espera antes de recalcular si la selección cambia seguida (carpeta/inspección).
+export const DEBOUNCE_ESTADO_MS = 300
+
 function Kpi({ etiqueta, valor, sub }) {
   return (
     <div className="sub-kpi">
@@ -155,6 +168,12 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
   // Desglose del destino (derivado del bucket, sobrevive a reiniciar la app).
   const [desglose, setDesglose] = useState(null)
   const [tick, setTick] = useState(0)
+  // Cálculo automático del estado del destino: en curso y último error (visible, con reintento).
+  // `hecho` = clave (carpeta+inspección+tick) del último cálculo terminado; `calculando` se deriva
+  // de ella para que no haya ningún fotograma con botones activos antes de arrancar el cálculo.
+  const [hecho, setHecho] = useState(null)
+  const [errorEstado, setErrorEstado] = useState('')
+  const ultimaSel = useRef(null)
   // «Al terminar, subir el resto»: lo ejecuta el backend al acabar urgentes (marcada por defecto).
   const [encadenar, setEncadenar] = useState(true)
   const encadenarRef = useRef(true)
@@ -173,11 +192,12 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
         switch (d.kind) {
           case 'start':
             setHayResto(Boolean(d.resto))
+            setError('')
             // Casilla desmarcada entre pulsar y arrancar (aún sin subida en curso): se reenvía.
             if (d.resto && encadenarRef.current === false && typeof api.resultadoEncadenar === 'function') {
-              Promise.resolve(api.resultadoEncadenar(false)).catch(() => {})
+              Promise.resolve(api.resultadoEncadenar(false)).catch((e) => setError(String(e?.message || e)))
             }
-            setSubiendo(true); setError(''); setAviso(''); setResumen(null); setEstado(null); setInicio(Date.now()); setAhora(Date.now()); setSerie([])
+            setSubiendo(true); setAviso(''); setResumen(null); setEstado(null); setInicio(Date.now()); setAhora(Date.now()); setSerie([])
             break
           case 'estado':
             setSubiendo(true); setEstado(d)
@@ -234,23 +254,52 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
   }, [subiendo])
 
   const sinCred = !cred || cred.ok === false
+  const elegible = Boolean(ready && carpeta && inspeccionId) && !sinCred && !subiendo
+  const claveEstado = `${carpeta}\u0000${inspeccionId}\u0000${tick}`
+  const calculando = elegible && hecho !== claveEstado
 
-  // Estado del destino al elegir inspección+carpeta y al acabar cada subida.
+  // Estado del destino: se calcula solo al entrar, al cambiar carpeta/inspección (con debounce)
+  // y al acabar cada subida; `tick` lo fuerza (botón). Una respuesta de una selección
+  // anterior se descarta (`vivo` pasa a false en la limpieza del efecto).
   useEffect(() => {
     let vivo = true
+    const ctl = new AbortController()
     setDesglose(null)
     setSinClasDestino(null)
-    if (!(ready && carpeta && inspeccionId) || sinCred || subiendo || typeof api.resultadoInspeccionarDestino !== 'function') return undefined
-    api.resultadoInspeccionarDestino(carpeta, inspeccionId)
-      .then((d) => {
-        if (!vivo) return
-        setDesglose(d && d.ok !== false ? d.desglose || null : null)
-        setSinClasDestino(d && d.ok !== false && Array.isArray(d.sin_clasificar_lista) ? d.sin_clasificar_lista : null)
-      })
-      .catch(() => { if (vivo) { setDesglose(null); setSinClasDestino(null) } })
-    return () => { vivo = false }
+    setErrorEstado('')
+    setHecho(null)
+    if (!(ready && carpeta && inspeccionId) || sinCred || subiendo) return undefined
+    if (typeof api.resultadoInspeccionarDestino !== 'function') {
+      setErrorEstado('método resultadoInspeccionarDestino no disponible'); setHecho(claveEstado); return undefined
+    }
+    const clave = claveEstado
+    if (typeof carpeta !== 'string' || !carpeta.trim()) {
+      setErrorEstado('La carpeta de salida no es una ruta válida'); setHecho(claveEstado); return undefined
+    }
+    const sel = `${carpeta}\u0000${inspeccionId}`
+    const retraso = ultimaSel.current === null || ultimaSel.current === sel ? 0 : DEBOUNCE_ESTADO_MS
+    ultimaSel.current = sel
+    const t = setTimeout(() => {
+      new Promise((resolve) => resolve(api.resultadoInspeccionarDestino(carpeta, inspeccionId, ctl.signal)))
+        .then((d) => {
+          if (!vivo) return
+          if (!d || typeof d !== 'object') throw new Error('respuesta vacía del backend')
+          if (d.ok === false) throw new Error(d.error || 'No se pudo inspeccionar el destino en el bucket.')
+          setDesglose(d.desglose || null)
+          setSinClasDestino(Array.isArray(d.sin_clasificar_lista) ? d.sin_clasificar_lista : null)
+          setHecho(clave)
+        })
+        .catch((e) => {
+          if (!vivo) return
+          setHecho(clave)
+          setErrorEstado(String(e?.message || e))
+        })
+    }, retraso)
+    return () => { vivo = false; clearTimeout(t); ctl.abort() }
   }, [ready, carpeta, inspeccionId, sinCred, subiendo, tick])
   const puede = ready && carpeta && inspeccionId && !subiendo && !sinCred
+  // Sin cifras no se sube: las acciones esperan al cálculo del estado.
+  const sinCifras = calculando
 
   async function revisar(m = 'urgencia') {
     setModo(m)
@@ -350,7 +399,7 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
           </span>
           {d.distintos > 0 && <span className="sub-estado-sub sub-aviso">{miles(d.distintos)} con otro tamaño en el bucket</span>}
         </>
-      ) : <span className="sub-estado-sub">—</span>}
+      ) : calculando ? <span className="sub-skeleton" role="status" aria-label={`Calculando ${titulo}`} /> : <span className="sub-estado-sub">—</span>}
     </div>
   )
 
@@ -370,16 +419,27 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
           )}
         </div>
         {!subiendo && puede && (
-          <button type="button" className="btn-ghost sub-actualizar" onClick={() => setTick((n) => n + 1)}>Actualizar estado</button>
+          <button type="button" className="btn-ghost sub-actualizar" onClick={() => setTick((n) => n + 1)} disabled={calculando} aria-busy={calculando}>
+            {calculando && <Spinner />} Actualizar estado
+          </button>
         )}
       </header>
 
-      <div className="sub-estado" aria-label="Estado del bucket">
+      {calculando && (
+        <span className="field-hint sub-calculando" role="status" aria-live="polite"><Spinner /> Calculando estado…</span>
+      )}
+      {errorEstado && (
+        <span className="field-hint hint-warn sub-error-estado" role="alert">
+          No se pudo calcular el estado: {errorEstado}{' '}
+          <button type="button" className="btn-ghost" onClick={() => setTick((n) => n + 1)}>Reintentar</button>
+        </span>
+      )}
+      <div className="sub-estado" aria-label="Estado del bucket" aria-busy={calculando}>
         {bucketCol('Urgentes', desglose?.urgentes)}
         {bucketCol('Resto', desglose?.resto)}
         <div className="sub-estado-col">
           <span className="sub-estado-tit">Conflictos</span>
-          <span className={'sub-estado-num' + (nConf ? ' sub-aviso' : '')}><strong>{resumen ? nConf : '—'}</strong>{resumen ? ' en la última pasada' : ''}</span>
+          <span className={'sub-estado-num' + (nConf ? ' sub-aviso' : '')}><strong>{resumen ? nConf : calculando ? <span className="sub-skeleton sub-skeleton-corto" aria-hidden="true" /> : '—'}</strong>{resumen ? ' en la última pasada' : ''}</span>
           <span className="sub-estado-sub">Existen con otro contenido; no se pisan.</span>
         </div>
       </div>
@@ -397,7 +457,7 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
       {desglose && <span className="sr-only">{textoDesglose(desglose)}</span>}
 
       <div className="sub-acciones">
-        <button type="button" className="btn-run" onClick={() => revisar('urgencia')} disabled={!puede || Boolean(previa) || (Boolean(urg) && nUrg === 0)}
+        <button type="button" className="btn-run" onClick={() => revisar('urgencia')} disabled={!puede || sinCifras || Boolean(previa) || (Boolean(urg) && nUrg === 0)}
           title={urg && nUrg === 0 ? (nSin ? 'Sin urgentes pendientes' : 'Todo subido') : undefined}>Publicar urgentes</button>
         <label className="check sub-encadenar">
           <input type="checkbox" checked={encadenar && !(!subiendo && rest && nResto === 0)} disabled={!subiendo && Boolean(rest) && nResto === 0}
@@ -405,10 +465,10 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
           <span>Al terminar, subir el resto</span>
         </label>
         {restoEnCola && <span className="sub-resto-cola" aria-live="polite">Resto en cola</span>}
-        <button type="button" className="btn-ghost" onClick={() => { setModo('normal'); lanzar('normal') }} disabled={!puede || !nResto} title={rest && !nResto ? (nSin ? 'Sin resto pendiente' : 'Todo subido') : undefined}>
+        <button type="button" className="btn-ghost" onClick={() => { setModo('normal'); lanzar('normal') }} disabled={!puede || sinCifras || !nResto} title={rest && !nResto ? (nSin ? 'Sin resto pendiente' : 'Todo subido') : undefined}>
           Subir el resto{nResto > 0 ? ` (${miles(nResto)} · ${textoBytes(rest.bytes_pendientes)})` : ''}
         </button>
-        <button type="button" className="btn-ghost" onClick={() => revisar('normal')} disabled={!puede || Boolean(previa) || todoSubido}
+        <button type="button" className="btn-ghost" onClick={() => revisar('normal')} disabled={!puede || sinCifras || Boolean(previa) || todoSubido}
           title={todoSubido ? 'Todo subido' : undefined}>Subir todo</button>
         {subiendo && <button type="button" className="btn-ghost sub-cancelar" onClick={() => api.resultadoCancelar()}>Cancelar</button>}
       </div>

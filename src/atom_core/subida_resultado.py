@@ -713,7 +713,10 @@ def inspeccionar_destino(destino, inspeccion_id: int, auth, *, proveedor=None) -
     """
     base = {"ok": True, "existe": False, "n_objetos": 0, "bytes": 0, "sobrescribe": [],
             "prefijo": None, "error": None, "detalle": ""}
+    logger.info("inspeccionar_destino: inicio carpeta=%s inspeccion=%s", destino, inspeccion_id)
     try:
+        if not Path(destino).is_dir():
+            raise SubidaResultadoError(f"La carpeta {destino} no existe o no es accesible")
         proveedor = proveedor or ProveedorResultado(auth, inspeccion_id)
         prefijo = proveedor.prefijo_destino()
         base["prefijo"] = prefijo
@@ -742,9 +745,15 @@ def inspeccionar_destino(destino, inspeccion_id: int, auth, *, proveedor=None) -
                            if remotos else f"El destino {prefijo} está vacío.")
     except cu.ListadoTruncado as exc:
         base.update(ok=False, existe=None, error=str(exc), detalle=f"No verificable: {exc}")
+    except SubidaResultadoError as exc:
+        base.update(ok=False, existe=None, error=str(exc), detalle=f"No se pudo inspeccionar el destino: {exc}")
     except Exception as exc:  # noqa: BLE001 - estado visible, nunca silencioso
         base.update(ok=False, existe=None, error=f"{type(exc).__name__}: {exc}",
                     detalle=f"No se pudo inspeccionar el destino: {exc}")
+    if base["ok"]:
+        logger.info("inspeccionar_destino: fin carpeta=%s objetos=%s", destino, base["n_objetos"])
+    else:
+        logger.warning("inspeccionar_destino: FALLO carpeta=%s: %s", destino, base["error"])
     return base
 
 

@@ -173,7 +173,7 @@ describe('PanelResultado', () => {
     expect(await screen.findByText(/Carpeta con imágenes/)).toBeInTheDocument()
     expect(screen.getByText(/faltan 2/)).toBeInTheDocument()
     expect(api.resultadoPrechequeo).toHaveBeenCalledWith('/salida')
-    expect(api.resultadoInspeccionarDestino).toHaveBeenCalledWith('/salida', 7)
+    expect(api.resultadoInspeccionarDestino).toHaveBeenCalledWith('/salida', 7, expect.any(AbortSignal))
     expect(api.resultadoSubir).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Confirmar y subir' }))
     await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalled())
@@ -207,8 +207,8 @@ describe('PanelResultado', () => {
       detalle: '', desglose: { urgentes: g, resto: g } })
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     const b = await screen.findByRole('button', { name: 'Publicar urgentes' })
-    await waitFor(() => expect(b).toBeDisabled())
-    expect(b).toHaveAttribute('title', 'Todo subido')
+    await waitFor(() => expect(b).toHaveAttribute('title', 'Todo subido'))
+    expect(b).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Subir todo' })).toBeDisabled()
     expect(screen.getAllByText(/3(,0)? GB del grupo/).length).toBeGreaterThan(0)
   })
@@ -423,3 +423,106 @@ describe('resumenMetricas', () => {
   })
 })
 
+
+describe('PanelResultado: estado automático', () => {
+  const dest = (n) => ({ ok: true, existe: true, n_objetos: 1, bytes: 1, sobrescribe: [],
+    desglose: { urgentes: { total: n, en_bucket: 0, pendientes: n, distintos: 0, bytes_total: 10, bytes_pendientes: 10 },
+                resto: { total: n, en_bucket: 0, pendientes: n, distintos: 0, bytes_total: 10, bytes_pendientes: 10 } } })
+  const diferida = () => { let res, rej; const p = new Promise((a, b) => { res = a; rej = b }); return { p, res, rej } }
+
+  it('calcula solo al montar, sin pulsar «Actualizar estado»', async () => {
+    api.resultadoInspeccionarDestino.mockResolvedValue(dest(4))
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    await waitFor(() => expect(api.resultadoInspeccionarDestino).toHaveBeenCalledWith('/salida', 7, expect.any(AbortSignal)))
+    expect((await screen.findAllByText(/4 pendientes/)).length).toBeGreaterThan(0)
+  })
+
+  it('al cambiar carpeta o inspección recalcula (con debounce: una sola llamada si cambian seguidas)', async () => {
+    api.resultadoInspeccionarDestino.mockResolvedValue(dest(1))
+    const { rerender } = render(<PanelResultado carpeta="/a" inspeccionId={7} ready />)
+    await waitFor(() => expect(api.resultadoInspeccionarDestino).toHaveBeenCalledTimes(1))
+    rerender(<PanelResultado carpeta="/b" inspeccionId={7} ready />)
+    rerender(<PanelResultado carpeta="/b" inspeccionId={8} ready />)
+    await waitFor(() => expect(api.resultadoInspeccionarDestino).toHaveBeenCalledWith('/b', 8, expect.any(AbortSignal)))
+    expect(api.resultadoInspeccionarDestino).toHaveBeenCalledTimes(2)
+  })
+
+  it('mientras calcula: spinner, «Calculando estado…», botón y subidas desactivados', async () => {
+    const d = diferida()
+    api.resultadoInspeccionarDestino.mockReturnValue(d.p)
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    expect(await screen.findByText(/Calculando estado…/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Actualizar estado/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Publicar urgentes' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Subir todo' })).toBeDisabled()
+    await act(async () => { d.res(dest(2)) })
+    await waitFor(() => expect(screen.queryByText(/Calculando estado…/)).toBeNull())
+    expect(screen.getByRole('button', { name: /Actualizar estado/ })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Publicar urgentes' })).not.toBeDisabled()
+  })
+
+  it('descarta la respuesta de una selección anterior', async () => {
+    const a = diferida(); const b = diferida()
+    api.resultadoInspeccionarDestino.mockReturnValueOnce(a.p).mockReturnValueOnce(b.p)
+    const { rerender } = render(<PanelResultado carpeta="/a" inspeccionId={7} ready />)
+    await waitFor(() => expect(api.resultadoInspeccionarDestino).toHaveBeenCalledTimes(1))
+    rerender(<PanelResultado carpeta="/b" inspeccionId={7} ready />)
+    await act(async () => { a.res(dest(111)) })
+    expect(screen.queryByText(/111/)).toBeNull()
+    expect(screen.getByText(/Calculando estado…/)).toBeInTheDocument()
+    await waitFor(() => expect(api.resultadoInspeccionarDestino).toHaveBeenCalledTimes(2))
+    await act(async () => { b.res(dest(222)) })
+    expect(await screen.findAllByText(/222/)).not.toHaveLength(0)
+    expect(screen.queryByText(/111/)).toBeNull()
+  })
+
+  it('si falla muestra el error y «Reintentar» vuelve a calcular', async () => {
+    api.resultadoInspeccionarDestino.mockRejectedValueOnce(new Error('sin red')).mockResolvedValue(dest(3))
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    expect(await screen.findByText(/No se pudo calcular el estado: sin red/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar' }))
+    await waitFor(() => expect(screen.queryByText(/No se pudo calcular el estado/)).toBeNull())
+    expect(api.resultadoInspeccionarDestino).toHaveBeenCalledTimes(2)
+  })
+
+  it('carpeta inexistente: el error del backend se ve en el panel y los KPIs no se quedan mudos', async () => {
+    api.resultadoInspeccionarDestino.mockResolvedValue({ ok: false, error: 'La carpeta D:\\CASTRUM_ORG no existe o no es accesible' })
+    render(<PanelResultado carpeta="D:\\CASTRUM_ORG" inspeccionId={7} ready />)
+    expect(await screen.findByText(/La carpeta D:\\CASTRUM_ORG no existe o no es accesible/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reintentar' })).toBeInTheDocument()
+  })
+
+  it('una excepción del bridge (método roto) no se traga: error visible', async () => {
+    api.resultadoInspeccionarDestino.mockImplementation(() => { throw new Error('bridge roto') })
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    expect(await screen.findByText(/bridge roto/)).toBeInTheDocument()
+  })
+
+  it('timeout/rechazo del bridge: error visible y el panel no se queda calculando', async () => {
+    api.resultadoInspeccionarDestino.mockRejectedValue(new Error('El backend no respondió a la inspección del destino en 75 s.'))
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    expect(await screen.findByText(/no respondió a la inspección del destino en 75 s/)).toBeInTheDocument()
+    expect(screen.queryByText(/Calculando estado…/)).toBeNull()
+  })
+
+  it('cambiar de carpeta cancela (abort) la petición anterior', async () => {
+    const señales = []
+    api.resultadoInspeccionarDestino.mockImplementation((_c, _i, signal) => { señales.push(signal); return new Promise(() => {}) })
+    const { rerender } = render(<PanelResultado carpeta="/a" inspeccionId={7} ready />)
+    await waitFor(() => expect(señales).toHaveLength(1))
+    expect(señales[0].aborted).toBe(false)
+    rerender(<PanelResultado carpeta="/b" inspeccionId={7} ready />)
+    expect(señales[0].aborted).toBe(true)
+    await waitFor(() => expect(señales).toHaveLength(2))
+    expect(señales[1].aborted).toBe(false)
+  })
+
+  it('al desmontar el panel cancela la petición en curso', async () => {
+    let señal
+    api.resultadoInspeccionarDestino.mockImplementation((_c, _i, signal) => { señal = signal; return new Promise(() => {}) })
+    const { unmount } = render(<PanelResultado carpeta="/a" inspeccionId={7} ready />)
+    await waitFor(() => expect(señal).toBeDefined())
+    unmount()
+    expect(señal.aborted).toBe(true)
+  })
+})
