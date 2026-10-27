@@ -1007,7 +1007,7 @@ function AppInterna() {
       )}
 
       {!kiosco && (
-        <nav className="seg" role="tablist">
+        <nav className="seg" role="tablist" aria-label="Secciones">
           {NAV.map((n) => (
             <button
               key={n.id}

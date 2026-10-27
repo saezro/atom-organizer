@@ -337,15 +337,39 @@ def _vuelos_de(rels) -> set:
     return {p for r in rels for p in r.split("/") if _RE_VUELO.match(p)}
 
 
+def _vuelo_de(rel: str) -> str | None:
+    """Vuelo (`PBx_Vy…`) al que pertenece una ruta, o None (ESTADILLOS, INDICE_…)."""
+    for p in rel.split("/"):
+        m = _RE_VUELO.match(p)
+        if m:
+            return m.group(0).upper()
+    return None
+
+
+def _desglose(items, prefijo: str) -> tuple[dict, dict]:
+    """`(por_tipo, por_vuelo)` con ficheros/bytes. Sin vuelo identificable no entra en `por_vuelo`."""
+    pref = prefijo.strip("/") + "/"
+    por_tipo: dict = {}
+    por_vuelo: dict = {}
+    for it in items:
+        r = it.remote[len(pref):] if it.remote.startswith(pref) else it.remote
+        tam = max(0, it.size)
+        d = por_tipo.setdefault(tipo_de(r), {"ficheros": 0, "bytes": 0})
+        d["ficheros"] += 1
+        d["bytes"] += tam
+        v = _vuelo_de(r)
+        if v:
+            dv = por_vuelo.setdefault(v, {"ficheros": 0, "bytes": 0})
+            dv["ficheros"] += 1
+            dv["bytes"] += tam
+    return por_tipo, por_vuelo
+
+
 def _metricas_grupo(items, prefijo: str) -> dict:
     """Ficheros/bytes por tipo y nº de vuelos (carpetas PBx_Vy) de una lista de items."""
     pref = prefijo.strip("/") + "/"
     rels = [it.remote[len(pref):] if it.remote.startswith(pref) else it.remote for it in items]
-    por_tipo: dict = {}
-    for r, it in zip(rels, items):
-        d = por_tipo.setdefault(tipo_de(r), {"ficheros": 0, "bytes": 0})
-        d["ficheros"] += 1
-        d["bytes"] += max(0, it.size)
+    por_tipo, _ = _desglose(items, prefijo)
     return {"por_tipo": por_tipo, "vuelos": len(_vuelos_de(rels))}
 
 
@@ -459,6 +483,11 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
         sum(it.size for it in sel.resto) if modo == MODO_NORMAL else 0)
     t0 = time.monotonic()
     bytes_ya = [0]  # bytes ya presentes en el bucket (grupos particionados)
+    # Medición de la pasada: lo acumulado de grupos ya terminados + la foto del grupo en curso.
+    env_prev = [0]                       # bytes realmente enviados en grupos terminados
+    sub_prev = [0]                       # ficheros realmente subidos en grupos terminados
+    med_prev = cu.medidas_vacias()       # tiempos-hilo y reintentos de grupos terminados
+    hilos_max = max(1, concurrency)
 
     def emitir(fase: str, s: dict | None = None, comprobando: tuple | None = None) -> None:
         if on_estado is None:
@@ -474,6 +503,16 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
             # Bytes de TODO lo del modo (ya en el bucket + lo que se va subiendo).
             "bytes_done": bytes_ya[0] + int((s or {}).get("bytes_done", 0)),
             "bytes_total": bytes_total,
+            # Medición para la gráfica y el diagnóstico del cuello de botella.
+            # `t` = segundos desde que empezó la pasada (eje X); `bytes_enviados` =
+            # bytes que han cruzado la red de verdad (sin contar lo ya presente en el bucket).
+            "t": round(time.monotonic() - t0, 2),
+            "bytes_enviados": env_prev[0] + int((s or {}).get("bytes_done", 0)),
+            # Ficheros realmente subidos en esta pasada (sin los ya presentes en el bucket).
+            "ficheros_subidos": sub_prev[0] + int((s or {}).get("files_done", 0)),
+            "hilos_activos": int((s or {}).get("hilos_activos", 0)),
+            "hilos_max": hilos_max,
+            "medidas": cu.sumar_medidas(med_prev, (s or {}).get("medidas")),
             # Destino real (se conoce antes de listar): la UI lo enseña desde el principio.
             "prefix": prefijo,
         })
@@ -526,10 +565,18 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
             cont.hechos = base + res.uploaded + res.skipped
             fall = {f[0] for f in res.failed}
             ok_items = [it for it in part.pendientes if it.remote not in fall]
+            env_prev[0] += int(getattr(res, "bytes_sent", 0) or 0)
+            sub_prev[0] += int(res.uploaded)
+            med_prev = cu.sumar_medidas(med_prev, getattr(res, "medidas", None))
             if res.uploaded or not fall:
                 resumen.metricas[nombre]["subidos"] = int(res.uploaded)
                 resumen.metricas[nombre]["bytes_subidos"] = int(getattr(res, "bytes_sent", 0) or
                                                                sum(it.size for it in ok_items))
+                # Desglose de lo SUBIDO (no de toda la selección). Aproximado: incluye
+                # el raro 412 «ya estaba» (ver `UploadResult.skipped_precondicion`).
+                tipos, vuelos = _desglose(ok_items, prefijo)
+                resumen.metricas[nombre]["subidos_por_tipo"] = tipos
+                resumen.metricas[nombre]["subidos_por_vuelo"] = vuelos
             resumen.fallidas += [f for f in res.failed if f[1] != "cancelado"]
             if should_stop is not None and should_stop():
                 resumen.cancelado = True
@@ -542,6 +589,9 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
     finally:
         resumen.metricas["duracion_s"] = round(time.monotonic() - t0, 1)
         resumen.metricas["conflictos_n"] = len(resumen.conflictos)
+        resumen.metricas["medidas"] = med_prev
+        resumen.metricas["hilos_max"] = hilos_max
+        resumen.metricas["bytes_enviados"] = env_prev[0]
         manifest.flush()  # `subir` puede ser ajeno a `upload_plan`: flush final siempre
 
     # Verificación FRESCA contra el bucket: un `res.ok` solo dice que no hubo

@@ -1083,11 +1083,49 @@ def _is_retryable(exc: Exception) -> bool:
                 or 500 <= exc.code < 600)
     return isinstance(exc, (urllib.error.URLError, TimeoutError, OSError))
 
+# Claves de `medidas` (segundos-hilo acumulados y reintentos por causa). Es lo
+# único que la UI usa para decir «limitado por red / disco / ...»: solo se
+# afirma lo que aquí se mide.
+MEDIDAS_SEGUNDOS = ("disco_s", "red_s", "sesion_s", "espera_s", "token_s")
+CAUSAS_RETRY = ("429", "5xx", "auth", "http", "red")
+
+
+def medidas_vacias() -> dict:
+    return {**{k: 0.0 for k in MEDIDAS_SEGUNDOS}, "reintentos": {c: 0 for c in CAUSAS_RETRY}}
+
+
+def sumar_medidas(a: dict | None, b: dict | None) -> dict:
+    """Suma dos `medidas` (p. ej. la de urgentes y la del resto)."""
+    out = medidas_vacias()
+    for m in (a, b):
+        if not m:
+            continue
+        for k in MEDIDAS_SEGUNDOS:
+            out[k] += float(m.get(k, 0.0) or 0.0)
+        for c in CAUSAS_RETRY:
+            out["reintentos"][c] += int((m.get("reintentos") or {}).get(c, 0) or 0)
+    return out
+
+
+def _causa_retry(exc: Exception) -> str:
+    """Por qué se reintenta: 429 (límite), 5xx (servidor), auth (401/403),
+    http (otro código) o red (corte/timeout, sin respuesta HTTP)."""
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code == 429:
+            return "429"
+        if exc.code >= 500:
+            return "5xx"
+        if exc.code in (401, 403):
+            return "auth"
+        return "http"
+    return "red"
+
 
 def upload_file(item: UploadItem, provider: UrlProvider, *,
                 on_bytes: Callable[[int], None] | None = None,
                 should_stop: Callable[[], bool] | None = None,
-                on_retry: Callable[[], None] | None = None) -> str:
+                on_retry: Callable[[], None] | None = None,
+                on_medida: Callable[[str, float], None] | None = None) -> str:
     """Sube un fichero completo. Devuelve su MD5 en base64.
 
     Reintenta con backoff exponencial ante errores de red o 5xx, reanudando
@@ -1096,6 +1134,10 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
     `on_retry` se avisa en cada reintento para poder contarlos: son la señal de
     que la red va mal, y sin contarlos un «tardó tres horas» no se distingue de
     un «tardó tres horas porque hubo 400 microcortes».
+
+    `on_medida(clave, valor)` recibe tiempos (`disco_s`, `red_s`, `sesion_s`,
+    `espera_s`, `token_s`, en segundos) y `retry:<causa>` (+1). Es opcional y
+    ligero: dos `monotonic()` por trozo de 8 MB.
 
     Lanza `YaExiste` si el objeto ya estaba en el bucket (y el item no venía
     marcado para sobreescribir): eso no es un fallo, es un saltado tardío.
@@ -1106,13 +1148,19 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
     empezado = time.monotonic()
     refrescado_403 = False
 
+    def _med(clave: str, valor: float) -> None:
+        if on_medida is not None:
+            on_medida(clave, valor)
+
     for attempt in range(MAX_RETRIES):
         try:
             if session_uri is None:
+                t_ses = time.monotonic()
                 url = provider.upload_url(item.remote, total,
                                           sobrescribir=item.sobrescribir)
                 try:
                     session_uri = _open_session(url, provider.headers())
+                    _med("sesion_s", time.monotonic() - t_ses)
                 except urllib.error.HTTPError as exc:
                     # 412: la precondición `ifGenerationMatch=0` ha cortado
                     # porque el objeto ya está ahí. GCS no ha aceptado ni un
@@ -1122,7 +1170,11 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
                     raise
                 offset = 0
             else:
-                offset = _committed_offset(session_uri, total, provider.headers())
+                t_res = time.monotonic()
+                try:
+                    offset = _committed_offset(session_uri, total, provider.headers())
+                finally:
+                    _med("red_s", time.monotonic() - t_res)
                 _log.info("reanudo %s en el byte %d de %d (%.0f%% ya confirmado "
                           "en el bucket)", item.remote, offset, total,
                           100.0 * offset / total if total else 100.0)
@@ -1130,19 +1182,28 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
             if total == 0:
                 # Un fichero vacío se cierra con un PUT de longitud cero.
                 _put_chunk(session_uri, b"", 0, 0, provider.headers())
-                return _file_md5_b64(item.local)
+                t_md = time.monotonic()
+                md5_vacio = _file_md5_b64(item.local)
+                _med("disco_s", time.monotonic() - t_md)
+                return md5_vacio
 
             with open(item.local, "rb") as fh:
                 fh.seek(offset)
                 while offset < total:
                     if should_stop is not None and should_stop():
                         raise InterruptedError("subida cancelada")
+                    t_lec = time.monotonic()
                     chunk = fh.read(CHUNK_SIZE)
+                    _med("disco_s", time.monotonic() - t_lec)
                     if not chunk:
                         break
                     # Las cabeceras se piden por trozo: en un fichero de varios
                     # GB el token puede caducar entre el primero y el último.
-                    _put_chunk(session_uri, chunk, offset, total, provider.headers())
+                    t_red = time.monotonic()
+                    try:
+                        _put_chunk(session_uri, chunk, offset, total, provider.headers())
+                    finally:
+                        _med("red_s", time.monotonic() - t_red)
                     offset += len(chunk)
                     # Trozo aceptado: el token funciona; un 403 posterior
                     # (caducidad en ficheros de horas) vuelve a poder refrescar.
@@ -1154,7 +1215,10 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
             _log.debug("subido %s (%.1f MB en %.1fs%s)", item.remote,
                        total / 1024 ** 2, duracion,
                        f", {attempt} reintento(s)" if attempt else "")
-            return _file_md5_b64(item.local)
+            t_md = time.monotonic()
+            md5 = _file_md5_b64(item.local)
+            _med("disco_s", time.monotonic() - t_md)
+            return md5
 
         except (InterruptedError, YaExiste):
             raise
@@ -1171,6 +1235,7 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
                 raise
             if on_retry is not None:
                 on_retry()
+            _med("retry:" + _causa_retry(exc), 1)
             _log.warning("%s: %s: %s — reintento %d/%d en %.0fs",
                          item.remote, type(exc).__name__, exc,
                          attempt + 1, MAX_RETRIES - 1, delay)
@@ -1179,6 +1244,7 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
                 # refrescar el token y la sesión resumable sigue viva (los
                 # bytes confirmados en GCS no se pierden). Con signed URL hay
                 # que pedir otra y abrir sesión nueva.
+                t_tok = time.monotonic()
                 try:
                     if not provider.recover_auth():
                         session_uri = None
@@ -1193,7 +1259,10 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
                     refrescado_403 = False
                     _log.warning("%s: no se pudo recuperar la autorización (%s)",
                                  item.remote, exc2)
+                _med("token_s", time.monotonic() - t_tok)
+            t_esp = time.monotonic()
             time.sleep(delay)
+            _med("espera_s", time.monotonic() - t_esp)
             delay = min(delay * 2, 30)
 
     raise RuntimeError(f"no se pudo subir {item.remote}")  # pragma: no cover
@@ -1227,6 +1296,9 @@ class UploadResult:
     # Mensaje si la subida se cortó entera por 403 persistente de GCS
     # (`MAX_403_CONSECUTIVOS`); None si no hubo corte.
     abortado: str | None = None
+    # Tiempos-hilo y reintentos por causa (ver `medidas_vacias`): de qué se
+    # fue el tiempo. Sirve para decir red / disco / reintentos sin adivinar.
+    medidas: dict = field(default_factory=medidas_vacias)
 
     @property
     def ok(self) -> bool:
@@ -1320,7 +1392,8 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
         return result
 
     sent_lock = threading.Lock()
-    counter = {"bytes": 0, "files": 0, "retries": 0, "ultimo_aviso": 0.0}
+    counter = {"bytes": 0, "files": 0, "retries": 0, "ultimo_aviso": 0.0, "activos": 0}
+    medidas = medidas_vacias()
     started = time.monotonic()
 
     def _stats(final: bool = False) -> dict:
@@ -1342,6 +1415,12 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
             "mbps": bps * 8 / 1_000_000,  # megabITS/s (bytes*8), no MB/s
             "files_per_s": counter["files"] / elapsed,
             "retries": counter["retries"],
+            # Hilos subiendo AHORA frente al máximo configurado: si hay pocos
+            # activos con muchos ficheros pendientes, el cuello no es el ancho.
+            "hilos_activos": counter["activos"],
+            "hilos_max": max(1, concurrency),
+            "medidas": {**{k: medidas[k] for k in MEDIDAS_SEGUNDOS},
+                        "reintentos": dict(medidas["reintentos"])},
             "final": final,
         }
 
@@ -1379,6 +1458,13 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
         with sent_lock:
             counter["retries"] += 1
 
+    def _medir(clave: str, valor: float) -> None:
+        with sent_lock:
+            if clave.startswith("retry:"):
+                medidas["reintentos"][clave[6:]] += int(valor)
+            else:
+                medidas[clave] += valor
+
     # Circuit breaker: 403 persistente (tras refrescar) en K ficheros seguidos.
     cb = {"seguidos": 0, "motivo": None}
 
@@ -1388,9 +1474,11 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
     def _one(item: UploadItem) -> tuple[UploadItem, str | None, str | None, bool]:
         if cb["motivo"] is not None:
             return item, None, "cancelado", False
+        with sent_lock:
+            counter["activos"] += 1
         try:
             md5 = upload_file(item, provider, on_bytes=_bump,
-                              should_stop=_parar, on_retry=_retry)
+                              should_stop=_parar, on_retry=_retry, on_medida=_medir)
             with sent_lock:
                 cb["seguidos"] = 0
             return item, md5, None, False
@@ -1415,6 +1503,9 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
             with sent_lock:
                 cb["seguidos"] = 0
             return item, None, f"{type(exc).__name__}: {exc}", False
+        finally:
+            with sent_lock:
+                counter["activos"] -= 1
 
     try:
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
@@ -1458,6 +1549,8 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
     result.bytes_sent = counter["bytes"]
     result.elapsed = time.monotonic() - started
     result.retries = counter["retries"]
+    result.medidas = {**{k: medidas[k] for k in MEDIDAS_SEGUNDOS},
+                      "reintentos": dict(medidas["reintentos"])}
 
     _log.info("FIN · %d subidos · %d omitidos (%d por precondición) · %.2f GB "
               "en %.0fs (%.0f Mbps) · %d reintentos · %d fallos",
