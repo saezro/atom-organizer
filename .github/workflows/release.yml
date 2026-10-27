@@ -119,7 +119,7 @@ jobs:
           path: ~/apt-debs
           key: checks-apt-${{ runner.os }}-ubuntu24.04-exiftool-ffmpeg-v1
       - name: Binarios externos del pipeline
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           PKGS="libimage-exiftool-perl ffmpeg"
