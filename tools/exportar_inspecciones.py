@@ -50,24 +50,29 @@ def _secreto(nombre: str) -> str:
         check=True, capture_output=True, text=True).stdout.strip()
 
 
-def _host() -> str:
-    return subprocess.run(
-        ["gcloud", "sql", "instances", "describe", INSTANCIA,
-         f"--project={PROYECTO}", "--format=value(ipAddresses[0].ipAddress)"],
-        check=True, capture_output=True, text=True).stdout.strip()
+def _env_obligatoria(nombre: str) -> str:
+    valor = os.environ.get(nombre, "").strip()
+    if not valor:
+        print(f"ERROR: falta la variable de entorno {nombre} "
+              "(IP privada de Cloud SQL, via VPN Aerotools o atom-dev-nl).",
+              file=sys.stderr)
+        sys.exit(2)
+    return valor
 
 
 class Db:
     def __init__(self) -> None:
+        self.host = _env_obligatoria("DB_HOST")
+        self.port = os.environ.get("DB_PORT", "").strip() or "5432"
         self.user = _secreto("DB_USER")
         self.name = _secreto("DB_NAME")
-        self._env = dict(os.environ, PGPASSWORD=_secreto("DB_PASSWORD"))
-        self.host = _host()
+        self._env = dict(os.environ, PGPASSWORD=_secreto("DB_PASSWORD"),
+                         PGSSLMODE="require")
 
     def consulta(self, sql: str) -> str:
         """Ejecuta y devuelve la salida cruda (`-A -t`: sin adornos)."""
         return subprocess.run(
-            ["psql", "-h", self.host, "-U", self.user, "-d", self.name,
+            ["psql", "-h", self.host, "-p", self.port, "-U", self.user, "-d", self.name,
              "-w", "-A", "-t", "-c", sql],
             check=True, capture_output=True, text=True, env=self._env).stdout.strip()
 
