@@ -45,6 +45,7 @@ from pathlib import Path
 import pandas as pd
 
 from atom_core import almacen
+from atom_core.errores_estadillo import ErrorEstadillo  # noqa: F401 (re-export)
 from utils import OrganizerLogger, Utils
 
 # Separador de rutas dentro del string único que viaja como "estadillo" por
@@ -109,9 +110,14 @@ def _read_dataframe(path: str) -> pd.DataFrame:
     # descarga a un temporal que se limpia al salir del `with`, así que el
     # DataFrame tiene que construirse DENTRO del bloque.
     with almacen.abrir_para_lectura(path) as local:
-        if ext in (".xlsx", ".xls"):
-            return pd.read_excel(local)
-        return pd.read_csv(local, sep=";")
+        try:
+            if ext in (".xlsx", ".xls"):
+                return pd.read_excel(local)
+            return pd.read_csv(local, sep=";")
+        except Exception as e:
+            raise ErrorEstadillo(
+                f"no se pudo leer el fichero ({type(e).__name__}: {e})",
+                ruta=path, esperado="CSV separado por ';' o XLSX/XLS válido") from e
 
 
 # Extensiones candidatas a estadillo. El resto (fotos, logs, PDFs sueltos en
