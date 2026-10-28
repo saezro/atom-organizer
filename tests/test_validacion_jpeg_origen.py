@@ -1,5 +1,6 @@
 """Fix 3.4.115: JPEG truncado en origen (apply) y excepción de cabecera (indice)."""
 import io
+import os
 
 from PIL import Image as PILImage
 
@@ -110,7 +111,13 @@ def test_cabecera_con_excepcion_se_excluye(tmp_path, monkeypatch):
 
     def _boom(*a, **k):
         raise RuntimeError("fallo")
-    monkeypatch.setattr(indice.os, "fstat", _boom)
+
+    class _OsFalso:
+        fstat = staticmethod(_boom)
+
+        def __getattr__(self, nombre):
+            return getattr(os, nombre)
+    monkeypatch.setattr(indice, "os", _OsFalso())
     assert indice._leer_cabecera(str(p)) == (None, True)
     assert indice._leer_cabecera(str(tmp_path / "no_existe.jpg"))[1] is True
 
@@ -119,15 +126,20 @@ def test_indice_lectura_corta_excluye(tmp_path, monkeypatch):
     monkeypatch.setattr(indice, "_FILTRO_ARCHIVO_A_MEDIAS", True)
     p = tmp_path / "b.jpg"
     p.write_bytes(_jpeg_bytes() + b"\x07" * 200_000)
-    real_stat = indice.os.fstat
 
     class _R:
         st_size = 5_500_000
 
-    monkeypatch.setattr(indice.os, "fstat", lambda fd: _R())
+    class _OsFalso:
+        fstat = staticmethod(lambda fd: _R())
+
+        def __getattr__(self, nombre):
+            return getattr(os, nombre)
+    monkeypatch.setattr(indice, "os", _OsFalso())
     cab, medias = indice._leer_cabecera(str(p))
     assert medias is True
-    monkeypatch.setattr(indice.os, "fstat", real_stat)
+    monkeypatch.undo()
+    monkeypatch.setattr(indice, "_FILTRO_ARCHIVO_A_MEDIAS", True)
     assert indice._leer_cabecera(str(p))[1] is False
 
 
