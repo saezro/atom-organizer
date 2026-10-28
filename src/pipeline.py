@@ -62,6 +62,7 @@ import sys
 import external_tools
 import dji_worker_pool
 import dji_irp_windows
+from atom_core import errores_estadillo
 from atom_core import almacen, esperado, rjpeg, sharding, lectura_segura
 from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO, NOMBRE_FICHERO_MANIFIESTO
 
@@ -1749,6 +1750,11 @@ class GenStructFolder:
         - desfase_horas / desfase_minutos - diferencia entre el reloj del estadillo
           y el de la cámara; se suma a las dos puntas.
         """
+        # Validación explícita: un valor mal formado lanza ErrorEstadillo (sin
+        # fichero/fila aquí; `indice._ventanas_por_vuelo` ya valida antes con ellos).
+        errores_estadillo.validar_fecha(fecha)
+        errores_estadillo.validar_hora(horaInicio, columna="Hora_de_inicio")
+        errores_estadillo.validar_hora(horaFinal, columna="Hora_final")
         fecha_hora_inicio_estadillo = datetime.datetime.strptime(fecha+'_'+horaInicio,'%Y:%m:%d_%H:%M:%S')
         fecha_hora_fin_estadillo = datetime.datetime.strptime(fecha+'_'+horaFinal,'%Y:%m:%d_%H:%M:%S')
 
@@ -4944,6 +4950,7 @@ class RGBProcessing:
                     numeroVuelos = estadillo.shape[0]
                     vuelo_sin_detectar = True  # Utilizado para detectar si hay algún log cuya diferencia en el tiempo con el vuelo es demasiado grande
                     for vuelo in range(numeroVuelos):
+                        errores_estadillo.validar_hora(estadillo[nombres_columnas['Hora_de_inicio']].iloc[vuelo], columna=nombres_columnas['Hora_de_inicio'], **errores_estadillo.contexto_fila(estadillo, vuelo, nombres_columnas))
                         hora_inicio_vuelo = datetime.datetime.strptime(estadillo[nombres_columnas['Hora_de_inicio']].iloc[vuelo], '%H:%M:%S') #Hora de inicio de cada línea del estadillo
                         hora_log = datetime.datetime.strptime(log_file.split(' ')[1].replace('-',':').split('.')[0], '%H:%M:%S')
                     
@@ -6051,6 +6058,10 @@ class Extraction:
                                 progress_callback.emit("\nWARNING: No existe hora final en PB {0} y vuelo {1}\n".format(row[nombres_columnas['PB']], row[nombres_columnas['Vuelo']]))
                                 continue
                             
+                            ctx_est = errores_estadillo.contexto_fila(df_estadillo, df_estadillo.index.get_loc(index), nombres_columnas)
+                            errores_estadillo.validar_fecha(row[nombres_columnas['Fecha']], columna=nombres_columnas['Fecha'], **ctx_est)
+                            errores_estadillo.validar_hora(row[nombres_columnas['Hora_de_inicio']], columna=nombres_columnas['Hora_de_inicio'], **ctx_est)
+                            errores_estadillo.validar_hora(row[nombres_columnas['Hora_final']], columna=nombres_columnas['Hora_final'], **ctx_est)
                             hora_inicio_time_obj = dt.datetime.strptime(row[nombres_columnas['Fecha']] + " " + row[nombres_columnas['Hora_de_inicio']], '%Y:%m:%d %H:%M:%S') - dt.timedelta(minutes=1,seconds=30) # Hora de inicio de cada línea del estadillo
                             hora_final_time_obj = dt.datetime.strptime(row[nombres_columnas['Fecha']] + " " + row[nombres_columnas['Hora_final']], '%Y:%m:%d %H:%M:%S') + dt.timedelta(minutes=1,seconds=30) # Hora final de cada línea del estadillo
                             

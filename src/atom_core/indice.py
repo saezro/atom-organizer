@@ -37,6 +37,7 @@ from atom_core import almacen
 from atom_core import cancelacion
 from atom_core import equipo as equipo_mod
 from atom_core import estadillo as estadillo_mod
+from atom_core import errores_estadillo
 from atom_core import lectura_segura
 from atom_core import pares as pares_mod
 from atom_core.manifiesto import FilaManifiesto, Manifiesto, clave_imagen
@@ -1084,6 +1085,12 @@ def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
             progress_callback.emit(
                 f"\nWARNING: No existe hora final en PB {pb} y vuelo {vuelo}\n")
             continue
+
+        # Validación explícita (sin normalizar): fichero/fila/PB/vuelo/valor en el error.
+        ctx = errores_estadillo.contexto_fila(estadillo_df, indice, nombres_columnas)
+        errores_estadillo.validar_fecha(fecha, columna=col_fecha, **ctx)
+        errores_estadillo.validar_hora(hora_inicio, columna=col_inicio, **ctx)
+        errores_estadillo.validar_hora(hora_final, columna=col_final, **ctx)
 
         # Franja EXACTA del estadillo (+ desfase): ya no hay margen `seconds_range`
         # (3.4.141). Una foto fuera de toda franja va a SIN_ORDENAR (ERROR).

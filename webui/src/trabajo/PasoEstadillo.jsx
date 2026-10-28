@@ -116,6 +116,19 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
   const omitirRef = useRef(omitirEstadillo)
   omitirRef.current = omitirEstadillo
 
+  // Rutas que NO eligió el operador (autodetección de la carpeta + recibidos
+  // por LAN). Al elegir un estadillo a mano la selección pasa a ser SOLO lo
+  // elegido a mano: estas rutas se descartan (varios manuales sí se suman).
+  const rutasAutoRef = useRef(new Set())
+
+  function anadirManual(nuevas) {
+    const auto = rutasAutoRef.current
+    const base = estadRutas.filter((r) => !auto.has(r))
+    const extra = [...new Set(nuevas)].filter((r) => !base.includes(r))
+    rutasAutoRef.current = new Set()
+    cambiarEstadRutas([...base, ...extra])
+  }
+
   function cambiarEstadRutas(next) {
     setEstadRutas(next)
     setEstadCheck(null)
@@ -151,6 +164,7 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
     if (prefijoAnteriorRef.current === prefijo && carpetaAnteriorRef.current === carpeta) return
     prefijoAnteriorRef.current = prefijo
     carpetaAnteriorRef.current = carpeta
+    rutasAutoRef.current = new Set()
     cambiarEstadRutas([])
     setOmitirEstadillo(false)
     // Cambiar de inspección deja sin sentido una espera en curso: era para
@@ -238,6 +252,7 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
           setAutoDeteccion({ estado: 'nada' })
           return
         }
+        rutasAutoRef.current = new Set(rutas)
         cambiarEstadRutas(rutas)
         setAutoDeteccion({ estado: 'encontrado', n: rutas.length })
       } catch (e) {
@@ -374,8 +389,8 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
   // Añade el fichero a la lista sin duplicarlo.
   async function elegirEstadillo() {
     const path = await api.pickFile('csv_xlsx')
-    if (!path || estadRutas.includes(path)) return
-    cambiarEstadRutas([...estadRutas, path])
+    if (!path) return
+    anadirManual([path])
   }
 
   async function bajarEstadilloNube() {
@@ -388,8 +403,7 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
         return
       }
       const nuevas = (r.rutas || []).map((f) => f.ruta)
-      const combinadas = [...estadRutas, ...nuevas.filter((ruta) => !estadRutas.includes(ruta))]
-      cambiarEstadRutas(combinadas)
+      anadirManual(nuevas)
     } catch (e) {
       setEstadBajarError(String(e))
     } finally {
@@ -487,6 +501,7 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
           disabled={disabled}
           onRecibido={(rutas) => {
             setEsperando(false)
+            rutasAutoRef.current = new Set(rutas)
             cambiarEstadRutas(rutas)
           }}
           onCancelar={() => setEsperando(false)}
@@ -614,7 +629,7 @@ export default function PasoEstadillo({ prefijo, carpeta, inspeccion, disabled, 
             disabled={disabled || estadSubiendo || omitirEstadillo}
             onClick={() => {
               if (estadRutas.includes(ruta)) return
-              cambiarEstadRutas([...estadRutas, ruta])
+              anadirManual([ruta])
               setCandidatosPadre((prev) => prev.filter((r) => r !== ruta))
             }}
           >

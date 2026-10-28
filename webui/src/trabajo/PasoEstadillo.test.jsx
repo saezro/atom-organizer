@@ -8,6 +8,7 @@ vi.mock('../bridge', () => ({
     estadilloExistente: vi.fn(),
     estadillosDetectar: vi.fn(),
     estadilloBajarNube: vi.fn(),
+    pickFile: vi.fn(),
   },
   isServerMode: vi.fn(() => false),
   onCloud: (h) => {
@@ -229,6 +230,21 @@ describe('PasoEstadillo', () => {
     // autodetección no acierta.
     render(<PasoEstadillo prefijo="ACME--P--2026--T" onEstado={vi.fn()} />)
     expect(await screen.findByRole('button', { name: /elegir/i })).toBeTruthy()
+  })
+
+  it('elegir a mano descarta los autodetectados/recibidos; varios manuales se acumulan', async () => {
+    api.estadillosDetectar.mockResolvedValue({ rutas: ['/vuelo/auto.csv', '/recibidos/otro.csv'] })
+    api.estadilloValidar.mockResolvedValue({ ok: true, vuelos_detectados: 1 })
+    let estado = null
+    render(
+      <PasoEstadillo prefijo="ACME--P--2026--T" carpeta="/vuelo" onEstado={(e) => { estado = e }} />)
+    await waitFor(() => expect(estado.rutas).toEqual(['/vuelo/auto.csv', '/recibidos/otro.csv']))
+    api.pickFile.mockResolvedValueOnce('/x/manual1.csv')
+    fireEvent.click(await screen.findByRole('button', { name: /elegir/i }))
+    await waitFor(() => expect(estado.rutas).toEqual(['/x/manual1.csv']))
+    api.pickFile.mockResolvedValueOnce('/x/manual2.csv')
+    fireEvent.click(await screen.findByRole('button', { name: /elegir/i }))
+    await waitFor(() => expect(estado.rutas).toEqual(['/x/manual1.csv', '/x/manual2.csv']))
   })
 
   it('sin prop carpeta no llama a estadillosDetectar', async () => {
