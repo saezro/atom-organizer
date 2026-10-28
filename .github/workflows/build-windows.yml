@@ -15,10 +15,14 @@ jobs:
         with:
           python-version: '3.11'
 
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'packaging/requirements/requirements*.txt'
+
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r packaging/requirements/requirements.txt
+          uv pip install --system -r packaging/requirements/requirements.txt
           # Sin reinstalar PyInstaller: manda el pin de packaging/requirements/requirements.txt (ver release.yml).
 
       - name: Build (PyInstaller onedir)

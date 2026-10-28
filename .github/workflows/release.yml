@@ -94,6 +94,10 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'packaging/requirements/requirements*.txt'
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
@@ -142,14 +146,13 @@ jobs:
           key: checks-venv-${{ runner.os }}-py3.11-${{ hashFiles('packaging/requirements/requirements-linux.txt', 'packaging/requirements/requirements-webview.txt') }}
       - name: Crear venv
         if: steps.cache-venv.outputs.cache-hit != 'true'
-        run: python -m venv .venv
+        run: uv venv .venv --python 3.11
       - name: Python deps
         if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/pip install -r packaging/requirements/requirements-linux.txt
-          .venv/bin/pip install -r packaging/requirements/requirements-webview.txt
-          .venv/bin/pip install pytest
+          uv pip install --python .venv/bin/python -r packaging/requirements/requirements-linux.txt
+          uv pip install --python .venv/bin/python -r packaging/requirements/requirements-webview.txt
+          uv pip install --python .venv/bin/python pytest
       # Con o sin cache-hit, el venv (con o sin instalar de nuevo) pasa a ser
       # el `python`/`pytest` que ven los pasos siguientes.
       - name: Activar venv
@@ -174,6 +177,10 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'packaging/requirements/requirements*.txt'
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
@@ -192,23 +199,22 @@ jobs:
           key: build-linux-venv-${{ runner.os }}-py3.11-gpu${{ inputs.build_gpu }}-${{ hashFiles('packaging/requirements/requirements-linux.txt', 'packaging/requirements/requirements-webview.txt', 'packaging/requirements/requirements-gpu.txt') }}
       - name: Crear venv
         if: steps.cache-venv.outputs.cache-hit != 'true'
-        run: python -m venv .venv
+        run: uv venv .venv --python 3.11
       - name: Python deps
         if: steps.cache-venv.outputs.cache-hit != 'true'
         env:
           BUILD_GPU: ${{ github.event.inputs.build_gpu }}
         run: |
-          .venv/bin/python -m pip install --upgrade pip
           # packaging/requirements/requirements-linux.txt (NO packaging/requirements/requirements.txt: esa lleva pywin32, solo-Windows)
-          .venv/bin/pip install -r packaging/requirements/requirements-linux.txt
-          .venv/bin/pip install -r packaging/requirements/requirements-webview.txt
+          uv pip install --python .venv/bin/python -r packaging/requirements/requirements-linux.txt
+          uv pip install --python .venv/bin/python -r packaging/requirements/requirements-webview.txt
           # cupy + nvImageCodec para el camino GPU opt-in (ORGANIZER_RGB_GPU=1,
           # atom_core/rgb_gpu.py). Build oficial va SIN esto (como 3.4.101):
           # el bundle GPU (~150MB de DLLs nvidia) precargaba con
           # pyi_rth_cuda.py y colgaba pywebview en máquinas sin runtime CUDA
           # (incidente 3.4.102). Solo se instala con ATOM_BUILD_GPU=1
           # (workflow_dispatch manual, opt-in).
-          if [ "$BUILD_GPU" = "true" ]; then .venv/bin/pip install -r packaging/requirements/requirements-gpu.txt; fi
+          if [ "$BUILD_GPU" = "true" ]; then uv pip install --python .venv/bin/python -r packaging/requirements/requirements-gpu.txt; fi
       - name: Activar venv
         run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       # El client_secret no está en el repo (es público: Google revocaría el
@@ -250,6 +256,10 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'packaging/requirements/requirements*.txt'
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
@@ -275,28 +285,27 @@ jobs:
           key: build-windows-venv-${{ runner.os }}-py3.11-gpu${{ inputs.build_gpu || 'false' }}-${{ hashFiles('packaging/requirements/requirements.txt', 'packaging/requirements/requirements-webview.txt', 'packaging/requirements/requirements-gpu.txt') }}
       - name: Crear venv
         if: steps.cache-venv.outputs.cache-hit != 'true'
-        run: python -m venv .venv
+        run: uv venv .venv --python 3.11
       - name: Python deps
         if: steps.cache-venv.outputs.cache-hit != 'true'
         # pwsh NO corta con el exit code de pip: un pip fallido (timeout de PyPI)
         # dejaba el paso en verde, venv sin pyinstaller y el fallo salía después.
         env:
           BUILD_GPU: ${{ github.event.inputs.build_gpu }}
-          PIP_RETRIES: '10'
-          PIP_DEFAULT_TIMEOUT: '60'
+          UV_HTTP_RETRIES: '10'
+          UV_HTTP_TIMEOUT: '60'
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          .venv\Scripts\python.exe -m pip install --upgrade pip
-          .venv\Scripts\pip.exe install -r packaging/requirements/requirements.txt
-          .venv\Scripts\pip.exe install -r packaging/requirements/requirements-webview.txt
+          uv pip install --python .venv\Scripts\python.exe -r packaging/requirements/requirements.txt
+          uv pip install --python .venv\Scripts\python.exe -r packaging/requirements/requirements-webview.txt
           # cupy + nvImageCodec para el camino GPU opt-in (ORGANIZER_RGB_GPU=1,
           # atom_core/rgb_gpu.py). Build oficial va SIN esto (como 3.4.101):
           # el bundle GPU (~150MB de DLLs nvidia) precargaba con
           # pyi_rth_cuda.py y colgaba pywebview en máquinas sin runtime CUDA
           # (incidente 3.4.102). Solo se instala con ATOM_BUILD_GPU=1
           # (workflow_dispatch manual, opt-in).
-          if ($env:BUILD_GPU -eq "true") { .venv\Scripts\pip.exe install -r packaging/requirements/requirements-gpu.txt }
+          if ($env:BUILD_GPU -eq "true") { uv pip install --python .venv\Scripts\python.exe -r packaging/requirements/requirements-gpu.txt }
           # NO reinstalar PyInstaller aqui: manda el pin de packaging/requirements/requirements.txt
           # (6.22.2 + pyinstaller-hooks-contrib 2026.6). El 6.6.0 que habia
           # fijado desde la v3.4.32 degradaba esa version y sus hooks son
