@@ -24,9 +24,11 @@ El host que herede este mixin DEBE proveer:
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -41,6 +43,8 @@ from atom_core import estadillo as estadillo_mod
 from atom_core import indice as indice_mod
 from atom_core import indice_excel
 from atom_core import paralelismo as paralelismo_mod
+from atom_core import apply as _apply_mod
+from atom_core import apply_shards
 from atom_core import sharding
 from atom_core.almacen import (
     abrir_para_lectura,
@@ -179,6 +183,62 @@ def _copiar_estadillos_a_salida(cfg, logger) -> None:
             counter += 1
         else:
             publicar_en(ruta, dest_estadillo)
+
+
+
+def _cpu_segundos() -> float:
+    """CPU (user+sys) de este proceso y de sus hijos ya esperados (pool RGB, exiftool)."""
+    try:
+        import resource  # noqa: PLC0415 — no existe en Windows
+    except ImportError:
+        return time.process_time()
+    propio = resource.getrusage(resource.RUSAGE_SELF)
+    hijos = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return propio.ru_utime + propio.ru_stime + hijos.ru_utime + hijos.ru_stime
+
+
+def _emitir_telemetria(host, cfg, estadisticas: dict, pared_s: float, cpu_s: float,
+                       ok: bool, progress_callback) -> None:
+    """UNA línea JSON a stdout al final de la task (la lee `scripts/nube_prueba.sh`) y
+    el mismo objeto en `<destino>/.organizado/telemetria/<ejecucion>-<fase>-<shard>.json`.
+    Nunca rompe el run: un fallo al escribirla se avisa."""
+    try:
+        fase = str(getattr(host, "fase", "completo") or "completo")
+        ejecucion = str(getattr(host, "ejecucion", "") or "").strip()
+        shard_index = int(getattr(host, "shard_index", 0))
+        vcpu = utils.cpus_efectivas()
+        dato = {
+            "telemetria": "organizer", "fase": fase, "ejecucion": ejecucion,
+            "shard_index": shard_index, "shard_count": int(getattr(host, "shard_count", 1)),
+            "imagenes": int(estadisticas.get("imagenes", 0)), "ok": ok,
+            "pared_s": round(pared_s, 2), "cpu_s": round(cpu_s, 2), "vcpu": vcpu,
+            "utilizacion": round(cpu_s / (vcpu * pared_s), 3) if pared_s > 0 else 0.0,
+        }
+        linea = json.dumps(dato, ensure_ascii=False)
+        print(linea, flush=True)
+        nombre = f"{ejecucion or 'local'}-{fase}-{shard_index}.json"
+        ruta = unir(cfg.output_folder, ".organizado", "telemetria", nombre)
+        if es_uri_gcs(ruta):
+            descriptor, tmp = tempfile.mkstemp(suffix=".json")
+            os.close(descriptor)
+        else:
+            os.makedirs(os.path.dirname(ruta), exist_ok=True)
+            tmp = ruta + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(linea + "\n")
+            if es_uri_gcs(ruta):
+                publicar_en(tmp, ruta)
+            else:
+                os.replace(tmp, ruta)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            progress_callback.emit(f"\nAVISO: no se pudo escribir la telemetría: {exc}\n")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class _PipelineAdaptadorPlanApply:
@@ -1143,6 +1203,22 @@ class PipelinePhasesMixin:
 
     def organizar_plan_apply(self, cfg: SplitImagesConfig, progress_callback, progress_bar,
                              progress_summarize) -> None:
+        """Motor índice -> manifiesto -> apply -> cierre (ver `_organizar_impl`), más la
+        telemetría de la task: una línea JSON a stdout y `.organizado/telemetria/`."""
+        estadisticas = {"imagenes": 0}
+        inicio = time.monotonic()
+        cpu_inicio = _cpu_segundos()
+        ok = False
+        try:
+            PipelinePhasesMixin._organizar_impl(
+                self, cfg, progress_callback, progress_bar, progress_summarize, estadisticas)
+            ok = True
+        finally:
+            _emitir_telemetria(self, cfg, estadisticas, time.monotonic() - inicio,
+                               _cpu_segundos() - cpu_inicio, ok, progress_callback)
+
+    def _organizar_impl(self, cfg: SplitImagesConfig, progress_callback, progress_bar,
+                        progress_summarize, estadisticas: dict) -> None:
         """Motor de organizado índice -> manifiesto SQLite -> apply -> cierre.
 
         Sustituye a `split_images` (motor viejo de 7 fases, arriba en este
@@ -1176,10 +1252,33 @@ class PipelinePhasesMixin:
 
         `.organizado/` se conserva SIEMPRE: es la memoria del destino para
         organizar por cachitos (decisión 2026-09-15). La subida lo excluye.
+
+        Fases (`self.fase`, defecto `completo` = todo seguido, como siempre):
+        `indice` | `apply` (= `rgb` + `termica`, repartible en `self.shard_count`
+        tasks) | `rgb` | `termica` | `cierre`, para encadenar 3 ejecuciones de
+        Cloud Run. `apply` NO sube el manifiesto: deja deltas por shard en
+        `<destino>/.organizado/shards/<self.ejecucion>/` (ver `apply_shards`) y
+        `cierre` los funde (`Manifiesto.aplicar_deltas`) antes de cerrar.
         """
         self.organizer_logger_obj.logger.info("###################################################################")
         self.organizer_logger_obj.logger.info("PROCESO: ORGANIZAR (motor índice -> manifiesto -> apply -> cierre)")
         self.organizer_logger_obj.logger.info("###################################################################")
+
+        # Los helpers `_fase_*` se llaman como `PipelinePhasesMixin._fase_x(self, ...)`
+        # y no como `self._fase_x(...)`: hay llamantes (tests) que invocan este método
+        # con un host que NO hereda del mixin.
+        fase = str(getattr(self, "fase", "completo") or "completo")
+        if fase not in sharding.FASES:
+            raise ValueError(f"Fase desconocida: {fase!r}. Válidas: {', '.join(sharding.FASES)}.")
+        shard_index = getattr(self, "shard_index", 0)
+        shard_count = getattr(self, "shard_count", 1)
+        if shard_count > 1 and fase not in sharding.FASES_REPARTIBLES:
+            raise ValueError(f"La fase {fase!r} no se puede repartir ({shard_count} tareas): "
+                             "solo apply/rgb/termica se reparten.")
+        if fase in sharding.FASES_REPARTIBLES:
+            return PipelinePhasesMixin._apply_repartido(
+                self, cfg, fase, shard_index, shard_count,
+                progress_callback, progress_bar, progress_summarize, estadisticas)
 
         adaptador = _PipelineAdaptadorPlanApply(self)
         # Salida gs://: SQLite no vive en el bucket. Copia LOCAL descargada del bucket
@@ -1197,12 +1296,17 @@ class PipelinePhasesMixin:
         manifiesto = Manifiesto(ruta_manifiesto)
         try:
             manifiesto.crear_esquema()
-            reabiertas = manifiesto.reabrir_huerfanas(cfg.input_folder)
-            if reabiertas:
-                progress_callback.emit(
-                    f"\n{reabiertas} imagen(es) quedaron a medias en un run anterior; "
-                    "se reintentan en esta corrida.\n")
-            ejecucion_id = manifiesto.abrir_ejecucion(cfg.input_folder, __version__)
+            hace_indice = fase in ("completo", "indice")
+            if hace_indice:
+                reabiertas = manifiesto.reabrir_huerfanas(cfg.input_folder)
+                if reabiertas:
+                    progress_callback.emit(
+                        f"\n{reabiertas} imagen(es) quedaron a medias en un run anterior; "
+                        "se reintentan en esta corrida.\n")
+                ejecucion_id = manifiesto.abrir_ejecucion(cfg.input_folder, __version__)
+            else:
+                # Cierre suelto: la ejecución es la que abrió el índice.
+                ejecucion_id = manifiesto.ultima_ejecucion_id()
             # `None` hasta que `construir_indice` lo rellene: si algo revienta
             # antes (o dentro), el `finally` de abajo igualmente puede cerrar
             # la ejecución con los contadores a 0 en vez de un `NameError`.
@@ -1214,185 +1318,29 @@ class PipelinePhasesMixin:
                 tiempos: dict[str, float] = {}
                 marca = time.monotonic()
 
-                cancelacion.comprobar()
-                _copiar_estadillos_a_salida(cfg, self.organizer_logger_obj.logger)
-
-                # Fallidas de OTRO origen (p. ej. el día anterior en un destino
-                # acumulado): no se reintentan, no se adoptan en este run (no
-                # entran en ERRORES_*.csv) y no sustituyen la corrida normal.
-                _ajenas = manifiesto.fallidas_de_otro_origen(cfg.input_folder)
-                if _ajenas:
-                    logger.debug("%d fallida(s) de otro origen ignoradas", len(_ajenas))
-                _solo_fallidas = getattr(self, "solo_fallidas", False)
-                if _solo_fallidas and not manifiesto.hay_fallidas_de_origen(cfg.input_folder):
-                    progress_callback.emit(
-                        "\n[reintento] no hay fallidas de este origen: corrida normal.\n")
-                    _solo_fallidas = False
-                if _solo_fallidas:
-                    # Reintento dirigido: sin reescanear el origen. Las filas
-                    # 'fallido' ya traen decisión y rutas; vuelven a 'pendiente'
-                    # y el apply/cierre de siempre las procesa. 'hecho' intacto.
-                    n_reint = manifiesto.reabrir_fallidas(ejecucion_id, cfg.input_folder)
-                    conteo_previo = manifiesto.resumen()
-                    resumen_indice = {
-                        "nuevas": 0, "saltadas": conteo_previo.get("hecho", 0),
-                        "reintentadas": n_reint, "no_disponibles": []}
-                    progress_callback.emit(
-                        f"\nReintentando {n_reint} imagen(es) fallida(s); las "
-                        f"{conteo_previo.get('hecho', 0)} ya hechas no se tocan.\n")
+                if hace_indice:
+                    resumen_indice = PipelinePhasesMixin._fase_indice(
+                        self, manifiesto, cfg, adaptador, progress_callback, progress_bar,
+                        progress_summarize, ejecucion_id)
+                    tiempos["Índice"] = time.monotonic() - marca
+                    marca = time.monotonic()
+                    estadisticas["imagenes"] += ((resumen_indice or {}).get("nuevas", 0)
+                                                 + (resumen_indice or {}).get("reintentadas", 0))
+                    cancelacion.comprobar()
+                if fase == "completo":
+                    estadisticas["imagenes"] += PipelinePhasesMixin._fase_apply(
+                        self, manifiesto, cfg, progress_callback, progress_bar,
+                        progress_summarize, ejecucion_id, tiempos)
+                    marca = time.monotonic()
+                if fase == "indice":
+                    PipelinePhasesMixin._avisos_indice(
+                        self, resumen_indice, progress_callback)
+                    progress_bar.emit(100)
                 else:
-                    resumen_indice = indice_mod.construir_indice(
-                        cfg, adaptador, self.split_images_obj.exif_management_obj, manifiesto,
-                        progress_callback, progress_bar, progress_summarize, ejecucion_id=ejecucion_id)
-                tiempos["Índice"] = time.monotonic() - marca
-                marca = time.monotonic()
-                cancelacion.comprobar()
-
-                # Sin `controlador` ambos apply corren SECUENCIALES, una imagen a la
-                # vez en este mismo proceso (`apply.py:321`). Eso es el camino de los
-                # tests, no el de producción: dejarlo así costó una regresión de ~10x
-                # en la fase RGB (3 min -> 30 min, reportado 2026-09-08 en el PC de
-                # oficina con la 3.4.81), porque el motor viejo sí repartía el lote
-                # con `utils.workers_para_lote()`. Un controlador POR FASE, no uno
-                # compartido: el historial de mediciones de RGB (CPU-bound, procesos)
-                # no describe a las térmicas (I/O-bound, hilos esperando a dji_irp y
-                # exiftool) y arrancaría la segunda fase con una tendencia ajena.
-                # Contador de rotación COMPARTIDO entre RGB y térmicas: la línea
-                # "Rotación: N giradas 270° · M sin girar" de la UI es acumulada
-                # del run entero, no por fase (ver `apply._ContadorRotacion`).
-                contador_rotacion = _ContadorRotacion()
-
-                # `tope_hdd` solo se pasa aquí, en RGB: es la fase que LEE en
-                # masa y secuencial del disco de origen, donde más workers en un
-                # HDD provoca seek thrashing (ver `paralelismo.TOPE_WORKERS_HDD`).
-                # Térmicas es I/O a procesos externos (dji_irp/exiftool), no
-                # lectura masiva del disco, así que no le aplica el mismo tope.
-                aplicar_rgb(manifiesto, cfg, pipeline, progress_callback, progress_bar,
-                           progress_summarize,
-                           controlador=paralelismo_mod.ControladorAdaptativo(
-                               maximo=paralelismo_mod.maximo_rgb(),
-                               etiqueta="RGB", tope_hdd=paralelismo_mod.TOPE_WORKERS_HDD),
-                           contador_rotacion=contador_rotacion,
-                           ejecucion_id=ejecucion_id)
-                tiempos["RGB"] = time.monotonic() - marca
-                marca = time.monotonic()
-                cancelacion.comprobar()
-
-                # Las térmicas van a un `ThreadPoolExecutor`: el tiempo se va
-                # esperando a procesos externos, así que el techo no es la RAM por
-                # worker sino el de I/O (`utils.max_io_workers`, ya usado por el
-                # resto del pipeline para trabajo de este tipo).
-                aplicar_termicas(manifiesto, cfg, self.split_images_obj, progress_callback,
-                                progress_bar, progress_summarize,
-                                controlador=paralelismo_mod.ControladorAdaptativo(
-                                    # Suelo 8: con el origen lento (Drive) el MB/s cae
-                                    # aunque la CPU esté ociosa y el controlador
-                                    # estrangulaba a 3-7 hilos; hilos esperando I/O no
-                                    # cuestan CPU. Respeta el tope `max_io_workers`.
-                                    minimo=min(8, utils.max_io_workers()),
-                                    maximo=utils.max_io_workers(),
-                                    arranque=utils.arranque_io(),
-                                    etiqueta="Termicas"),
-                                contador_rotacion=contador_rotacion,
-                                ejecucion_id=ejecucion_id)
-                tiempos["Térmicas"] = time.monotonic() - marca
-                marca = time.monotonic()
-                cancelacion.comprobar()
-
-                progress_summarize.emit("---> SUBPROCESO: Cierre")
-                proyecciones: dict = {}
-                recuentos_csv: dict = {}
-                cierre_mod.emitir_csvs(manifiesto, cfg, progress_callback, proyecciones=proyecciones,
-                                       recuentos_csv=recuentos_csv)
-                csv_para_verificar = recuentos_csv if cfg.gen_meta_location else None
-                problemas = cierre_mod.verificar(manifiesto, cfg, csv_para_verificar)
-                # El índice Excel es informativo: si falla, se avisa y el cierre sigue.
-                try:
-                    ruta_indice = indice_excel.escribir_indice(
-                        manifiesto, cfg, proyecciones, progress_callback,
-                        recuentos=cierre_mod.calcular_recuentos(manifiesto, cfg, csv_para_verificar))
-                    progress_callback.emit(f"\nÍndice de la planta: {ruta_indice}\n")
-                except Exception as excepcion:  # noqa: BLE001
-                    progress_callback.emit(f"\nAVISO: no se pudo generar el índice Excel: {excepcion}\n")
-                tiempos["Cierre"] = time.monotonic() - marca
-                progress_bar.emit(100)
-
-                desglose = " · ".join(
-                    f"{etapa} {_formatear_duracion(segundos)}"
-                    for etapa, segundos in tiempos.items())
-                progress_callback.emit(
-                    f"\n[tiempos] Organizado completo: "
-                    f"{_formatear_duracion(sum(tiempos.values()))} "
-                    f"({desglose}).\n")
-                errores_cierre, avisos_cierre = cierre_mod.separar_problemas(problemas)
-                # Errores que no salen del manifiesto (coherencia, duplicados,
-                # térmicas pendientes, SIN_ORDENAR...) se suman al n_fallos del
-                # marcador: 1 por línea de problema, no por foto.
-                n_coherencia = cierre_mod.contar_errores_extra(errores_cierre)
-                if errores_cierre:
-                    # Imágenes fallidas = ERROR, no aviso. "HA HABIDO ERRORES"
-                    # no casa con los regex de `organize._scan_errors`: el
-                    # estado 'errors' lo fuerza el marcador STATS_ERRORES.
-                    progress_callback.emit(
-                        "\nHA HABIDO ERRORES: el cierre encontró imágenes que "
-                        "NO se han procesado:\n")
-                    for problema in errores_cierre:
-                        progress_callback.emit(f"  - {problema[len(cierre_mod.PREFIJO_ERROR):]}\n")
-                    self.organizer_logger_obj.logger.error(
-                        "Cierre con %d error(es): %s", len(errores_cierre), errores_cierre)
-                if avisos_cierre:
-                    progress_callback.emit(
-                        f"\nHA HABIDO AVISOS: el cierre encontró {len(avisos_cierre)} "
-                        "problema(s) al verificar el manifiesto contra disco:\n")
-                    for problema in avisos_cierre:
-                        progress_callback.emit(f"  - {problema}\n")
-                    self.organizer_logger_obj.logger.warning(
-                        "Cierre con %d problema(s): %s", len(avisos_cierre), avisos_cierre)
-                try:
-                    _info_ajenas = cierre_mod.linea_info_ajenas(manifiesto, cfg)
-                except Exception:  # noqa: BLE001 — informativo
-                    _info_ajenas = None
-                if _info_ajenas:
-                    progress_callback.emit("\n" + _info_ajenas + "\n")
-                # Marcador propio del cierre: fallidas de CUALQUIER tipo de ESTE
-                # run, para que el estado final sea 'errors' aunque no sean RGB/TERMICA.
-                try:
-                    emitir_errores_fase(manifiesto, cfg, progress_callback, "Cierre",
-                                        "CIERRE", None, ejecucion_id=ejecucion_id, cierre=True,
-                                        n_extra=n_coherencia,
-                                        detalle_errores=[p[len(cierre_mod.PREFIJO_ERROR):]
-                                                         for p in errores_cierre],
-                                        detalle_avisos=list(avisos_cierre))
-                except Exception as excepcion_marcador:  # noqa: BLE001
-                    progress_callback.emit(
-                        f"\nERROR no se pudo emitir el marcador de errores del cierre: "
-                        f"{excepcion_marcador}\n")
-                dias_sin_est = (resumen_indice or {}).get("dias_sin_estadillo") or []
-                no_dji = (resumen_indice or {}).get("no_dji") or []
-                if no_dji:
-                    progress_callback.emit(
-                        f"\nAVISO: {len(no_dji)} ficheros no DJI ignorados (quedan en origen): "
-                        + ", ".join(os.path.basename(r) for r, _m in no_dji[:10])
-                        + ("…" if len(no_dji) > 10 else "") + "\n")
-                for dia, n_fotos in dias_sin_est:
-                    progress_callback.emit(
-                        f"\nAVISO: día {dia} sin estadillo ({n_fotos} fotos) → "
-                        "irán a SIN_ORDENAR\n")
-                n_avisos = (1 if no_dji else 0) + len(dias_sin_est)
-                no_disp = (resumen_indice or {}).get("no_disponibles") or []
-                if no_disp:
-                    progress_callback.emit(
-                        f"\nHA HABIDO AVISOS: {len(no_disp)} fichero(s) no estaban "
-                        "disponibles (sin respuesta del origen, p. ej. Drive sin "
-                        "descargar) y NO se han organizado:\n")
-                    for ruta in no_disp:
-                        progress_callback.emit(f"  - {ruta}\n")
-                elif not problemas:
-                    if n_avisos:
-                        progress_callback.emit(
-                            f"\nOrganizado completado con {n_avisos} aviso(s).\n")
-                    else:
-                        progress_callback.emit("\nOrganizado completado sin problemas.\n")
+                    PipelinePhasesMixin._fase_cierre(
+                        self, manifiesto, cfg, progress_callback, progress_bar,
+                        progress_summarize, ejecucion_id, resumen_indice,
+                        tiempos, marca, fase, estadisticas)
             except cancelacion.RunCancelado as cancelada:
                 # Cancelado: se sale SIN cierre (CSVs/verificación darían las
                 # filas 'pendiente' por run roto). Las filas 'hecho' están
@@ -1410,9 +1358,10 @@ class PipelinePhasesMixin:
                 # queda sin `fin` (F6). Un fallo aquí se avisa pero nunca tapa
                 # la excepción original del `try` (si la hay, sigue propagándose).
                 try:
-                    manifiesto.cerrar_ejecucion(
-                        ejecucion_id, (resumen_indice or {}).get("nuevas", 0),
-                        (resumen_indice or {}).get("saltadas", 0), (resumen_indice or {}).get("reintentadas", 0))
+                    if hace_indice:
+                        manifiesto.cerrar_ejecucion(
+                            ejecucion_id, (resumen_indice or {}).get("nuevas", 0),
+                            (resumen_indice or {}).get("saltadas", 0), (resumen_indice or {}).get("reintentadas", 0))
                 except Exception as excepcion_cierre:  # noqa: BLE001
                     progress_callback.emit(f"\nAVISO: no se pudo cerrar la ejecución: {excepcion_cierre}\n")
         finally:
@@ -1438,6 +1387,324 @@ class PipelinePhasesMixin:
                         raise RuntimeError(msg) from error_subida
                 else:
                     pipeline._limpiar_copia_local_manifiesto_gcs(ruta_manifiesto)
+
+
+    def _avisos_indice(self, resumen_indice, progress_callback) -> int:
+        """Avisos que deja el índice (no DJI, días sin estadillo, ficheros no
+        disponibles). En `completo` salen al final, tras el cierre; en `indice`
+        suelto salen aquí, porque el cierre ya no tiene el resumen. Devuelve
+        cuántos avisos propios ha emitido (no DJI + días sin estadillo)."""
+        dias_sin_est = (resumen_indice or {}).get("dias_sin_estadillo") or []
+        no_dji = (resumen_indice or {}).get("no_dji") or []
+        if no_dji:
+            progress_callback.emit(
+                f"\nAVISO: {len(no_dji)} ficheros no DJI ignorados (quedan en origen): "
+                + ", ".join(os.path.basename(r) for r, _m in no_dji[:10])
+                + ("…" if len(no_dji) > 10 else "") + "\n")
+        for dia, n_fotos in dias_sin_est:
+            progress_callback.emit(
+                f"\nAVISO: día {dia} sin estadillo ({n_fotos} fotos) → "
+                "irán a SIN_ORDENAR\n")
+        no_disp = (resumen_indice or {}).get("no_disponibles") or []
+        if no_disp:
+            progress_callback.emit(
+                f"\nHA HABIDO AVISOS: {len(no_disp)} fichero(s) no estaban "
+                "disponibles (sin respuesta del origen, p. ej. Drive sin "
+                "descargar) y NO se han organizado:\n")
+            for ruta in no_disp:
+                progress_callback.emit(f"  - {ruta}\n")
+        return (1 if no_dji else 0) + len(dias_sin_est)
+
+    def _apply_repartido(self, cfg, fase, shard_index, shard_count, progress_callback,
+                         progress_bar, progress_summarize, estadisticas) -> None:
+        """Fases `apply` / `rgb` / `termica` (una task de N).
+
+        Baja el manifiesto SOLO para leerlo (copia temporal; el del destino no se
+        toca ni se sube), se queda con las filas que le tocan y deja sus deltas en
+        `<destino>/.organizado/shards/<ejecucion>/<shard_index>.jsonl`. Reanudable:
+        las filas ya `hecho` en su jsonl se saltan.
+        """
+        ejecucion = str(getattr(self, "ejecucion", "") or "").strip()
+        registro = apply_shards.RegistroDeltas(cfg.output_folder, ejecucion, shard_index, fase)
+        es_gcs = es_uri_gcs(cfg.output_folder)
+        if es_gcs:
+            with pipeline._LOCK_MANIFIESTO_GCS:
+                ruta_local, _generacion = pipeline._sincronizar_manifiesto_gcs(cfg.output_folder)
+            carpeta_temporal = os.path.dirname(ruta_local)
+        else:
+            origen_db = os.path.join(cfg.output_folder, NOMBRE_CARPETA_MANIFIESTO, "manifiesto.db")
+            if not os.path.exists(origen_db):
+                raise FileNotFoundError(
+                    f"No hay manifiesto en {origen_db}: la fase 'indice' tiene que correr antes.")
+            carpeta_temporal = tempfile.mkdtemp(prefix="apply_shard_")
+            ruta_local = os.path.join(carpeta_temporal, "manifiesto.db")
+            shutil.copy2(origen_db, ruta_local)
+        manifiesto = Manifiesto(ruta_local)
+        try:
+            if not manifiesto.todas():
+                raise RuntimeError(
+                    f"El manifiesto de {cfg.output_folder} no tiene filas: la fase 'indice' "
+                    "no corrió o no subió su manifiesto.")
+            vista = apply_shards.ManifiestoShard(manifiesto, registro, shard_index, shard_count)
+            progress_callback.emit(
+                f"\n[reparto] fase {fase}: tarea {shard_index + 1}/{shard_count}, ejecución "
+                f"{ejecucion}; ya hechas por esta tarea en un intento anterior: "
+                f"{len(registro.hechas)}.\n")
+            tipos = ("rgb", "termica") if fase == "apply" else (fase,)
+            tiempos: dict[str, float] = {}
+            try:
+                estadisticas["imagenes"] += PipelinePhasesMixin._fase_apply(
+                    self, vista, cfg, progress_callback, progress_bar, progress_summarize,
+                    None, tiempos, tipos, con_marcador=False)
+            finally:
+                registro.cerrar()
+            progress_bar.emit(100)
+            progress_callback.emit(
+                "\n[tiempos] " + " · ".join(f"{e} {_formatear_duracion(s)}" for e, s in tiempos.items())
+                + f". Deltas: {registro.ruta}\n")
+        finally:
+            manifiesto.cerrar()
+            shutil.rmtree(carpeta_temporal, ignore_errors=True)
+
+    def _fase_indice(self, manifiesto, cfg, adaptador, progress_callback, progress_bar,
+                     progress_summarize, ejecucion_id) -> dict:
+        """Fase `indice`: estadillos al destino + `construir_indice` (o reintento
+        de fallidas). Devuelve el resumen del índice."""
+        resumen_indice = None
+
+        cancelacion.comprobar()
+        _copiar_estadillos_a_salida(cfg, self.organizer_logger_obj.logger)
+
+        # Fallidas de OTRO origen (p. ej. el día anterior en un destino
+        # acumulado): no se reintentan, no se adoptan en este run (no
+        # entran en ERRORES_*.csv) y no sustituyen la corrida normal.
+        _ajenas = manifiesto.fallidas_de_otro_origen(cfg.input_folder)
+        if _ajenas:
+            logger.debug("%d fallida(s) de otro origen ignoradas", len(_ajenas))
+        _solo_fallidas = getattr(self, "solo_fallidas", False)
+        if _solo_fallidas and not manifiesto.hay_fallidas_de_origen(cfg.input_folder):
+            progress_callback.emit(
+                "\n[reintento] no hay fallidas de este origen: corrida normal.\n")
+            _solo_fallidas = False
+        if _solo_fallidas:
+            # Reintento dirigido: sin reescanear el origen. Las filas
+            # 'fallido' ya traen decisión y rutas; vuelven a 'pendiente'
+            # y el apply/cierre de siempre las procesa. 'hecho' intacto.
+            n_reint = manifiesto.reabrir_fallidas(ejecucion_id, cfg.input_folder)
+            conteo_previo = manifiesto.resumen()
+            resumen_indice = {
+                "nuevas": 0, "saltadas": conteo_previo.get("hecho", 0),
+                "reintentadas": n_reint, "no_disponibles": []}
+            progress_callback.emit(
+                f"\nReintentando {n_reint} imagen(es) fallida(s); las "
+                f"{conteo_previo.get('hecho', 0)} ya hechas no se tocan.\n")
+        else:
+            resumen_indice = indice_mod.construir_indice(
+                cfg, adaptador, self.split_images_obj.exif_management_obj, manifiesto,
+                progress_callback, progress_bar, progress_summarize, ejecucion_id=ejecucion_id)
+        return resumen_indice
+
+
+    def _fase_apply(self, manifiesto, cfg, progress_callback, progress_bar, progress_summarize,
+                    ejecucion_id, tiempos, tipos=("rgb", "termica"), con_marcador=True) -> int:
+        """Fase `apply`: escribe RGB y/o térmicas pendientes de `manifiesto`.
+
+        `completo` la llama con el manifiesto real. Una task repartida la llama
+        con un `ManifiestoShard` (solo ve lo suyo) y `con_marcador=False`: el
+        marcador y `ERRORES_*.csv` de la fase los emite el cierre una vez fundidos
+        los deltas de todas las tasks (N tasks escribiendo el mismo CSV se pisarían).
+        """
+        marca = time.monotonic()
+        aplicar_rgb_fn = aplicar_rgb if con_marcador else _apply_mod._aplicar_rgb_impl
+        aplicar_termicas_fn = aplicar_termicas if con_marcador else _apply_mod._aplicar_termicas_impl
+        extra_rgb = {"ejecucion_id": ejecucion_id} if con_marcador else {}
+
+        contador_rotacion = _ContadorRotacion()
+        procesadas = 0
+        # RGB y térmica de una misma task van EN SECUENCIA (RGB, luego térmica), cada
+        # una con su pool dimensionado a los vCPU del contenedor: nunca compiten por
+        # la CPU entre sí. Para solaparlas, ejecuciones separadas (`--fase rgb` y
+        # `--fase termica`), cada una con sus propios vCPU.
+
+        if "rgb" in tipos:
+            # Sin `controlador` ambos apply corren SECUENCIALES, una imagen a la
+            # vez en este mismo proceso (`apply.py:321`). Eso es el camino de los
+            # tests, no el de producción: dejarlo así costó una regresión de ~10x
+            # en la fase RGB (3 min -> 30 min, reportado 2026-09-08 en el PC de
+            # oficina con la 3.4.81), porque el motor viejo sí repartía el lote
+            # con `utils.workers_para_lote()`. Un controlador POR FASE, no uno
+            # compartido: el historial de mediciones de RGB (CPU-bound, procesos)
+            # no describe a las térmicas (I/O-bound, hilos esperando a dji_irp y
+            # exiftool) y arrancaría la segunda fase con una tendencia ajena.
+            # Contador de rotación COMPARTIDO entre RGB y térmicas: la línea
+            # "Rotación: N giradas 270° · M sin girar" de la UI es acumulada
+            # del run entero, no por fase (ver `apply._ContadorRotacion`).
+
+            # `tope_hdd` solo se pasa aquí, en RGB: es la fase que LEE en
+            # masa y secuencial del disco de origen, donde más workers en un
+            # HDD provoca seek thrashing (ver `paralelismo.TOPE_WORKERS_HDD`).
+            # Térmicas es I/O a procesos externos (dji_irp/exiftool), no
+            # lectura masiva del disco, así que no le aplica el mismo tope.
+            r = aplicar_rgb_fn(manifiesto, cfg, pipeline, progress_callback, progress_bar,
+                       progress_summarize,
+                       controlador=paralelismo_mod.ControladorAdaptativo(
+                           maximo=paralelismo_mod.maximo_rgb(),
+                           etiqueta="RGB", tope_hdd=paralelismo_mod.TOPE_WORKERS_HDD),
+                       contador_rotacion=contador_rotacion,
+                       **extra_rgb)
+            procesadas += (r or {}).get("hecho", 0) + (r or {}).get("fallido", 0)
+            tiempos["RGB"] = time.monotonic() - marca
+            marca = time.monotonic()
+            cancelacion.comprobar()
+
+        if "termica" in tipos:
+            # Las térmicas van a un `ThreadPoolExecutor`: el tiempo se va
+            # esperando a procesos externos, así que el techo no es la RAM por
+            # worker sino el de I/O (`utils.max_io_workers`, ya usado por el
+            # resto del pipeline para trabajo de este tipo).
+            maximo_termica = utils.workers_termica()
+            r = aplicar_termicas_fn(manifiesto, cfg, self.split_images_obj, progress_callback,
+                            progress_bar, progress_summarize,
+                            controlador=paralelismo_mod.ControladorAdaptativo(
+                                # Suelo 8: con el origen lento (Drive) el MB/s cae
+                                # aunque la CPU esté ociosa y el controlador
+                                # estrangulaba a 3-7 hilos; hilos esperando I/O no
+                                # cuestan CPU. Respeta el tope `max_io_workers`.
+                                minimo=min(8, maximo_termica),
+                                maximo=maximo_termica,
+                                arranque=min(utils.arranque_io(), maximo_termica),
+                                etiqueta="Termicas"),
+                            contador_rotacion=contador_rotacion,
+                            **extra_rgb)
+            procesadas += (r or {}).get("hecho", 0) + (r or {}).get("fallido", 0)
+            tiempos["Térmicas"] = time.monotonic() - marca
+            cancelacion.comprobar()
+        return procesadas
+
+
+    def _fase_cierre(self, manifiesto, cfg, progress_callback, progress_bar, progress_summarize,
+                     ejecucion_id, resumen_indice, tiempos, marca, fase="completo",
+                     estadisticas=None) -> None:
+        """Fase `cierre`: (si es suelta) funde los deltas de apply, CSVs,
+        verificación, índice Excel, marcadores y mensaje final."""
+        progress_summarize.emit("---> SUBPROCESO: Cierre")
+        if fase == "cierre":
+            # Cierre suelto (3 ejecuciones): primero se funden los deltas de las
+            # tasks de apply. Las filas que ninguna reportó siguen 'pendiente' y
+            # `verificar` las da por ERROR (relanzar apply las recoge).
+            fusion = manifiesto.aplicar_deltas(cfg.output_folder)
+            if estadisticas is not None:
+                estadisticas["imagenes"] += fusion["hechas"] + fusion["fallidas"]
+            progress_callback.emit(
+                f"\nDeltas de apply fundidos: {fusion['hechas']} hecha(s), "
+                f"{fusion['fallidas']} fallida(s), {fusion['ignoradas']} ignorada(s).\n")
+            # Marcador + ERRORES_RGB/TERMICA.csv de cada fase de apply: en `completo`
+            # los emite `aplicar_*`; con apply repartido solo se pueden calcular aquí.
+            for fase_apply, slug, tipos_apply in (
+                    ("Imágenes RGB", "RGB", indice_mod.TIPOS_RGB),
+                    ("Conversión térmica", "TERMICA", frozenset({"TERMICA"}))):
+                emitir_errores_fase(manifiesto, cfg, progress_callback, fase_apply, slug,
+                                    tipos_apply, ejecucion_id=ejecucion_id)
+        proyecciones: dict = {}
+        recuentos_csv: dict = {}
+        cierre_mod.emitir_csvs(manifiesto, cfg, progress_callback, proyecciones=proyecciones,
+                               recuentos_csv=recuentos_csv)
+        csv_para_verificar = recuentos_csv if cfg.gen_meta_location else None
+        problemas = cierre_mod.verificar(manifiesto, cfg, csv_para_verificar)
+        if fase == "cierre":
+            # Cierre suelto: una fila que ninguna tarea de apply reportó NO es un
+            # run "interrumpido" que se avisa, es trabajo sin hacer -> ERROR.
+            problemas = [
+                (cierre_mod.PREFIJO_ERROR + p) if ("siguen 'pendiente'/'en_curso'" in p
+                                                   and not p.startswith(cierre_mod.PREFIJO_ERROR)) else p
+                for p in problemas]
+        # El índice Excel es informativo: si falla, se avisa y el cierre sigue.
+        try:
+            ruta_indice = indice_excel.escribir_indice(
+                manifiesto, cfg, proyecciones, progress_callback,
+                recuentos=cierre_mod.calcular_recuentos(manifiesto, cfg, csv_para_verificar))
+            progress_callback.emit(f"\nÍndice de la planta: {ruta_indice}\n")
+        except Exception as excepcion:  # noqa: BLE001
+            progress_callback.emit(f"\nAVISO: no se pudo generar el índice Excel: {excepcion}\n")
+        tiempos["Cierre"] = time.monotonic() - marca
+        progress_bar.emit(100)
+
+        desglose = " · ".join(
+            f"{etapa} {_formatear_duracion(segundos)}"
+            for etapa, segundos in tiempos.items())
+        progress_callback.emit(
+            f"\n[tiempos] Organizado completo: "
+            f"{_formatear_duracion(sum(tiempos.values()))} "
+            f"({desglose}).\n")
+        errores_cierre, avisos_cierre = cierre_mod.separar_problemas(problemas)
+        # Errores que no salen del manifiesto (coherencia, duplicados,
+        # térmicas pendientes, SIN_ORDENAR...) se suman al n_fallos del
+        # marcador: 1 por línea de problema, no por foto.
+        n_coherencia = cierre_mod.contar_errores_extra(errores_cierre)
+        if errores_cierre:
+            # Imágenes fallidas = ERROR, no aviso. "HA HABIDO ERRORES"
+            # no casa con los regex de `organize._scan_errors`: el
+            # estado 'errors' lo fuerza el marcador STATS_ERRORES.
+            progress_callback.emit(
+                "\nHA HABIDO ERRORES: el cierre encontró imágenes que "
+                "NO se han procesado:\n")
+            for problema in errores_cierre:
+                progress_callback.emit(f"  - {problema[len(cierre_mod.PREFIJO_ERROR):]}\n")
+            self.organizer_logger_obj.logger.error(
+                "Cierre con %d error(es): %s", len(errores_cierre), errores_cierre)
+        if avisos_cierre:
+            progress_callback.emit(
+                f"\nHA HABIDO AVISOS: el cierre encontró {len(avisos_cierre)} "
+                "problema(s) al verificar el manifiesto contra disco:\n")
+            for problema in avisos_cierre:
+                progress_callback.emit(f"  - {problema}\n")
+            self.organizer_logger_obj.logger.warning(
+                "Cierre con %d problema(s): %s", len(avisos_cierre), avisos_cierre)
+        try:
+            _info_ajenas = cierre_mod.linea_info_ajenas(manifiesto, cfg)
+        except Exception:  # noqa: BLE001 — informativo
+            _info_ajenas = None
+        if _info_ajenas:
+            progress_callback.emit("\n" + _info_ajenas + "\n")
+        # Marcador propio del cierre: fallidas de CUALQUIER tipo de ESTE
+        # run, para que el estado final sea 'errors' aunque no sean RGB/TERMICA.
+        try:
+            emitir_errores_fase(manifiesto, cfg, progress_callback, "Cierre",
+                                "CIERRE", None, ejecucion_id=ejecucion_id, cierre=True,
+                                n_extra=n_coherencia,
+                                detalle_errores=[p[len(cierre_mod.PREFIJO_ERROR):]
+                                                 for p in errores_cierre],
+                                detalle_avisos=list(avisos_cierre))
+        except Exception as excepcion_marcador:  # noqa: BLE001
+            progress_callback.emit(
+                f"\nERROR no se pudo emitir el marcador de errores del cierre: "
+                f"{excepcion_marcador}\n")
+        dias_sin_est = (resumen_indice or {}).get("dias_sin_estadillo") or []
+        no_dji = (resumen_indice or {}).get("no_dji") or []
+        if no_dji:
+            progress_callback.emit(
+                f"\nAVISO: {len(no_dji)} ficheros no DJI ignorados (quedan en origen): "
+                + ", ".join(os.path.basename(r) for r, _m in no_dji[:10])
+                + ("…" if len(no_dji) > 10 else "") + "\n")
+        for dia, n_fotos in dias_sin_est:
+            progress_callback.emit(
+                f"\nAVISO: día {dia} sin estadillo ({n_fotos} fotos) → "
+                "irán a SIN_ORDENAR\n")
+        n_avisos = (1 if no_dji else 0) + len(dias_sin_est)
+        no_disp = (resumen_indice or {}).get("no_disponibles") or []
+        if no_disp:
+            progress_callback.emit(
+                f"\nHA HABIDO AVISOS: {len(no_disp)} fichero(s) no estaban "
+                "disponibles (sin respuesta del origen, p. ej. Drive sin "
+                "descargar) y NO se han organizado:\n")
+            for ruta in no_disp:
+                progress_callback.emit(f"  - {ruta}\n")
+        elif not problemas:
+            if n_avisos:
+                progress_callback.emit(
+                    f"\nOrganizado completado con {n_avisos} aviso(s).\n")
+            else:
+                progress_callback.emit("\nOrganizado completado sin problemas.\n")
 
     def rename_images(self, cfg: RenameImagesConfig, progress_callback, progress_bar, progress_summarize):
         """Función que renombra las imágenes que se encuentran en la carpeta elegida

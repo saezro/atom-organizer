@@ -1355,6 +1355,73 @@ def _en_cloud_run() -> bool:
     return bool(os.environ.get("CLOUD_RUN_TASK_INDEX") or os.environ.get("K_SERVICE"))
 
 
+def _leer_texto(ruta: str):
+    try:
+        with open(ruta, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
+
+
+def _cuota_cgroup_cpu():
+    """vCPU que el cgroup permite al contenedor (`cpu.max` v2 o `cfs_quota` v1), o None
+    si no hay tope. `os.cpu_count()` ve los núcleos del HOST, no los del contenedor."""
+    v2 = _leer_texto("/sys/fs/cgroup/cpu.max")
+    try:
+        if v2:
+            cuota, periodo = v2.split()[:2]
+            if cuota != "max":
+                return max(1, int(int(cuota) / int(periodo)))
+            return None
+        cuota = _leer_texto("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+        periodo = _leer_texto("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+        if cuota and periodo and int(cuota) > 0:
+            return max(1, int(int(cuota) / int(periodo)))
+    except (ValueError, ZeroDivisionError):
+        pass
+    return None
+
+
+def cpus_efectivas() -> int:
+    """vCPU REALES de este proceso: afinidad de CPU y cuota del cgroup (el menor).
+    Es la base de todos los tamaños de pool (RGB procesos, térmica hilos, exiftool)."""
+    try:
+        n = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        n = os.cpu_count() or 1
+    cuota = _cuota_cgroup_cpu()
+    return max(1, min(n, cuota) if cuota else n)
+
+
+def memoria_cgroup_mb():
+    """RAM libre (MB) dentro del límite del cgroup (`memory.max` - `memory.current`, o v1),
+    o None si el contenedor no tiene tope."""
+    for limite_p, uso_p in (("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),
+                            ("/sys/fs/cgroup/memory/memory.limit_in_bytes",
+                             "/sys/fs/cgroup/memory/memory.usage_in_bytes")):
+        limite = _leer_texto(limite_p)
+        if limite is None or limite == "max":
+            continue
+        try:
+            limite_b = int(limite)
+            if limite_b >= 1 << 60:  # v1 sin tope
+                continue
+            uso_b = int(_leer_texto(uso_p) or 0)
+        except ValueError:
+            continue
+        return max(0.0, (limite_b - uso_b) / (1024 * 1024))
+    return None
+
+
+def workers_termica() -> int:
+    """Hilos máximos de la fase térmica. En Cloud Run, uno por vCPU (cada imagen en
+    vuelo lanza su `dji_irp`/libdirp, que SÍ consume CPU); fuera, el techo I/O de siempre.
+    `ATOM_IO_WORKERS` manda en ambos casos."""
+    if _en_cloud_run() and not int(os.environ.get("ATOM_IO_WORKERS", "0") or 0):
+        return cpus_efectivas()
+    return max_io_workers()
+
+
 def max_io_workers() -> int:
     """
     Cuántos hilos usar para trabajo I/O-bound (leer EXIF, mover ficheros).
@@ -1363,7 +1430,7 @@ def max_io_workers() -> int:
     red de gcsfuse, así que conviene tener bastantes más que núcleos para solapar
     latencias. `ATOM_IO_WORKERS` permite forzar el valor desde el entorno.
     """
-    return int(os.environ.get("ATOM_IO_WORKERS", "0") or 0) or min(32, (os.cpu_count() or 4) * 4)
+    return int(os.environ.get("ATOM_IO_WORKERS", "0") or 0) or min(32, cpus_efectivas() * 4)
 
 
 def arranque_io() -> int:
@@ -1382,7 +1449,7 @@ def arranque_io() -> int:
     de `max_io_workers`. A partir de ahí manda el `ControladorAdaptativo`, que
     sube o baja según el throughput real.
     """
-    return max(1, min(max_io_workers(), (os.cpu_count() or 4) * 2))
+    return max(1, min(max_io_workers(), cpus_efectivas() * 2))
 
 
 def _memoria_disponible_mb():
@@ -1396,9 +1463,14 @@ def _memoria_disponible_mb():
     try:
         import psutil
 
-        return psutil.virtual_memory().available / (1024 * 1024)
+        disponible = psutil.virtual_memory().available / (1024 * 1024)
     except Exception:
-        return None
+        disponible = None
+    # En un contenedor la RAM que cuenta es la del cgroup, no la del host.
+    cgroup = memoria_cgroup_mb()
+    if cgroup is not None:
+        disponible = cgroup if disponible is None else min(disponible, cgroup)
+    return disponible
 
 
 def workers_para_lote(mb_por_worker: int = MB_POR_WORKER) -> int:
@@ -1421,7 +1493,7 @@ def workers_para_lote(mb_por_worker: int = MB_POR_WORKER) -> int:
     - mb_por_worker - RAM que se le presupone a cada proceso. Súbelo en fases que abran
       imágenes más grandes, bájalo en las que solo muevan ficheros.
     """
-    nucleos = os.process_cpu_count() if hasattr(os, "process_cpu_count") else os.cpu_count()
+    nucleos = cpus_efectivas()
     reservados = 0 if _en_cloud_run() else NUCLEOS_RESERVADOS
     limite = max(1, (nucleos or 1) - reservados)
 

@@ -41,6 +41,16 @@
 # Uso:
 #   scripts/desplegar_job.sh [imagen] [--aplicar]
 #   scripts/desplegar_job.sh --imagen=IMAGEN [--aplicar]
+#   scripts/desplegar_job.sh --perfiles [--imagen=IMAGEN] [--aplicar]
+#
+# --perfiles: en vez de tocar atom-organizer-pipeline (NO se modifica), crea o
+# actualiza con la MISMA imagen y la MISMA SA/env (clonados con
+# `gcloud run jobs describe --format json` del job pipeline) dos jobs:
+#   atom-organizer-ligero  2 vCPU / 8Gi  (fases indice y cierre) retries 0
+#   atom-organizer-apply   4 vCPU / 8Gi  (fases rgb y termica)   retries 1
+# (Cloud Run no deja cambiar cpu/memoria por ejecucion: un job por perfil.)
+# Sin --imagen usa la imagen que tenga hoy el job pipeline. Memoria del ligero
+# sobreescribible con LIGERO_MEM (ej. 4Gi si el cierre cabe).
 #
 # Por defecto (sin --aplicar) es DRY-RUN: solo imprime el comando gcloud
 # completo que se ejecutaria (y el de verificacion posterior), sin tocar
@@ -58,14 +68,26 @@ MOUNT_OPTIONS="implicit-dirs,metadata-cache-ttl-secs=600,stat-cache-max-size-mb=
 
 imagen="$IMAGEN_DEFAULT"
 aplicar="false"
+perfiles="false"
+imagen_explicita="false"
+JOB_LIGERO="atom-organizer-ligero"
+JOB_APPLY="atom-organizer-apply"
+LIGERO_CPU="${LIGERO_CPU:-2}"
+LIGERO_MEM="${LIGERO_MEM:-8Gi}"
+APPLY_CPU="${APPLY_CPU:-4}"
+APPLY_MEM="${APPLY_MEM:-8Gi}"
 
 for arg in "$@"; do
     case "$arg" in
         --aplicar)
             aplicar="true"
             ;;
+        --perfiles)
+            perfiles="true"
+            ;;
         --imagen=*)
             imagen="${arg#--imagen=}"
+            imagen_explicita="true"
             ;;
         --*)
             echo "Flag desconocido: $arg" >&2
@@ -73,9 +95,78 @@ for arg in "$@"; do
             ;;
         *)
             imagen="$arg"
+            imagen_explicita="true"
             ;;
     esac
 done
+
+print_cmd() {
+    local -n arr="$1"
+    local out="${arr[0]}"
+    for ((i = 1; i < ${#arr[@]}; i++)); do
+        out+=" ${arr[$i]}"
+    done
+    echo "$out"
+}
+
+# ---------------------------------------------------------------------------
+# Modo --perfiles: clona el job pipeline en dos jobs con otro cpu/mem/retries.
+# ---------------------------------------------------------------------------
+# Transforma el JSON del job pipeline (stdin) en el de un job nuevo.
+# Uso: transformar_job NOMBRE CPU MEM RETRIES [IMAGEN]
+transformar_job() {
+    python3 -I -c '
+import json, sys
+nombre, cpu, mem, retries, imagen = sys.argv[1:6]
+d = json.load(sys.stdin)
+md = d["metadata"]
+d["metadata"] = {"name": nombre, "namespace": md.get("namespace"),
+                 "labels": md.get("labels", {})}
+d["metadata"] = {k: v for k, v in d["metadata"].items() if v}
+d.pop("status", None)
+tpl = d["spec"]["template"]
+tpl.get("metadata", {}).pop("name", None)
+ts = tpl["spec"]["template"]["spec"]
+ts["maxRetries"] = int(retries)
+ts["timeoutSeconds"] = 21600
+c = ts["containers"][0]
+c.setdefault("resources", {}).setdefault("limits", {}).update(cpu=cpu, memory=mem)
+if imagen:
+    c["image"] = imagen
+d["spec"]["template"]["spec"]["taskCount"] = 1
+json.dump(d, sys.stdout, indent=1)
+' "$@"
+}
+
+if [ "$perfiles" = "true" ]; then
+    img_arg=""
+    [ "$imagen_explicita" = "true" ] && img_arg="$imagen"
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' EXIT
+    export_cmd=(gcloud run jobs describe "$JOB" --project "$PROJECT" --region "$REGION"
+                --account "$ACCOUNT" --format json)
+    perfil_defs=("$JOB_LIGERO|$LIGERO_CPU|$LIGERO_MEM|0" "$JOB_APPLY|$APPLY_CPU|$APPLY_MEM|1")
+    if [ "$aplicar" != "true" ]; then
+        echo "== DRY-RUN perfiles (usa --aplicar para aplicarlo; $JOB NO se modifica) =="
+        echo "Lectura de la config base:"; print_cmd export_cmd
+        for def in "${perfil_defs[@]}"; do
+            IFS='|' read -r n c m r <<<"$def"
+            echo
+            echo "Job $n (cpu=$c mem=$m maxRetries=$r timeout=21600s imagen=${img_arg:-<la de $JOB>}):"
+            echo "  <JSON de $JOB transformado> | gcloud run jobs replace <fichero.json> --project $PROJECT --region $REGION --account $ACCOUNT"
+            echo "  (si no existe, replace lo crea; mismos env y SA que $JOB)"
+        done
+        exit 0
+    fi
+    "${export_cmd[@]}" > "$tmpdir/base.json"
+    for def in "${perfil_defs[@]}"; do
+        IFS='|' read -r n c m r <<<"$def"
+        echo "Aplicando $n (cpu=$c mem=$m maxRetries=$r)..."
+        transformar_job "$n" "$c" "$m" "$r" "$img_arg" < "$tmpdir/base.json" > "$tmpdir/$n.json"
+        gcloud run jobs replace "$tmpdir/$n.json" --project "$PROJECT" --region "$REGION" --account "$ACCOUNT"
+    done
+    exit 0
+fi
 
 # OJO: NO se pasa --execution-environment: ese flag no existe en
 # `gcloud run jobs update` (ver cabecera). Como `update` es incremental y
@@ -111,15 +202,6 @@ describe_cmd=(
     --region "$REGION"
     --account "$ACCOUNT"
 )
-
-print_cmd() {
-    local -n arr="$1"
-    local out="${arr[0]}"
-    for ((i = 1; i < ${#arr[@]}; i++)); do
-        out+=" ${arr[$i]}"
-    done
-    echo "$out"
-}
 
 if [ "$aplicar" != "true" ]; then
     echo "== DRY-RUN (no se ejecuta nada; usa --aplicar para aplicarlo de verdad) =="

@@ -267,6 +267,19 @@ def main(argv: list[str] | None = None) -> int:
                         help="Número total de tareas entre las que se reparte la "
                              "etapa. Por defecto, $CLOUD_RUN_TASK_COUNT (1 fuera "
                              "de Cloud Run).")
+    parser.add_argument("--fase", choices=sharding.FASES, default="completo",
+                        help="Parte del organizado (motor índice -> manifiesto -> apply "
+                             "-> cierre) a ejecutar. `completo` (por defecto) = las tres "
+                             "seguidas, como siempre. Para Cloud Run, en tres ejecuciones "
+                             "encadenadas: `indice` (1 tarea) -> `apply` (N tareas, "
+                             "reparto por imagen con --shard-count/CLOUD_RUN_TASK_COUNT; "
+                             "`rgb` y `termica` son sus mitades por separado) -> `cierre` "
+                             "(1 tarea, funde los deltas de las tareas de apply).")
+    parser.add_argument("--ejecucion", dest="ejecucion", default=None,
+                        help="Identificador de la ejecución (fases apply/rgb/termica): "
+                             "los deltas de cada tarea van a "
+                             "<destino>/.organizado/shards/<ejecucion>/<shard>.jsonl. "
+                             "Por defecto, $CLOUD_RUN_EXECUTION (que manda si existe).")
     parser.add_argument("--modo-destino", dest="modo_destino",
                         choices=["sobrescribir", "obviar"], default="sobrescribir",
                         help="Que hacer con lo que ya haya en el destino. "
@@ -359,6 +372,8 @@ def main(argv: list[str] | None = None) -> int:
     params: dict = {"origen": str(origen), "destino": str(destino),
                     "estadillo": empaquetar_rutas(args.estadillo),
                     "etapa": args.etapa,
+                    "fase": args.fase,
+                    "ejecucion": sharding.ejecucion_desde_entorno(explicita=args.ejecucion),
                     "modo_destino": args.modo_destino,
                     "shard_index": shard_index, "shard_count": shard_count}
     avanzado: dict = {}
@@ -559,6 +574,7 @@ def main(argv: list[str] | None = None) -> int:
     # QUÉ carpetas les tocaron, y al diagnosticar un vuelo incompleto lo primero
     # que hace falta saber es si una tarea se quedó sin trabajo.
     print(f"etapa    : {args.etapa}")
+    print(f"fase     : {args.fase}")
     print(f"destino  : modo {args.modo_destino}", flush=True)
     print(f"shard    : {shard_index + 1}/{shard_count}\n", flush=True)
 

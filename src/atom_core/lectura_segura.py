@@ -157,6 +157,22 @@ def _esperados(ruta, bytes_origen) -> int:
     return esperados
 
 
+def _leer_completo_gcs(ruta, bytes_origen) -> bytes:
+    """`gs://…`: tamaño por metadatos del blob, descarga a temporal local y
+    lectura entera. Mismo contrato que el camino POSIX: `FicheroCambiado` si el
+    tamaño difiere del indexado, `LecturaIncompleta` si se leen menos bytes.
+    Sin reintentos con espera: la descarga del SDK ya reintenta y verifica."""
+    from atom_core import almacen as almacen_mod  # noqa: PLC0415 (stdlib puro)
+    esperados = almacen_mod.tamano_de(str(ruta))
+    if bytes_origen and int(bytes_origen) != esperados:
+        raise FicheroCambiado(ruta, esperados, int(bytes_origen))
+    with almacen_mod.abrir_para_lectura(str(ruta)) as local:
+        datos = local.read_bytes()
+    if len(datos) < esperados:
+        raise LecturaIncompleta(ruta, len(datos), esperados, 1)
+    return datos
+
+
 def leer_completo(ruta, intentos: int = 5, backoff: float = 0.5, backoff_max: float = 8.0,
                   bytes_origen: int | None = None) -> bytes:
     """Devuelve TODOS los bytes de `ruta` o lanza `LecturaIncompleta`.
@@ -166,6 +182,8 @@ def leer_completo(ruta, intentos: int = 5, backoff: float = 0.5, backoff_max: fl
     lecturas consecutivas con los mismos bytes (< esperados) = EOF estable, sin
     más reintentos. El camino
     normal (lectura completa a la primera) no espera nada."""
+    if str(ruta).lower().startswith("gs://"):
+        return _leer_completo_gcs(ruta, bytes_origen)
     espera = backoff
     leidos = 0
     esperados = 0
@@ -199,6 +217,8 @@ def copiar_completo(origen, destino, **kw) -> None:
     datos = leer_completo(origen, **kw)
     with open(destino, "wb") as f:
         f.write(datos)
+    if str(origen).lower().startswith("gs://"):
+        return  # sin stat POSIX que copiar
     try:
         shutil.copystat(origen, destino)
     except OSError:

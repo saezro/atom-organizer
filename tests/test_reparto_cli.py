@@ -72,7 +72,7 @@ def test_el_organizado_rechaza_el_reparto_mientras_el_motor_nuevo_no_lo_soporte(
                        "estadillo": "/no/existe.csv",
                        "etapa": etapa, "shard_index": 1, "shard_count": 4},
                       emit)
-    assert [e for e in _errores(eventos) if "no se puede repartir todavía" in e], \
+    assert [e for e in _errores(eventos) if "no se puede repartir en la fase" in e], \
         "el organizado aceptó un reparto que el motor nuevo no sabe hacer"
 
 
