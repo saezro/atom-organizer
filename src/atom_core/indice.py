@@ -43,6 +43,8 @@ from atom_core import pares as pares_mod
 from atom_core.manifiesto import FilaManifiesto, Manifiesto, clave_imagen
 from rjpeg_a_tiff import EXTS_FUENTE
 
+_LOG = logging.getLogger(__name__)
+
 # Único nombre de la carpeta extra: fija la inconsistencia de casing entre
 # `RGB_Extra` (pipeline.py:2829) y `RGB_extra` (pipeline.py:1377) que en NTFS
 # no se nota pero en el bucket sí (ver Tarea 0, punto 6 de las correcciones a
@@ -608,7 +610,8 @@ class _Limite:
 
 
 def _listar_imagenes(input_folder: str, omitidas: "list[str] | None" = None,
-                     limite: "_Limite | None" = None) -> list[str]:
+                     limite: "_Limite | None" = None,
+                     tamanos_origen: "dict[str, int] | None" = None) -> list[str]:
     """Rutas absolutas de toda imagen FUENTE (`EXTS_FUENTE`) bajo
     `input_folder`, recursivo. Es la única pasada de listado: el resto del
     índice trabaja sobre esta lista, no vuelve a tocar el árbol de origen.
@@ -622,7 +625,7 @@ def _listar_imagenes(input_folder: str, omitidas: "list[str] | None" = None,
     (`_leer_cabecera`, una sola apertura por fichero)."""
     rutas: list[str] = []
     if almacen.es_uri_gcs(input_folder):
-        rutas.extend(_listar_imagenes_gcs(input_folder))
+        rutas.extend(_listar_imagenes_gcs(input_folder, tamanos_origen))
         return sorted(rutas)
     if not os.path.isdir(input_folder):
         return []
@@ -656,21 +659,22 @@ def _listar_imagenes(input_folder: str, omitidas: "list[str] | None" = None,
 
 # Tamaños de las imágenes de origen `gs://` tal como vinieron del listado (un
 # solo `list_blobs`): evitan un `reload()` por imagen en `_construir_fila`.
-# Se rehace en cada listado; el origen no cambia durante el índice.
-_TAMANOS_ORIGEN_GCS: "dict[str, int]" = {}
+# Estado POR EJECUCIÓN: `_listar_imagenes_gcs` rellena el `dict` que le pasa el
+# llamador y `_construir_fila` lo recibe explícito (sin global entre ejecuciones).
 
 
-def _listar_imagenes_gcs(carpeta: str) -> list[str]:
+def _listar_imagenes_gcs(carpeta: str, tamanos: "dict[str, int] | None" = None) -> list[str]:
     """Imágenes fuente bajo `carpeta` (recursivo) con UN solo listado del
-    origen; de paso guarda sus tamaños en `_TAMANOS_ORIGEN_GCS`."""
+    origen; de paso vuelca sus tamaños en `tamanos` (si se pasa)."""
     rutas: list[str] = []
     for ruta, tam in almacen.listar_con_tamanos(carpeta).items():
         if os.path.splitext(ruta)[1].lower() in EXTS_FUENTE:
             rutas.append(ruta)
-            if tam is not None:
-                _TAMANOS_ORIGEN_GCS[ruta] = int(tam)
-            else:
-                _TAMANOS_ORIGEN_GCS.pop(ruta, None)
+            if tamanos is not None:
+                if tam is not None:
+                    tamanos[ruta] = int(tam)
+                else:
+                    tamanos.pop(ruta, None)
     return rutas
 
 
@@ -960,7 +964,10 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
     else:
         try:
             buf = almacen.leer_cabecera(ruta, _BYTES_CABECERA)
-        except Exception:  # noqa: BLE001 — sin cabecera: cada campo cae a su función por ruta
+        except almacen.errores_lectura_gcs() as exc:
+            # Sin cabecera: cada campo cae a su función por ruta (más lento), con aviso visible.
+            _LOG.warning("Cabecera por rango ilegible en '%s' (%s: %s); se usa la lectura por ruta",
+                         ruta, type(exc).__name__, exc)
             buf = None
     buf_exif = buf if buf is not None and _exif_entero_en_buffer(buf) else None
 
@@ -1695,7 +1702,8 @@ def _avisar_jpeg_sin_eoi(filas: list[FilaManifiesto], progress_callback) -> int:
 
 def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
                     angulos: dict[tuple[str, str, str | None], int], cfg, pipeline,
-                    votos: dict | None = None) -> FilaManifiesto:
+                    votos: dict | None = None,
+                    tamanos_origen: "dict[str, int] | None" = None) -> FilaManifiesto:
     tipo = _clasificar_tipo(dato.nombre, cfg)
     unassigned = ventana is None
 
@@ -1757,7 +1765,7 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
     # habría con qué comparar la entrega. Un origen ilegible cuenta 0 en vez
     # de tumbar el indexado entero por una estadística.
     try:
-        bytes_origen = _TAMANOS_ORIGEN_GCS.get(dato.ruta)
+        bytes_origen = (tamanos_origen or {}).get(dato.ruta)
         if bytes_origen is None:
             bytes_origen = almacen.tamano_de(dato.ruta)
     except Exception:
@@ -1957,9 +1965,10 @@ def construir_indice(
 
     omitidas_copiandose: list[str] = []
     lentas: list[str] = []
+    tamanos_origen: dict[str, int] = {}  # por ejecución (origen gs://), ver `_listar_imagenes_gcs`
     imagenes = _listar_imagenes(
         cfg.input_folder, omitidas_copiandose,
-        _Limite(emisor))
+        _Limite(emisor), tamanos_origen)
     cancelacion.comprobar()
     # Scoping por carpeta: cada imagen solo compite contra las ventanas del
     # estadillo cuyo directorio es su ancestro más cercano (ver
@@ -2176,7 +2185,8 @@ def construir_indice(
     emisor.iniciar("Construir filas", len(asignaciones), barra=(90, 8))
     for n_filas, (dato, ventana) in enumerate(asignaciones, 1):
         cancelacion.comprobar()
-        filas.append(_construir_fila(dato, ventana, angulos, cfg, pipeline, votos_giro))
+        filas.append(_construir_fila(dato, ventana, angulos, cfg, pipeline, votos_giro,
+                                   tamanos_origen))
         emisor.progreso(n_filas, len(asignaciones))
     emisor.progreso(len(asignaciones), len(asignaciones), forzar=True)
     filas = _desambiguar_colisiones_generales(filas, manifiesto.rutas_salida_por_clave())

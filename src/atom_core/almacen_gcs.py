@@ -13,9 +13,12 @@ clave completa del objeto en el bucket.
 """
 from __future__ import annotations
 
+import logging
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
+
+_LOG = logging.getLogger(__name__)
 
 
 def _normalizar(ruta: str) -> str:
@@ -145,12 +148,16 @@ class AlmacenGCS:
             raise
 
     @staticmethod
-    def _borrar_subida_corrupta(blob) -> None:
-        # No dejar un objeto corrupto que otro paso daria por bueno (existe_ruta).
+    def _borrar_subida_corrupta(blob) -> str:
+        """Borra el objeto corrupto para que ningun paso lo de por bueno
+        (existe_ruta). Devuelve un sufijo para el mensaje de error: si el borrado
+        falla NO se silencia (queda un objeto malo en el bucket y hay que verlo)."""
         try:
             blob.delete()
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - se informa, no se traga
+            _LOG.warning("No se pudo borrar el objeto corrupto '%s': %s", getattr(blob, "name", "?"), exc)
+            return f"; ADEMAS no se pudo borrar el objeto corrupto del bucket ({exc})"
+        return ""
 
     def descargar_con_generacion(self, ruta: str, destino_local: Path) -> int:
         """Descarga `ruta` a `destino_local` y devuelve su `generation` (la de ESA
@@ -178,10 +185,10 @@ class AlmacenGCS:
         blob.reload()
         esperado = Path(ruta_local).stat().st_size
         if blob.size != esperado:
-            self._borrar_subida_corrupta(blob)
+            extra = self._borrar_subida_corrupta(blob)
             raise OSError(
                 f"Subida corrupta de '{ruta_local}' a '{destino}': "
-                f"{blob.size} bytes en el bucket, {esperado} en local"
+                f"{blob.size} bytes en el bucket, {esperado} en local{extra}"
             )
         md5_remoto = getattr(blob, "md5_hash", None)
         if md5_remoto:
@@ -193,8 +200,8 @@ class AlmacenGCS:
                 for trozo in iter(lambda: f.read(1 << 20), b""):
                     h.update(trozo)
             if base64.b64encode(h.digest()).decode() != md5_remoto:
-                self._borrar_subida_corrupta(blob)
-                raise OSError(f"Subida corrupta de '{ruta_local}' a '{destino}': md5 distinto")
+                extra = self._borrar_subida_corrupta(blob)
+                raise OSError(f"Subida corrupta de '{ruta_local}' a '{destino}': md5 distinto{extra}")
 
     def mover(self, origen: str, destino: str) -> None:
         clave_origen = self._clave(origen)
@@ -213,14 +220,17 @@ class AlmacenGCS:
         blob_origen.reload()
         blob_destino.reload()
         if blob_destino.size != blob_origen.size:
+            # La copia mala NO se deja en destino (parcial/0 bytes que existe_ruta daria por bueno).
+            extra = self._borrar_subida_corrupta(blob_destino)
             raise OSError(
                 f"Copia inconsistente al mover '{origen}' a '{destino}': "
-                f"{blob_destino.size} != {blob_origen.size} bytes; origen conservado"
+                f"{blob_destino.size} != {blob_origen.size} bytes; origen conservado{extra}"
             )
         md5_o = getattr(blob_origen, "md5_hash", None)
         md5_d = getattr(blob_destino, "md5_hash", None)
         if md5_o and md5_d and md5_o != md5_d:
-            raise OSError(f"Copia inconsistente al mover '{origen}' a '{destino}': md5 distinto; origen conservado")
+            extra = self._borrar_subida_corrupta(blob_destino)
+            raise OSError(f"Copia inconsistente al mover '{origen}' a '{destino}': md5 distinto; origen conservado{extra}")
         blob_origen.delete()
 
     def borrar(self, ruta: str) -> None:

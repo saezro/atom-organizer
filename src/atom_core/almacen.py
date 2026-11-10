@@ -20,6 +20,7 @@ traduce a rutas del sistema de ficheros.
 """
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from contextlib import contextmanager
@@ -147,6 +148,7 @@ class AlmacenLocal:
 # migrando llamada a llamada sin que cambie su forma de pasar rutas.
 
 _ESQUEMA_GCS = "gs://"
+_LOG = logging.getLogger(__name__)
 
 # Un `Almacen` por raíz (bucket+prefijo o carpeta local), cacheado a nivel de
 # módulo. Es necesario porque `abrir_almacen` se llama una vez POR IMAGEN, y
@@ -162,6 +164,27 @@ def _limpiar_cache_almacenes() -> None:
     """Vacía la caché de `abrir_almacen`. Solo para tests: cada proceso real
     (o hijo del pool) vive lo suficiente como para no necesitar limpiarla."""
     _ALMACENES.clear()
+
+
+def errores_lectura_gcs() -> tuple:
+    """Excepciones esperables de una lectura gs:// (red, rango, SDK). Import
+    perezoso: sin el SDK de Google solo quedan las de Python."""
+    base: tuple = (OSError, ValueError, NotImplementedError, AttributeError)  # AttributeError: almacén sin rango
+    try:
+        from google.api_core.exceptions import GoogleAPICallError
+    except ImportError:
+        return base
+    return base + (GoogleAPICallError,)
+
+
+def normalizar_ruta(ruta: str) -> str:
+    """Forma canónica para COMPARAR rutas: `gs://` -> esquema en minúsculas, `/`
+    como único separador y sin `//` repetidos ni `/` final; local -> `normpath`."""
+    ruta = str(ruta)
+    if es_uri_gcs(ruta):
+        resto = ruta[len(_ESQUEMA_GCS):].replace("\\", "/")
+        return _ESQUEMA_GCS + "/".join(p for p in resto.split("/") if p)
+    return os.path.normpath(ruta)
 
 
 def es_uri_gcs(ruta: str) -> bool:
@@ -260,8 +283,9 @@ def leer_cabecera(ruta: str, n: int) -> bytes:
             return leer_rango(prefijo, n)
         except FileNotFoundError:
             raise
-        except Exception:  # noqa: BLE001 — rango no soportado/416: objeto entero
-            pass
+        except errores_lectura_gcs() as exc:  # rango no soportado/416: objeto entero
+            _LOG.warning("Lectura por rango fallida en '%s' (%s: %s); se descarga el objeto entero",
+                         ruta, type(exc).__name__, exc)
     with almacen.abrir_local(prefijo) as ruta_local:
         with open(ruta_local, "rb") as fd:
             return fd.read(n)
