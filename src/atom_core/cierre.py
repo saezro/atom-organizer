@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import utils
 from atom_core.almacen import (
-    AVISO_GENERALES_SIN_CSV, es_uri_gcs, existe_ruta, listar_con_tamanos, tamano_de, unir,
+    AVISO_GENERALES_SIN_CSV, es_uri_gcs, existe_ruta, listar_con_tamanos, normalizar_ruta, tamano_de, unir,
 )
 from atom_core import pares as pares_mod
 from atom_core.manifiesto import ruta_bajo_origen
@@ -77,8 +77,9 @@ def _revisar_ruta(ruta_origen: str, ruta: str, listado: "dict[str, int | None] |
     round-trips: existencia y tamaño salen del propio listado. Una ruta fuera del
     listado se comprueba por el camino de siempre solo si el listado no cubre su
     prefijo (ver `verificar`)."""
-    if listado is not None and ruta in listado:
-        tam = listado[ruta]
+    clave = normalizar_ruta(ruta)  # comparar siempre en forma canónica (// , \\ , / final)
+    if listado is not None and clave in listado:
+        tam = listado[clave]
         if tam is None:
             return None if tamano_de(ruta) != 0 else f"{ruta_origen}: {ruta} existe pero está vacío."
         if tam == 0:
@@ -646,12 +647,15 @@ def verificar(manifiesto, cfg, recuentos_csv=None) -> list[str]:
         # rutas fuera de ese destino, o el listado falla, cada ruta va por su cuenta.
         listado = None
         destino = str(getattr(cfg, "output_folder", "") or "").rstrip("/")
+        destino = normalizar_ruta(destino) if destino else destino
         if es_uri_gcs(destino) and all(
-                ruta.startswith(destino + "/") for _o, ruta in por_comprobar):
+                normalizar_ruta(ruta).startswith(destino + "/") for _o, ruta in por_comprobar):
             try:
                 listado = listar_con_tamanos(destino)
             except Exception:  # noqa: BLE001 — sin listado: comprobación individual
                 listado = None
+        if listado is not None:
+            listado = {normalizar_ruta(k): v for k, v in listado.items()}
         trabajadores = min(utils.max_io_workers(), len(por_comprobar))
         with ThreadPoolExecutor(max_workers=trabajadores) as executor:
             for problema in executor.map(lambda par: _revisar_ruta(*par, listado), por_comprobar):

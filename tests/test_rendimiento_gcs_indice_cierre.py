@@ -108,7 +108,8 @@ def test_indice_gcs_rellena_meta_leida_sin_reload_ni_tamano_por_blob(bucket, tmp
     _subir(bucket, tmp_path, make_dji_jpeg, nombres)
     gi = exif.GeneralInformationFromImage(logger)
 
-    rutas = indice._listar_imagenes_gcs(f"{RAIZ}/ORIGEN")
+    tamanos = {}
+    rutas = indice._listar_imagenes_gcs(f"{RAIZ}/ORIGEN", tamanos)
     assert len(rutas) == 3
     assert bucket.listados == 1  # UN solo list_blobs del origen
     datos = [indice._leer_metadatos(r, gi, _Cb()) for r in rutas]
@@ -125,7 +126,7 @@ def test_indice_gcs_rellena_meta_leida_sin_reload_ni_tamano_por_blob(bucket, tmp
     with mock.patch.object(indice.almacen, "tamano_de", side_effect=AssertionError("reload por blob")):
         with mock.patch.object(indice, "_clasificar_tipo", return_value="RGB"), \
                 mock.patch.object(indice, "_pct_recorte", return_value=None):
-            fila = indice._construir_fila(datos[0], None, {}, cfg, pipe)
+            fila = indice._construir_fila(datos[0], None, {}, cfg, pipe, None, tamanos)
     assert fila.bytes_origen == len(bucket.objetos["PLANTA/INSP/ORIGEN/DJI_0001_W.JPG"])
     assert bucket.reloads == 0
 
