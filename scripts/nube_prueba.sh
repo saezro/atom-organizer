@@ -24,7 +24,7 @@ REGION="europe-west4"
 ACCOUNT="atom-compute-ops@aerotools-484814.iam.gserviceaccount.com"
 JOB_LIGERO="atom-organizer-ligero"; LIGERO_CPU="${LIGERO_CPU:-2}"; LIGERO_MEM_GIB="${LIGERO_MEM_GIB:-8}"
 JOB_APPLY="atom-organizer-apply";   APPLY_CPU="${APPLY_CPU:-4}";   APPLY_MEM_GIB="${APPLY_MEM_GIB:-8}"
-IMG_POR_TASK=300; TOPE_TASKS=32; POLL_S="${POLL_S:-20}"
+IMG_POR_TASK=300; TOPE_TASKS=32; POLL_S="${POLL_S:-5}"
 
 dry="false"; rjpeg="true"; pos=(); extra=()
 for a in "$@"; do

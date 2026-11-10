@@ -1998,11 +1998,9 @@ class PipelinePhasesMixin:
         if not sample:
             progress_callback.emit("AVISO: no se encontró imagen térmica de muestra para identificar el dron.\n")
         else:
-            if es_uri_gcs(sample):
-                with abrir_para_lectura(sample) as ruta_local:
-                    model = self.meta_location_obj.exif_management_obj.get_model(str(ruta_local), progress_callback)
-            else:
-                model = self.meta_location_obj.exif_management_obj.get_model(sample, progress_callback)
+            # `get_model` es URI-aware: en `gs://` lee la cabecera por rango y solo
+            # baja el objeto entero si el modelo no aparece ahí.
+            model = self.meta_location_obj.exif_management_obj.get_model(sample, progress_callback)
             model = (model or "").strip("\x00").strip()
             detected_model = model
             if model and _norm(model) in modelos_conocidos:

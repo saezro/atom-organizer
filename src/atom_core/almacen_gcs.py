@@ -94,6 +94,18 @@ class AlmacenGCS:
         ]
         return sorted(encontradas)
 
+    def listar_con_tamanos(self, prefijo: str) -> "dict[str, int | None]":
+        """`{ruta relativa al raíz: tamaño}` de todo lo que cuelga de `prefijo`
+        (recursivo), con UN solo `list_blobs`: el tamaño ya viene en el listado,
+        así que no hace falta un `reload()` por objeto. Mismo filtro de frontera
+        de segmento que `listar`. Tamaño `None` si el listado no lo trae."""
+        clave = self._clave(prefijo)
+        return {
+            self._relativa(blob.name): getattr(blob, "size", None)
+            for blob in self.bucket.list_blobs(prefix=clave)
+            if not clave or blob.name == clave or blob.name.startswith(clave + "/")
+        }
+
     def existe(self, ruta: str) -> bool:
         blob = self.bucket.blob(self._clave(ruta))
         return blob.exists()
