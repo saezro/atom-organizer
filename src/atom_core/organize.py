@@ -70,7 +70,7 @@ from atom_core.diagnostico_maquina import (
     sonda_inicial,
 )
 from atom_core.phases import PipelinePhasesMixin
-from atom_core.sharding import ETAPAS, FASES, FASES_REPARTIBLES, normalizar_shard
+from atom_core.sharding import ETAPAS, FASES, FASES_MAPREDUCE, FASES_REPARTIBLES, normalizar_shard
 from atom_core import lock_destino
 from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO, destino_organizado, fallidas_reintentables
 from utils import (
@@ -746,7 +746,15 @@ def run_task(
                           "(variable CLOUD_RUN_EXECUTION o --ejecucion): los deltas de cada "
                           "tarea se guardan en .organizado/shards/<ejecucion>/.")
             return
-        _fase_repartible = task == "split_images" and fase in FASES_REPARTIBLES
+        # `indice` SOLO cuenta como repartible con N>1 (índice map/reduce): con
+        # N=1 es el índice de siempre, con su guard de destino vacío y su lock.
+        _fase_repartible = task == "split_images" and (
+            fase in FASES_REPARTIBLES or (fase in FASES_MAPREDUCE and shard_count > 1))
+        if _fase_repartible and fase in FASES_MAPREDUCE and not ejecucion:
+            emit("error", f"La fase {fase} repartida ({shard_count} tareas) necesita el "
+                          "identificador de la ejecución (CLOUD_RUN_EXECUTION o --ejecucion): "
+                          "los parciales se guardan en .organizado/indice/<ejecucion>/.")
+            return
 
         # `todo` repartido NO existe, y hay que rechazarlo en vez de dejarlo
         # correr: en una sola ejecución las tres etapas van seguidas sin ninguna
@@ -785,10 +793,10 @@ def run_task(
         if task == "split_images" and shard_count > 1 and not _fase_repartible:
             emit("error",
                  f"El organizado no se puede repartir en la fase {fase!r} (llegan "
-                 f"{shard_count} tareas): solo --fase apply, rgb o termica se reparten; "
-                 "completo, indice y cierre van con --shard-count 1. Encadena tres "
-                 "ejecuciones: --fase indice (1 tarea), --fase apply (N tareas), "
-                 "--fase cierre (1 tarea).")
+                 f"{shard_count} tareas): solo --fase indice, apply, rgb o termica se reparten; "
+                 "completo, indice-reduce y cierre van con --shard-count 1. Encadena tres "
+                 "ejecuciones: --fase indice (N tareas, la última hace el reduce), "
+                 "--fase apply (N tareas), --fase cierre (1 tarea).")
             return
 
         # Guarda: la carpeta de SALIDA debe estar vacía (decisión de Cas
@@ -1261,6 +1269,8 @@ def run_task(
         host.shard_count = shard_count
         host.fase = fase
         host.ejecucion = ejecucion
+        # Solo `--fase indice-reduce`: ejecución del map cuyos parciales se reducen.
+        host.ejecucion_indice = str(params.get("ejecucion_indice") or "").strip()
         pcb = _Signal(_on_log)
         pbar = _Signal(lambda i: emit("progress", int(i)))
         psum = _Signal(_on_summary)

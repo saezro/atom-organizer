@@ -42,6 +42,7 @@ from atom_core import esperado as esperado_mod
 from atom_core import estadillo as estadillo_mod
 from atom_core import indice as indice_mod
 from atom_core import indice_excel
+from atom_core import indice_mapreduce as indice_mr
 from atom_core import paralelismo as paralelismo_mod
 from atom_core import apply as _apply_mod
 from atom_core import apply_shards
@@ -214,6 +215,9 @@ def _emitir_telemetria(host, cfg, estadisticas: dict, pared_s: float, cpu_s: flo
             "pared_s": round(pared_s, 2), "cpu_s": round(cpu_s, 2), "vcpu": vcpu,
             "utilizacion": round(cpu_s / (vcpu * pared_s), 3) if pared_s > 0 else 0.0,
         }
+        # Índice map/reduce: marca si ESTA task hizo además el reduce (la última en terminar).
+        if "reduce" in estadisticas:
+            dato["reduce"] = bool(estadisticas["reduce"])
         linea = json.dumps(dato, ensure_ascii=False)
         print(linea, flush=True)
         nombre = f"{ejecucion or 'local'}-{fase}-{shard_index}.json"
@@ -1272,13 +1276,38 @@ class PipelinePhasesMixin:
             raise ValueError(f"Fase desconocida: {fase!r}. Válidas: {', '.join(sharding.FASES)}.")
         shard_index = getattr(self, "shard_index", 0)
         shard_count = getattr(self, "shard_count", 1)
-        if shard_count > 1 and fase not in sharding.FASES_REPARTIBLES:
+        if (shard_count > 1 and fase not in sharding.FASES_REPARTIBLES
+                and fase not in sharding.FASES_MAPREDUCE):
             raise ValueError(f"La fase {fase!r} no se puede repartir ({shard_count} tareas): "
-                             "solo apply/rgb/termica se reparten.")
+                             "solo indice/apply/rgb/termica se reparten.")
         if fase in sharding.FASES_REPARTIBLES:
             return PipelinePhasesMixin._apply_repartido(
                 self, cfg, fase, shard_index, shard_count,
                 progress_callback, progress_bar, progress_summarize, estadisticas)
+
+        # Índice map/reduce (`indice_mapreduce`): `indice` con N>1 tasks = map de
+        # su tramo y, la última en terminar, reduce; `indice-reduce` = solo el
+        # reduce, a mano. Con N=1 `reduce_desde` queda a None: índice de siempre.
+        reduce_desde = None
+        if fase == "indice" and shard_count > 1:
+            reduce_desde = PipelinePhasesMixin._indice_map(
+                self, cfg, shard_index, shard_count, progress_callback, progress_bar,
+                progress_summarize, estadisticas)
+            if reduce_desde is None:
+                return
+        elif fase == "indice-reduce":
+            if shard_count > 1:
+                raise ValueError("La fase 'indice-reduce' es de UNA tarea "
+                                 f"({shard_count} tareas).")
+            if getattr(self, "solo_fallidas", False):
+                raise ValueError("'indice-reduce' no admite el reintento de fallidas.")
+            ejecucion_map = str(getattr(self, "ejecucion_indice", "") or
+                                getattr(self, "ejecucion", "") or "").strip()
+            if not ejecucion_map:
+                raise ValueError("'indice-reduce' necesita la ejecución del map "
+                                 "(--ejecucion-indice o --ejecucion).")
+            reduce_desde = {"ejecucion": ejecucion_map, "shard_count": None}
+            estadisticas["reduce"] = True
 
         adaptador = _PipelineAdaptadorPlanApply(self)
         # Salida gs://: SQLite no vive en el bucket. Copia LOCAL descargada del bucket
@@ -1296,7 +1325,7 @@ class PipelinePhasesMixin:
         manifiesto = Manifiesto(ruta_manifiesto)
         try:
             manifiesto.crear_esquema()
-            hace_indice = fase in ("completo", "indice")
+            hace_indice = fase in ("completo", "indice", "indice-reduce")
             if hace_indice:
                 reabiertas = manifiesto.reabrir_huerfanas(cfg.input_folder)
                 if reabiertas:
@@ -1321,18 +1350,19 @@ class PipelinePhasesMixin:
                 if hace_indice:
                     resumen_indice = PipelinePhasesMixin._fase_indice(
                         self, manifiesto, cfg, adaptador, progress_callback, progress_bar,
-                        progress_summarize, ejecucion_id)
+                        progress_summarize, ejecucion_id, reduce_desde=reduce_desde)
                     tiempos["Índice"] = time.monotonic() - marca
                     marca = time.monotonic()
-                    estadisticas["imagenes"] += ((resumen_indice or {}).get("nuevas", 0)
-                                                 + (resumen_indice or {}).get("reintentadas", 0))
+                    if reduce_desde is None:
+                        estadisticas["imagenes"] += ((resumen_indice or {}).get("nuevas", 0)
+                                                     + (resumen_indice or {}).get("reintentadas", 0))
                     cancelacion.comprobar()
                 if fase == "completo":
                     estadisticas["imagenes"] += PipelinePhasesMixin._fase_apply(
                         self, manifiesto, cfg, progress_callback, progress_bar,
                         progress_summarize, ejecucion_id, tiempos)
                     marca = time.monotonic()
-                if fase == "indice":
+                if fase in ("indice", "indice-reduce"):
                     PipelinePhasesMixin._avisos_indice(
                         self, resumen_indice, progress_callback)
                     progress_bar.emit(100)
@@ -1466,8 +1496,48 @@ class PipelinePhasesMixin:
             manifiesto.cerrar()
             shutil.rmtree(carpeta_temporal, ignore_errors=True)
 
+    def _indice_map(self, cfg, shard_index, shard_count, progress_callback, progress_bar,
+                    progress_summarize, estadisticas):
+        """Fase `indice` repartida (N>1 tasks): MAP de esta task y, si es la última
+        en terminar, devuelve el contexto del REDUCE (`reduce_desde`); si no,
+        `None` y la task acaba bien sin más.
+
+        El map NO toca el manifiesto (N tasks subiéndolo se pisarían): lee las
+        cabeceras de su tramo del listado y deja
+        `<destino>/.organizado/indice/<ejecucion>/map-<k>.jsonl.gz`. Después, solo
+        si ve los N parciales, intenta el lock `reduce.lock` (`ifGenerationMatch=0`
+        en gs://, `O_EXCL` en local): la que lo gana hace el reduce."""
+        ejecucion = str(getattr(self, "ejecucion", "") or "").strip()
+        if not ejecucion:
+            raise ValueError("la fase indice repartida necesita el identificador de la "
+                             "ejecución (CLOUD_RUN_EXECUTION o --ejecucion): los parciales "
+                             "van a .organizado/indice/<ejecucion>/.")
+        if getattr(self, "solo_fallidas", False):
+            raise ValueError("el reintento de fallidas no se puede repartir "
+                             f"({shard_count} tareas): usa una sola tarea.")
+        resultado = indice_mod.mapear_indice(
+            cfg, self.split_images_obj.exif_management_obj, progress_callback, progress_bar,
+            progress_summarize, shard_index=shard_index, shard_count=shard_count,
+            ejecucion=ejecucion)
+        estadisticas["imagenes"] += resultado["leidas"]
+        estadisticas["reduce"] = False
+        if not indice_mr.parciales_presentes(cfg.output_folder, ejecucion, shard_count):
+            progress_callback.emit(
+                f"\n[indice] tarea {shard_index + 1}/{shard_count}: parcial escrito; aún faltan "
+                "parciales de otras tareas, el reduce lo hará la última en terminar.\n")
+            return None
+        if not indice_mr.adquirir_lock_reduce(cfg.output_folder, ejecucion, shard_index):
+            progress_callback.emit(
+                f"\n[indice] tarea {shard_index + 1}/{shard_count}: otra tarea hace el reduce.\n")
+            return None
+        estadisticas["reduce"] = True
+        progress_callback.emit(
+            f"\n[indice] tarea {shard_index + 1}/{shard_count}: gana el lock y hace el reduce "
+            f"({shard_count} parciales).\n")
+        return {"ejecucion": ejecucion, "shard_count": shard_count}
+
     def _fase_indice(self, manifiesto, cfg, adaptador, progress_callback, progress_bar,
-                     progress_summarize, ejecucion_id) -> dict:
+                     progress_summarize, ejecucion_id, reduce_desde=None) -> dict:
         """Fase `indice`: estadillos al destino + `construir_indice` (o reintento
         de fallidas). Devuelve el resumen del índice."""
         resumen_indice = None
@@ -1501,7 +1571,8 @@ class PipelinePhasesMixin:
         else:
             resumen_indice = indice_mod.construir_indice(
                 cfg, adaptador, self.split_images_obj.exif_management_obj, manifiesto,
-                progress_callback, progress_bar, progress_summarize, ejecucion_id=ejecucion_id)
+                progress_callback, progress_bar, progress_summarize, ejecucion_id=ejecucion_id,
+                reduce_desde=reduce_desde)
         return resumen_indice
 
 

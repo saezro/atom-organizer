@@ -52,11 +52,18 @@ ETAPAS = ("todo", "split", "struct", "post")
 #: encadenar 3 ejecuciones de Cloud Run: `indice` -> `apply` (xN tasks) ->
 #: `cierre`. `completo` (defecto) = las tres seguidas en un solo proceso, como
 #: siempre. `rgb` / `termica` = mitades de `apply` (ejecuciones separadas).
-FASES = ("completo", "indice", "apply", "rgb", "termica", "cierre")
+FASES = ("completo", "indice", "indice-reduce", "apply", "rgb", "termica", "cierre")
 
-#: Solo la fase pesada se reparte entre tasks (por imagen, `toca_imagen`);
-#: indice y cierre escriben el manifiesto y son de UNA sola task.
+#: La fase pesada se reparte entre tasks (por imagen, `toca_imagen`); cierre
+#: escribe el manifiesto y es de UNA sola task.
 FASES_REPARTIBLES = ("apply", "rgb", "termica")
+
+#: `indice` TAMBIÉN se puede repartir (map/reduce, `atom_core.indice_mapreduce`):
+#: cada task lee las cabeceras de su tramo contiguo del listado y deja un
+#: parcial; la última en terminar hace el reduce (manifiesto, CSV, INDICE).
+#: Con 1 task es el índice de siempre. `indice-reduce` = solo el reduce, a mano
+#: (1 task), sobre los parciales de una ejecución de `indice` ya terminada.
+FASES_MAPREDUCE = ("indice",)
 
 
 def normalizar_shard(shard_index, shard_count) -> tuple[int, int]:
