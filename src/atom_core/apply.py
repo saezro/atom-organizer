@@ -202,6 +202,43 @@ def _tamano_mb(ruta: str) -> float:
         return _MB_POR_DEFECTO_SI_FALLA_STAT
 
 
+def _es_gcs(ruta) -> bool:
+    return almacen_mod.es_uri_gcs(str(ruta))
+
+
+def _tamano_ruta(ruta: str) -> int:
+    """Tamaño en bytes de una salida/origen, local o `gs://` (por metadatos del
+    blob, sin descargar)."""
+    if _es_gcs(ruta):
+        return almacen_mod.tamano_de(ruta)
+    return os.path.getsize(ruta)
+
+
+def _parcial_para(destino: str) -> str:
+    """Temporal del `destino`. Local: `ruta_parcial` junto al destino (como
+    siempre, mismo volumen para el `os.replace`). `gs://`: un temporal LOCAL con
+    la misma extensión (PIL decide el formato por ella); lo que llega al bucket
+    se publica entero desde ahí, así que en el bucket nunca hay un `.parcial`."""
+    if not _es_gcs(destino):
+        return ruta_parcial(destino)
+    return ruta_parcial(os.path.join(tempfile.gettempdir(), os.path.basename(destino)))
+
+
+def _publicar_parcial(parcial: str, destino: str) -> None:
+    """Deja el `parcial` ya verificado en `destino`. Local: `os.replace`
+    (atómico, igual que antes). `gs://`: subida del objeto (se finaliza entero o
+    no existe; `AlmacenGCS.publicar` comprueba tamaño/md5 y borra una subida
+    corrupta) y se borra el temporal local."""
+    if not _es_gcs(destino):
+        os.replace(parcial, destino)
+        return
+    try:
+        almacen_mod.publicar_en(parcial, destino)
+    finally:
+        if os.path.exists(parcial):
+            os.remove(parcial)
+
+
 def _transpose_para_angulo(angulo: int, pipeline_mod) -> "int | None":
     """Mapea el ángulo de giro (0/90/270, criterio horario) a la constante de
     PIL con la que hay que llamar a `transpose`. PIL gira en sentido
@@ -362,7 +399,7 @@ def _guardar_atomico(img, destino: str, transpose, crop_box, calidad: int,
     (instrumentación OPT-IN, no-op si `perfil_rgb.ACTIVO` es `False`).
     """
     carpeta = os.path.dirname(destino)
-    if carpeta:
+    if carpeta and not _es_gcs(destino):
         os.makedirs(carpeta, exist_ok=True)
     # `.parcial` va ANTES de la extensión real (`DJI_0001.parcial.JPG`), no
     # después (`DJI_0001.JPG.parcial`): PIL decide el formato de guardado
@@ -370,7 +407,7 @@ def _guardar_atomico(img, destino: str, transpose, crop_box, calidad: int,
     # parámetro `format`, y no se toca `pipeline.py` para añadirlo — ver
     # reutilización obligatoria) y `<algo>.parcial` sin extensión reconocida
     # revienta con `ValueError: unknown file extension: .parcial`.
-    parcial = ruta_parcial(destino)
+    parcial = _parcial_para(destino)
     cfg_escritura = pipeline_mod.ImageProcessConfig(
         output_path=parcial,
         quality=calidad,
@@ -388,7 +425,7 @@ def _guardar_atomico(img, destino: str, transpose, crop_box, calidad: int,
             # relativa): sin esto el location.csv sale con esas columnas a 0.
             # Se inserta como APP1 en cabecera con UNA escritura `wb` a otro
             # temporal: reabrir en `ab` corrompía el JPG en el montaje de Drive.
-            parcial_xmp = ruta_parcial(destino)
+            parcial_xmp = _parcial_para(destino)
             insertar_xmp_app1(parcial, parcial_xmp, bloque_xmp)
             os.remove(parcial)
             parcial, parcial_xmp = parcial_xmp, None
@@ -398,8 +435,13 @@ def _guardar_atomico(img, destino: str, transpose, crop_box, calidad: int,
             if ruta and os.path.exists(ruta):
                 os.remove(ruta)
         raise
-    with perfil_rgb.medir("escritura"):
-        os.replace(parcial, destino)
+    try:
+        with perfil_rgb.medir("escritura"):
+            _publicar_parcial(parcial, destino)
+    except Exception:
+        if os.path.exists(parcial):
+            os.remove(parcial)
+        raise
 
 
 def _bloque_xmp_de_bytes(datos: bytes) -> bytes | None:
@@ -455,8 +497,8 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
     """
     nombre = os.path.basename(fila["ruta_origen"])
     try:
-        bytes_origen = os.path.getsize(fila["ruta_origen"])
-    except OSError:
+        bytes_origen = _tamano_ruta(fila["ruta_origen"])
+    except Exception:  # noqa: BLE001 — gs:// puede dar errores del SDK, no solo OSError
         bytes_origen = 0
 
     with perfil_rgb.medir_imagen(nombre, bytes_origen):
@@ -522,7 +564,7 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
                 except Exception:
                     pass
 
-    return "; ".join(f"{ruta}:{os.path.getsize(ruta)}" for ruta in escritas)
+    return "; ".join(f"{ruta}:{_tamano_ruta(ruta)}" for ruta in escritas)
 
 
 #: Recreaciones máximas del pool RGB tras un `BrokenProcessPool` antes de bajar
@@ -979,6 +1021,11 @@ def _copiar_jpg_destino(origen: str, destino: str, angulo: int = 0) -> None:
     compatibilidad con el llamador pero se ignora; el TIFF y la RGB (W) siguen
     su propio camino y su giro.
     """
+    if _es_gcs(destino):
+        # El `origen` es el R-JPEG en staging local: se sube tal cual (byte a
+        # byte, sin giro ni recompresión); el objeto aparece entero o no existe.
+        almacen_mod.publicar_en(origen, destino)
+        return
     carpeta = os.path.dirname(destino)
     if carpeta:
         os.makedirs(carpeta, exist_ok=True)
@@ -1249,6 +1296,9 @@ class _PoolExiftool:
 def _mover_atomico_a_destino(origen_local: str, destino: str) -> None:
     """Publica un fichero ya terminado (staging local) en `destino` con
     `<raíz>.parcial<ext>` + `os.replace`: en el destino solo se escribe una vez."""
+    if _es_gcs(destino):
+        almacen_mod.publicar_en(origen_local, destino)
+        return
     carpeta = os.path.dirname(destino)
     if carpeta:
         os.makedirs(carpeta, exist_ok=True)
@@ -1346,7 +1396,7 @@ def _procesos_exif() -> int:
     forzado = int(os.environ.get("ATOM_EXIF_WORKERS", "0") or 0)
     if forzado > 0:
         return forzado
-    return max(1, min(4, os.cpu_count() or 1))
+    return max(1, min(4, utils.cpus_efectivas()))
 
 
 def _vetar_sobrescrituras(manifiesto, filas: list[dict], progress_callback) -> list[dict]:
@@ -1578,11 +1628,11 @@ def _aplicar_termicas_impl(manifiesto, cfg, pipeline, progress_callback, progres
                                        progress_callback, progress_bar, staging_raiz,
                                        copiar_exif=pool_exif.copiar)
                 piezas = [
-                    f"{fila['ruta_salida_original']}:{os.path.getsize(fila['ruta_salida_original'])}",
+                    f"{fila['ruta_salida_original']}:{_tamano_ruta(fila['ruta_salida_original'])}",
                 ]
                 if fila["ruta_salida_tiff"]:
                     piezas.append(
-                        f"{fila['ruta_salida_tiff']}:{os.path.getsize(fila['ruta_salida_tiff'])}"
+                        f"{fila['ruta_salida_tiff']}:{_tamano_ruta(fila['ruta_salida_tiff'])}"
                     )
                 manifiesto.marcar_hecha(fila["id"], "; ".join(piezas))
             except ExiftoolNoDisponible:
@@ -1731,13 +1781,25 @@ def emitir_errores_fase(manifiesto, cfg, progress_callback, fase: str, slug: str
         payload["rutas_truncadas"] = len(fallidas) > MAX_RUTAS_MARCADOR
         if not cierre:
             try:
-                carpeta = os.path.join(cfg.output_folder, NOMBRE_CARPETA_LOGS_APPLY)
-                os.makedirs(carpeta, exist_ok=True)
-                ruta_csv = os.path.join(carpeta, f"ERRORES_{slug}.csv")
-                with open(ruta_csv, "w", newline="", encoding="utf-8-sig") as fh:
-                    escritor = csv.writer(fh)
-                    escritor.writerow(["ruta", "motivo"])
-                    escritor.writerows(fallidas)
+                carpeta = almacen_mod.unir(cfg.output_folder, NOMBRE_CARPETA_LOGS_APPLY)
+                ruta_csv = almacen_mod.unir(carpeta, f"ERRORES_{slug}.csv")
+                if _es_gcs(ruta_csv):
+                    # Se escribe en un temporal local y se publica en el bucket.
+                    descriptor, ruta_local = tempfile.mkstemp(suffix=".csv")
+                    os.close(descriptor)
+                else:
+                    os.makedirs(carpeta, exist_ok=True)
+                    ruta_local = ruta_csv
+                try:
+                    with open(ruta_local, "w", newline="", encoding="utf-8-sig") as fh:
+                        escritor = csv.writer(fh)
+                        escritor.writerow(["ruta", "motivo"])
+                        escritor.writerows(fallidas)
+                    if ruta_local != ruta_csv:
+                        almacen_mod.publicar_en(ruta_local, ruta_csv)
+                finally:
+                    if ruta_local != ruta_csv and os.path.exists(ruta_local):
+                        os.remove(ruta_local)
                 payload["csv"] = ruta_csv
             except Exception as exc:  # noqa: BLE001 — visible, no silencioso
                 payload["csv_error"] = f"{type(exc).__name__}: {exc}"

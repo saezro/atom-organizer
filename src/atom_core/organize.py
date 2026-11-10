@@ -70,7 +70,7 @@ from atom_core.diagnostico_maquina import (
     sonda_inicial,
 )
 from atom_core.phases import PipelinePhasesMixin
-from atom_core.sharding import ETAPAS, normalizar_shard
+from atom_core.sharding import ETAPAS, FASES, FASES_REPARTIBLES, normalizar_shard
 from atom_core import lock_destino
 from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO, destino_organizado, fallidas_reintentables
 from utils import (
@@ -734,6 +734,20 @@ def run_task(
         shard_index, shard_count = normalizar_shard(
             params.get("shard_index", 0), params.get("shard_count", 1))
 
+        # Fase del motor nuevo (ver `sharding.FASES`): `completo` por defecto. Solo
+        # las fases pesadas (apply/rgb/termica) se reparten entre tasks.
+        fase = str(params.get("fase") or "completo")
+        if fase not in FASES:
+            emit("error", f"Fase desconocida: {fase!r}. Válidas: {', '.join(FASES)}.")
+            return
+        ejecucion = str(params.get("ejecucion") or "").strip()
+        if fase in FASES_REPARTIBLES and task == "split_images" and not ejecucion:
+            emit("error", f"La fase {fase} necesita el identificador de la ejecución "
+                          "(variable CLOUD_RUN_EXECUTION o --ejecucion): los deltas de cada "
+                          "tarea se guardan en .organizado/shards/<ejecucion>/.")
+            return
+        _fase_repartible = task == "split_images" and fase in FASES_REPARTIBLES
+
         # `todo` repartido NO existe, y hay que rechazarlo en vez de dejarlo
         # correr: en una sola ejecución las tres etapas van seguidas sin ninguna
         # barrera entre ellas, así que la tarea 2 podría estar estructurando
@@ -746,7 +760,7 @@ def run_task(
         # reparto se hacía por vuelo del estadillo (dos tareas podían reclamar la
         # misma imagen); ahora se reparte por imagen con un hash del nombre y cada
         # foto tiene una sola dueña — ver `sharding.toca_imagen`.
-        if etapa == "todo" and shard_count > 1:
+        if etapa == "todo" and shard_count > 1 and not _fase_repartible:
             emit("error",
                  f"--etapa {etapa} no se puede repartir (llegan {shard_count} tareas). "
                  "Las tres etapas irían sin barrera entre ellas y el post-proceso "
@@ -763,13 +777,18 @@ def run_task(
         # tareas escribiendo los mismos destinos en paralelo. Se rechaza en
         # claro en vez de dejarlo correr mal en silencio; el reparto llega en la
         # Tarea 8, cuando el manifiesto se filtre por shard.
-        if task == "split_images" and shard_count > 1:
+        # Desde la Tarea 8 SOLO la fase pesada (`--fase apply|rgb|termica`) se reparte:
+        # cada tarea filtra el manifiesto por imagen y deja sus deltas en
+        # `.organizado/shards/`. `completo`, `indice` y `cierre` escriben el manifiesto
+        # y el índice/CSVs enteros: N tareas harían el trabajo multiplicado por N
+        # sobre la misma carpeta de salida a la vez.
+        if task == "split_images" and shard_count > 1 and not _fase_repartible:
             emit("error",
-                 f"El organizado no se puede repartir todavía (llegan {shard_count} "
-                 "tareas). El motor nuevo (índice -> manifiesto -> apply -> cierre) "
-                 "aún no soporta el reparto entre varias tareas: las "
-                 f"{shard_count} harían el trabajo entero sobre la misma carpeta de "
-                 "salida a la vez. Lanza el organizado con --shard-count 1.")
+                 f"El organizado no se puede repartir en la fase {fase!r} (llegan "
+                 f"{shard_count} tareas): solo --fase apply, rgb o termica se reparten; "
+                 "completo, indice y cierre van con --shard-count 1. Encadena tres "
+                 "ejecuciones: --fase indice (1 tarea), --fase apply (N tareas), "
+                 "--fase cierre (1 tarea).")
             return
 
         # Guarda: la carpeta de SALIDA debe estar vacía (decisión de Cas
@@ -788,7 +807,10 @@ def run_task(
         # guard quede en el log de todas formas.
         if task == "split_images":
             _out = getattr(cfg, "output_folder", "")
-            _guard_activo = (etapa in ("todo", "split")) and shard_count == 1
+            # apply/rgb/termica nunca llevan lock ni limpieza de parciales: `rgb` y
+            # `termica` corren a la vez y el lock/limpieza de una pisaría a la otra.
+            _guard_activo = ((etapa in ("todo", "split")) and shard_count == 1
+                             and not _fase_repartible)
             # `.organizado/` NO cuenta como residuo: es el manifiesto que el
             # motor deja aposta cuando un run muere a mitad, y es justo lo que
             # permite reanudar. Si lo contáramos, el guard abortaría la corrida
@@ -1237,6 +1259,8 @@ def run_task(
         host.solo_fallidas = bool(params.get("solo_fallidas"))
         host.shard_index = shard_index
         host.shard_count = shard_count
+        host.fase = fase
+        host.ejecucion = ejecucion
         pcb = _Signal(_on_log)
         pbar = _Signal(lambda i: emit("progress", int(i)))
         psum = _Signal(_on_summary)

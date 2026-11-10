@@ -48,6 +48,16 @@ from atom_core.almacen import es_uri_gcs, existe_ruta, listar_subcarpetas, unir
 
 ETAPAS = ("todo", "split", "struct", "post")
 
+#: Fases del motor nuevo de organizado (`organizar_plan_apply`), pensadas para
+#: encadenar 3 ejecuciones de Cloud Run: `indice` -> `apply` (xN tasks) ->
+#: `cierre`. `completo` (defecto) = las tres seguidas en un solo proceso, como
+#: siempre. `rgb` / `termica` = mitades de `apply` (ejecuciones separadas).
+FASES = ("completo", "indice", "apply", "rgb", "termica", "cierre")
+
+#: Solo la fase pesada se reparte entre tasks (por imagen, `toca_imagen`);
+#: indice y cierre escriben el manifiesto y son de UNA sola task.
+FASES_REPARTIBLES = ("apply", "rgb", "termica")
+
 
 def normalizar_shard(shard_index, shard_count) -> tuple[int, int]:
     """Devuelve `(index, count)` saneados. Cualquier valor ilegible o fuera de
@@ -81,6 +91,16 @@ def shard_desde_entorno(env=None) -> tuple[int, int]:
     env = os.environ if env is None else env
     return normalizar_shard(env.get("CLOUD_RUN_TASK_INDEX"),
                             env.get("CLOUD_RUN_TASK_COUNT"))
+
+
+def ejecucion_desde_entorno(env=None, explicita=None) -> str:
+    """Identificador de la ejecucion (Cloud Run Execution) a la que pertenece
+    esta task: `CLOUD_RUN_EXECUTION` si existe, si no el argumento `--ejecucion`.
+    Todas las tasks de una ejecucion lo comparten; cada una de las 3 ejecuciones
+    encadenadas tiene uno distinto. `""` si no hay ninguno (el llamador decide si
+    eso es un error: `apply` lo exige)."""
+    env = os.environ if env is None else env
+    return str(env.get("CLOUD_RUN_EXECUTION") or explicita or "").strip()
 
 
 def repartir(items: list, shard_index: int, shard_count: int, peso=None) -> list:

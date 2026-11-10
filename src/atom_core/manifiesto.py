@@ -1058,6 +1058,56 @@ class Manifiesto:
                 (datetime.datetime.now().isoformat(timespec="seconds"),
                  n_nuevas, n_saltadas, n_reintentadas, id_ejecucion))
 
+    def ultima_ejecucion_id(self) -> int | None:
+        """Id de la ejecucion mas reciente (la que abrio el `indice`); `None` si
+        no hay ninguna. La fase `cierre` suelta no abre una propia: cierra con la
+        del indice, que es la que estampo `ejecucion_id` en las filas."""
+        fila = self._conexion().execute("SELECT MAX(id) AS id FROM ejecuciones").fetchone()
+        return int(fila["id"]) if fila and fila["id"] is not None else None
+
+    def aplicar_deltas(self, destino: str) -> dict[str, int]:
+        """Funde en este manifiesto los jsonl que dejaron las tasks de `apply`
+        (`<destino>/.organizado/shards/<ejecucion>/<shard>.jsonl`).
+
+        Solo toca filas todavia 'pendiente'/'en_curso' cuya `ruta_origen` coincide
+        con la anotada: un delta viejo (de un manifiesto regenerado, o de una fila
+        ya cerrada por un cierre anterior) no pisa nada. Las filas que ningun shard
+        reporto siguen 'pendiente': `cierre.verificar` las da por ERROR y relanzar
+        `apply` las recoge. Las `hecho` sin ficheros viejos de SIN_ORDENAR se
+        escriben en bloque (una transaccion); las demas pasan por `marcar_hecha`,
+        que borra esos ficheros viejos.
+
+        Returns: {"hechas", "fallidas", "ignoradas"}."""
+        from atom_core import apply_shards  # noqa: PLC0415 — evita ciclo de imports
+        deltas = apply_shards.resolver_deltas(apply_shards.leer_deltas(destino))
+        conexion = self._conexion()
+        filas = {f["id"]: f for f in conexion.execute(
+            "SELECT id, estado, ruta_origen, previas_sin_ordenar FROM imagenes")}
+        en_bloque, una_a_una = [], []
+        resultado = {"hechas": 0, "fallidas": 0, "ignoradas": 0}
+        for id_fila, delta in deltas.items():
+            fila = filas.get(id_fila)
+            if (fila is None or fila["estado"] not in ("pendiente", "en_curso")
+                    or (delta.get("ruta_origen") and delta["ruta_origen"] != fila["ruta_origen"])):
+                resultado["ignoradas"] += 1
+                continue
+            if delta["estado"] == "fallido":
+                en_bloque.append(("fallido", None, delta.get("motivo") or "", id_fila))
+                resultado["fallidas"] += 1
+            elif fila["previas_sin_ordenar"]:
+                una_a_una.append((id_fila, delta.get("verificacion") or ""))
+                resultado["hechas"] += 1
+            else:
+                en_bloque.append(("hecho", delta.get("verificacion") or "", None, id_fila))
+                resultado["hechas"] += 1
+        with conexion:
+            conexion.executemany(
+                "UPDATE imagenes SET estado = ?, verificacion = COALESCE(?, verificacion), "
+                "motivo_fallo = ? WHERE id = ?", en_bloque)
+        for id_fila, verificacion in una_a_una:
+            self.marcar_hecha(id_fila, verificacion)
+        return resultado
+
     def ejecuciones(self) -> dict[int, sqlite3.Row]:
         return {fila["id"]: fila for fila in
                 self._conexion().execute("SELECT * FROM ejecuciones ORDER BY id")}
