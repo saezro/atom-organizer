@@ -45,9 +45,10 @@
 #
 # --perfiles: en vez de tocar atom-organizer-pipeline (NO se modifica), crea o
 # actualiza con la MISMA imagen y la MISMA SA/env (clonados con
-# `gcloud run jobs describe --format json` del job pipeline) dos jobs:
+# `gcloud run jobs describe --format json` del job pipeline) tres jobs:
 #   atom-organizer-ligero  2 vCPU / 8Gi  (fases indice y cierre) retries 0
 #   atom-organizer-apply   4 vCPU / 8Gi  (fases rgb y termica)   retries 1
+#   atom-organizer-indice-map 1 vCPU / 2Gi (fase indice map/reduce, N tasks) retries 1
 # (Cloud Run no deja cambiar cpu/memoria por ejecucion: un job por perfil.)
 # Sin --imagen usa la imagen que tenga hoy el job pipeline. Memoria del ligero
 # sobreescribible con LIGERO_MEM (ej. 4Gi si el cierre cabe).
@@ -76,6 +77,15 @@ LIGERO_CPU="${LIGERO_CPU:-2}"
 LIGERO_MEM="${LIGERO_MEM:-8Gi}"
 APPLY_CPU="${APPLY_CPU:-4}"
 APPLY_MEM="${APPLY_MEM:-8Gi}"
+# Fase indice map/reduce (v3.4.160): N tasks leen cabeceras EXIF de su tramo (I/O de red,
+# 32 hilos, casi sin RAM) y la ULTIMA en terminar hace ademas el reduce. El reduce carga
+# en RAM los N parciales (~60k registros JSON en la planta completa -> lista de dicts +
+# _MetadatosImagen: orden de 0,2-0,5 GiB) y el manifiesto SQLite va a disco local, no a
+# RAM. 2Gi cabe con holgura >4x; 1 vCPU basta (el reduce es secuencial y el cuello era
+# la lectura de cabeceras, ya repartida). 1 vCPU admite hasta 4Gi (>4Gi exigiria >=2 vCPU).
+JOB_INDICE_MAP="atom-organizer-indice-map"
+INDICE_MAP_CPU="${INDICE_MAP_CPU:-1}"
+INDICE_MAP_MEM="${INDICE_MAP_MEM:-2Gi}"
 
 for arg in "$@"; do
     case "$arg" in
@@ -151,7 +161,8 @@ if [ "$perfiles" = "true" ]; then
     trap 'rm -rf "$tmpdir"' EXIT
     export_cmd=(gcloud run jobs describe "$JOB" --project "$PROJECT" --region "$REGION"
                 --account "$ACCOUNT" --format json)
-    perfil_defs=("$JOB_LIGERO|$LIGERO_CPU|$LIGERO_MEM|0" "$JOB_APPLY|$APPLY_CPU|$APPLY_MEM|1")
+    perfil_defs=("$JOB_LIGERO|$LIGERO_CPU|$LIGERO_MEM|0" "$JOB_APPLY|$APPLY_CPU|$APPLY_MEM|1"
+                 "$JOB_INDICE_MAP|$INDICE_MAP_CPU|$INDICE_MAP_MEM|1")
     if [ "$aplicar" != "true" ]; then
         echo "== DRY-RUN perfiles (usa --aplicar para aplicarlo; $JOB NO se modifica) =="
         echo "Lectura de la config base:"; print_cmd export_cmd
