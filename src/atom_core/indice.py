@@ -654,13 +654,23 @@ def _listar_imagenes(input_folder: str, omitidas: "list[str] | None" = None,
     return sorted(rutas)
 
 
+# Tamaños de las imágenes de origen `gs://` tal como vinieron del listado (un
+# solo `list_blobs`): evitan un `reload()` por imagen en `_construir_fila`.
+# Se rehace en cada listado; el origen no cambia durante el índice.
+_TAMANOS_ORIGEN_GCS: "dict[str, int]" = {}
+
+
 def _listar_imagenes_gcs(carpeta: str) -> list[str]:
+    """Imágenes fuente bajo `carpeta` (recursivo) con UN solo listado del
+    origen; de paso guarda sus tamaños en `_TAMANOS_ORIGEN_GCS`."""
     rutas: list[str] = []
-    for nombre in almacen.listar_ficheros(carpeta):
-        if os.path.splitext(nombre)[1].lower() in EXTS_FUENTE:
-            rutas.append(almacen.unir(carpeta, nombre))
-    for subcarpeta in almacen.listar_subcarpetas(carpeta):
-        rutas.extend(_listar_imagenes_gcs(almacen.unir(carpeta, subcarpeta)))
+    for ruta, tam in almacen.listar_con_tamanos(carpeta).items():
+        if os.path.splitext(ruta)[1].lower() in EXTS_FUENTE:
+            rutas.append(ruta)
+            if tam is not None:
+                _TAMANOS_ORIGEN_GCS[ruta] = int(tam)
+            else:
+                _TAMANOS_ORIGEN_GCS.pop(ruta, None)
     return rutas
 
 
@@ -892,7 +902,8 @@ def _con_reintento_fichero_completo(funcion_pura, buf: bytes, ruta: str):
         # releer el fichero entero no lo arregla; quien llama cae al fallback.
         raise
     except Exception:
-        with open(ruta, 'rb') as fd:
+        # `abrir_para_lectura`: local = la propia ruta; `gs://` = descarga a temporal.
+        with almacen.abrir_para_lectura(ruta) as ruta_local, open(ruta_local, 'rb') as fd:
             buf_completo = fd.read()
         return funcion_pura(buf_completo)
 
@@ -902,11 +913,12 @@ def _motivo_no_dji(dato) -> str | None:
 
     Solo se descarta si el Make se leyó y no contiene 'DJI', o si es un PNG
     sin Make (un PNG nunca es DJI). Make ilegible por error o JPG sin tag
-    Make -> NO se descarta. En `gs://` no se lee la cabecera (sin round-trip
-    extra por foto): solo se filtra por extensión PNG."""
+    Make -> NO se descarta. En `gs://` el Make sale de la misma cabecera por rango
+    que ya se lee para el resto de metadatos (sin lecturas extra); si no salió,
+    solo se filtra por extensión PNG."""
     es_png = dato.ruta.lower().endswith(".png")
     make = (dato.make or "").strip()
-    if almacen.es_uri_gcs(dato.ruta):
+    if almacen.es_uri_gcs(dato.ruta) and not make:
         return "PNG no DJI" if es_png else None
     if make:
         return None if "dji" in make.lower() else f"Make={make}"
@@ -932,9 +944,10 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
     El GPS se lee ahora con una réplica pura en memoria (`_gps_desde_buffer`),
     con el mismo reintento con fichero completo que el resto de campos.
 
-    Las rutas `gs://…` tampoco entran en el atajo (la lectura cruda de bytes
-    solo vale para ficheros locales): siguen el camino de siempre, llamando
-    directamente a las funciones originales."""
+    Las rutas `gs://…` entran en el mismo atajo: UNA sola lectura por rango
+    (`leer_cabecera`, 256 KB) y de ese buffer salen todos los campos (incluidos
+    GPS/gimbal/XMP, `meta_leida=True`), de modo que el cierre no relee el EXIF de
+    la salida. No hay detección de "a medio copiar" (el listado no trae mtime)."""
     nombre = os.path.basename(ruta)
 
     buf = None
@@ -944,6 +957,11 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
         if a_medias:
             return _MetadatosImagen(ruta=ruta, nombre=nombre, timestamp=None,
                                     modelo=None, yaw=None, gps=None, a_medias=True)
+    else:
+        try:
+            buf = almacen.leer_cabecera(ruta, _BYTES_CABECERA)
+        except Exception:  # noqa: BLE001 — sin cabecera: cada campo cae a su función por ruta
+            buf = None
     buf_exif = buf if buf is not None and _exif_entero_en_buffer(buf) else None
 
     timestamp = None
@@ -1021,12 +1039,12 @@ def _leer_metadatos(ruta: str, exif, progress_callback) -> _MetadatosImagen:
             if buf_exif is not None:
                 gps = _con_reintento_fichero_completo(_gps_desde_buffer, buf_exif, ruta)
             else:
-                with open(ruta, 'rb') as fd:
+                with almacen.abrir_para_lectura(ruta) as ruta_local, open(ruta_local, 'rb') as fd:
                     gps = _gps_desde_buffer(fd.read())
         except Exception:  # noqa: BLE001 — sin GPS la fila queda fuera de meta/location, como hoy
             gps = None
 
-    # Solo local: con buffer, gimbal y XMP leídos. `gs://…` o lectura rota ->
+    # Con buffer, gimbal y XMP leídos (local o `gs://…`). Lectura rota ->
     # `meta_leida=False` y el cierre relee el fichero de salida como siempre.
     posicion = None
     meta_leida = buf is not None and gimbal is not None and xmp is not None
@@ -1739,7 +1757,9 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
     # habría con qué comparar la entrega. Un origen ilegible cuenta 0 en vez
     # de tumbar el indexado entero por una estadística.
     try:
-        bytes_origen = almacen.tamano_de(dato.ruta)
+        bytes_origen = _TAMANOS_ORIGEN_GCS.get(dato.ruta)
+        if bytes_origen is None:
+            bytes_origen = almacen.tamano_de(dato.ruta)
     except Exception:
         bytes_origen = 0
 

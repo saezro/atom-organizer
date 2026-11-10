@@ -20,7 +20,9 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 import utils
-from atom_core.almacen import AVISO_GENERALES_SIN_CSV, es_uri_gcs, existe_ruta, tamano_de, unir
+from atom_core.almacen import (
+    AVISO_GENERALES_SIN_CSV, es_uri_gcs, existe_ruta, listar_con_tamanos, tamano_de, unir,
+)
 from atom_core import pares as pares_mod
 from atom_core.manifiesto import ruta_bajo_origen
 from atom_core.indice import NOMBRE_CARPETA_RGB_EXTRA, TIPOS_RGB, _es_pb_generales
@@ -66,10 +68,24 @@ def _agrupar_por_vuelo(filas) -> "dict[tuple[str, str], list]":
     return grupos
 
 
-def _revisar_ruta(ruta_origen: str, ruta: str) -> str | None:
+def _revisar_ruta(ruta_origen: str, ruta: str, listado: "dict[str, int | None] | None" = None) -> str | None:
     """Problema con `ruta` (o None si está bien). Una sola función para poder
     lanzarla en paralelo: cada llamada son 2 round-trips de metadata y en
-    almacenamiento remoto (GCS/SMB) la latencia manda sobre todo lo demás."""
+    almacenamiento remoto (GCS/SMB) la latencia manda sobre todo lo demás.
+
+    Con `listado` (`{URI: tamaño}` de UN solo listado del destino `gs://`) no hay
+    round-trips: existencia y tamaño salen del propio listado. Una ruta fuera del
+    listado se comprueba por el camino de siempre solo si el listado no cubre su
+    prefijo (ver `verificar`)."""
+    if listado is not None and ruta in listado:
+        tam = listado[ruta]
+        if tam is None:
+            return None if tamano_de(ruta) != 0 else f"{ruta_origen}: {ruta} existe pero está vacío."
+        if tam == 0:
+            return f"{ruta_origen}: {ruta} existe pero está vacío."
+        return None
+    if listado is not None:
+        return f"{ruta_origen}: 'hecho' en el manifiesto pero {ruta} no existe en disco."
     if not existe_ruta(ruta):
         return f"{ruta_origen}: 'hecho' en el manifiesto pero {ruta} no existe en disco."
     if tamano_de(ruta) == 0:
@@ -625,9 +641,20 @@ def verificar(manifiesto, cfg, recuentos_csv=None) -> list[str]:
         if fila[campo]
     ]
     if por_comprobar:
+        # Destino `gs://`: UN listado del destino (set de nombres + tamaños) en vez
+        # de un `exists()` + `reload()` por fichero (~240k en una planta). Si hay
+        # rutas fuera de ese destino, o el listado falla, cada ruta va por su cuenta.
+        listado = None
+        destino = str(getattr(cfg, "output_folder", "") or "").rstrip("/")
+        if es_uri_gcs(destino) and all(
+                ruta.startswith(destino + "/") for _o, ruta in por_comprobar):
+            try:
+                listado = listar_con_tamanos(destino)
+            except Exception:  # noqa: BLE001 — sin listado: comprobación individual
+                listado = None
         trabajadores = min(utils.max_io_workers(), len(por_comprobar))
         with ThreadPoolExecutor(max_workers=trabajadores) as executor:
-            for problema in executor.map(lambda par: _revisar_ruta(*par), por_comprobar):
+            for problema in executor.map(lambda par: _revisar_ruta(*par, listado), por_comprobar):
                 if problema is not None:
                     problemas.append(problema)
 

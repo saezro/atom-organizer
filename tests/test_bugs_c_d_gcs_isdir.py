@@ -193,27 +193,20 @@ def test_primera_imagen_almacen_encuentra_muestra_en_gcs_y_corta_pronto():
     assert encontrada == f"gs://{bucket_nombre}/dest/TERMICA/PB1/PB1_V1/DJI_0001_T.JPG"
 
 
-def test_resolve_dron_selector_gcs_encuentra_muestra_y_pasa_ruta_local(tmp_path, monkeypatch):
+def test_resolve_dron_selector_gcs_encuentra_muestra_y_pasa_uri_a_lector_por_rango(tmp_path, monkeypatch):
     """Con `termica_folder` en `gs://…` y una imagen real en el bucket falso,
     `_resolve_dron_selector` debe encontrar la muestra (antes del fix,
     `os.walk` no iteraba nada sobre `gs://…` y `sample` quedaba `None`) y la
-    ruta que le pasa al lector de EXIF debe ser LOCAL (descargada) y existir,
-    no la URI `gs://…` cruda."""
+    URI `gs://…` se la pasa tal cual al lector de EXIF, que es URI-aware y lee
+    la cabecera POR RANGO (no se descarga el objeto entero)."""
     bucket_nombre = "bucket-bug-d-resolve"
     bucket = _sembrar_almacen_gcs(bucket_nombre)
     bucket.objetos["dest/TERMICA/PB1/PB1_V1/DJI_0001_T.JPG"] = b"contenido-jpg"
 
-    import os as _os
-
     rutas_recibidas = []
-    existia_en_el_momento_de_la_llamada = []
 
     def _get_model_falso(ruta, progress_callback):
         rutas_recibidas.append(ruta)
-        # Se comprueba AQUÍ, dentro del `with abrir_para_lectura`: el
-        # temporal se borra al salir del bloque, así que fuera de esta
-        # llamada ya no existiría aunque el fix fuese correcto.
-        existia_en_el_momento_de_la_llamada.append(_os.path.exists(ruta))
         return "Matrice 4T"
 
     # Base de recursos vacía: en el repo `programas_externos/DJI` SÍ existe (dev), y
@@ -231,7 +224,6 @@ def test_resolve_dron_selector_gcs_encuentra_muestra_y_pasa_ruta_local(tmp_path,
 
     assert len(rutas_recibidas) == 1, "no se encontró ninguna muestra térmica"
     ruta_pasada_a_exif = rutas_recibidas[0]
-    assert not str(ruta_pasada_a_exif).startswith("gs://"), (
-        "la ruta pasada al lector de EXIF debe ser LOCAL, no la URI gs:// cruda"
+    assert str(ruta_pasada_a_exif).startswith("gs://"), (
+        "el lector de EXIF URI-aware recibe la URI y lee por rango"
     )
-    assert existia_en_el_momento_de_la_llamada == [True]

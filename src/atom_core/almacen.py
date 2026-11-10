@@ -346,6 +346,28 @@ def listar_ficheros(ruta: str) -> list[str]:
     )
 
 
+def listar_con_tamanos(ruta: str) -> "dict[str, int | None]":
+    """`{URI completa: tamaño}` de todo fichero bajo `ruta` (recursivo) con UN
+    solo listado. Solo `gs://…` (el tamaño viene en el propio `list_blobs`; en
+    local el `stat` ya es barato). Si el backend no sabe dar tamaños, cae a
+    `listar` con tamaño `None`."""
+    if not es_uri_gcs(ruta):
+        raise ValueError("listar_con_tamanos solo vale con gs://")
+    almacen, prefijo = abrir_almacen(ruta)
+    base = ruta.rstrip("/")
+    con_tamanos = getattr(almacen, "listar_con_tamanos", None)
+    if con_tamanos is not None:
+        pares = con_tamanos(prefijo).items()
+    else:
+        pares = ((r, None) for r in almacen.listar(prefijo))
+    salida: "dict[str, int | None]" = {}
+    for relativo, tam in pares:
+        resto = relativo[len(prefijo):].strip("/") if prefijo else relativo
+        if resto:
+            salida[f"{base}/{resto}"] = tam
+    return salida
+
+
 def listar_subcarpetas(ruta: str) -> list[str]:
     """Nombres de las subcarpetas DIRECTAS de `ruta` (no recursivo), en orden
     alfabético."""

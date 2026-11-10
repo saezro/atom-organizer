@@ -180,7 +180,14 @@ class GeneralInformationFromImage:
                 f.seek(0)
                 tags = exifread.process_file(f, details=True)
             f.close()
-            return str(tags["Image Model"])
+            modelo = tags.get("Image Model")
+            if modelo is None:
+                self.organizer_logger.logger.warning("La imagen {0} no trae el tag 'Image Model'.".format(filename))
+                progress_callback.emit("ERROR: La imagen {0} no trae el tag 'Image Model' y no se puede obtener el modelo de dron.".format(filename))
+                self.error_exif_data += 1
+                self.images_error_exif_data.append(filename)
+                return None
+            return str(modelo)
         except FileNotFoundError as f:
             self.organizer_logger.logger.warning('------------------------------------------------------------------------------------------------------')
             self.organizer_logger.logger.error("ERROR: No se encuentra la imagen {0} para poder obtener el modelo de dron.".format(filename))
