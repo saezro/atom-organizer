@@ -271,7 +271,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Parte del organizado (motor índice -> manifiesto -> apply "
                              "-> cierre) a ejecutar. `completo` (por defecto) = las tres "
                              "seguidas, como siempre. Para Cloud Run, en tres ejecuciones "
-                             "encadenadas: `indice` (1 tarea) -> `apply` (N tareas, "
+                             "encadenadas: `indice` (N tareas: cada una lee su tramo y la "
+                             "última en terminar hace el reduce; `indice-reduce` = solo "
+                             "ese reduce, a mano, 1 tarea) -> `apply` (N tareas, "
                              "reparto por imagen con --shard-count/CLOUD_RUN_TASK_COUNT; "
                              "`rgb` y `termica` son sus mitades por separado) -> `cierre` "
                              "(1 tarea, funde los deltas de las tareas de apply).")
@@ -280,6 +282,11 @@ def main(argv: list[str] | None = None) -> int:
                              "los deltas de cada tarea van a "
                              "<destino>/.organizado/shards/<ejecucion>/<shard>.jsonl. "
                              "Por defecto, $CLOUD_RUN_EXECUTION (que manda si existe).")
+    parser.add_argument("--ejecucion-indice", dest="ejecucion_indice", default=None,
+                        help="Solo con --fase indice-reduce: identificador de la ejecución "
+                             "de `indice` (map) cuyos parciales se reducen "
+                             "(<destino>/.organizado/indice/<ejecucion>/). Por defecto, "
+                             "el valor de --ejecucion / $CLOUD_RUN_EXECUTION.")
     parser.add_argument("--modo-destino", dest="modo_destino",
                         choices=["sobrescribir", "obviar"], default="sobrescribir",
                         help="Que hacer con lo que ya haya en el destino. "
@@ -374,6 +381,7 @@ def main(argv: list[str] | None = None) -> int:
                     "etapa": args.etapa,
                     "fase": args.fase,
                     "ejecucion": sharding.ejecucion_desde_entorno(explicita=args.ejecucion),
+                    "ejecucion_indice": args.ejecucion_indice or "",
                     "modo_destino": args.modo_destino,
                     "shard_index": shard_index, "shard_count": shard_count}
     avanzado: dict = {}

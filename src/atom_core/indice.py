@@ -1890,6 +1890,176 @@ def _dias_sin_estadillo(metadatos, ventanas) -> list[tuple[str, int]]:
         return []
 
 
+@dataclass
+class _LoteLeido:
+    """Resultado de leer las cabeceras de un conjunto de imágenes (todo el
+    listado, o el tramo de una task de map). Misma información y mismo orden
+    que las listas locales que `construir_indice` tenía en línea.
+
+    `registros` es la serialización por imagen (orden de la entrada) que se
+    vuelca al parcial del map: `(ruta, estado, motivo, dato)`; `omitidas` y
+    `no_dji` ya van en el orden de siempre (primera pasada, luego reintento)."""
+
+    metadatos: list
+    no_dji: list
+    omitidas: list
+    no_disponibles: list
+    registros: list
+
+
+def _leer_lote(imagenes: list[str], exif, progress_callback, emisor, hilos: int,
+               timeout_s: float, timeout_reintento_s: float, watchdog_s: float) -> _LoteLeido:
+    """Lee EXIF/XMP de `imagenes` (HILOS: trabajo I/O-bound, dimensionado por
+    `max_io_workers`, hasta 32; no `workers_para_lote`, que calcula PROCESOS que
+    decodifican imágenes enteras y topa por RAM). Cada lectura con tiempo máximo
+    (`_ejecutar_con_limite`): un fichero de Drive sin descargar ya no cuelga la
+    fase; los vencidos se reintentan al final y los que siguen sin responder
+    quedan en `no_disponibles`."""
+    metadatos: list = []
+    no_dji: list[tuple[str, str]] = []
+    omitidas: list[str] = []
+    lentas: list[str] = []
+    estado_de: dict[str, tuple[str, str | None]] = {}
+    if imagenes:
+        emisor.iniciar("Leer EXIF/XMP", len(imagenes), barra=(5, 75))
+        lecturas = _ejecutar_con_limite(
+            imagenes, lambda ruta: _leer_metadatos(ruta, exif, progress_callback),
+            hilos, timeout_s, emisor, watchdog_s)
+        for ruta, lectura in zip(imagenes, lecturas):
+            if lectura is _VENCIDO:
+                lentas.append(ruta)
+            elif lectura.a_medias:
+                omitidas.append(ruta)
+                estado_de[ruta] = ("a_medias", None)
+            elif _motivo_no_dji(lectura):
+                no_dji.append((ruta, _motivo_no_dji(lectura)))
+                estado_de[ruta] = ("no_dji", _motivo_no_dji(lectura))
+            else:
+                metadatos.append(lectura)
+                estado_de[ruta] = ("ok", lectura)
+
+    no_disponibles: list[str] = []
+    if lentas:
+        def _filtrar_y_leer(ruta: str):
+            lectura = _leer_metadatos(ruta, exif, progress_callback)
+            return None if lectura.a_medias else lectura
+
+        emisor.aviso(
+            f"\nÍndice · {len(lentas)} fichero(s) lentos (más de {int(timeout_s)} s); "
+            f"reintento con {int(timeout_reintento_s)} s por fichero.\n")
+        emisor.iniciar("Reintentar lentas", len(lentas))
+        reintentos = _ejecutar_con_limite(lentas, _filtrar_y_leer, hilos,
+                                          timeout_reintento_s, emisor, watchdog_s)
+        for ruta, lectura in zip(lentas, reintentos):
+            if lectura is _VENCIDO:
+                no_disponibles.append(ruta)
+                estado_de[ruta] = ("no_disponible", None)
+            elif lectura is None:
+                omitidas.append(ruta)
+                estado_de[ruta] = ("a_medias_reintento", None)
+            elif _motivo_no_dji(lectura):
+                no_dji.append((ruta, _motivo_no_dji(lectura)))
+                estado_de[ruta] = ("no_dji_reintento", _motivo_no_dji(lectura))
+            else:
+                metadatos.append(lectura)
+                estado_de[ruta] = ("ok", lectura)
+        metadatos.sort(key=lambda dato: dato.ruta)
+    registros = []
+    for ruta in imagenes:
+        estado, extra = estado_de[ruta]
+        registros.append((ruta, estado, extra if isinstance(extra, str) else None,
+                          extra if estado == "ok" else None))
+    return _LoteLeido(metadatos, no_dji, omitidas, no_disponibles, registros)
+
+
+def _lote_desde_parciales(imagenes: list[str], destino: str, reduce_desde: dict,
+                          emisor) -> _LoteLeido:
+    """El `_LoteLeido` de TODO el listado a partir de los parciales del map,
+    con las listas en el mismo orden que dejaría `_leer_lote` sobre el listado
+    entero (primera pasada por posición, luego los reintentos por posición)."""
+    from atom_core import indice_mapreduce as mr  # noqa: PLC0415 - evita ciclo
+
+    ejecucion = str(reduce_desde["ejecucion"])
+    n_tasks = reduce_desde.get("shard_count") or mr.shard_count_de(destino, ejecucion)
+    emisor.aviso(f"\nÍndice · reduce: uniendo {n_tasks} parcial(es) de la ejecución {ejecucion}…\n")
+    registros = mr.cargar_parciales(destino, ejecucion, int(n_tasks), imagenes)
+    metadatos: list = []
+    no_dji: list[tuple[str, str]] = []
+    omitidas: list[str] = []
+    omitidas_reintento: list[str] = []
+    no_dji_reintento: list[tuple[str, str]] = []
+    no_disponibles: list[str] = []
+    for r in registros:
+        estado, ruta = r["estado"], r["ruta"]
+        if estado == "ok":
+            metadatos.append(mr.dato_de_json(r["dato"]))
+        elif estado == "a_medias":
+            omitidas.append(ruta)
+        elif estado == "a_medias_reintento":
+            omitidas_reintento.append(ruta)
+        elif estado == "no_dji":
+            no_dji.append((ruta, r["motivo"]))
+        elif estado == "no_dji_reintento":
+            no_dji_reintento.append((ruta, r["motivo"]))
+        else:
+            no_disponibles.append(ruta)
+    return _LoteLeido(metadatos, no_dji + no_dji_reintento, omitidas + omitidas_reintento,
+                      no_disponibles, [])
+
+
+def mapear_indice(
+    cfg,
+    exif,
+    progress_callback,
+    progress_bar,
+    progress_summarize,
+    *,
+    shard_index: int,
+    shard_count: int,
+    ejecucion: str,
+    max_hilos: int | None = None,
+    timeout_s: float | None = None,
+    timeout_reintento_s: float | None = None,
+    watchdog_s: float | None = None,
+    intervalo_progreso_s: float | None = None,
+) -> dict:
+    """MAP del índice repartido: lista el origen (todas las tasks igual: lista
+    ordenada), lee las cabeceras de SU tramo contiguo y escribe su parcial
+    `<destino>/.organizado/indice/<ejecucion>/map-<k>.jsonl.gz`. No toca el
+    manifiesto ni los estadillos. Devuelve `{"leidas", "total", "parcial",
+    "imagenes", "tamanos_origen"}` (`imagenes` = el listado entero, que el reduce
+    reutiliza si esta task lo hace)."""
+    from atom_core import indice_mapreduce as mr  # noqa: PLC0415 - evita ciclo
+
+    progress_summarize.emit("---> SUBPROCESO: Índice")
+    timeout_s = timeout_s or _env_float("ATOM_INDICE_TIMEOUT_S", TIMEOUT_FICHERO_S)
+    timeout_reintento_s = timeout_reintento_s or _env_float(
+        "ATOM_INDICE_TIMEOUT_REINTENTO_S", TIMEOUT_REINTENTO_S)
+    watchdog_s = watchdog_s or _env_float("ATOM_INDICE_WATCHDOG_S", WATCHDOG_S)
+    emisor = _EmisorIndice(
+        progress_callback, progress_summarize, progress_bar,
+        intervalo_progreso_s or _env_float("ATOM_INDICE_PROGRESO_S", INTERVALO_PROGRESO_S))
+    hilos = max_hilos or utils.max_io_workers()
+    tamanos_origen: dict[str, int] = {}
+    imagenes = _listar_imagenes(cfg.input_folder, [], _Limite(emisor), tamanos_origen)
+    cancelacion.comprobar()
+    inicio, fin = mr.tramo(len(imagenes), shard_index, shard_count)
+    emisor.aviso(
+        f"\nÍndice · map {shard_index + 1}/{shard_count}: imágenes {inicio}-{fin} "
+        f"de {len(imagenes)}.\n")
+    lote = _leer_lote(imagenes[inicio:fin], exif, progress_callback, emisor, hilos,
+                      timeout_s, timeout_reintento_s, watchdog_s)
+    registros = [{"ruta": ruta, "estado": estado, "motivo": motivo,
+                  "dato": None if dato is None else mr.dato_a_json(dato)}
+                 for ruta, estado, motivo, dato in lote.registros]
+    ruta_parcial = mr.escribir_parcial(
+        cfg.output_folder, ejecucion, shard_index, shard_count, imagenes, registros)
+    emisor.aviso(f"\nÍndice · parcial escrito: {ruta_parcial}\n")
+    progress_bar.emit(100)
+    return {"leidas": fin - inicio, "total": len(imagenes), "parcial": ruta_parcial,
+            "imagenes": imagenes, "tamanos_origen": tamanos_origen}
+
+
 def construir_indice(
     cfg,
     pipeline,
@@ -1904,6 +2074,7 @@ def construir_indice(
     timeout_reintento_s: float | None = None,
     watchdog_s: float | None = None,
     intervalo_progreso_s: float | None = None,
+    reduce_desde: "dict | None" = None,
 ) -> dict:
     """Construye el manifiesto completo del run: una pasada de metadatos
     sobre `cfg.input_folder`, cruzada con el estadillo, decidiendo vuelo,
@@ -1920,6 +2091,11 @@ def construir_indice(
     `timeout_reintento_s` (`ATOM_INDICE_TIMEOUT_REINTENTO_S`, 180 s) y los que
     siguen sin responder se devuelven en `no_disponibles` y se informan como
     error; NO entran en el manifiesto (se recogerán en otra tanda).
+
+    `reduce_desde` (índice map/reduce, ver `indice_mapreduce`): en vez de leer
+    las cabeceras, une los parciales que dejaron las N tasks de map. Es
+    `{"ejecucion": str, "shard_count": int | None}` (`None` = leerlo de `map-0`).
+    El resto (estadillos, vuelos, giro, nombres, manifiesto) es EL MISMO código.
     """
     progress_summarize.emit("---> SUBPROCESO: Índice")
     timeout_s = timeout_s or _env_float("ATOM_INDICE_TIMEOUT_S", TIMEOUT_FICHERO_S)
@@ -1964,7 +2140,6 @@ def construir_indice(
             "Revisa los estadillos de origen antes de reintentar.")
 
     omitidas_copiandose: list[str] = []
-    lentas: list[str] = []
     tamanos_origen: dict[str, int] = {}  # por ejecución (origen gs://), ver `_listar_imagenes_gcs`
     imagenes = _listar_imagenes(
         cfg.input_folder, omitidas_copiandose,
@@ -2037,52 +2212,15 @@ def construir_indice(
 
     ventanas = [v for lista in ventanas_por_carpeta.values() for v in lista]
 
-    # Son HILOS leyendo EXIF/XMP: trabajo I/O-bound, así que el dimensionado es
-    # `max_io_workers` (hasta 32 hilos), no `workers_para_lote`, que calcula
-    # PROCESOS que decodifican imágenes enteras y topa por RAM (600 MB/worker).
-    # El resto del código ya usa este helper para este mismo patrón
-    # (`pipeline.py:1642`, `exif.py:985`); el índice era el único que no.
-    # Cada lectura con tiempo máximo (`_ejecutar_con_limite`): un fichero de
-    # Drive sin descargar ya no cuelga la fase.
-    metadatos = []
-    no_dji: list[tuple[str, str]] = []
-    if imagenes:
-        emisor.iniciar("Leer EXIF/XMP", len(imagenes), barra=(5, 75))
-        lecturas = _ejecutar_con_limite(
-            imagenes, lambda ruta: _leer_metadatos(ruta, exif, progress_callback),
-            hilos, timeout_s, emisor, watchdog_s)
-        for ruta, lectura in zip(imagenes, lecturas):
-            if lectura is _VENCIDO:
-                lentas.append(ruta)
-            elif lectura.a_medias:
-                omitidas_copiandose.append(ruta)
-            elif _motivo_no_dji(lectura):
-                no_dji.append((ruta, _motivo_no_dji(lectura)))
-            else:
-                metadatos.append(lectura)
-
-    no_disponibles: list[str] = []
-    if lentas:
-        def _filtrar_y_leer(ruta: str):
-            lectura = _leer_metadatos(ruta, exif, progress_callback)
-            return None if lectura.a_medias else lectura
-
-        emisor.aviso(
-            f"\nÍndice · {len(lentas)} fichero(s) lentos (más de {int(timeout_s)} s); "
-            f"reintento con {int(timeout_reintento_s)} s por fichero.\n")
-        emisor.iniciar("Reintentar lentas", len(lentas))
-        reintentos = _ejecutar_con_limite(lentas, _filtrar_y_leer, hilos,
-                                          timeout_reintento_s, emisor, watchdog_s)
-        for ruta, lectura in zip(lentas, reintentos):
-            if lectura is _VENCIDO:
-                no_disponibles.append(ruta)
-            elif lectura is None:
-                omitidas_copiandose.append(ruta)
-            elif _motivo_no_dji(lectura):
-                no_dji.append((ruta, _motivo_no_dji(lectura)))
-            else:
-                metadatos.append(lectura)
-        metadatos.sort(key=lambda dato: dato.ruta)
+    if reduce_desde is None:
+        lote = _leer_lote(imagenes, exif, progress_callback, emisor, hilos, timeout_s,
+                          timeout_reintento_s, watchdog_s)
+    else:
+        lote = _lote_desde_parciales(imagenes, cfg.output_folder, reduce_desde, emisor)
+    metadatos = lote.metadatos
+    no_dji = lote.no_dji
+    omitidas_copiandose.extend(lote.omitidas)
+    no_disponibles = lote.no_disponibles
     rutas_leidas = [dato.ruta for dato in metadatos]
     for directorio, rutas_grupo, ventanas_grupo in grupos_pendientes:
         if any(_bajo_carpeta(directorio, imagen) for imagen in rutas_leidas):
