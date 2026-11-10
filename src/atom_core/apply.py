@@ -497,7 +497,8 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
     """
     nombre = os.path.basename(fila["ruta_origen"])
     try:
-        bytes_origen = _tamano_ruta(fila["ruta_origen"])
+        # Si el manifiesto ya trae el tamaño no se pide por metadatos GCS (1 llamada/imagen).
+        bytes_origen = int(fila.get("bytes_origen") or 0) or _tamano_ruta(fila["ruta_origen"])
     except Exception:  # noqa: BLE001 — gs:// puede dar errores del SDK, no solo OSError
         bytes_origen = 0
 

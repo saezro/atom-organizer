@@ -198,6 +198,18 @@ def _cpu_segundos() -> float:
     return propio.ru_utime + propio.ru_stime + hijos.ru_utime + hijos.ru_stime
 
 
+def _rss_pico_mb():
+    """Pico RSS (MB) del proceso principal + hijos esperados (máximo de UN hijo, no
+    suma). `ru_maxrss` viene en KB en Linux. None si no hay `resource` (Windows)."""
+    try:
+        import resource  # noqa: PLC0415
+        kb = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+              + resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)
+        return round(kb / 1024, 1)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _emitir_telemetria(host, cfg, estadisticas: dict, pared_s: float, cpu_s: float,
                        ok: bool, progress_callback) -> None:
     """UNA línea JSON a stdout al final de la task (la lee `scripts/nube_prueba.sh`) y
@@ -208,6 +220,11 @@ def _emitir_telemetria(host, cfg, estadisticas: dict, pared_s: float, cpu_s: flo
         ejecucion = str(getattr(host, "ejecucion", "") or "").strip()
         shard_index = int(getattr(host, "shard_index", 0))
         vcpu = utils.cpus_efectivas()
+        # `rss_pico_mb` = pico RSS del proceso principal + el MAYOR de sus hijos
+        # (RUSAGE_CHILDREN.ru_maxrss es el máximo de un hijo, NO la suma).
+        # `mem_limite_mb` = límite de memoria del cgroup, si existe. Ambos opcionales.
+        rss_pico = _rss_pico_mb()
+        mem_limite = utils.memoria_limite_cgroup_mb()
         dato = {
             "telemetria": "organizer", "fase": fase, "ejecucion": ejecucion,
             "shard_index": shard_index, "shard_count": int(getattr(host, "shard_count", 1)),
@@ -215,6 +232,10 @@ def _emitir_telemetria(host, cfg, estadisticas: dict, pared_s: float, cpu_s: flo
             "pared_s": round(pared_s, 2), "cpu_s": round(cpu_s, 2), "vcpu": vcpu,
             "utilizacion": round(cpu_s / (vcpu * pared_s), 3) if pared_s > 0 else 0.0,
         }
+        if rss_pico is not None:
+            dato["rss_pico_mb"] = rss_pico
+        if mem_limite is not None:
+            dato["mem_limite_mb"] = mem_limite
         # Índice map/reduce: marca si ESTA task hizo además el reduce (la última en terminar).
         if "reduce" in estadisticas:
             dato["reduce"] = bool(estadisticas["reduce"])
@@ -1619,7 +1640,9 @@ class PipelinePhasesMixin:
             r = aplicar_rgb_fn(manifiesto, cfg, pipeline, progress_callback, progress_bar,
                        progress_summarize,
                        controlador=paralelismo_mod.ControladorAdaptativo(
-                           maximo=paralelismo_mod.maximo_rgb(),
+                           maximo=paralelismo_mod.maximo_rgb(
+                               remoto=es_uri_gcs(str(cfg.input_folder or ""))
+                               or es_uri_gcs(str(cfg.output_folder or ""))),
                            etiqueta="RGB", tope_hdd=paralelismo_mod.TOPE_WORKERS_HDD),
                        contador_rotacion=contador_rotacion,
                        **extra_rgb)

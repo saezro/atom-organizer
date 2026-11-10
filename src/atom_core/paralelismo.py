@@ -20,6 +20,7 @@ número. Quien lo consume aforo un semáforo con ese número (un
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -115,13 +116,41 @@ def maximo_cpu_bound() -> int:
     return utils.workers_para_lote(mb_por_worker=0)
 
 
-def maximo_rgb() -> int:
+def maximo_rgb(remoto: bool = False) -> int:
     """Techo de procesos de la fase RGB: los núcleos utilizables (`maximo_cpu_bound`)
     acotados además por la RAM disponible a razón de `utils.MB_POR_WORKER` por
     worker, sin bajar de 1. Con `mb_por_worker=0` un portátil con poca RAM libre
     abría un proceso por núcleo con JPG de 48 MP dentro y Windows mataba workers
-    (`BrokenProcessPool`). El `tope_hdd` del controlador se sigue aplicando aparte."""
-    return max(1, min(maximo_cpu_bound(), utils.workers_para_lote(utils.MB_POR_WORKER)))
+    (`BrokenProcessPool`). El `tope_hdd` del controlador se sigue aplicando aparte.
+
+    Cloud Run con origen o destino `gs://` (`remoto=True`): cada worker pasa parte
+    del tiempo esperando a GCS, así que se permite sobre-suscribir a 2x vCPU
+    (medido: utilización RGB 0,61), acotado por la RAM del cgroup con el mismo
+    presupuesto por worker. `ATOM_RGB_WORKERS` (entero >= 1) manda sobre todo."""
+    forzado = _rgb_workers_env()
+    if forzado is not None:
+        return forzado
+    base = max(1, min(maximo_cpu_bound(), utils.workers_para_lote(utils.MB_POR_WORKER)))
+    if remoto and en_cloud_run():
+        por_cpu = 2 * utils.cpus_efectivas()
+        libre = utils.memoria_cgroup_mb()
+        por_ram = por_cpu if libre is None else int(libre // utils.MB_POR_WORKER)
+        return max(base, 1, min(por_cpu, por_ram))
+    return base
+
+
+def en_cloud_run() -> bool:
+    """¿Corre dentro de un Cloud Run Job? (`CLOUD_RUN_JOB` o `CLOUD_RUN_EXECUTION`)."""
+    return bool(os.environ.get("CLOUD_RUN_JOB") or os.environ.get("CLOUD_RUN_EXECUTION"))
+
+
+def _rgb_workers_env() -> Optional[int]:
+    """Override `ATOM_RGB_WORKERS`: entero >= 1, si no es válido se ignora."""
+    try:
+        valor = int(os.environ.get("ATOM_RGB_WORKERS", "").strip())
+    except ValueError:
+        return None
+    return valor if valor >= 1 else None
 
 
 @dataclass(frozen=True)

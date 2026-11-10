@@ -1352,7 +1352,8 @@ def _en_cloud_run() -> bool:
     trabaja. En un contenedor headless no hay interfaz que proteger y el vCPU reservado
     es capacidad alquilada que se queda parada, así que ahí no se reserva nada.
     """
-    return bool(os.environ.get("CLOUD_RUN_TASK_INDEX") or os.environ.get("K_SERVICE"))
+    return bool(os.environ.get("CLOUD_RUN_TASK_INDEX") or os.environ.get("K_SERVICE")
+                or os.environ.get("CLOUD_RUN_JOB") or os.environ.get("CLOUD_RUN_EXECUTION"))
 
 
 def _leer_texto(ruta: str):
@@ -1391,6 +1392,9 @@ def cpus_efectivas() -> int:
     except (AttributeError, OSError):
         n = os.cpu_count() or 1
     cuota = _cuota_cgroup_cpu()
+    if cuota and _en_cloud_run():
+        # En Cloud Run la cuota es lo que se paga; la afinidad a veces da 3 con 4 vCPU.
+        return max(1, cuota)
     return max(1, min(n, cuota) if cuota else n)
 
 
@@ -1411,6 +1415,21 @@ def memoria_cgroup_mb():
         except ValueError:
             continue
         return max(0.0, (limite_b - uso_b) / (1024 * 1024))
+    return None
+
+
+def memoria_limite_cgroup_mb():
+    """Límite de RAM (MB) del cgroup (`memory.max` v2 / `limit_in_bytes` v1), o None."""
+    for ruta in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        limite = _leer_texto(ruta)
+        if limite is None or limite == "max":
+            continue
+        try:
+            b = int(limite)
+        except ValueError:
+            continue
+        if b < 1 << 60:
+            return round(b / (1024 * 1024), 1)
     return None
 
 
