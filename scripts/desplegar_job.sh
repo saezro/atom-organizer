@@ -133,6 +133,10 @@ c = ts["containers"][0]
 c.setdefault("resources", {}).setdefault("limits", {}).update(cpu=cpu, memory=mem)
 if imagen:
     c["image"] = imagen
+# Valvula persistente: sin ella el Job aborta en Cloud Run si falta telemetria.
+env = [e for e in c.get("env", []) if e.get("name") != "ORGANIZER_TELEMETRIA_OPCIONAL"]
+env.append({"name": "ORGANIZER_TELEMETRIA_OPCIONAL", "value": "1"})
+c["env"] = env
 d["spec"]["template"]["spec"]["taskCount"] = 1
 json.dump(d, sys.stdout, indent=1)
 ' "$@"
@@ -154,7 +158,7 @@ if [ "$perfiles" = "true" ]; then
             echo
             echo "Job $n (cpu=$c mem=$m maxRetries=$r timeout=21600s imagen=${img_arg:-<la de $JOB>}):"
             echo "  <JSON de $JOB transformado> | gcloud run jobs replace <fichero.json> --project $PROJECT --region $REGION --account $ACCOUNT"
-            echo "  (si no existe, replace lo crea; mismos env y SA que $JOB)"
+            echo "  (si no existe, replace lo crea; mismos env y SA que $JOB, mas ORGANIZER_TELEMETRIA_OPCIONAL=1)"
         done
         exit 0
     fi

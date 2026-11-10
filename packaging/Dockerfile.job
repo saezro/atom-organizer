@@ -56,9 +56,9 @@ COPY config/ ./config/
 # `resolucion_desde_raw` (deduce la resolucion termica del tamano del .raw en vez
 # de hardcodear 640x512). Sin este fichero la conversion a TIFF muere con
 # ModuleNotFoundError en la primera imagen.
-COPY src/organize_cli.py src/external_tools.py src/utils.py src/version.py \
-     src/dji_irp_linux.py src/pipeline.py src/exif.py src/rjpeg_a_tiff.py \
-     ./src/
+# Se copian TODOS los src/*.py de primer nivel (no una lista a mano): v3.4.155 salio
+# sin dji_worker_pool.py y las 22 tasks murieron con ModuleNotFoundError.
+COPY src/*.py ./src/
 
 # Solo la parte Linux del SDK DJI (.so). Los .exe y .dll son ~500 KB de peso
 # muerto en una imagen que nunca va a correr en Windows.

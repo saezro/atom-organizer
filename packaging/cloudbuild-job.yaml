@@ -38,6 +38,14 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args: ['build', '-f', 'packaging/Dockerfile.job', '-t', '${_IMAGEN}:${_VERSION}', '.']
 
+  # Smoke dentro de Cloud Build (no local): si falta algun modulo de src/ el build
+  # falla aqui y no llega a publicarse una imagen rota (v3.4.155 salio sin dji_worker_pool).
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['run', '--rm', '--entrypoint', 'python', '${_IMAGEN}:${_VERSION}',
+           '-c', 'import sys; sys.path.insert(0, "src"); import atom_core.apply, pipeline, organize_cli; print("smoke import OK")']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['run', '--rm', '${_IMAGEN}:${_VERSION}', '--help']
+
 images:
   - '${_IMAGEN}:${_VERSION}'
 

@@ -120,6 +120,18 @@ class AlmacenGCS:
         finally:
             ruta_temporal.unlink(missing_ok=True)
 
+    def leer_rango(self, ruta: str, n: int) -> bytes:
+        """Primeros `n` bytes del objeto con UNA petición `Range` (sin descargarlo entero)."""
+        blob = self.bucket.blob(self._clave(ruta))
+        try:
+            return blob.download_as_bytes(start=0, end=n - 1)
+        except FileNotFoundError:
+            raise
+        except Exception as exc:
+            if _es_no_encontrado(exc):
+                raise FileNotFoundError(ruta) from exc
+            raise
+
     @staticmethod
     def _borrar_subida_corrupta(blob) -> None:
         # No dejar un objeto corrupto que otro paso daria por bueno (existe_ruta).

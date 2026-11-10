@@ -115,18 +115,35 @@ fallos=0
 EJECS=()  # "ejecucion|job|fase|cpu|memgib"
 reg() { EJECS+=("$1|$2|$3|$4|$5"); }
 
+ABORTADA_EN=""
+# fallo_en <ejecucion>...: 0 si alguna tiene tasks fallidas/canceladas
+fallo_en() {
+    [ "$dry" = "true" ] && return 1
+    local e
+    for e in "$@"; do
+        python3 -I -c 'import json,sys; s=json.load(open(sys.argv[1])).get("status",{}); sys.exit(0 if int(s.get("failedCount",0) or 0)>0 or int(s.get("cancelledCount",0) or 0)>0 else 1)' "$WORK/$e.json" && return 0
+    done
+    return 1
+}
+
 echo "== 1/3 indice ($JOB_LIGERO, 1 task) ==" >&2
 E_IDX="$(lanzar "$JOB_LIGERO" indice 1)"; reg "$E_IDX" "$JOB_LIGERO" indice "$LIGERO_CPU" "$LIGERO_MEM_GIB"
 esperar "$E_IDX"
+if fallo_en "$E_IDX"; then ABORTADA_EN="indice"; echo "!! fase indice FALLO: se aborta (no se lanzan rgb/termica/cierre)" >&2; fi
 
+if [ -z "$ABORTADA_EN" ]; then
 echo "== 2/3 rgb ($N_RGB) || termica ($N_TER) ($JOB_APPLY) ==" >&2
 E_RGB="$(lanzar "$JOB_APPLY" rgb "$N_RGB")";  reg "$E_RGB" "$JOB_APPLY" rgb "$APPLY_CPU" "$APPLY_MEM_GIB"
 E_TER="$(lanzar "$JOB_APPLY" termica "$N_TER")"; reg "$E_TER" "$JOB_APPLY" termica "$APPLY_CPU" "$APPLY_MEM_GIB"
 esperar "$E_RGB" "$E_TER"
+if fallo_en "$E_RGB" "$E_TER"; then ABORTADA_EN="rgb/termica"; echo "!! fase rgb/termica FALLO: se aborta (no se lanza cierre)" >&2; fi
+fi
 
+if [ -z "$ABORTADA_EN" ]; then
 echo "== 3/3 cierre ($JOB_LIGERO, 1 task) ==" >&2
 E_CIE="$(lanzar "$JOB_LIGERO" cierre 1)"; reg "$E_CIE" "$JOB_LIGERO" cierre "$LIGERO_CPU" "$LIGERO_MEM_GIB"
 esperar "$E_CIE"
+fi
 
 if [ "$dry" = "true" ]; then
     echo "+ telemetria por ejecucion: ${GC[*]} logging read 'resource.type=\"cloud_run_job\" AND labels.\"run.googleapis.com/execution_name\"=\"<EJEC>\" AND (textPayload:\"pared_s\" OR jsonPayload.pared_s:*)' --project $PROJECT --format json" >&2
@@ -147,11 +164,11 @@ done
 "${GC[@]}" storage cat "$DESTINO/.organizado/telemetria/*.json" > "$WORK/destino_telemetria.txt" 2>/dev/null || : > "$WORK/destino_telemetria.txt"
 printf '%s\n' "${EJECS[@]}" > "$WORK/ejecs.txt"
 
-python3 -I - "$WORK" "$OUT_JSON" "$n_img" <<'PY'
+python3 -I - "$WORK" "$OUT_JSON" "$n_img" "$ABORTADA_EN" <<'PY'
 import json, sys, os, re
 from datetime import datetime
 from zoneinfo import ZoneInfo
-work, out, n_img = sys.argv[1:4]
+work, out, n_img, abortada_en = sys.argv[1:5]
 MAD = ZoneInfo("Europe/Madrid")
 def ts(s):
     return datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
@@ -214,7 +231,7 @@ for linea in open(os.path.join(work, "ejecs.txt")).read().split("\n"):
         utilizacion_media=round(sum(utils) / len(utils), 3) if utils else None,
         coste_usd=round(coste, 4), telemetria=tel))
 todas = [u for x in ejecs for u in ([t["utilizacion"] for t in x["telemetria"] if t.get("utilizacion") is not None])]
-resumen = dict(imagenes_origen=n_img, ejecuciones=ejecs, coste_total_usd=round(tot_cost, 4),
+resumen = dict(abortada_en=abortada_en or None, imagenes_origen=n_img, ejecuciones=ejecs, coste_total_usd=round(tot_cost, 4),
     tasks_fallidas_total=tot_fallidas,
     utilizacion_media=round(sum(map(float, todas)) / len(todas), 3) if todas else None)
 json.dump(resumen, open(out, "w"), indent=1, ensure_ascii=False)
@@ -222,7 +239,8 @@ print(f"{'fase':8} {'ejecucion':34} {'inicio':19} {'fin':19} {'dur_s':>7} {'task
 for x in ejecs:
     u = "-" if x["utilizacion_media"] is None else f"{x['utilizacion_media']:.2f}"
     print(f"{x['fase']:8} {x['ejecucion']:34} {x['inicio'] or '-':19} {x['fin'] or '-':19} {x['duracion_s']:7.0f} {x['tasks']:5d} {x['tasks_fallidas']:4d} {u:>5} {x['coste_usd']:8.4f}")
+if abortada_en: print(f"ABORTADA en fase: {abortada_en}")
 print(f"TOTAL coste={tot_cost:.4f} USD | fallidas={tot_fallidas} | utilizacion media={resumen['utilizacion_media']}")
 print("JSON:", out)
-sys.exit(1 if tot_fallidas else 0)
+sys.exit(1 if (tot_fallidas or abortada_en) else 0)
 PY
