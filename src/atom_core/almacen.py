@@ -242,6 +242,31 @@ def abrir_para_lectura(ruta: str):
         yield Path(ruta)
 
 
+def leer_cabecera(ruta: str, n: int) -> bytes:
+    """Primeros `n` bytes de `ruta` (menos si el fichero es más corto).
+
+    Local: `open` + `read(n)`. `gs://`: lectura por RANGO (`Almacen.leer_rango`,
+    una petición HTTP con `Range`, sin descargar el objeto); si el almacén no
+    lo soporta o el rango falla (p. ej. 416 en objeto vacío) se lee el objeto
+    ENTERO vía `abrir_local` y se recorta. Un objeto inexistente lanza
+    `FileNotFoundError`."""
+    if not es_uri_gcs(ruta):
+        with open(ruta, "rb") as fd:
+            return fd.read(n)
+    almacen, prefijo = abrir_almacen(ruta)
+    leer_rango = getattr(almacen, "leer_rango", None)
+    if leer_rango is not None:
+        try:
+            return leer_rango(prefijo, n)
+        except FileNotFoundError:
+            raise
+        except Exception:  # noqa: BLE001 — rango no soportado/416: objeto entero
+            pass
+    with almacen.abrir_local(prefijo) as ruta_local:
+        with open(ruta_local, "rb") as fd:
+            return fd.read(n)
+
+
 def descargar_con_generacion(origen_gcs: str, destino_local: "str | Path") -> int:
     """Descarga el objeto `gs://…` a `destino_local` y devuelve su `generation`
     (`0` si no existe; entonces no se escribe nada). Solo `gs://`."""

@@ -1364,19 +1364,20 @@ def _leer_texto(ruta: str):
 
 
 def _cuota_cgroup_cpu():
-    """vCPU que el cgroup permite al contenedor (`cpu.max` v2 o `cfs_quota` v1), o None
+    """vCPU que el cgroup permite al contenedor (`cpu.max` v2 o `cfs_quota` v1), REDONDEADA
+    al entero más cercano (Cloud Run da cuotas como 399000/100000 en 4 vCPU: truncar daba 3), o None
     si no hay tope. `os.cpu_count()` ve los núcleos del HOST, no los del contenedor."""
     v2 = _leer_texto("/sys/fs/cgroup/cpu.max")
     try:
         if v2:
             cuota, periodo = v2.split()[:2]
             if cuota != "max":
-                return max(1, int(int(cuota) / int(periodo)))
+                return max(1, round(int(cuota) / int(periodo)))
             return None
         cuota = _leer_texto("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
         periodo = _leer_texto("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
         if cuota and periodo and int(cuota) > 0:
-            return max(1, int(int(cuota) / int(periodo)))
+            return max(1, round(int(cuota) / int(periodo)))
     except (ValueError, ZeroDivisionError):
         pass
     return None

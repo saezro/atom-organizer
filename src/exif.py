@@ -1,3 +1,4 @@
+import io
 import os
 import re
 import math
@@ -18,7 +19,7 @@ import utils
 from atom_core import sharding
 from atom_core.almacen import (
     es_uri_gcs, existe_ruta, es_carpeta, listar_subcarpetas, listar_ficheros,
-    abrir_para_lectura, publicar_en, unir,
+    abrir_para_lectura, publicar_en, unir, leer_cabecera,
     es_carpeta_generales, AVISO_GENERALES_SIN_CSV,
 )
 from geopy import distance
@@ -56,6 +57,13 @@ def leer_bloque_xmp(filename: str) -> str:
     ---------
     - filename - ruta de la imagen de la que leer el XMP.
     """
+    if es_uri_gcs(filename):
+        # gs://: cabecera por rango (256 KB); si no trae el cierre del XMP, objeto entero.
+        cabecera = leer_cabecera(filename, _XMP_HEADER_BYTES).decode('latin-1')
+        if cabecera.find('</x:xmpmeta') != -1:
+            return cabecera
+        with abrir_para_lectura(filename) as ruta_local:
+            return Path(ruta_local).read_bytes().decode('latin-1')
     with open(filename, encoding='latin-1') as fd:
         cabecera = fd.read(_XMP_HEADER_BYTES)
         if cabecera.find('</x:xmpmeta') != -1:
@@ -139,6 +147,9 @@ class GeneralInformationFromImage:
     def get_make(self, filename: str):
         """Fabricante EXIF (`Image Make`) leyendo el fichero entero. `None` si no
         hay tag; los errores de lectura se propagan (quien llama decide)."""
+        if es_uri_gcs(filename):
+            with abrir_para_lectura(filename) as ruta_local:
+                return self.get_make(str(ruta_local))
         with open(filename, 'rb') as f:
             tags = exifread.process_file(f, details=False, stop_tag="Image Make")
             if "Image Make" not in tags:
@@ -150,6 +161,14 @@ class GeneralInformationFromImage:
 
     def get_model(self, filename: str, progress_callback) -> str:
         try:
+            if es_uri_gcs(filename):
+                # gs://: primero la cabecera por rango; si no aparece el modelo, objeto entero.
+                tags = exifread.process_file(io.BytesIO(leer_cabecera(filename, _XMP_HEADER_BYTES)),
+                                             details=False, stop_tag="Image Model")
+                if "Image Model" in tags:
+                    return str(tags["Image Model"])
+                with abrir_para_lectura(filename) as ruta_local:
+                    return self.get_model(str(ruta_local), progress_callback)
             f = open(filename, 'rb')
             # details=False + stop_tag: de esta imagen solo queremos "Image Model". Con
             # details=True exifread se traga además el MakerNote y las miniaturas
@@ -192,6 +211,13 @@ class GeneralInformationFromImage:
         - pathImagen - path de la imagen de la que extraer los datos
         - progress_callback - Callback (los signals) que envían, mediante un emit(), información de texto desde el hilo correspondiente.
         """
+        if es_uri_gcs(pathImagen):
+            try:
+                with abrir_para_lectura(pathImagen) as ruta_local:
+                    return self.fechaHora_DJI(str(ruta_local), progress_callback)
+            except FileNotFoundError:
+                self.organizer_logger.logger.warning("ERROR: No se encuentra la imagen {0} para que PIL la pueda abrir.".format(pathImagen))
+                return None
         try:
             img = PIL.Image.open(pathImagen) #Abrimos el Exif
             datos_exif = img._getexif() # Obtenemos los datos del exif, que es un diccionario
@@ -270,6 +296,27 @@ class GeneralInformationFromImage:
         ---------
         - pathImagen - path de la imagen de la que extraer los datos
         """
+        if es_uri_gcs(pathImagen):
+            # gs://: PIL no abre URIs. Cabecera por rango (256 KB, suele bastar para el EXIF);
+            # si no da fecha, objeto entero a un temporal y camino local de siempre.
+            try:
+                img = PIL.Image.open(io.BytesIO(leer_cabecera(pathImagen, _XMP_HEADER_BYTES)))
+                datos_exif = img._getexif()
+                img.close()
+                if datos_exif and 36867 in datos_exif:
+                    f_h = datos_exif[36867].split(' ')
+                    return datetime.datetime.strptime(f_h[0] + '_' + f_h[1], '%Y:%m:%d_%H:%M:%S')
+            except FileNotFoundError:
+                self.organizer_logger.logger.warning("ERROR: No se encuentra la imagen {0} para que PIL la pueda abrir.".format(pathImagen))
+                return None
+            except Exception:  # noqa: BLE001 — cabecera corta/ilegible: objeto entero
+                pass
+            try:
+                with abrir_para_lectura(pathImagen) as ruta_local:
+                    return self.get_timestamp_from_image(str(ruta_local))
+            except FileNotFoundError:
+                self.organizer_logger.logger.warning("ERROR: No se encuentra la imagen {0} para que PIL la pueda abrir.".format(pathImagen))
+                return None
         try:
             img = PIL.Image.open(pathImagen) #Abrimos el Exif
             datos_exif = img._getexif() # Obtenemos los datos del exif, que es un diccionario
