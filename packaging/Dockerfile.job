@@ -78,6 +78,7 @@ ENV LD_LIBRARY_PATH=/app/programas_externos/DJI
 # Sin ventana no hay a quién preguntar: cualquier prompt de Qt/matplotlib sería
 # un cuelgue silencioso hasta que Cloud Run mate el job por timeout.
 ENV MPLBACKEND=Agg
+ENV PYTHONUNBUFFERED=1
 
 # (Aquí vivía QT_QPA_PLATFORM=offscreen. Ya no hay Qt en la imagen que ponerle
 # plataforma: si algún día vuelve a hacer falta, es que el acoplamiento se ha
