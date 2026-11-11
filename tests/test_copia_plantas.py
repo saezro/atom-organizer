@@ -13,7 +13,7 @@ from atom_core import copia_plantas as cp
 RAIZ = "gs://plantas_pv_nl"
 SAL = "gs://datos/SALIDA--RES_GROUP--TOCOPILLA--2026--T_Modulos"
 SAL_PRUEBA = "gs://datos/SALIDA-PRUEBA-RES_GROUP--TOCOPILLA--2026--T_Modulos"
-DEST = "gs://plantas_pv_nl/TOCOPILLA/INSPECCIONES/T_Modulos/2026"
+DEST = "gs://plantas_pv_nl/TOCOPILLA/INSPECCIONES/TERMICA_MODULOS/2026"
 
 
 class Mem:
@@ -364,3 +364,75 @@ def test_backend_gcs_meta_y_listar(gcs):
     assert be.meta("gs://datos/S/a") == (2, "ma")
     assert be.meta("gs://datos/S/nada") is None
     assert be.listar("gs://datos/S") == [("gs://datos/S/a", 2, "ma"), ("gs://datos/S/b/c", 3, "mc")]
+
+
+class MemSinMeta(Mem):
+    """Con destino listado una vez, `meta` no debe llamarse (salvo carrera)."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.metas = 0
+        self.listados = []
+
+    def listar(self, prefijo):
+        self.listados.append(prefijo)
+        return super().listar(prefijo)
+
+    def meta(self, uri):
+        self.metas += 1
+        return super().meta(uri)
+
+
+def test_plan_con_dict_destino_copiar_identico_choque():
+    extra = {f"{SAL}/a.tif": (b"aa", "ma"), f"{SAL}/b.tif": (b"bb", "mb"), f"{SAL}/c.tif": (b"cc", "mc"),
+             f"{DEST}/b.tif": (b"bb", "mb"), f"{DEST}/c.tif": (b"XX", "mX")}
+    be = MemSinMeta(extra)
+    plan = cp.planificar_copia(SAL, RAIZ, backend=be)
+    inf = cp.ejecutar_copia(plan, solo_plan=True, backend=be, prefijo_destino=DEST)
+    assert (inf.copiados, inf.identicos, inf.bytes) == (1, 1, 2)
+    assert [c["ruta"] for c in inf.choques] == [f"{DEST}/c.tif"]
+    assert be.metas == 0 and DEST in be.listados and be.copias == []
+
+
+def test_copia_en_hilos_contadores_correctos():
+    n = 200
+    obj = {f"{SAL}/d/{i}.tif": (b"x" * (i + 1), f"m{i}") for i in range(n)}
+    obj[f"{DEST}/d/0.tif"] = (b"x", "m0")      # idéntico
+    obj[f"{DEST}/d/1.tif"] = (b"zz", "otro")   # choque
+    be = MemSinMeta(obj)
+    orig = be.copiar
+
+    def copiar(o, d):
+        if o.endswith("/d/7.tif"):
+            raise OSError("boom")
+        orig(o, d)
+    be.copiar = copiar
+    plan = cp.planificar_copia(SAL, RAIZ, backend=be)
+    inf = cp.ejecutar_copia(plan, solo_plan=False, backend=be, prefijo_destino=DEST, hilos=16)
+    assert inf.identicos == 1 and len(inf.choques) == 1
+    assert len(inf.errores) == 1 and "boom" in inf.errores[0]["motivo"]
+    assert inf.copiados == n - 3 and len(be.copias) == n - 3
+    assert inf.bytes == sum(i + 1 for i in range(n) if i not in (0, 1, 7))
+    assert be.metas == 0
+
+
+def test_hilos_desde_env(monkeypatch):
+    monkeypatch.setenv("ORGANIZER_COPIA_HILOS", "5")
+    assert cp._hilos_copia() == 5
+    monkeypatch.delenv("ORGANIZER_COPIA_HILOS")
+    assert cp._hilos_copia() == 48
+
+
+def test_mapeo_tipo_t_modulos_a_termica_modulos():
+    _o, d = cp._mapeo(SAL, "gs://plantas_pv_nl")
+    assert d == "gs://plantas_pv_nl/TOCOPILLA/INSPECCIONES/TERMICA_MODULOS/2026"
+
+
+def test_mapeo_tipo_canonico_pasa():
+    _o, d = cp._mapeo("gs://datos/SALIDA--RES_GROUP--TOCOPILLA--2026--TERMICA_MODULOS", "gs://plantas_pv_nl")
+    assert d.endswith("/TOCOPILLA/INSPECCIONES/TERMICA_MODULOS/2026")
+
+
+def test_mapeo_tipo_desconocido_error():
+    with pytest.raises(ValueError, match="tipo de inspección desconocido"):
+        cp._mapeo("gs://datos/SALIDA--RES_GROUP--TOCOPILLA--2026--Raro", "gs://plantas_pv_nl")

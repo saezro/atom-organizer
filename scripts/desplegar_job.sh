@@ -144,10 +144,11 @@ c.setdefault("resources", {}).setdefault("limits", {}).update(cpu=cpu, memory=me
 if imagen:
     c["image"] = imagen
 # Valvula persistente: sin ella el Job aborta en Cloud Run si falta telemetria.
-_pisa = ("ORGANIZER_TELEMETRIA_OPCIONAL", "ATOM_IO_WORKERS")
+_pisa = ("ORGANIZER_TELEMETRIA_OPCIONAL", "ATOM_IO_WORKERS", "PYTHONUNBUFFERED")
 env = [e for e in c.get("env", []) if e.get("name") not in _pisa]
 env.append({"name": "ORGANIZER_TELEMETRIA_OPCIONAL", "value": "1"})
 env.append({"name": "ATOM_IO_WORKERS", "value": "32"})
+env.append({"name": "PYTHONUNBUFFERED", "value": "1"})
 c["env"] = env
 d["spec"]["template"]["spec"]["taskCount"] = 1
 json.dump(d, sys.stdout, indent=1)

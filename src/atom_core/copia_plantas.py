@@ -10,7 +10,8 @@
 - NUNCA borra nada (el backend ni siquiera expone `borrar`).
 - La copia es server-side (`copy_blob` con `if_generation_match=0`): sin
   descargar, y atómicamente no-clobber aunque alguien cree el destino en medio.
-- Secuencial, objeto a objeto.
+- El destino se lista una vez (dict en memoria); la copia va en hilos
+  (`ORGANIZER_COPIA_HILOS`, 48 por defecto), un `rewrite` por objeto.
 - Un nombre de SALIDA que no encaja con el mapeo es un ERROR, nunca se adivina.
 
 El acceso al bucket va por un `backend` con 4 métodos (`listar`, `meta`,
@@ -18,6 +19,8 @@ El acceso al bucket va por un `backend` con 4 métodos (`listar`, `meta`,
 """
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 
 from atom_core.almacen import abrir_almacen
@@ -26,6 +29,13 @@ PREFIJOS_SALIDA = ("SALIDA-PRUEBA-", "SALIDA--")  # el más específico primero
 MOTIVO_DISTINTO = "contenido-distinto"
 MOTIVO_SIN_MD5 = "md5-no-disponible"
 MUESTRA_MAX = 20
+# Tipo de la SALIDA (inspecciones.py / Suite `ins.tipo`) -> carpeta real del bucket
+# (`<PLANTA>/INSPECCIONES/<carpeta>/<año>`). Tipo ausente = ValueError, nunca se
+# usa el nombre tal cual. La forma canónica (valores de este mapa) se acepta.
+TIPO_A_CARPETA = {"T_Modulos": "TERMICA_MODULOS"}
+CARPETAS_TIPO = frozenset(TIPO_A_CARPETA.values())
+HILOS_DEFECTO = 48  # override: env ORGANIZER_COPIA_HILOS
+PROGRESO_CADA = 2000
 
 
 @dataclass(frozen=True)
@@ -83,12 +93,19 @@ def _mapeo(destino_salida: str, raiz_plantas: str) -> tuple[str, str]:
     for nombre, valor in (("planta", planta), ("anio", anio), ("tipo", tipo)):
         if not valor or ".." in valor or "/" in valor or "\\" in valor:
             raise ValueError(f"{nombre} no válido en el nombre de SALIDA {clave!r}: {valor!r}")
+    if tipo in TIPO_A_CARPETA:
+        carpeta = TIPO_A_CARPETA[tipo]
+    elif tipo in CARPETAS_TIPO:
+        carpeta = tipo
+    else:
+        raise ValueError(f"tipo de inspección desconocido {tipo!r} en la SALIDA {clave!r}; "
+                         f"conocidos: {sorted(TIPO_A_CARPETA)} (o canónicos {sorted(CARPETAS_TIPO)})")
     raiz = raiz_plantas.rstrip("/")
     _partir_uri(raiz)
     salida = destino_salida.rstrip("/")
     if raiz == salida or raiz.startswith(salida + "/"):
         raise ValueError(f"--destino-copia {raiz!r} está dentro de la propia SALIDA {salida!r}")
-    return destino_salida.rstrip("/"), f"{raiz}/{planta}/INSPECCIONES/{tipo}/{anio}"
+    return destino_salida.rstrip("/"), f"{raiz}/{planta}/INSPECCIONES/{carpeta}/{anio}"
 
 
 def _es_organizado(rel: str) -> bool:
@@ -116,8 +133,28 @@ def planificar_copia(destino_salida: str, raiz_plantas: str, *, backend=None) ->
     return _planificar(destino_salida, raiz_plantas, backend or _backend_gcs())[0]
 
 
-def ejecutar_copia(plan: list[CopiaItem], *, solo_plan: bool, backend=None) -> InformeCopia:
+def _hilos_copia() -> int:
+    try:
+        n = int(os.environ.get("ORGANIZER_COPIA_HILOS", "") or HILOS_DEFECTO)
+    except ValueError:
+        n = HILOS_DEFECTO
+    return max(1, n)
+
+
+def _log(msg: str) -> None:
+    print(f"copiar: {msg}", flush=True)
+
+
+def _gib(n: int) -> str:
+    return f"{n / 2**30:.2f} GiB"
+
+
+def ejecutar_copia(plan: list[CopiaItem], *, solo_plan: bool, backend=None,
+                   prefijo_destino: str | None = None, hilos: int | None = None) -> InformeCopia:
+    """Con `prefijo_destino` el destino se lista UNA vez (dict en memoria) en vez
+    de un `meta` por objeto; sin él, se comprueba objeto a objeto (como antes)."""
     backend = backend or _backend_gcs()
+    hilos = hilos or _hilos_copia()
     inf = InformeCopia(solo_plan=solo_plan)
     inf.muestra = [{"origen": i.origen, "destino": i.destino} for i in plan[:MUESTRA_MAX]]
 
@@ -130,28 +167,63 @@ def ejecutar_copia(plan: list[CopiaItem], *, solo_plan: bool, backend=None) -> I
         else:
             inf.choques.append({"ruta": item.destino, "motivo": MOTIVO_DISTINTO})
 
+    existentes = None
+    if prefijo_destino is not None:
+        existentes = {u: (sz, md5) for u, sz, md5 in backend.listar(prefijo_destino)}
+        _log(f"destino listado: {len(existentes)} objetos en {prefijo_destino}")
+
+    # 1) clasificación en el hilo principal (sin red si hay dict)
+    pendientes = []
     for item in plan:
         try:
-            meta_dest = backend.meta(item.destino)
+            meta_dest = existentes.get(item.destino) if existentes is not None else backend.meta(item.destino)
             if meta_dest is not None:
                 clasificar_existente(item, meta_dest)
-                continue
-            if solo_plan:
+            elif solo_plan:
                 inf.copiados += 1
                 inf.bytes += item.size
-                continue
+            else:
+                pendientes.append(item)
+        except Exception as exc:  # noqa: BLE001
+            inf.errores.append({"ruta": item.destino, "motivo": f"{type(exc).__name__}: {exc}"})
+    _log(f"planificado: copiar={len(pendientes) + (inf.copiados if solo_plan else 0)} "
+         f"identicos={inf.identicos} choques={len(inf.choques)} errores={len(inf.errores)}")
+    if solo_plan or not pendientes:
+        return inf
+
+    # 2) copia en hilos; contadores solo en el hilo principal (agregación de resultados)
+    def copiar_uno(item):
+        try:
+            backend.copiar(item.origen, item.destino)
+            return item, "ok", None
+        except FileExistsError:  # alguien lo creó entre la comprobación y la copia
             try:
-                backend.copiar(item.origen, item.destino)
-            except FileExistsError:  # alguien lo creó entre la comprobación y la copia
                 meta_dest = backend.meta(item.destino)
                 if meta_dest is None:
                     raise
-                clasificar_existente(item, meta_dest)
-                continue
-            inf.copiados += 1
-            inf.bytes += item.size
+                return item, "existe", meta_dest
+            except Exception as exc:  # noqa: BLE001
+                return item, "error", exc
         except Exception as exc:  # noqa: BLE001 - se registra visible y se sigue con el resto
-            inf.errores.append({"ruta": item.destino, "motivo": f"{type(exc).__name__}: {exc}"})
+            return item, "error", exc
+
+    total, hechos = len(pendientes), 0
+    _log(f"copiando {total} objetos ({_gib(sum(i.size for i in pendientes))}) con {hilos} hilos")
+    with ThreadPoolExecutor(max_workers=hilos) as pool:
+        for item, estado, dato in pool.map(copiar_uno, pendientes):
+            hechos += 1
+            if estado == "ok":
+                inf.copiados += 1
+                inf.bytes += item.size
+            elif estado == "existe":
+                clasificar_existente(item, dato)
+            else:
+                inf.errores.append({"ruta": item.destino, "motivo": f"{type(dato).__name__}: {dato}"})
+            if hechos % PROGRESO_CADA == 0:
+                _log(f"progreso {hechos}/{total} copiados={inf.copiados} {_gib(inf.bytes)} "
+                     f"errores={len(inf.errores)}")
+    _log(f"copia terminada {hechos}/{total} copiados={inf.copiados} {_gib(inf.bytes)} "
+         f"errores={len(inf.errores)}")
     return inf
 
 
@@ -166,12 +238,27 @@ def ejecutar_fase(destino_salida: str, destino_copia: str, *, solo_plan: bool, e
     import json
     backend = backend or _backend_gcs()
     plan, excluidos = _planificar(destino_salida, destino_copia, backend)
-    inf = ejecutar_copia(plan, solo_plan=solo_plan, backend=backend)
+    _log(f"origen listado: {len(plan) + len(excluidos)} objetos "
+         f"({len(plan)} copiables, {_gib(sum(i.size for i in plan))})")
+    _pref_o, pref_d = _mapeo(destino_salida, destino_copia)
+    inf = ejecutar_copia(plan, solo_plan=solo_plan, backend=backend, prefijo_destino=pref_d)
     inf.excluidos = len(excluidos)
     inf.muestra_excluidos = excluidos[:MUESTRA_MAX]
     backend.escribir_texto(ruta_informe(destino_salida, ejecucion),
                            json.dumps(inf.a_dict(), ensure_ascii=False, indent=2))
     return inf
+
+
+def _ampliar_pool(client) -> None:
+    """Más conexiones por host para la copia en hilos (por defecto requests: 10)."""
+    sesion = getattr(client, "_http", None)
+    if sesion is None or getattr(client, "_atom_pool_ampliado", False):
+        return
+    from requests.adapters import HTTPAdapter
+    n = _hilos_copia() + 8
+    for pref in ("https://", "http://"):
+        sesion.mount(pref, HTTPAdapter(pool_connections=n, pool_maxsize=n))
+    client._atom_pool_ampliado = True
 
 
 class _BackendGCS:
@@ -184,6 +271,7 @@ class _BackendGCS:
 
     def listar(self, prefijo):
         bucket, clave = self._bucket_clave(prefijo)
+        _ampliar_pool(bucket.client)
         out = []
         for blob in bucket.client.list_blobs(bucket, prefix=clave + "/"):
             out.append((f"gs://{bucket.name}/{blob.name}", blob.size, blob.md5_hash))
