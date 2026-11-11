@@ -52,8 +52,11 @@ ETAPAS = ("todo", "split", "struct", "post")
 #: encadenar 3 ejecuciones de Cloud Run: `indice` -> `apply` (xN tasks) ->
 #: `cierre`. `completo` (defecto) = las tres seguidas en un solo proceso, como
 #: siempre. `rgb` / `termica` = mitades de `apply` (ejecuciones separadas).
-FASES = ("completo", "indice", "indice-reduce", "apply", "rgb", "termica", "cierre")
+FASES = ("completo", "indice", "indice-reduce", "apply", "rgb", "termica", "cierre", "copiar")
 
+#: `copiar` (1 task, ligera) = copia no-clobber de una SALIDA a `plantas_pv_nl`
+#: (`atom_core.copia_plantas`); no es repartible ni parte del `completo`.
+#:
 #: La fase pesada se reparte entre tasks (por imagen, `toca_imagen`); cierre
 #: escribe el manifiesto y es de UNA sola task.
 FASES_REPARTIBLES = ("apply", "rgb", "termica")
