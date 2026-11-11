@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass, field
 from atom_core.almacen import abrir_almacen
 
 PREFIJOS_SALIDA = ("SALIDA-PRUEBA-", "SALIDA--")  # el más específico primero
-MOTIVO_DISTINTO = "destino-distinto"
+MOTIVO_DISTINTO = "contenido-distinto"
 MOTIVO_SIN_MD5 = "md5-no-disponible"
 MUESTRA_MAX = 20
 
@@ -45,6 +45,8 @@ class InformeCopia:
     errores: list = field(default_factory=list)  # [{ruta, motivo}] fallos reales
     solo_plan: bool = False
     muestra: list = field(default_factory=list)  # [{origen, destino}] primeros items
+    excluidos: int = 0  # objetos de la SALIDA que NO se copian (.organizado/, marcadores)
+    muestra_excluidos: list = field(default_factory=list)  # primeras rutas excluidas
 
     def a_dict(self) -> dict:
         return asdict(self)
@@ -78,8 +80,14 @@ def _mapeo(destino_salida: str, raiz_plantas: str) -> tuple[str, str]:
         raise ValueError(
             f"nombre de SALIDA no válido: {clave!r}; se esperaba <prefijo><empresa>--<planta>--<año>--<tipo>")
     _empresa, planta, anio, tipo = (p.strip() for p in partes)
+    for nombre, valor in (("planta", planta), ("anio", anio), ("tipo", tipo)):
+        if not valor or ".." in valor or "/" in valor or "\\" in valor:
+            raise ValueError(f"{nombre} no válido en el nombre de SALIDA {clave!r}: {valor!r}")
     raiz = raiz_plantas.rstrip("/")
     _partir_uri(raiz)
+    salida = destino_salida.rstrip("/")
+    if raiz == salida or raiz.startswith(salida + "/"):
+        raise ValueError(f"--destino-copia {raiz!r} está dentro de la propia SALIDA {salida!r}")
     return destino_salida.rstrip("/"), f"{raiz}/{planta}/INSPECCIONES/{tipo}/{anio}"
 
 
@@ -87,18 +95,25 @@ def _es_organizado(rel: str) -> bool:
     return rel.startswith(".organizado/") or "/.organizado/" in rel
 
 
-def planificar_copia(destino_salida: str, raiz_plantas: str, *, backend=None) -> list[CopiaItem]:
-    backend = backend or _backend_gcs()
+def _planificar(destino_salida, raiz_plantas, backend):
+    """`(plan, excluidos)`; `excluidos` = URIs que no se copian. ValueError si
+    no queda nada copiable."""
     pref_o, pref_d = _mapeo(destino_salida, raiz_plantas)
-    plan = []
+    plan, excluidos = [], []
     for uri, size, md5 in backend.listar(pref_o):
         rel = uri[len(pref_o):].lstrip("/")
-        if not rel or rel.endswith("/"):  # marcador de carpeta, no es un fichero
-            continue
-        if _es_organizado(rel):
+        if not rel or rel.endswith("/") or _es_organizado(rel):  # marcador de carpeta / metadatos
+            excluidos.append(uri)
             continue
         plan.append(CopiaItem(uri, f"{pref_d}/{rel}", int(size), md5 or ""))
-    return plan
+    if not plan:
+        raise ValueError(f"nada que copiar en {pref_o!r}: 0 objetos copiables "
+                         f"({len(excluidos)} excluidos); ¿SALIDA vacía o mal indicada?")
+    return plan, excluidos
+
+
+def planificar_copia(destino_salida: str, raiz_plantas: str, *, backend=None) -> list[CopiaItem]:
+    return _planificar(destino_salida, raiz_plantas, backend or _backend_gcs())[0]
 
 
 def ejecutar_copia(plan: list[CopiaItem], *, solo_plan: bool, backend=None) -> InformeCopia:
@@ -150,8 +165,10 @@ def ejecutar_fase(destino_salida: str, destino_copia: str, *, solo_plan: bool, e
     El informe se escribe SIEMPRE (también con errores) antes de devolver."""
     import json
     backend = backend or _backend_gcs()
-    plan = planificar_copia(destino_salida, destino_copia, backend=backend)
+    plan, excluidos = _planificar(destino_salida, destino_copia, backend)
     inf = ejecutar_copia(plan, solo_plan=solo_plan, backend=backend)
+    inf.excluidos = len(excluidos)
+    inf.muestra_excluidos = excluidos[:MUESTRA_MAX]
     backend.escribir_texto(ruta_informe(destino_salida, ejecucion),
                            json.dumps(inf.a_dict(), ensure_ascii=False, indent=2))
     return inf
@@ -182,8 +199,16 @@ class _BackendGCS:
     def copiar(self, origen, destino):
         b_o, k_o = self._bucket_clave(origen)
         b_d, k_d = self._bucket_clave(destino)
+        origen_blob, destino_blob = b_o.blob(k_o), b_d.blob(k_d)
         try:
-            b_o.copy_blob(b_o.blob(k_o), b_d, k_d, if_generation_match=0)
+            # rewrite (no copy_blob): troceado, vale entre buckets/clases de
+            # almacenamiento y objetos grandes; hay que repetir hasta token None.
+            token = None
+            while True:
+                token, _hechos, _total = destino_blob.rewrite(
+                    origen_blob, token=token, if_generation_match=0)
+                if token is None:
+                    break
         except Exception as exc:
             if getattr(exc, "code", None) == 412:
                 raise FileExistsError(destino) from exc
