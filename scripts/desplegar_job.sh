@@ -46,12 +46,12 @@
 # --perfiles: en vez de tocar atom-organizer-pipeline (NO se modifica), crea o
 # actualiza con la MISMA imagen y la MISMA SA/env (clonados con
 # `gcloud run jobs describe --format json` del job pipeline) tres jobs:
-#   atom-organizer-ligero  2 vCPU / 8Gi  (fases indice y cierre) retries 0
-#   atom-organizer-apply   4 vCPU / 8Gi  (fases rgb y termica)   retries 1
+#   atom-organizer-ligero  2 vCPU / 2Gi  (fases indice y cierre) retries 0
+#   atom-organizer-apply   4 vCPU / 2Gi  (fases rgb y termica)   retries 1
 #   atom-organizer-indice-map 1 vCPU / 2Gi (fase indice map/reduce, N tasks) retries 1
 # (Cloud Run no deja cambiar cpu/memoria por ejecucion: un job por perfil.)
 # Sin --imagen usa la imagen que tenga hoy el job pipeline. Memoria del ligero
-# sobreescribible con LIGERO_MEM (ej. 4Gi si el cierre cabe).
+# sobreescribible con LIGERO_MEM (ej. 4Gi si el cierre no cabe en 2Gi).
 #
 # Por defecto (sin --aplicar) es DRY-RUN: solo imprime el comando gcloud
 # completo que se ejecutaria (y el de verificacion posterior), sin tocar
@@ -74,9 +74,9 @@ imagen_explicita="false"
 JOB_LIGERO="atom-organizer-ligero"
 JOB_APPLY="atom-organizer-apply"
 LIGERO_CPU="${LIGERO_CPU:-2}"
-LIGERO_MEM="${LIGERO_MEM:-8Gi}"
+LIGERO_MEM="${LIGERO_MEM:-2Gi}"
 APPLY_CPU="${APPLY_CPU:-4}"
-APPLY_MEM="${APPLY_MEM:-8Gi}"
+APPLY_MEM="${APPLY_MEM:-2Gi}"
 # Fase indice map/reduce (v3.4.160): N tasks leen cabeceras EXIF de su tramo (I/O de red,
 # 32 hilos, casi sin RAM) y la ULTIMA en terminar hace ademas el reduce. El reduce carga
 # en RAM los N parciales (~60k registros JSON en la planta completa -> lista de dicts +

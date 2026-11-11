@@ -3,7 +3,8 @@
 #
 # Uso:
 #   scripts/nube_prueba.sh <origen_gs> <destino_gs> <estadillo_gs> [N_rgb] [N_termica] [opciones organizer...] [--dry-run]
-#   (indice: --n-indice=N, defecto auto = ceil(imagenes/9000) tope 32)
+#   (indice: --n-indice=N, defecto auto = ceil(imagenes/600) tope 32)
+#   --imagenes=N (solo con --dry-run: simula el recuento de imagenes para ver las tasks).
 #
 #   N_rgb / N_termica: numero de tasks; omitidos o "auto" = ceil(imagenes/300),
 #   tope 32 (imagenes = listado `gcloud storage ls` del origen, solo lectura).
@@ -28,13 +29,13 @@ set -euo pipefail
 PROJECT="aerotools-484814"
 REGION="europe-west4"
 ACCOUNT="atom-compute-ops@aerotools-484814.iam.gserviceaccount.com"
-JOB_LIGERO="atom-organizer-ligero"; LIGERO_CPU="${LIGERO_CPU:-2}"; LIGERO_MEM_GIB="${LIGERO_MEM_GIB:-8}"
-JOB_APPLY="atom-organizer-apply";   APPLY_CPU="${APPLY_CPU:-4}";   APPLY_MEM_GIB="${APPLY_MEM_GIB:-8}"
+JOB_LIGERO="atom-organizer-ligero"; LIGERO_CPU="${LIGERO_CPU:-2}"; LIGERO_MEM_GIB="${LIGERO_MEM_GIB:-2}"
+JOB_APPLY="atom-organizer-apply";   APPLY_CPU="${APPLY_CPU:-4}";   APPLY_MEM_GIB="${APPLY_MEM_GIB:-2}"
 JOB_INDICE="atom-organizer-indice-map"; IDX_CPU="${IDX_CPU:-1}"; IDX_MEM_GIB="${IDX_MEM_GIB:-2}"
-IMG_POR_TASK=300; IMG_POR_TASK_IDX=9000; TOPE_TASKS=32; POLL_S="${POLL_S:-5}"
+IMG_POR_TASK=300; IMG_POR_TASK_IDX=600; TOPE_TASKS=32; POLL_S="${POLL_S:-5}"
 EUR_POR_USD="${EUR_POR_USD:-0.92}"  # tipo de cambio APROXIMADO, solo para orientar el coste en EUR
 
-dry="false"; rjpeg="true"; pos=(); extra=(); N_IDX="auto"
+dry="false"; rjpeg="true"; pos=(); extra=(); N_IDX="auto"; SIM_IMG=""
 for a in "$@"; do
     case "$a" in
         --dry-run) dry="true" ;;
@@ -43,6 +44,7 @@ for a in "$@"; do
         --job-apply=*) JOB_APPLY="${a#*=}" ;;
         --job-indice=*) JOB_INDICE="${a#*=}" ;;
         --n-indice=*) N_IDX="${a#*=}" ;;
+        --imagenes=*) SIM_IMG="${a#*=}" ;;
         *) if [ "${#pos[@]}" -lt 3 ]; then pos+=("$a"); else extra+=("$a"); fi ;;
     esac
 done
@@ -77,6 +79,11 @@ if [ "$N_RGB" = "auto" ] || [ "$N_TER" = "auto" ] || [ "$N_IDX" = "auto" ]; then
     if [ "$dry" = "true" ]; then
         echo "+ ${GC[*]} storage ls --recursive \"$ORIGEN/**\" | grep -ciE '\\.(jpe?g|tiff?|png)\$'   # N=ceil(n/$IMG_POR_TASK) tope $TOPE_TASKS" >&2
         n_img="?"; auto_n="<auto>"; auto_idx="<auto>"
+        if [[ "$SIM_IMG" =~ ^[0-9]+$ ]] && [ "$SIM_IMG" -gt 0 ]; then
+            n_img="$SIM_IMG"
+            auto_n=$(( (n_img + IMG_POR_TASK - 1) / IMG_POR_TASK )); [ "$auto_n" -le "$TOPE_TASKS" ] || auto_n="$TOPE_TASKS"
+            auto_idx=$(( (n_img + IMG_POR_TASK_IDX - 1) / IMG_POR_TASK_IDX )); [ "$auto_idx" -le "$TOPE_TASKS" ] || auto_idx="$TOPE_TASKS"
+        fi
     else
         n_img="$("${GC[@]}" storage ls "$ORIGEN/**" 2>/dev/null | grep -ciE '\.(jpe?g|tiff?|png)$' || true)"
         [ "$n_img" -gt 0 ] || { echo "No se encontraron imagenes en $ORIGEN" >&2; exit 1; }
