@@ -2,6 +2,9 @@
 import hashlib
 import json
 import os
+from types import SimpleNamespace
+
+import pytest
 
 from atom_core import indice_mapreduce as mr
 from tests.test_giro_manifiesto_gcs import bucket  # noqa: F401 (fixture)
@@ -60,12 +63,8 @@ def test_escribir_resumen_local_exige_ejecucion(tmp_path):
     assert ruta == mr.ruta_resumen(str(tmp_path), "e9")
     datos = json.loads(open(ruta, encoding="utf-8").read())
     assert datos["version"] == 1 and datos["ejecucion_indice"] == "e9"
-    try:
+    with pytest.raises(mr.ErrorIndiceParcial):
         mr.escribir_resumen_indice(str(tmp_path), " ", {})
-    except mr.ErrorIndiceParcial:
-        pass
-    else:
-        raise AssertionError("debía fallar sin ejecución")
 
 
 def test_resumen_n1_y_reduce_son_iguales(_origen, logger, monkeypatch):
@@ -89,3 +88,62 @@ def test_resumen_n1_y_reduce_son_iguales(_origen, logger, monkeypatch):
 def mr_listado(cfg):
     from atom_core import indice as indice_mod
     return indice_mod._listar_imagenes(cfg.input_folder)
+
+
+class _Cb:
+    def __init__(self):
+        self.msgs = []
+
+    def emit(self, msg):
+        self.msgs.append(msg)
+
+
+def _dato(ruta, ts):
+    return SimpleNamespace(ruta=ruta, timestamp=ts)
+
+
+def _resumen_sintetico(tmp_path, asignaciones, dias_sin_estadillo=(), no_dji=(),
+                       omitidas=(), no_disponibles=(), estadillo_sin_fecha=False):
+    # una fila por imagen sin ventana, como en el índice real (pb/vuelo None = SIN_ORDENAR)
+    filas = [SimpleNamespace(ruta_origen=d.ruta, pb=None, vuelo=None)
+             for d, v in asignaciones if v is None]
+    from atom_core import indice
+    cfg = SimpleNamespace(input_folder="/o", output_folder=str(tmp_path))
+    imagenes = sorted({d.ruta for d, _v in asignaciones} | {r for r, _m in no_dji}
+                      | set(omitidas) | set(no_disponibles))
+    indice._escribir_resumen(
+        cfg, "e1", imagenes, asignaciones, filas, list(dias_sin_estadillo), list(no_dji),
+        list(omitidas), list(no_disponibles), _Cb(), estadillo_sin_fecha=estadillo_sin_fecha)
+    return _leer(str(tmp_path), "e1")
+
+
+def test_escribir_resumen_clasifica_motivos(tmp_path):
+    import datetime as dt
+    asig = [
+        (_dato("/o/a.JPG", None), None),
+        (_dato("/o/b.JPG", dt.datetime(2026, 1, 16, 10)), None),
+        (_dato("/o/c.JPG", dt.datetime(2026, 1, 15, 10)), None),
+    ]
+    r = _resumen_sintetico(tmp_path, asig, dias_sin_estadillo=[("2026-01-16", 1)])
+    assert r["fuera_de_orden"] == [
+        {"motivo": "dia-sin-estadillo", "n": 1, "ejemplos": ["b.JPG"]},
+        {"motivo": "fuera-de-ventana", "n": 1, "ejemplos": ["c.JPG"]},
+        {"motivo": "sin-fecha-exif", "n": 1, "ejemplos": ["a.JPG"]}]
+    assert r["n_sin_ordenar"] == sum(e["n"] for e in r["fuera_de_orden"]) == 3
+
+
+def test_escribir_resumen_estadillo_sin_fecha_legible_y_no_dji(tmp_path):
+    import datetime as dt
+    asig = [(_dato("/o/c.JPG", dt.datetime(2026, 1, 15, 10)), None)]
+    r = _resumen_sintetico(tmp_path, asig, no_dji=[("/o/x.txt", "ext raro")],
+                           estadillo_sin_fecha=True)
+    assert r["fuera_de_orden"] == [
+        {"motivo": "estadillo-sin-fecha-legible", "n": 1, "ejemplos": ["c.JPG"]},
+        {"motivo": "no-dji", "n": 1, "ejemplos": ["x.txt"]}]
+
+
+def test_escribir_resumen_sin_ejecucion_gcs_falla(tmp_path):
+    from atom_core import indice
+    cfg = SimpleNamespace(input_folder="/o", output_folder="gs://b/dest")
+    with pytest.raises(mr.ErrorIndiceParcial):
+        indice._escribir_resumen(cfg, "", [], [], [], [], [], [], [], _Cb())
