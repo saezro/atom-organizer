@@ -210,11 +210,39 @@ def _verificar_hash_listado(origen: str, esperado: str) -> None:
         raise SystemExit(2)
 
 
+def _main_copiar(parser, args) -> int:
+    """`--fase copiar`: sale 0 aunque haya choques (van en el informe); !=0 solo
+    ante error real (argumentos, o algún objeto que no se pudo copiar)."""
+    from atom_core import copia_plantas
+    if not args.destino_copia:
+        parser.error("--fase copiar exige --destino-copia")
+    if not es_uri_gcs(args.destino) or not es_uri_gcs(args.destino_copia):
+        parser.error("--fase copiar exige --destino y --destino-copia en gs://")
+    ejecucion = sharding.ejecucion_desde_entorno(explicita=args.ejecucion)
+    if not ejecucion:
+        parser.error("--fase copiar exige --ejecucion (o $CLOUD_RUN_EXECUTION) para nombrar el informe")
+    try:
+        inf = copia_plantas.ejecutar_fase(args.destino, args.destino_copia,
+                                          solo_plan=args.solo_plan, ejecucion=ejecucion)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"copiar: copiados={inf.copiados} identicos={inf.identicos} "
+          f"choques={len(inf.choques)} errores={len(inf.errores)} bytes={inf.bytes}"
+          f"{' (solo plan)' if inf.solo_plan else ''}")
+    if inf.errores:
+        print(f"error: {len(inf.errores)} objeto(s) sin copiar; ver "
+              f"{copia_plantas.ruta_informe(args.destino, ejecucion)}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Pipeline de ATOM Organizer sin interfaz gráfica.")
-    parser.add_argument("--origen", required=True,
-                        help="Carpeta del vuelo (la que se sube al bucket).")
+    parser.add_argument("--origen", default=None,
+                        help="Carpeta del vuelo (la que se sube al bucket). Obligatorio "
+                             "salvo con --fase copiar (donde NO se admite).")
     parser.add_argument("--destino", required=True,
                         help="Carpeta de salida. Se crea si no existe.")
     parser.add_argument("--estadillo", nargs="+", default=[], metavar="CSV",
@@ -306,6 +334,14 @@ def main(argv: list[str] | None = None) -> int:
                              "reparto por imagen con --shard-count/CLOUD_RUN_TASK_COUNT; "
                              "`rgb` y `termica` son sus mitades por separado) -> `cierre` "
                              "(1 tarea, funde los deltas de las tareas de apply).")
+    parser.add_argument("--destino-copia", dest="destino_copia", default=None, metavar="GS_URI",
+                        help="Solo --fase copiar (OBLIGATORIO): raiz gs:// de las plantas "
+                             "(la decide el backend, sin valor por defecto). Copia no-clobber "
+                             "de --destino (carpeta SALIDA--…) a "
+                             "<raiz>/<PLANTA>/INSPECCIONES/<TIPO>/<ANIO>/…; nunca borra. "
+                             "Informe en <destino>/.organizado/copias/<ejecucion>.json.")
+    parser.add_argument("--solo-plan", dest="solo_plan", action="store_true",
+                        help="Solo --fase copiar: calcula y escribe el informe sin copiar nada.")
     parser.add_argument("--ejecucion", dest="ejecucion", default=None,
                         help="Identificador de la ejecución (fases apply/rgb/termica): "
                              "los deltas de cada tarea van a "
@@ -338,6 +374,15 @@ def main(argv: list[str] | None = None) -> int:
               "pipeline se comporta exactamente como antes."),
     )
     args = parser.parse_args(argv)
+
+    if args.fase == "copiar":
+        if args.origen is not None:
+            parser.error("--fase copiar no usa --origen (parte de --destino): quitalo")
+        return _main_copiar(parser, args)
+    if args.origen is None:
+        parser.error("--origen es obligatorio (salvo con --fase copiar)")
+    if args.destino_copia is not None or args.solo_plan:
+        parser.error("--destino-copia/--solo-plan solo aplican a --fase copiar")
 
     # El shard explícito manda sobre el entorno: así se puede reproducir en local
     # exactamente la partición que le tocó a una tarea concreta del Job.

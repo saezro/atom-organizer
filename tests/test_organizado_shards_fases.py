@@ -287,7 +287,7 @@ def test_rjpeg_termico_intacto_con_sin_rotacion(tmp_path, make_dji_jpeg, logger,
 
 def test_fases_validas_en_sharding():
     assert sharding.FASES == ("completo", "indice", "indice-reduce", "apply", "rgb",
-                              "termica", "cierre")
+                              "termica", "cierre", "copiar")
     assert set(sharding.FASES_REPARTIBLES) == {"apply", "rgb", "termica"}
     assert sharding.FASES_MAPREDUCE == ("indice",)
 
