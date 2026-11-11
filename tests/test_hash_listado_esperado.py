@@ -39,7 +39,7 @@ def test_hash_correcto_la_fase_pasa(_lote, fase):
     origen, est, destino, imagenes, llamadas = _lote
     codigo = organize_cli.main(_args(origen, est, destino, fase,
                                      "--hash-listado-esperado", hash_listado(imagenes)))
-    assert codigo != 2
+    assert codigo == 0
     assert len(llamadas) == 1
 
 
@@ -59,14 +59,23 @@ def test_hash_distinto_exit_2_y_destino_vacio(_lote, fase, capsys):
 def test_sin_arg_igual_que_antes(_lote):
     origen, est, destino, _imagenes, llamadas = _lote
     codigo = organize_cli.main(_args(origen, est, destino, "apply"))
-    assert codigo != 2
+    assert codigo == 0
     assert len(llamadas) == 1
     assert destino.is_dir()
 
 
-def test_fases_que_no_son_de_apply_ignoran_el_hash(_lote):
+def test_hash_en_fase_que_no_es_de_apply_es_error_exit_2(_lote):
     origen, est, destino, _imagenes, llamadas = _lote
-    codigo = organize_cli.main(_args(origen, est, destino, "indice",
-                                     "--hash-listado-esperado", "0" * 64))
-    assert codigo != 2
-    assert len(llamadas) == 1
+    with pytest.raises(SystemExit) as exc:
+        organize_cli.main(_args(origen, est, destino, "indice",
+                                "--hash-listado-esperado", "0" * 64))
+    assert exc.value.code == 2
+    assert llamadas == []
+
+
+def test_hash_vacio_es_error_exit_2(_lote):
+    origen, est, destino, _imagenes, llamadas = _lote
+    with pytest.raises(SystemExit) as exc:
+        organize_cli.main(_args(origen, est, destino, "apply", "--hash-listado-esperado", ""))
+    assert exc.value.code == 2
+    assert llamadas == []

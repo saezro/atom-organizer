@@ -398,7 +398,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # Antes de crear el destino: si el listado cambió desde el índice, no se
     # escribe NADA (ni la carpeta de destino).
-    if args.hash_listado_esperado and args.fase in ("apply", "rgb", "termica"):
+    if args.hash_listado_esperado is not None:
+        if not args.hash_listado_esperado.strip():
+            parser.error("--hash-listado-esperado vacío")
+        if args.fase not in ("apply", "rgb", "termica"):
+            parser.error("--hash-listado-esperado solo aplica a las fases apply/rgb/termica")
         _verificar_hash_listado(str(origen), args.hash_listado_esperado)
 
     # En GCS no hay directorios: nada que crear de antemano.

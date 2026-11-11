@@ -1860,21 +1860,27 @@ def _desambiguar_colisiones_generales(
     return resultado
 
 
+def _fechas_estadillo(ventanas) -> set:
+    """Fechas legibles de las ventanas del estadillo (las ilegibles se ignoran)."""
+    cubiertos = set()
+    for ventana in ventanas:
+        texto = str(ventana.get("fecha", "")).strip()
+        for formato in ("%Y:%m:%d", "%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                cubiertos.add(datetime.datetime.strptime(texto, formato).date())
+                break
+            except ValueError:
+                continue
+    return cubiertos
+
+
 def _dias_sin_estadillo(metadatos, ventanas) -> list[tuple[str, int]]:
     """Días (YYYY-MM-DD) con fotos y SIN ninguna ventana de estadillo de ese
     día, con su nº de fotos. Solo informativo (nunca bloquea). Las fotos sin
     timestamp no cuentan; una fecha de estadillo ilegible se ignora. Sin
     ninguna fecha de estadillo legible no se concluye nada -> []."""
     try:
-        cubiertos = set()
-        for ventana in ventanas:
-            texto = str(ventana.get("fecha", "")).strip()
-            for formato in ("%Y:%m:%d", "%Y-%m-%d", "%d/%m/%Y"):
-                try:
-                    cubiertos.add(datetime.datetime.strptime(texto, formato).date())
-                    break
-                except ValueError:
-                    continue
+        cubiertos = _fechas_estadillo(ventanas)
         if not cubiertos:
             return []
         conteo: Counter = Counter()
@@ -2061,11 +2067,20 @@ def mapear_indice(
 
 
 def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_sin_estadillo,
-                      no_dji, omitidas, no_disponibles, progress_callback) -> None:
-    """`resumen.json` del índice (ver `indice_mapreduce.construir_resumen_indice`)."""
+                      no_dji, omitidas, no_disponibles, progress_callback,
+                      estadillo_sin_fecha: bool = False) -> None:
+    """`resumen.json` del índice (ver `indice_mapreduce.construir_resumen_indice`).
+
+    `estadillo_sin_fecha`: hay ventanas pero ninguna con fecha legible; las
+    fotos sin ventana se clasifican `estadillo-sin-fecha-legible`. El detalle
+    del motivo no-DJI no viaja: el resumen solo admite `(ruta, motivo)`."""
     from atom_core import indice_mapreduce as mr  # noqa: PLC0415 - evita ciclo
 
     if not str(ejecucion or "").strip():
+        if almacen.es_uri_gcs(cfg.output_folder):
+            raise mr.ErrorIndiceParcial(
+                "sin identificador de ejecución: no se puede escribir resumen.json "
+                "del índice en el destino GCS")
         progress_callback.emit(
             "\nAVISO: sin identificador de ejecución: no se escribe resumen.json del índice.\n")
         return
@@ -2083,10 +2098,12 @@ def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_s
                 motivo = "sin-fecha-exif"
             elif dato.timestamp.date().isoformat() in dias:
                 motivo = "dia-sin-estadillo"
+            elif estadillo_sin_fecha:
+                motivo = "estadillo-sin-fecha-legible"
             else:
                 motivo = "fuera-de-ventana"
             fuera.append((dato.ruta, motivo))
-    fuera.extend((ruta, f"no-dji ({m})" if m else None) for ruta, m in no_dji)
+    fuera.extend((ruta, "no-dji") for ruta, _m in no_dji)
     fuera.extend((ruta, "a-medio-copiar") for ruta in omitidas)
     fuera.extend((ruta, "no-disponible") for ruta in no_disponibles)
     asignadas = [(fila.ruta_origen, fila.pb, fila.vuelo) for fila in filas]
@@ -2437,7 +2454,8 @@ def construir_indice(
 
     _escribir_resumen(
         cfg, ejecucion_resumen, imagenes, asignaciones, filas, dias_sin_estadillo,
-        no_dji, omitidas_copiandose, no_disponibles, progress_callback)
+        no_dji, omitidas_copiandose, no_disponibles, progress_callback,
+        estadillo_sin_fecha=bool(ventanas) and not _fechas_estadillo(ventanas))
 
     progress_bar.emit(100)
     return {
