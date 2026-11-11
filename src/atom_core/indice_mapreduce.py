@@ -256,6 +256,79 @@ def cargar_parciales(destino: str, ejecucion: str, shard_count: int,
     return union
 
 
+# ---- resumen del índice (resumen.json) ---------------------------------------
+
+VERSION_RESUMEN = 1
+NOMBRE_RESUMEN = "resumen.json"
+MAX_EJEMPLOS_FUERA_DE_ORDEN = 5
+MOTIVO_SIN_CLASIFICAR = "sin-clasificar"
+
+
+def ruta_resumen(destino: str, ejecucion: str) -> str:
+    return unir(carpeta_indice(destino, ejecucion), NOMBRE_RESUMEN)
+
+
+def construir_resumen_indice(imagenes: list[str], asignadas: list[tuple[str, "str | None", "str | None"]],
+                             fuera_de_orden: list[tuple[str, "str | None"]],
+                             relativa=lambda ruta: ruta) -> dict:
+    """Contenido de `resumen.json` (sin `version` ni `ejecucion_indice`).
+
+    `imagenes`: el listado completo (de él sale `hash_listado`). `asignadas`:
+    `(ruta, pb, vuelo)` de cada imagen indexada (`pb`/`vuelo` None = SIN_ORDENAR).
+    `fuera_de_orden`: `(ruta, motivo)` de toda imagen que no entra en un vuelo
+    (SIN_ORDENAR y las omitidas del índice); motivo vacío = `sin-clasificar`.
+    `relativa`: ruta absoluta -> ruta relativa al origen (para los ejemplos).
+    Un par = idx DJI con T y W en el mismo vuelo y carpeta de origen."""
+    from atom_core import pares as pares_mod  # noqa: PLC0415 - evita ciclo
+
+    por_vuelo: dict[tuple[str, str], list[str]] = {}
+    n_sin_ordenar = 0
+    for ruta, pb, vuelo in asignadas:
+        if pb is None or vuelo is None:
+            n_sin_ordenar += 1
+        else:
+            por_vuelo.setdefault((str(pb), str(vuelo)), []).append(ruta)
+
+    def _pares(rutas: list[str]) -> int:
+        t, w = set(), set()
+        for ruta in rutas:
+            clave = pares_mod.clave_pareja(ruta)
+            if clave:
+                (t if clave[1] == "T" else w).add((os.path.dirname(ruta), clave[0]))
+        return len(t & w)
+
+    pb = [{"pb": k[0], "vuelo": k[1], "imagenes": len(rutas), "pares": _pares(rutas)}
+          for k, rutas in sorted(por_vuelo.items())]
+    por_motivo: dict[str, list[str]] = {}
+    for ruta, motivo in fuera_de_orden:
+        por_motivo.setdefault((motivo or "").strip() or MOTIVO_SIN_CLASIFICAR, []).append(ruta)
+    return {
+        "hash_listado": hash_listado(imagenes),
+        "n_imagenes": len(imagenes),
+        "n_pares": sum(e["pares"] for e in pb),
+        "n_pb": len({e["pb"] for e in pb}),
+        "n_vuelos": len(pb),
+        "n_sin_ordenar": n_sin_ordenar,
+        "pb": pb,
+        "fuera_de_orden": [
+            {"motivo": motivo, "n": len(rutas),
+             "ejemplos": [relativa(r) for r in sorted(rutas)[:MAX_EJEMPLOS_FUERA_DE_ORDEN]]}
+            for motivo, rutas in sorted(por_motivo.items())],
+    }
+
+
+def escribir_resumen_indice(destino: str, ejecucion: str, indice: dict) -> str:
+    """Escribe `<destino>/.organizado/indice/<ejecucion>/resumen.json` (local o
+    gs://, de una pieza) con `indice` (ver `construir_resumen_indice`) y devuelve
+    su ruta. Es el MISMO punto para N=1 y para el reduce."""
+    if not str(ejecucion).strip():
+        raise ErrorIndiceParcial("resumen del índice: falta la ejecución")
+    contenido = {"version": VERSION_RESUMEN, "ejecucion_indice": str(ejecucion), **indice}
+    ruta = ruta_resumen(destino, ejecucion)
+    _escribir_atomico(ruta, (json.dumps(contenido, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    return ruta
+
+
 # ---- lock del reduce ---------------------------------------------------------
 
 def _es_precondicion_fallida(error: BaseException) -> bool:

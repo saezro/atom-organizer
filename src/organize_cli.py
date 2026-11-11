@@ -181,6 +181,35 @@ def _formatear(segundos: float) -> str:
     return f"{seg}s"
 
 
+class _EmisorNulo:
+    """Emisor de progreso mudo para listar igual que el índice (con `_Limite`)."""
+
+    def iniciar(self, *args, **kwargs) -> None:
+        pass
+
+    def progreso(self, *args, **kwargs) -> None:
+        pass
+
+    def aviso(self, *args, **kwargs) -> None:
+        pass
+
+
+def _verificar_hash_listado(origen: str, esperado: str) -> None:
+    """Lista `origen` EXACTAMENTE como el índice (`indice._listar_imagenes`, con
+    `_Limite`: sin filtro de «a medio copiar») y compara su hash con `esperado`.
+    Si difiere, `SystemExit(2)` con `listado-cambiado: esperado=<h1> actual=<h2>`
+    por stderr; nada se ha escrito todavía."""
+    from atom_core import indice as indice_mod
+    from atom_core.indice_mapreduce import hash_listado
+
+    imagenes = indice_mod._listar_imagenes(origen, [], indice_mod._Limite(_EmisorNulo()), {})
+    actual = hash_listado(imagenes)
+    esperado = esperado.strip().lower()
+    if actual != esperado:
+        print(f"listado-cambiado: esperado={esperado} actual={actual}", file=sys.stderr)
+        raise SystemExit(2)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Pipeline de ATOM Organizer sin interfaz gráfica.")
@@ -287,6 +316,12 @@ def main(argv: list[str] | None = None) -> int:
                              "de `indice` (map) cuyos parciales se reducen "
                              "(<destino>/.organizado/indice/<ejecucion>/). Por defecto, "
                              "el valor de --ejecucion / $CLOUD_RUN_EXECUTION.")
+    parser.add_argument("--hash-listado-esperado", dest="hash_listado_esperado", default=None,
+                        metavar="HEX",
+                        help="Solo fases apply/rgb/termica: hash (sha256 hex) del listado de "
+                             "imagenes con el que se genero el indice. Si el origen lista "
+                             "distinto, aborta con exit 2 (`listado-cambiado: esperado=… "
+                             "actual=…`) SIN escribir nada en destino. Sin el, no se comprueba.")
     parser.add_argument("--modo-destino", dest="modo_destino",
                         choices=["sobrescribir", "obviar"], default="sobrescribir",
                         help="Que hacer con lo que ya haya en el destino. "
@@ -360,6 +395,11 @@ def main(argv: list[str] | None = None) -> int:
                   "--estadillo o colócalo junto a la carpeta de fotos.",
                   file=sys.stderr)
         return 2
+
+    # Antes de crear el destino: si el listado cambió desde el índice, no se
+    # escribe NADA (ni la carpeta de destino).
+    if args.hash_listado_esperado and args.fase in ("apply", "rgb", "termica"):
+        _verificar_hash_listado(str(origen), args.hash_listado_esperado)
 
     # En GCS no hay directorios: nada que crear de antemano.
     if not destino_es_gcs:
