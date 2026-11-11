@@ -2060,6 +2060,41 @@ def mapear_indice(
             "imagenes": imagenes, "tamanos_origen": tamanos_origen}
 
 
+def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_sin_estadillo,
+                      no_dji, omitidas, no_disponibles, progress_callback) -> None:
+    """`resumen.json` del índice (ver `indice_mapreduce.construir_resumen_indice`)."""
+    from atom_core import indice_mapreduce as mr  # noqa: PLC0415 - evita ciclo
+
+    if not str(ejecucion or "").strip():
+        progress_callback.emit(
+            "\nAVISO: sin identificador de ejecución: no se escribe resumen.json del índice.\n")
+        return
+    base = str(cfg.input_folder).replace("\\", "/").rstrip("/") + "/"
+
+    def relativa(ruta: str) -> str:
+        norm = str(ruta).replace("\\", "/")
+        return norm[len(base):] if norm.startswith(base) else ruta
+
+    dias = {dia for dia, _n in dias_sin_estadillo}
+    fuera: list[tuple[str, str | None]] = []
+    for dato, ventana in asignaciones:
+        if ventana is None:
+            if dato.timestamp is None:
+                motivo = "sin-fecha-exif"
+            elif dato.timestamp.date().isoformat() in dias:
+                motivo = "dia-sin-estadillo"
+            else:
+                motivo = "fuera-de-ventana"
+            fuera.append((dato.ruta, motivo))
+    fuera.extend((ruta, f"no-dji ({m})" if m else None) for ruta, m in no_dji)
+    fuera.extend((ruta, "a-medio-copiar") for ruta in omitidas)
+    fuera.extend((ruta, "no-disponible") for ruta in no_disponibles)
+    asignadas = [(fila.ruta_origen, fila.pb, fila.vuelo) for fila in filas]
+    mr.escribir_resumen_indice(
+        cfg.output_folder, ejecucion,
+        mr.construir_resumen_indice(imagenes, asignadas, fuera, relativa))
+
+
 def construir_indice(
     cfg,
     pipeline,
@@ -2075,6 +2110,7 @@ def construir_indice(
     watchdog_s: float | None = None,
     intervalo_progreso_s: float | None = None,
     reduce_desde: "dict | None" = None,
+    ejecucion_resumen: str = "",
 ) -> dict:
     """Construye el manifiesto completo del run: una pasada de metadatos
     sobre `cfg.input_folder`, cruzada con el estadillo, decidiendo vuelo,
@@ -2096,6 +2132,9 @@ def construir_indice(
     las cabeceras, une los parciales que dejaron las N tasks de map. Es
     `{"ejecucion": str, "shard_count": int | None}` (`None` = leerlo de `map-0`).
     El resto (estadillos, vuelos, giro, nombres, manifiesto) es EL MISMO código.
+
+    `ejecucion_resumen`: carpeta `<destino>/.organizado/indice/<ejecucion>/` donde
+    se deja `resumen.json` (N=1 y reduce). Vacío = no se escribe y se avisa.
     """
     progress_summarize.emit("---> SUBPROCESO: Índice")
     timeout_s = timeout_s or _env_float("ATOM_INDICE_TIMEOUT_S", TIMEOUT_FICHERO_S)
@@ -2395,6 +2434,10 @@ def construir_indice(
         "ya_organizadas": resultado.saltadas,
         "no_disponibles": len(no_disponibles),
     }))
+
+    _escribir_resumen(
+        cfg, ejecucion_resumen, imagenes, asignaciones, filas, dias_sin_estadillo,
+        no_dji, omitidas_copiandose, no_disponibles, progress_callback)
 
     progress_bar.emit(100)
     return {

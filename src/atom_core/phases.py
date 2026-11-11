@@ -1593,7 +1593,9 @@ class PipelinePhasesMixin:
             resumen_indice = indice_mod.construir_indice(
                 cfg, adaptador, self.split_images_obj.exif_management_obj, manifiesto,
                 progress_callback, progress_bar, progress_summarize, ejecucion_id=ejecucion_id,
-                reduce_desde=reduce_desde)
+                reduce_desde=reduce_desde,
+                ejecucion_resumen=str(
+                    (reduce_desde or {}).get("ejecucion") or getattr(self, "ejecucion", "") or ""))
         return resumen_indice
 
 
