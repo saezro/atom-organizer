@@ -494,3 +494,41 @@ def test_reduce_forma_real_destino_vacio_es_rapido(tmp_path):
     manifiesto.cerrar()
     assert res.nuevas == len(filas) and res.reabiertas_por_nombre == 0 and not res.ambiguas
     assert dur < 30, f"{dur:.1f}s para {len(filas)} inserciones (¿falta idx_nombre_ts?)"
+
+
+def test_migracion_columna_categoria_filas_antiguas_vuelo(tmp_path):
+    """Manifiesto sin `categoria`/`motivo_fuera`: se añaden aditivas; las filas
+    antiguas quedan `vuelo` (default) y sin motivo."""
+    ruta = tmp_path / "m.db"
+    antiguo = sqlite3.connect(ruta)
+    antiguo.executescript("""
+        CREATE TABLE imagenes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, ruta_origen TEXT NOT NULL,
+            nombre_original TEXT NOT NULL DEFAULT '', clave TEXT NOT NULL,
+            tipo TEXT NOT NULL, timestamp_exif TEXT, modelo TEXT, pb TEXT, vuelo TEXT,
+            nombre_nuevo TEXT NOT NULL DEFAULT '', angulo_giro INTEGER NOT NULL DEFAULT 0,
+            pct_recorte REAL, comprime INTEGER NOT NULL DEFAULT 0,
+            ruta_salida_original TEXT NOT NULL, ruta_salida_crop TEXT, ruta_salida_tiff TEXT,
+            unassigned INTEGER NOT NULL DEFAULT 0, bytes_origen INTEGER NOT NULL DEFAULT 0,
+            estado TEXT NOT NULL DEFAULT 'pendiente', motivo_fallo TEXT, verificacion TEXT);
+        INSERT INTO imagenes (ruta_origen, clave, tipo, ruta_salida_original)
+        VALUES ('/sd1/a.JPG', 'a.JPG||0', 'RGB', '/d/a.JPG');
+    """)
+    antiguo.commit()
+    antiguo.close()
+    manifiesto = Manifiesto(ruta)
+    manifiesto.crear_esquema()
+    fila = manifiesto.todas()[0]
+    assert fila["categoria"] == "vuelo"
+    assert fila["motivo_fuera"] is None
+    Manifiesto(ruta).crear_esquema()  # idempotente
+
+
+def test_categoria_y_motivo_se_persisten(tmp_path):
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    manifiesto.insertar_o_reabrir([
+        _fila("/sd/x.JPG", bytes_origen=1, unassigned=True,
+              categoria="sin_ordenar", motivo_fuera="fuera-de-ventana")])
+    fila = manifiesto.todas()[0]
+    assert (fila["categoria"], fila["motivo_fuera"]) == ("sin_ordenar", "fuera-de-ventana")

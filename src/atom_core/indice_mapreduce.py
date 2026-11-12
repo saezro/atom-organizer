@@ -353,6 +353,13 @@ def ruta_resumen(destino: str, ejecucion: str) -> str:
     return unir(carpeta_indice(destino, ejecucion), NOMBRE_RESUMEN)
 
 
+NOMBRE_PROPUESTA = "propuesta.json"
+
+
+def ruta_propuesta(destino: str, ejecucion: str) -> str:
+    return unir(carpeta_indice(destino, ejecucion), NOMBRE_PROPUESTA)
+
+
 def construir_resumen_indice(imagenes: list[str], asignadas: list[tuple[str, "str | None", "str | None"]],
                              fuera_de_orden: list[tuple[str, "str | None"]],
                              relativa=lambda ruta: ruta,
@@ -425,6 +432,17 @@ def escribir_resumen_indice(destino: str, ejecucion: str, indice: dict) -> str:
     contenido = {"version": VERSION_RESUMEN, "ejecucion_indice": str(ejecucion), **indice}
     ruta = ruta_resumen(destino, ejecucion)
     _escribir_atomico(ruta, (json.dumps(contenido, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    return ruta
+
+
+def escribir_propuesta_indice(destino: str, ejecucion: str, propuesta: dict) -> str:
+    """Escribe `<destino>/.organizado/indice/<ejecucion>/propuesta.json` (local o
+    gs://, de una pieza) con `propuesta` (ver `atom_core.propuesta.construir_propuesta`)
+    y devuelve su ruta. Mismo punto que `escribir_resumen_indice`."""
+    if not str(ejecucion).strip():
+        raise ErrorIndiceParcial("propuesta del índice: falta la ejecución")
+    ruta = ruta_propuesta(destino, ejecucion)
+    _escribir_atomico(ruta, (json.dumps(propuesta, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     return ruta
 
 

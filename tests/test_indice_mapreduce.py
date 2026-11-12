@@ -207,7 +207,7 @@ def test_paridad_n1_n7_local(_origen, logger, monkeypatch):
     # Los parciales sí existen con N=7.
     carpeta = os.path.join(cfg7.output_folder, ".organizado", "indice", EJEC)
     assert sorted(os.listdir(carpeta)) == sorted(
-        [f"map-{k}.jsonl.gz" for k in range(7)] + ["reduce.lock", "resumen.json"])
+        [f"map-{k}.jsonl.gz" for k in range(7)] + ["reduce.lock", "propuesta.json", "resumen.json"])
 
 
 def test_paridad_n1_n7_gcs(_origen, logger, monkeypatch, bucket, tmp_path):
@@ -294,6 +294,7 @@ def _mapear_sin_reduce(logger, monkeypatch, cfg, n):
     carpeta = os.path.join(cfg.output_folder, ".organizado", "indice", EJEC)
     os.remove(os.path.join(carpeta, "reduce.lock"))
     os.remove(os.path.join(carpeta, "resumen.json"))  # lo escribe el reduce
+    os.remove(os.path.join(carpeta, "propuesta.json"))  # idem
     return carpeta
 
 

@@ -1792,7 +1792,8 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
                     angulos: dict[tuple[str, str, str | None], int], cfg, pipeline,
                     votos: dict | None = None,
                     tamanos_origen: "dict[str, int] | None" = None,
-                    hay_zoom: bool = False) -> FilaManifiesto:
+                    hay_zoom: bool = False,
+                    motivo_fuera: "str | None" = None) -> FilaManifiesto:
     tipo = _clasificar_tipo(dato.nombre, cfg)
     unassigned = ventana is None
 
@@ -1807,7 +1808,9 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
         timestamp=dato.timestamp)
     nombre_final = nombre_nuevo if nombre_nuevo else dato.nombre
 
+    categoria = "vuelo"
     if unassigned:
+        categoria = "sin_ordenar"
         pb = vuelo = None
         angulo_giro = 0
         angulo_version = None
@@ -1816,6 +1819,7 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
         angulo_version = None
         pb, vuelo = ventana["pb"], ventana["vuelo"]
         if _es_pb_generales(pb):
+            categoria = "fotos_generales"
             # Fotos de contexto, no de un vuelo: carpeta HERMANA de
             # TERMICA/RGB/RGB_Extra, plana (sin PB/vuelo) y sin girar -no hay
             # consenso de ángulo posible sin línea de vuelo real. El recorte
@@ -1869,6 +1873,8 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
         angulo_version=angulo_version,
         jpeg_sin_eoi=getattr(dato, "jpeg_sin_eoi", None),
         giro_voto=None if unassigned or votos is None else votos.get(id(dato)),
+        categoria=categoria,
+        motivo_fuera=motivo_fuera if unassigned else None,
     )
 
 
@@ -2170,7 +2176,7 @@ def motivo_sin_ventana(dato, dias_sin_estadillo: set, estadillo_sin_fecha: bool)
 
 def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_sin_estadillo,
                       no_dji, omitidas, no_disponibles, progress_callback,
-                      estadillo_sin_fecha: bool = False) -> None:
+                      estadillo_sin_fecha: bool = False, manifiesto=None) -> None:
     """`resumen.json` del índice (ver `indice_mapreduce.construir_resumen_indice`).
 
     `estadillo_sin_fecha`: hay ventanas pero ninguna con fecha legible; las
@@ -2201,13 +2207,29 @@ def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_s
     fuera.extend((ruta, "a-medio-copiar") for ruta in omitidas)
     fuera.extend((ruta, "no-disponible") for ruta in no_disponibles)
     asignadas = [(fila.ruta_origen, fila.pb, fila.vuelo) for fila in filas]
-    mr.escribir_resumen_indice(
-        cfg.output_folder, ejecucion,
-        mr.construir_resumen_indice(imagenes, asignadas, fuera, relativa,
-                                    tipos=[fila.tipo for fila in filas],
-                                    rgb=_rgb_pareja(cfg, any(
-                                        fila.tipo in TIPOS_RGB and camara_rgb_mod.es_zoom(fila.ruta_origen)
-                                        for fila in filas))))
+    resumen = mr.construir_resumen_indice(
+        imagenes, asignadas, fuera, relativa,
+        tipos=[fila.tipo for fila in filas],
+        rgb=_rgb_pareja(cfg, any(
+            fila.tipo in TIPOS_RGB and camara_rgb_mod.es_zoom(fila.ruta_origen)
+            for fila in filas)))
+    propuesta = None
+    if manifiesto is not None:
+        import sqlite3  # noqa: PLC0415
+        from atom_core import propuesta as propuesta_mod  # noqa: PLC0415 - evita ciclo
+        planta = base.rstrip("/").rsplit("/", 1)[-1]
+        generado = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            manifiesto.checkpoint()
+            propuesta = propuesta_mod.construir_propuesta(
+                manifiesto.ruta_db, {"version": mr.VERSION_RESUMEN, "ejecucion_indice": str(ejecucion),
+                                     **resumen}, planta, generado)
+        except (propuesta_mod.ErrorPropuesta, sqlite3.Error) as exc:
+            # Sin propuesta válida no se publica nada: ni resumen ni propuesta.
+            raise mr.ErrorIndiceParcial(f"propuesta-indice-invalida: {exc}") from exc
+    mr.escribir_resumen_indice(cfg.output_folder, ejecucion, resumen)
+    if propuesta is not None:
+        mr.escribir_propuesta_indice(cfg.output_folder, ejecucion, propuesta)
 
 
 def _registrar_sin_colocar(cfg, manifiesto, ejecucion_id, ventanas, ventanas_por_carpeta,
@@ -2537,11 +2559,15 @@ def construir_indice(
         progress_callback.emit(
             f"\nRGB _W y _Z en la tanda: se recorta SOLO la cámara {_camara_cfg(cfg)} "
             "(ajuste camara_rgb); la otra se copia sin _CROP.\n")
+    dias_fuera = {dia for dia, _n in dias_sin_estadillo}
+    sin_fecha_estadillo = bool(ventanas) and not _fechas_estadillo(ventanas)
     emisor.iniciar("Construir filas", len(asignaciones), barra=(90, 8))
     for n_filas, (dato, ventana) in enumerate(asignaciones, 1):
         cancelacion.comprobar()
-        filas.append(_construir_fila(dato, ventana, angulos, cfg, pipeline, votos_giro,
-                                   tamanos_origen, hay_zoom))
+        filas.append(_construir_fila(
+            dato, ventana, angulos, cfg, pipeline, votos_giro, tamanos_origen, hay_zoom,
+            motivo_fuera=(motivo_sin_ventana(dato, dias_fuera, sin_fecha_estadillo)
+                          if ventana is None else None)))
         emisor.progreso(n_filas, len(asignaciones))
     emisor.progreso(len(asignaciones), len(asignaciones), forzar=True)
     filas = _desambiguar_colisiones_generales(filas, manifiesto.rutas_salida_por_clave())
@@ -2620,7 +2646,8 @@ def construir_indice(
     _escribir_resumen(
         cfg, ejecucion_resumen, imagenes, asignaciones, filas, dias_sin_estadillo,
         no_dji, omitidas_copiandose, no_disponibles, progress_callback,
-        estadillo_sin_fecha=bool(ventanas) and not _fechas_estadillo(ventanas))
+        estadillo_sin_fecha=bool(ventanas) and not _fechas_estadillo(ventanas),
+        manifiesto=manifiesto)
 
     progress_bar.emit(100)
     return {
