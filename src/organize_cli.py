@@ -237,6 +237,26 @@ def _main_copiar(parser, args) -> int:
     return 0
 
 
+def _escribir_salida_sin_colocar(ruta, contenido: dict) -> None:
+    """Deja el JSON en `ruta` (local: tmp + rename; `gs://`: un único upload). Sin ruta, nada."""
+    if not ruta:
+        return
+    import tempfile
+    from atom_core import almacen
+    texto = json.dumps(contenido, ensure_ascii=False, indent=2)
+    if es_uri_gcs(ruta):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "salida.json"
+            f.write_text(texto, encoding="utf-8")
+            almacen.publicar_en(f, ruta)
+        return
+    destino = Path(ruta).expanduser()
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    tmp = destino.with_name(destino.name + ".tmp")
+    tmp.write_text(texto, encoding="utf-8")
+    os.replace(tmp, destino)
+
+
 def _main_sin_colocar(parser, args) -> int:
     """`--sin-colocar listar|asignar`: JSON por stdout (solo el JSON); errores por stderr con
     código 2. Local o `gs://` (mismo manifiesto que el índice/apply)."""
@@ -246,8 +266,11 @@ def _main_sin_colocar(parser, args) -> int:
         if args.sin_colocar == "listar":
             if args.grupo or args.fila or args.quien:
                 parser.error("--grupo/--fila/--quien no aplican a --sin-colocar listar")
-            resultado = {"destino": destino, "grupos": sin_colocar.grupos_sin_colocar(
-                destino, solo_pendientes=not args.todos, incluir_fotos=args.incluir_fotos)}
+            grupos = sin_colocar.grupos_sin_colocar(
+                destino, solo_pendientes=not args.todos, incluir_fotos=args.incluir_fotos)
+            resultado = {"ok": True, "destino": destino, "grupos": grupos,
+                         "filas": sin_colocar.filas_estadillo(destino, grupos),
+                         "zona_horaria": sin_colocar.ZONA_HORARIA}
         else:
             if not args.grupo or args.fila is None or not args.quien:
                 parser.error("--sin-colocar asignar exige --grupo, --fila y --quien")
@@ -259,10 +282,13 @@ def _main_sin_colocar(parser, args) -> int:
                     fila = int(texto)
                 except ValueError:
                     parser.error(f"--fila debe ser un entero o `ninguna`: {args.fila!r}")
-            resultado = sin_colocar.asignar_grupo(destino, args.grupo, fila, quien=args.quien)
+            resultado = {"ok": True, "resultado": sin_colocar.asignar_grupo(
+                destino, args.grupo, fila, quien=args.quien)}
     except (sin_colocar.ErrorSinColocar, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        _escribir_salida_sin_colocar(args.sin_colocar_salida, {"ok": False, "error": str(exc)})
         return 2
+    _escribir_salida_sin_colocar(args.sin_colocar_salida, resultado)
     print(json.dumps(resultado, ensure_ascii=False, indent=2))
     return 0
 
@@ -447,11 +473,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="Con --sin-colocar listar: incluye también los grupos ya decididos.")
     parser.add_argument("--incluir-fotos", dest="incluir_fotos", action="store_true",
                         help="Con --sin-colocar listar: añade `claves` de las fotos de cada grupo.")
+    parser.add_argument("--sin-colocar-salida", dest="sin_colocar_salida", default=None,
+                        metavar="RUTA",
+                        help="Con --sin-colocar: escribe además el JSON (también el de error, "
+                             "{ok:false,error}) en RUTA, local o gs://.")
     args = parser.parse_args(argv)
 
     if args.sin_colocar:
         return _main_sin_colocar(parser, args)
-    if args.grupo or args.fila or args.quien or args.todos or args.incluir_fotos:
+    if args.grupo or args.fila or args.quien or args.todos or args.incluir_fotos or args.sin_colocar_salida:
         parser.error("--grupo/--fila/--quien/--todos/--incluir-fotos solo aplican a --sin-colocar")
 
     if args.fase == "copiar":
