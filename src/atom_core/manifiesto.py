@@ -242,6 +242,7 @@ _SENTENCIAS_ESQUEMA = (
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_clave ON imagenes(clave)",
     "CREATE INDEX IF NOT EXISTS idx_estado ON imagenes(estado)",
     "CREATE INDEX IF NOT EXISTS idx_vuelo ON imagenes(pb, vuelo)",
+    "CREATE INDEX IF NOT EXISTS idx_nombre_ts ON imagenes(nombre_original, timestamp_exif, bytes_origen)",
     """
     CREATE TABLE IF NOT EXISTS ejecuciones (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
