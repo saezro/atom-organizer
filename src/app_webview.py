@@ -497,6 +497,7 @@ class Api:
         self._window = None
         self._sink = None
         self._running = False
+        self._ultimo_destino = ""
         self._downloading = False
         # Código de salida del último PowerShell de diálogo: distingue "el usuario
         # canceló" (0, sin stdout) de "el script abortó" (!= 0), que es lo que
@@ -3937,6 +3938,58 @@ class Api:
             return
         self._sink.dispatch("atom:analisis", detail)
 
+    # ---- fotos sin colocar (fuera de rango del estadillo) -------------------
+    def _destino_sin_colocar(self, ruta_salida: str = "") -> str:
+        ruta = str(ruta_salida or "").strip() or getattr(self, "_ultimo_destino", "")
+        if not ruta:
+            raise ValueError("no hay carpeta de destino: lanza un proceso o indícala.")
+        return ruta
+
+    def sin_colocar_listar(self, ruta_salida: str = "", incluir_fotos: bool = False) -> dict:
+        """Grupos de fotos sin colocar PENDIENTES del destino + todas las filas del estadillo
+        (de `filas_estadillo` del manifiesto, para el selector). Las horas van en hora EXIF
+        del dron (`zona_horaria: "exif-local"`), sin convertir. `ruta_salida` vacía = el
+        destino del último run. Error -> `{ok: False, error}`, nunca silenciado."""
+        try:
+            from atom_core import sin_colocar as sc
+            ruta = self._destino_sin_colocar(ruta_salida)
+            grupos = sc.grupos_sin_colocar(ruta, solo_pendientes=True,
+                                           incluir_fotos=bool(incluir_fotos))
+            filas: list[dict] = []
+            if grupos:
+                ejecuciones = sorted({g["ejecucion"] for g in grupos if g.get("ejecucion") is not None})
+                with sc._abrir(ruta, escribe=False) as man:
+                    for ej in ejecuciones:
+                        for r in man._conexion().execute(
+                                "SELECT datos FROM filas_estadillo WHERE ejecucion = ? ORDER BY fila",
+                                (int(ej),)):
+                            f = json.loads(r["datos"])
+                            filas.append({"ejecucion": ej, "fila": f["fila"], "pb": f.get("pb"),
+                                          "vuelo": f.get("vuelo"), "fecha": f.get("fecha"),
+                                          "hora_inicio": f.get("inicio"), "hora_fin": f.get("fin")})
+            return {"ok": True, "destino": ruta, "grupos": grupos, "filas": filas,
+                    "zona_horaria": sc.ZONA_HORARIA}
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def sin_colocar_asignar(self, grupo_id: str, fila_estadillo=None, ruta_salida: str = "") -> dict:
+        """Asigna todo el grupo a `fila_estadillo` (int) o lo deja en SIN_ORDENAR (`None`).
+        Firma con `usuario@equipo` del SO. Devuelve `{ok, resultado}` (resultado de
+        `asignar_grupo`: `pendientes_apply`, `recolocadas`, `avisos`…) o `{ok: False, error}`."""
+        try:
+            import getpass
+            import socket
+            from atom_core import sin_colocar as sc
+            ruta = self._destino_sin_colocar(ruta_salida)
+            if fila_estadillo is not None:
+                fila_estadillo = int(fila_estadillo)
+            quien = f"{getpass.getuser()}@{socket.gethostname()}"
+            res = sc.asignar_grupo(ruta, str(grupo_id), fila_estadillo, quien=quien)
+            logger.info("sin_colocar_asignar: grupo=%s fila=%s quien=%s", grupo_id, fila_estadillo, quien)
+            return {"ok": True, "resultado": res}
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
     # ---- disparo del pipeline ---------------------------------------------
     def run_organize(self, params: dict, advanced: dict | None = None) -> dict:
         """Atajo de la pantalla principal: "Organizar completo". `advanced` son
@@ -3956,6 +4009,9 @@ class Api:
         threading.Thread(target=self._cloud_estado_en_segundo_plano, daemon=True).start()
         if self._running:
             return {"started": False, "reason": "Ya hay un proceso en curso."}
+        _dest = str((params or {}).get("destino") or (params or {}).get("output_folder") or "").strip()
+        if _dest:
+            self._ultimo_destino = _dest
         self._running = True
         cancelacion.limpiar()  # un run nuevo no hereda la cancelación del anterior
         # Estado del panel de control remoto (`GET /api/control/estado`): un

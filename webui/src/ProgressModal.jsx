@@ -203,6 +203,8 @@ export default function ProgressModal({
   finished,
   recursosTotales,
   maquina,
+  sinColocarN = 0,
+  onSinColocar,
   onClose,
   onCancel,
 }) {
@@ -366,6 +368,15 @@ export default function ProgressModal({
               </p>
             )}
           </div>
+        )}
+
+        {sinColocarN > 0 && onSinColocar && (
+          <p className="pm-status warn">
+            ⚠ Hay fotos fuera de rango del estadillo sin colocar.{' '}
+            <button type="button" className="btn-ghost" onClick={onSinColocar}>
+              Ver y colocar
+            </button>
+          </p>
         )}
 
         {detail.length > 0 && (
