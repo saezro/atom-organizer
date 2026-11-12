@@ -883,7 +883,10 @@ def run_task(
         # se marca en la fase "Índice" (ahí es donde el modal enseña los datos
         # del estadillo) en vez de salir como un banner de error suelto sin
         # checklist detrás.
-        if task == "split_images":
+        # `--fase apply --simular` NO lee estadillo (solo manifiesto ya construido por
+        # la fase indice; ver `phases._apply_repartido`): no se exige.
+        _apply_simulado = fase == "apply" and simulacion.activa()
+        if task == "split_images" and not _apply_simulado:
             from atom_core.estadillo import (
                 desempaquetar_rutas,
                 detectar_estadillos,
