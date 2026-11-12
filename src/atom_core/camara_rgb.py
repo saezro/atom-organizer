@@ -23,8 +23,9 @@ CAMARA_RGB_DEFECTO = "Z"
 SECCION_CONFIG = "cropping"
 CLAVE_CONFIG = "camara_rgb"
 
-# `_Z` final del nombre (sin extensión), admitiendo el `_pointN` de la H30T.
-_RE_ZOOM = re.compile(r"_Z(?:_point\d+)?$", re.IGNORECASE)
+# `_<contador DJI>_Z` final del nombre (sin extensión), admitiendo el `_pointN` de la H30T:
+# `FOTO_Z.jpg` NO es zoom.
+_RE_ZOOM = re.compile(r"_\d+_Z(?:_point\d+)?$", re.IGNORECASE)  # contador DJI, como pares.py
 
 
 def normalizar_camara(valor) -> str:
@@ -67,6 +68,7 @@ def clave_porcentaje(modelo: str, camara: str, hay_zoom: bool) -> str:
 
 
 AJUSTE_MANIFIESTO = "camara_rgb"
+AJUSTE_HAY_ZOOM = "hay_zoom"  # "1"/"0": la tanda indexada trae `_Z` (lo escribe el índice)
 
 
 def fijar_camara_en_manifiesto(manifiesto, cfg, fase_indice: bool, emit=None):

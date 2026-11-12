@@ -299,17 +299,19 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None,
         _emitir_df(df, por_nombre, carpeta, nombre_csv, False)
 
     camara = _camara_de_cfg(cfg)
+    # Zoom por TANDA (el mismo que decidió los `_CROP` en el índice), no por vuelo.
+    hay_zoom_tanda = _hay_zoom_tanda(manifiesto, [f for filas in grupos.values() for f in filas])
 
     def _emparejado(pn_t, pn_w, pref=""):
         """Espejo de `MetaLocation.gen_meta_location_emparejado`: meta (T) y location (W)
         del vuelo desde UNA lista de pares por idx DJI, mismo orden, misma longitud.
 
-        `camara_rgb=Z` y el vuelo trae `_Z`: la RGB de referencia (location) es la `_Z`
+        `camara_rgb=Z` y la tanda trae `_Z`: la RGB de referencia (location) es la `_Z`
         -la `_W` no entra en el CSV- y se empareja con la T por el idx de la `_Z`. El CSV
         lista el original; Análisis sirve `<base>_CROP` si existe. En modo W (o sin `_Z`)
         todo como siempre."""
         rgb = "W"
-        if camara == "Z" and camara_rgb_mod.tanda_trae_zoom(pn_w):
+        if camara == "Z" and hay_zoom_tanda:
             pn_w = {n: f for n, f in pn_w.items() if camara_rgb_mod.es_zoom(n)}
             rgb = "Z"
         imgs_t, imgs_w = natsorted(pn_t), natsorted(pn_w)
@@ -493,7 +495,8 @@ def _nombre_fila(fila) -> str:
 
 def recuentos_por_vuelo(filas_manifiesto, filas_csv, *, convert_to_tif: bool = False,
                         cropping_rgb: bool = False,
-                        camara_rgb: "str | None" = None) -> "dict[tuple[str, str], dict]":
+                        camara_rgb: "str | None" = None,
+                        hay_zoom: "bool | None" = None) -> "dict[tuple[str, str], dict]":
     """Recuentos y veredicto de coherencia por (pb, vuelo). PURA: sin I/O.
 
     Solo filas `hecho` con vuelo asignado (las fallidas/pendientes ya se
@@ -504,7 +507,9 @@ def recuentos_por_vuelo(filas_manifiesto, filas_csv, *, convert_to_tif: bool = F
     Reglas ERROR (solo lo que aplique al vuelo):
     - convert_to_tif y T>0: n_T != n_tiff
     - cropping_rgb y W>0: n_W != n_crop
-    - `camara_rgb` ("Z"|"W", ver `atom_core.camara_rgb`) y el vuelo trae `_Z`:
+    - `camara_rgb` ("Z"|"W", ver `atom_core.camara_rgb`) y la TANDA trae `_Z`
+      (`hay_zoom`, el que guardó el índice; `None` = se deduce de las filas RGB de todo
+      el manifiesto, nunca por vuelo: un vuelo solo W de una tanda con `_Z` no es sin zoom):
       "Z" -> la RGB del vuelo es la `_Z` (n_W cuenta solo las `_Z` y se compara
       con su n_crop); "W" -> se espera `_CROP` en todo menos la `_Z`. Sin `_Z`
       en el vuelo, o `camara_rgb=None`, todo como siempre.
@@ -526,10 +531,13 @@ def recuentos_por_vuelo(filas_manifiesto, filas_csv, *, convert_to_tif: bool = F
             rgb_por_vuelo.setdefault((pb, vuelo), []).append(
                 (_nombre_fila(fila), bool(fila["ruta_salida_crop"])))
 
+    if hay_zoom is None:
+        hay_zoom = any(camara_rgb_mod.es_zoom(_nombre_fila(f)) for f in filas_manifiesto
+                       if f["tipo"] == "RGB")
+    hay_zoom = camara_rgb is not None and bool(hay_zoom)
     etiqueta_rgb: "dict[tuple[str, str], str]" = {}
     for clave, rgb in rgb_por_vuelo.items():
         r = acum[clave]
-        hay_zoom = camara_rgb is not None and camara_rgb_mod.tanda_trae_zoom(n for n, _c in rgb)
         modo_z = hay_zoom and camara_rgb_mod.normalizar_camara(camara_rgb) == "Z"
         # Cámara "de referencia" del vuelo (la que lista el CSV location): en modo Z con
         # `_Z`, solo las `_Z`; en cualquier otro caso, toda la RGB.
@@ -589,13 +597,23 @@ def _camara_de_cfg(cfg) -> str:
         getattr(cfg, "camara_rgb", camara_rgb_mod.CAMARA_RGB_DEFECTO))
 
 
+def _hay_zoom_tanda(manifiesto, filas) -> bool:
+    """¿La tanda trae `_Z`? Lo guardó el índice en `ajustes`; en un manifiesto anterior a
+    ese ajuste se deduce de TODAS las filas RGB (nunca por vuelo)."""
+    guardado = manifiesto.leer_ajuste(camara_rgb_mod.AJUSTE_HAY_ZOOM)
+    if guardado is not None:
+        return guardado == "1"
+    return any(camara_rgb_mod.es_zoom(_nombre_fila(f)) for f in filas if f["tipo"] == "RGB")
+
+
 def calcular_recuentos(manifiesto, cfg, filas_csv) -> "dict[tuple[str, str], dict]":
     """`recuentos_por_vuelo` sobre todo el manifiesto con los flags de `cfg`."""
     return recuentos_por_vuelo(
         manifiesto.todas(), filas_csv,
         convert_to_tif=bool(getattr(cfg, "convert_to_tif", False)),
         cropping_rgb=bool(getattr(cfg, "cropping_rgb", False)),
-        camara_rgb=_camara_de_cfg(cfg))
+        camara_rgb=_camara_de_cfg(cfg),
+        hay_zoom=_hay_zoom_tanda(manifiesto, manifiesto.todas()))
 
 
 def verificar(manifiesto, cfg, recuentos_csv=None) -> list[str]:

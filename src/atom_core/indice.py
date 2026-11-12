@@ -1143,8 +1143,23 @@ def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
 _SEGUNDOS_MAX_PAREJA_TW = 5.0
 
 
+def _clave_toma(nombre: str, rgb: str):
+    """`pares.clave_pareja` de siempre; con `rgb="Z"` (tanda en modo Z) la `_Z` también
+    tiene clave -hereda el vuelo de su T- y la `_W` conserva la suya (misma toma)."""
+    clave = pares_mod.clave_pareja(nombre)
+    if clave is None and rgb == "Z":
+        clave = pares_mod.clave_pareja(nombre, "Z")
+    return clave
+
+
+def _rgb_pareja(cfg, hay_zoom: bool) -> str:
+    """"Z" si la tanda trae `_Z` y `camara_rgb=Z` (la `_Z` forma pareja con la T); si no "W"."""
+    return "Z" if hay_zoom and _camara_cfg(cfg) == "Z" else "W"
+
+
 def _heredar_vuelo_por_pareja(asignaciones: list[tuple[_MetadatosImagen, dict | None]],
-                              progress_callback=None) -> list[tuple[_MetadatosImagen, dict | None]]:
+                              progress_callback=None,
+                              rgb: str = "W") -> list[tuple[_MetadatosImagen, dict | None]]:
     """La W hereda el vuelo de su T por idx DJI (`pares.clave_pareja`), dentro de
     la misma carpeta de origen. T y W de un disparo pueden diferir ~1 s: con la
     ventana horaria estricta aplicada por separado, en el borde del vuelo una cae
@@ -1159,7 +1174,7 @@ def _heredar_vuelo_por_pareja(asignaciones: list[tuple[_MetadatosImagen, dict | 
     termicas: dict[tuple[str, int], list[tuple[_MetadatosImagen, dict | None]]] = {}
     con_w: set[tuple[str, int]] = set()
     for dato, ventana in asignaciones:
-        clave = pares_mod.clave_pareja(dato.nombre)
+        clave = _clave_toma(dato.nombre, rgb)
         if not clave:
             continue
         k = (os.path.dirname(dato.ruta), clave[0])
@@ -1170,7 +1185,7 @@ def _heredar_vuelo_por_pareja(asignaciones: list[tuple[_MetadatosImagen, dict | 
     resultado = []
     heredadas = ambiguas = t_sin_vuelo_w_con = 0
     for dato, ventana in asignaciones:
-        clave = pares_mod.clave_pareja(dato.nombre)
+        clave = _clave_toma(dato.nombre, rgb)
         if clave and clave[1] == "W":
             candidatas = termicas.get((os.path.dirname(dato.ruta), clave[0]))
             if candidatas:
@@ -1712,7 +1727,7 @@ def _avisar_equipo(asignaciones, progress_callback) -> int:
     return len(discrepancias)
 
 
-def _avisar_paridad_tw(filas: list[FilaManifiesto], progress_callback) -> list[tuple[str, str, list[str], list[str]]]:
+def _avisar_paridad_tw(filas: list[FilaManifiesto], progress_callback, rgb: str = "W") -> list[tuple[str, str, list[str], list[str]]]:
     """AVISO por vuelo con los idx T sin W y W sin T (`pares.paridad_tw`). Se llama
     con las filas T y W de TODOS los vuelos, antes de insertar en el manifiesto.
     Devuelve `[(pb, vuelo, t_sin_w, w_sin_t)]` de los vuelos con huérfanas."""
@@ -1725,7 +1740,7 @@ def _avisar_paridad_tw(filas: list[FilaManifiesto], progress_callback) -> list[t
         por_vuelo.setdefault((fila.pb, fila.vuelo), []).append(fila.ruta_origen)
     huerfanas = []
     for (pb, vuelo), rutas in sorted(por_vuelo.items()):
-        t_sin_w, w_sin_t = pares_mod.paridad_tw(rutas)
+        t_sin_w, w_sin_t = pares_mod.paridad_tw(rutas, rgb)
         if not t_sin_w and not w_sin_t:
             continue
         huerfanas.append((pb, vuelo, t_sin_w, w_sin_t))
@@ -2189,7 +2204,10 @@ def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_s
     mr.escribir_resumen_indice(
         cfg.output_folder, ejecucion,
         mr.construir_resumen_indice(imagenes, asignadas, fuera, relativa,
-                                    tipos=[fila.tipo for fila in filas]))
+                                    tipos=[fila.tipo for fila in filas],
+                                    rgb=_rgb_pareja(cfg, any(
+                                        fila.tipo in TIPOS_RGB and camara_rgb_mod.es_zoom(fila.ruta_origen)
+                                        for fila in filas))))
 
 
 def _registrar_sin_colocar(cfg, manifiesto, ejecucion_id, ventanas, ventanas_por_carpeta,
@@ -2474,7 +2492,10 @@ def construir_indice(
             dato.ruta, ventanas_por_carpeta, ventanas_sin_carpeta))))
         emisor.progreso(n_asignadas, len(metadatos))
     emisor.progreso(len(metadatos), len(metadatos), forzar=True)
-    asignaciones = _heredar_vuelo_por_pareja(asignaciones, progress_callback)
+    # Zoom por TANDA (no por vuelo); lo usan pareja T/RGB, recorte y cierre (se guarda abajo).
+    hay_zoom = _tanda_trae_zoom(metadatos, cfg)
+    rgb_pareja = _rgb_pareja(cfg, hay_zoom)
+    asignaciones = _heredar_vuelo_por_pareja(asignaciones, progress_callback, rgb_pareja)
     # Fotos que el usuario colocó a mano en una tanda/índice anterior: conservan su fila.
     asignaciones = sin_colocar_mod.aplicar_asignaciones_manuales(
         asignaciones, manifiesto, ventanas, tamanos_origen, progress_callback.emit)
@@ -2510,7 +2531,8 @@ def construir_indice(
     _validar_giro_contra_flight_yaw(asignaciones, angulos, cfg)
 
     filas = []
-    hay_zoom = _tanda_trae_zoom(metadatos, cfg)
+    # El cierre lee este valor (misma tanda que decidió los `_CROP`), no lo recalcula por vuelo.
+    manifiesto.guardar_ajuste(camara_rgb_mod.AJUSTE_HAY_ZOOM, "1" if hay_zoom else "0")
     if hay_zoom and cfg.cropping_rgb:
         progress_callback.emit(
             f"\nRGB _W y _Z en la tanda: se recorta SOLO la cámara {_camara_cfg(cfg)} "
@@ -2523,7 +2545,7 @@ def construir_indice(
         emisor.progreso(n_filas, len(asignaciones))
     emisor.progreso(len(asignaciones), len(asignaciones), forzar=True)
     filas = _desambiguar_colisiones_generales(filas, manifiesto.rutas_salida_por_clave())
-    _avisar_paridad_tw(filas, progress_callback)
+    _avisar_paridad_tw(filas, progress_callback, rgb_pareja)
     _avisar_jpeg_sin_eoi(filas, progress_callback)
     # Último punto seguro: tras insertar, las filas ya existen en el manifiesto.
     cancelacion.comprobar()

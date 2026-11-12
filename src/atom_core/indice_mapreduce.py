@@ -356,7 +356,7 @@ def ruta_resumen(destino: str, ejecucion: str) -> str:
 def construir_resumen_indice(imagenes: list[str], asignadas: list[tuple[str, "str | None", "str | None"]],
                              fuera_de_orden: list[tuple[str, "str | None"]],
                              relativa=lambda ruta: ruta,
-                             tipos: "list[str] | None" = None) -> dict:
+                             tipos: "list[str] | None" = None, rgb: str = "W") -> dict:
     """Contenido de `resumen.json` (sin `version` ni `ejecucion_indice`).
 
     `imagenes`: el listado completo (de él sale `hash_listado`). `asignadas`:
@@ -381,7 +381,7 @@ def construir_resumen_indice(imagenes: list[str], asignadas: list[tuple[str, "st
     def _pares(rutas: list[str]) -> int:
         t, w = set(), set()
         for ruta in rutas:
-            clave = pares_mod.clave_pareja(ruta)
+            clave = pares_mod.clave_pareja(ruta, rgb)
             if clave:
                 (t if clave[1] == "T" else w).add((os.path.dirname(ruta), clave[0]))
         return len(t & w)

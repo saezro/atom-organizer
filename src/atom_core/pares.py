@@ -30,13 +30,14 @@ def clave_pareja(nombre: str, rgb: str = "W") -> "tuple[int, str] | None":
     return (int(m.group(1)), "W" if suf == "V" else suf)
 
 
-def paridad_tw(rutas) -> "tuple[list[str], list[str]]":
+def paridad_tw(rutas, rgb: str = "W") -> "tuple[list[str], list[str]]":
     """Devuelve (idx con T sin W, idx con W sin T) por idx DJI (`clave_pareja`).
-    Ignora nombres sin patrón (p. ej. `_Z`). Se llama por vuelo: la pareja se busca
+    Ignora nombres sin patrón (p. ej. `_Z`, salvo `rgb="Z"`: tanda en modo Z, la `_Z` es
+    la RGB que forma pareja y la `_W` se ignora; ver `clave_pareja`). Se llama por vuelo: la pareja se busca
     dentro de la lista recibida. Los idx se devuelven con 4 dígitos mínimo."""
     t, w = set(), set()
     for ruta in rutas:
-        c = clave_pareja(ruta)
+        c = clave_pareja(ruta, rgb)
         if c:
             (t if c[1] == "T" else w).add(c[0])
     return ([f"{i:04d}" for i in sorted(t - w)], [f"{i:04d}" for i in sorted(w - t)])

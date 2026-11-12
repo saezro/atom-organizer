@@ -239,9 +239,10 @@ def test_cierre_sin_z_igual_que_siempre():
 
 
 def test_se_recorta_reglas():
-    assert camara_rgb.se_recorta("a_Z.JPG", "Z", True) and not camara_rgb.se_recorta("a_W.JPG", "Z", True)
-    assert camara_rgb.se_recorta("a_W.JPG", "W", True) and not camara_rgb.se_recorta("a_Z.JPG", "W", True)
-    assert camara_rgb.se_recorta("a_W.JPG", "Z", False) and camara_rgb.se_recorta("a_Z_point1.JPG", "Z", True)
+    z, w = "DJI_0001_Z.JPG", "DJI_0001_W.JPG"
+    assert camara_rgb.se_recorta(z, "Z", True) and not camara_rgb.se_recorta(w, "Z", True)
+    assert camara_rgb.se_recorta(w, "W", True) and not camara_rgb.se_recorta(z, "W", True)
+    assert camara_rgb.se_recorta(w, "Z", False) and camara_rgb.se_recorta("DJI_0001_Z_point1.JPG", "Z", True)
     assert camara_rgb.clave_porcentaje("h30t\x00", "Z", True) == "H30T_Z"
     assert camara_rgb.clave_porcentaje("H30T", "W", True) == "H30T"
     assert camara_rgb.clave_porcentaje("H30T", "Z", False) == "H30T"
@@ -397,3 +398,97 @@ def test_user_config_path_migra_al_arrancar(tmp_path, monkeypatch):
     (base / "Config.ini").write_text("[percentage_by_models]\nM4T = 48\nXT2 = 55\n")
     ruta = external_tools._user_config_path()
     assert load_config_or_default(ruta)["percentage_by_models"] == {"XT2": 55}
+
+
+# ---- auditoría: zoom por tanda, FOTO_Z, pareja con Z ---------------------------
+
+def test_foto_z_no_es_zoom_pero_el_contador_dji_si():
+    assert not camara_rgb.es_zoom("FOTO_Z.jpg")
+    assert not camara_rgb.es_zoom("IMG_Z.JPG")
+    assert camara_rgb.es_zoom("DJI_20260101100000_0001_Z.JPG")
+    assert camara_rgb.es_zoom("DJI_0001_Z_point2.JPG")
+    # una tanda con FOTO_Z no activa el modo zoom: se recorta toda la RGB como siempre
+    assert camara_rgb.se_recorta("FOTO_W.jpg", "Z", camara_rgb.tanda_trae_zoom(["FOTO_Z.jpg", "FOTO_W.jpg"]))
+
+
+def _fila_v(vuelo, tipo, nombre, crop):
+    f = _f(tipo, vuelo=vuelo, crop=crop)
+    f["ruta_salida_original"] = f"/d/{tipo}/{nombre}"
+    return f
+
+
+def _tanda_mixta():
+    """Vuelo 1 con W+Z (crop solo en Z); vuelo 2 SOLO W sin crop (modo Z de la tanda)."""
+    return [_fila_v("1", "RGB", "DJI_0001_W.JPG", False), _fila_v("1", "RGB", "DJI_0001_Z.JPG", True),
+            _fila_v("2", "RGB", "DJI_0001_W.JPG", False), _fila_v("2", "RGB", "DJI_0002_W.JPG", False)]
+
+
+def test_cierre_tanda_mixta_sin_falsos_fallos():
+    rec = cierre.recuentos_por_vuelo(_tanda_mixta(), None, cropping_rgb=True, camara_rgb="Z")
+    assert rec[("1", "1")]["estado"] == "OK"
+    assert rec[("1", "2")]["estado"] == "OK"          # vuelo sin Z: la tanda manda, no se espera crop
+    # hay_zoom explícito (el que guardó el índice) manda sobre la deducción
+    rec = cierre.recuentos_por_vuelo(_tanda_mixta(), None, cropping_rgb=True, camara_rgb="Z", hay_zoom=False)
+    assert rec[("1", "2")]["estado"] == "ERROR"
+
+
+def test_cierre_lee_hay_zoom_guardado_en_el_manifiesto(tmp_path):
+    m = _manifiesto(tmp_path)
+    assert cierre._hay_zoom_tanda(m, []) is False
+    m.guardar_ajuste(camara_rgb.AJUSTE_HAY_ZOOM, "1")
+    assert cierre._hay_zoom_tanda(m, []) is True
+    m.cerrar()
+
+
+def test_indice_guarda_hay_zoom_de_la_tanda(tmp_path):
+    _, m, _ = _indice(tmp_path, ["DJI_0001_W.JPG", "DJI_0001_Z.JPG"], {"H30T_Z": 48.5}, camara="Z")
+    assert m.leer_ajuste(camara_rgb.AJUSTE_HAY_ZOOM) == "1"
+    m.cerrar()
+    (tmp_path / "otra").mkdir()
+    filas, m2, _ = _indice(tmp_path / "otra", ["DJI_0001_W.JPG"], {"H30T": 70}, camara="Z")
+    assert m2.leer_ajuste(camara_rgb.AJUSTE_HAY_ZOOM) == "0"
+    m2.cerrar()
+
+
+def _md(nombre, ts):
+    from atom_core.indice import _MetadatosImagen
+    return _MetadatosImagen(ruta=f"/sd/100MEDIA/{nombre}", nombre=nombre, timestamp=ts,
+                            modelo=None, yaw=None, gps=None)
+
+
+def test_z_hereda_el_vuelo_de_su_t_en_el_borde_en_modo_z():
+    from atom_core.indice import _heredar_vuelo_por_pareja
+    v1 = {"pb": "1", "vuelo": "1"}
+    t = _md("DJI_20260301100459_0007_T.JPG", dt.datetime(2026, 3, 1, 10, 4, 59))
+    w = _md("DJI_20260301100500_0007_W.JPG", dt.datetime(2026, 3, 1, 10, 5, 0))
+    z = _md("DJI_20260301100500_0007_Z.JPG", dt.datetime(2026, 3, 1, 10, 5, 0))
+    res = _heredar_vuelo_por_pareja([(t, v1), (w, None), (z, None)], None, "Z")
+    assert res[1][1] is v1 and res[2][1] is v1          # la W conserva su herencia y la Z la gana
+    # modo W / histórico: la Z no tiene clave y no hereda (todo igual que antes)
+    res = _heredar_vuelo_por_pareja([(t, v1), (w, None), (z, None)])
+    assert res[1][1] is v1 and res[2][1] is None
+
+
+def test_paridad_cuenta_la_z_en_modo_z_y_sin_z_es_identica():
+    from atom_core.pares import paridad_tw
+    rutas = ["DJI_0001_T.JPG", "DJI_0001_W.JPG", "DJI_0001_Z.JPG", "DJI_0002_T.JPG", "DJI_0002_W.JPG"]
+    assert paridad_tw(rutas) == ([], [])                       # histórico: Z ignorada
+    assert paridad_tw(rutas, "Z") == (["0002"], [])            # Z: falta la Z del idx 2
+    sin_z = ["DJI_0001_T.JPG", "DJI_0001_W.JPG", "DJI_0002_T.JPG"]
+    assert paridad_tw(sin_z) == paridad_tw(sin_z, "W") == (["0002"], [])
+
+
+def test_tanda_sin_z_identica_en_modo_z_y_w(tmp_path):
+    from atom_core.indice import _heredar_vuelo_por_pareja, _rgb_pareja
+    assert _rgb_pareja(_cfg(tmp_path, camara_rgb="Z"), False) == "W"   # sin Z nunca cambia la pareja
+    v1 = {"pb": "1", "vuelo": "1"}
+    t = _md("DJI_20260301100459_0007_T.JPG", dt.datetime(2026, 3, 1, 10, 4, 59))
+    w = _md("DJI_20260301100500_0007_W.JPG", dt.datetime(2026, 3, 1, 10, 5, 0))
+    a = _heredar_vuelo_por_pareja([(t, v1), (w, None)], None, "W")
+    assert a == _heredar_vuelo_por_pareja([(t, v1), (w, None)]) and a[1][1] is v1
+
+
+def test_webserver_expone_sin_colocar_y_config_de_recortes():
+    from atom_core.webserver import METODOS_EXPUESTOS, METODOS_REMOTOS
+    assert {"sin_colocar_listar", "sin_colocar_asignar", "read_config", "write_config"} <= METODOS_EXPUESTOS
+    assert not {"sin_colocar_listar", "sin_colocar_asignar", "write_config"} & METODOS_REMOTOS  # solo local
