@@ -85,6 +85,40 @@ def test_resumen_n1_y_reduce_son_iguales(_origen, logger, monkeypatch):
                for e in uno["fuera_de_orden"] for x in e["ejemplos"])
 
 
+def _leer_propuesta(destino, ejecucion=EJEC):
+    with open(mr.ruta_propuesta(destino, ejecucion), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def test_resumen_n1_y_reduce_escriben_propuesta_identica(_origen, logger, monkeypatch):
+    cfg1 = _cfg_meta(_origen, output_folder=str(_origen / "salida1"))
+    cfg7 = _cfg_meta(_origen, output_folder=str(_origen / "salida7"))
+    _correr(logger, monkeypatch, cfg1, "indice", 0, 1)
+    _indice_n(logger, monkeypatch, cfg7, 7, orden=[6, 5, 4, 3, 2, 1, 0])
+    uno, siete = _leer_propuesta(cfg1.output_folder), _leer_propuesta(cfg7.output_folder)
+    resumen = _leer(cfg1.output_folder)
+    assert uno.pop("generado") and siete.pop("generado")
+    assert uno == siete
+    assert uno["version"] == 1 and uno["ejecucion_indice"] == EJEC
+    assert uno["hash_listado"] == resumen["hash_listado"]
+    assert uno["planta"] == "origen"
+    assert uno["totales"]["n_vuelos"] == 3 and uno["totales"]["n_sin_ordenar"] == 2
+    assert uno["totales"]["n_imagenes"] == resumen["n_imagenes"]
+
+
+def test_propuesta_invalida_falla_visible_y_no_publica(_origen, logger, monkeypatch):
+    from atom_core import propuesta as propuesta_mod
+
+    def _rota(*a, **k):
+        raise propuesta_mod.ErrorPropuesta("incoherente a propósito")
+
+    monkeypatch.setattr(propuesta_mod, "construir_propuesta", _rota)
+    cfg = _cfg_meta(_origen, output_folder=str(_origen / "salida1"))
+    with pytest.raises(mr.ErrorIndiceParcial, match="propuesta-indice-invalida.*incoherente"):
+        _correr(logger, monkeypatch, cfg, "indice", 0, 1)
+    assert not os.path.exists(mr.ruta_propuesta(cfg.output_folder, EJEC))
+
+
 def mr_listado(cfg):
     from atom_core import indice as indice_mod
     return indice_mod._listar_imagenes(cfg.input_folder)
@@ -147,3 +181,20 @@ def test_escribir_resumen_sin_ejecucion_gcs_falla(tmp_path):
     cfg = SimpleNamespace(input_folder="/o", output_folder="gs://b/dest")
     with pytest.raises(mr.ErrorIndiceParcial):
         indice._escribir_resumen(cfg, "", [], [], [], [], [], [], [], _Cb())
+
+
+def test_fila_sin_ordenar_trae_motivo(_origen, logger, monkeypatch):
+    import sqlite3
+
+    from atom_core.manifiesto import NOMBRE_CARPETA_MANIFIESTO
+    cfg = _cfg_meta(_origen, output_folder=str(_origen / "salida1"))
+    _correr(logger, monkeypatch, cfg, "indice", 0, 1)
+    con = sqlite3.connect(os.path.join(cfg.output_folder, NOMBRE_CARPETA_MANIFIESTO, "manifiesto.db"))
+    filas = con.execute("SELECT unassigned, categoria, motivo_fuera FROM imagenes").fetchall()
+    con.close()
+    fuera = [f for f in filas if f[0]]
+    assert len(fuera) == 2
+    resumen = _leer(cfg.output_folder)
+    motivos_resumen = {e["motivo"] for e in resumen["fuera_de_orden"]}
+    assert all(f[1] == "sin_ordenar" and f[2] in motivos_resumen for f in fuera)
+    assert all(f[1] == "vuelo" and f[2] is None for f in filas if not f[0])

@@ -294,3 +294,58 @@ def test_bytes_null_lanza_con_conteo_y_vuelo(manifiesto_sintetico):
     con.close()
     with pytest.raises(ErrorPropuesta, match=r"vuelo 24/1: 4 imagen\(es\) con bytes_origen NULL"):
         construir_propuesta(manifiesto_sintetico, _resumen(), "T", GEN)
+
+
+def _borrar_columnas_categoria(db):
+    import sqlite3
+    con = sqlite3.connect(db)
+    cols = [r[1] for r in con.execute("PRAGMA table_info(imagenes)")
+            if r[1] not in ("categoria", "motivo_fuera")]
+    con.execute(f"CREATE TABLE imagenes_vieja AS SELECT {', '.join(cols)} FROM imagenes")
+    con.execute("DROP TABLE imagenes")
+    con.execute("ALTER TABLE imagenes_vieja RENAME TO imagenes")
+    con.commit()
+    con.close()
+
+
+def test_propuesta_usa_columna_categoria(tmp_path):
+    db = _crear(tmp_path)
+    import sqlite3
+    con = sqlite3.connect(db)
+    con.execute("UPDATE imagenes SET categoria='fotos_generales' WHERE pb='GENERALES'")
+    con.execute("UPDATE imagenes SET categoria='sin_ordenar', motivo_fuera='dia-sin-estadillo' "
+                "WHERE unassigned=1")
+    con.commit()
+    con.close()
+    p = construir_propuesta(db, _resumen(), "T", GEN)
+    assert p["fuente_categoria"] == "columna"
+    ordenar = [f for f in p["fuera_de_vuelo"] if f["categoria"] == "sin_ordenar" and f["indexada"]]
+    assert [(f["motivo"], f["n_imagenes"]) for f in ordenar] == [("dia-sin-estadillo", 3)]
+    assert [f["categoria"] for f in p["fuera_de_vuelo"]].count("fotos_generales") == 1
+
+
+def test_propuesta_columna_sin_motivo_en_fila_sin_ordenar_lanza(tmp_path):
+    db = _crear(tmp_path)
+    import sqlite3
+    con = sqlite3.connect(db)
+    con.execute("UPDATE imagenes SET categoria='sin_ordenar' WHERE unassigned=1")
+    con.execute("UPDATE imagenes SET categoria='fotos_generales' WHERE pb='GENERALES'")
+    con.commit()
+    con.close()
+    with pytest.raises(ErrorPropuesta, match="motivo_fuera"):
+        construir_propuesta(db, _resumen(), "T", GEN)
+
+
+def test_propuesta_manifiesto_antiguo_deriva_v1(tmp_path):
+    db = _crear(tmp_path)
+    _borrar_columnas_categoria(db)
+    p = construir_propuesta(db, _resumen(), "T", GEN)
+    assert p["fuente_categoria"] == "derivada-v1"
+    assert {f["categoria"] for f in p["fuera_de_vuelo"]} == {"fotos_generales", "sin_ordenar"}
+
+
+def test_propuesta_columna_default_contradice_estructura_cae_a_derivada(tmp_path):
+    """Manifiesto migrado: filas antiguas con default 'vuelo' pese a unassigned."""
+    db = _crear(tmp_path)
+    p = construir_propuesta(db, _resumen(), "T", GEN)
+    assert p["fuente_categoria"] == "derivada-v1"

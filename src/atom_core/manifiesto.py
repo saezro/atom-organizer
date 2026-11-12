@@ -236,7 +236,13 @@ _SENTENCIAS_ESQUEMA = (
         jpeg_sin_eoi INTEGER,
         -- Voto de giro de ESTA imagen según su yaw (90 / 270 / 0). Es el voto
         -- individual; el ángulo aplicado es el del consenso del vuelo (`vuelos`).
-        giro_voto INTEGER
+        giro_voto INTEGER,
+        -- Qué es la imagen en la propuesta: vuelo | pb_general | fotos_generales |
+        -- sin_ordenar. Lo decide el índice (mismo `if` que el destino); el apply NO la lee.
+        -- Filas migradas: 'vuelo' (default), aunque fueran sin asignar.
+        categoria TEXT NOT NULL DEFAULT 'vuelo',
+        -- Motivo por el que va fuera de un vuelo (`indice.motivo_sin_ventana`); NULL en vuelo.
+        motivo_fuera TEXT
     )
     """,
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_clave ON imagenes(clave)",
@@ -410,6 +416,9 @@ class FilaManifiesto:
     # Voto de giro individual de la imagen (90 / 270 / 0); None = sin voto (sin yaw,
     # planta Horizontal, modo manual, fotos generales o sin asignar).
     giro_voto: int | None = None
+    # Categoría para la propuesta y motivo de estar fuera de un vuelo (ver el esquema).
+    categoria: str = "vuelo"
+    motivo_fuera: str | None = None
 
 
 @dataclass
@@ -515,7 +524,9 @@ class Manifiesto:
                                   ("previas_sin_ordenar", "TEXT"),
                                   ("angulo_version", "TEXT"),
                                   ("jpeg_sin_eoi", "INTEGER"),
-                                  ("giro_voto", "INTEGER")):
+                                  ("giro_voto", "INTEGER"),
+                                  ("categoria", "TEXT NOT NULL DEFAULT 'vuelo'"),
+                                  ("motivo_fuera", "TEXT")):
             if nombre not in existentes:
                 conexion.execute(f"ALTER TABLE imagenes ADD COLUMN {nombre} {definicion}")
 
@@ -1282,6 +1293,15 @@ class Manifiesto:
                 "ORDER BY ruta_salida_original"
             )
         )
+
+    def checkpoint(self) -> None:
+        """Vuelca el WAL al fichero principal para que un lector `immutable=1`
+        (ver `propuesta._abrir_ro`) vea todo lo escrito. Falla si no puede."""
+        conexion = self._conexion()
+        conexion.commit()
+        ocupado = conexion.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+        if ocupado:
+            raise sqlite3.OperationalError("no se pudo hacer checkpoint del manifiesto (WAL ocupado)")
 
     def cerrar(self) -> None:
         """Cierra TODAS las conexiones abiertas por esta instancia (una por

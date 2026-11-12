@@ -30,6 +30,9 @@ ANGULOS_VALIDOS = (0, 90, 270)
 _RE_EXIF = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?$")
 
 
+CATEGORIAS_COLUMNA = ("vuelo", "pb_general", "fotos_generales", "sin_ordenar")
+
+
 class ErrorPropuesta(Exception):
     """Manifiesto/resumen incoherentes o inválidos: no se genera propuesta."""
 
@@ -107,9 +110,12 @@ def construir_propuesta(ruta_db: str, resumen: dict, planta: str, generado: str)
             raise ErrorPropuesta(f"resumen.json sin '{clave}'")
     con = _abrir_ro(ruta_db)
     try:
+        con_columna = {c["name"] for c in con.execute("PRAGMA table_info(imagenes)")} >= {
+            "categoria", "motivo_fuera"}
         filas = con.execute(
             "SELECT clave, ruta_origen, tipo, timestamp_exif, pb, vuelo, unassigned, angulo_giro, "
-            "bytes_origen FROM imagenes").fetchall()
+            "bytes_origen" + (", categoria, motivo_fuera" if con_columna else "")
+            + " FROM imagenes").fetchall()
         vuelos_db = con.execute("SELECT * FROM vuelos").fetchall()
         tiene_ajustes = con.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ajustes'").fetchone()
@@ -143,14 +149,41 @@ def construir_propuesta(ruta_db: str, resumen: dict, planta: str, generado: str)
     hay_zoom = any(f["tipo"] in TIPOS_RGB and camara_rgb_mod.es_zoom(f["ruta_origen"]) for f in filas)
     rgb = "Z" if (str(ajuste or "").strip().upper() == "Z" and hay_zoom) else "W"
 
+    # Fuente de la categoría: la columna si existe y es coherente con la estructura;
+    # si falta (manifiesto antiguo) o una fila migrada con el default 'vuelo' la
+    # contradice (sin asignar / PB GENERALES), se deriva con la regla de la FASE 1.
+    fuente = "derivada-v1"
+    if con_columna:
+        for f in filas:
+            if f["categoria"] not in CATEGORIAS_COLUMNA:
+                raise ErrorPropuesta(f"categoria desconocida en el manifiesto: {f['categoria']!r}")
+        if not any(f["categoria"] == "vuelo" and (f["unassigned"] or _es_pb_generales(f["pb"]))
+                   for f in filas):
+            fuente = "columna"
+    if fuente == "columna":
+        for f in filas:
+            if f["unassigned"] != (f["categoria"] == "sin_ordenar"):
+                raise ErrorPropuesta(
+                    f"categoria {f['categoria']!r} incoherente con unassigned={f['unassigned']}: {f['ruta_origen']}")
+            if f["categoria"] == "sin_ordenar" and not (f["motivo_fuera"] or "").strip():
+                raise ErrorPropuesta(f"imagen sin_ordenar sin motivo_fuera en el manifiesto: {f['ruta_origen']}")
+
     por_vuelo: dict[tuple[str, str], list] = {}
     generales: dict[str, list] = {}
     sin_ordenar: list = []
     for f in filas:
-        if f["unassigned"]:
+        if fuente == "columna" and f["categoria"] in ("fotos_generales", "pb_general"):
+            generales.setdefault((f["categoria"], str(f["pb"])), []).append(f)
+        elif fuente == "columna" and f["categoria"] == "sin_ordenar":
+            sin_ordenar.append(f)
+        elif fuente == "columna":
+            if f["pb"] is None or f["vuelo"] is None:
+                raise ErrorPropuesta(f"imagen asignada sin pb/vuelo: {f['ruta_origen']}")
+            por_vuelo.setdefault((str(f["pb"]), str(f["vuelo"])), []).append(f)
+        elif f["unassigned"]:
             sin_ordenar.append(f)
         elif _es_pb_generales(f["pb"]):
-            generales.setdefault(str(f["pb"]), []).append(f)
+            generales.setdefault(("fotos_generales", str(f["pb"])), []).append(f)
         else:
             if f["pb"] is None or f["vuelo"] is None:
                 raise ErrorPropuesta(f"imagen asignada sin pb/vuelo: {f['ruta_origen']}")
@@ -229,9 +262,9 @@ def construir_propuesta(ruta_db: str, resumen: dict, planta: str, generado: str)
         return [rel(r) for r in sorted(rutas)[:MAX_EJEMPLOS]]
 
     fuera = []
-    for pb in sorted(generales, key=_natural):
-        fs = generales[pb]
-        fuera.append({"categoria": "fotos_generales", "motivo": MOTIVO_GENERALES, "pb": pb,
+    for cat, pb in sorted(generales, key=lambda k: (k[0], _natural(k[1]))):
+        fs = generales[(cat, pb)]
+        fuera.append({"categoria": cat, "motivo": MOTIVO_GENERALES, "pb": pb,
                       "n_imagenes": len(fs), "bytes": _suma_bytes(fs, f"generales {pb}"),
                       "ejemplos": ejemplos([f["ruta_origen"] for f in fs]), "indexada": True})
     motivo_de: dict[str, str] = {}
@@ -243,7 +276,10 @@ def construir_propuesta(ruta_db: str, resumen: dict, planta: str, generado: str)
             motivo_de[c] = m
     por_motivo: dict[str, list] = {}
     for f in sin_ordenar:
-        m = (motivo_de.get(f["clave"]) or "").strip() or MOTIVO_SIN_CLASIFICAR
+        if fuente == "columna":
+            m = f["motivo_fuera"].strip()
+        else:
+            m = (motivo_de.get(f["clave"]) or "").strip() or MOTIVO_SIN_CLASIFICAR
         por_motivo.setdefault(m, []).append(f)
     for m in sorted(por_motivo):
         fs = por_motivo[m]
@@ -258,7 +294,7 @@ def construir_propuesta(ruta_db: str, resumen: dict, planta: str, generado: str)
 
     return {
         "version": VERSION_PROPUESTA, "ejecucion_indice": ejecucion, "hash_listado": hash_listado,
-        "planta": planta, "generado": generado,
+        "planta": planta, "generado": generado, "fuente_categoria": fuente,
         "totales": {"n_imagenes": resumen["n_imagenes"],
                     "bytes": _suma_bytes(filas, "totales"),
                     "n_pb": len({v["pb"] for v in vuelos}), "n_vuelos": len(vuelos),
