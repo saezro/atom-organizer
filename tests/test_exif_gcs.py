@@ -101,6 +101,7 @@ def test_indice_con_origen_gcs_no_deja_imagenes_en_sin_ordenar(
         bucket_rango.objetos["PLANTA/INSP/origen/" + f.name] = f.read_bytes()
         bucket_rango.generaciones["PLANTA/INSP/origen/" + f.name] = 1
     cfg_g = _cfg(_inspeccion, input_folder=RAIZ + "/origen", output_folder=str(_inspeccion / "dest_gcs"))
+    object.__setattr__(cfg_g, "planta", "INSP")  # origen sintético de 3 niveles: planta explícita
     _correr_fase(logger, monkeypatch, cfg_g, "indice")
     got = _normalizar(_estado_indice(os.path.join(cfg_g.output_folder, ".organizado", "manifiesto.db")),
                       RAIZ + "/origen", cfg_g.output_folder)
