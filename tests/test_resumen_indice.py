@@ -198,3 +198,34 @@ def test_fila_sin_ordenar_trae_motivo(_origen, logger, monkeypatch):
     motivos_resumen = {e["motivo"] for e in resumen["fuera_de_orden"]}
     assert all(f[1] == "sin_ordenar" and f[2] in motivos_resumen for f in fuera)
     assert all(f[1] == "vuelo" and f[2] is None for f in filas if not f[0])
+
+
+@pytest.mark.parametrize("base,esperada", [
+    ("gs://datos_para_organizar/TOCOPILLA/", "TOCOPILLA"),
+    ("gs://datos_para_organizar/TOCOPILLA/2026_11_08_J1/", "TOCOPILLA"),
+    ("/data/PLANTA_X/", "PLANTA_X"),
+    ("/data/PLANTA_X/2026_11_08_J1", "PLANTA_X"),
+])
+def test_inspeccion_de_origen(base, esperada):
+    from atom_core import indice
+    assert indice._inspeccion_de_origen(base) == esperada
+
+
+@pytest.mark.parametrize("base", ["gs://b/", "gs://b/P/otra/cosa", "gs://b/P/J1"])
+def test_inspeccion_de_origen_indeterminable_falla(base):
+    from atom_core import indice
+    with pytest.raises(mr.ErrorIndiceParcial):
+        indice._inspeccion_de_origen(base)
+
+
+def test_resumen_planta_explicita_del_cfg_gana(tmp_path, monkeypatch):
+    from atom_core import indice, propuesta
+    vistas = []
+    monkeypatch.setattr(propuesta, "construir_propuesta",
+                        lambda db, res, planta, gen: vistas.append(planta) or {})
+    monkeypatch.setattr(mr, "escribir_propuesta_indice", lambda *a, **k: None)
+    manif = SimpleNamespace(checkpoint=lambda: None, ruta_db="x")
+    cfg = SimpleNamespace(input_folder="/data/P/2026_11_08_J1", output_folder=str(tmp_path),
+                          planta="EXPLICITA")
+    indice._escribir_resumen(cfg, "e1", [], [], [], [], [], [], [], _Cb(), manifiesto=manif)
+    assert vistas == ["EXPLICITA"]
