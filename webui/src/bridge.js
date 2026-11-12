@@ -317,6 +317,14 @@ export const api = {
   // ¿La carpeta de salida está vacía? Feedback previo al arrancar (el backend
   // igualmente rechaza no-vacía). Devuelve {exists, empty, count}.
   folderIsEmpty: (path, origen) => call('folder_is_empty', path, origen || ''),
+  // Fotos fuera de rango del estadillo (`atom_core/sin_colocar.py`). Listar devuelve
+  // {ok, destino, grupos[], filas[], zona_horaria} | {ok:false, error}; las horas
+  // van en hora EXIF del dron. Asignar: `fila` entero, o null = dejar en SIN_ORDENAR.
+  // `destino` vacio = el del ultimo run.
+  sinColocarListar: (destino, incluirFotos) =>
+    call('sin_colocar_listar', destino || '', !!incluirFotos),
+  sinColocarAsignar: (grupoId, fila, destino) =>
+    call('sin_colocar_asignar', grupoId, fila ?? null, destino || ''),
   // Configuración persistente: ruta de ThermoViewer.exe + % de recorte RGB por
   // modelo de dron. read devuelve {ruta_thermoviewer, percentage_by_models (override), recortes_efectivos, recortes_tabla};
   // write persiste y devuelve {ok, path} | {ok:false, error}.

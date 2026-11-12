@@ -4783,3 +4783,20 @@ html.kiosk-modo body * {
   background: rgba(238, 117, 58, 0.18);
   border-color: rgba(238, 117, 58, 0.55);
 }
+
+/* --- Fotos sin colocar (SinColocarModal) ---------------------------------- */
+.sc-overlay { z-index: 60; }
+.sc-card { width: min(46rem, 100%); }
+.sc-lista { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.8rem; }
+.sc-grupo {
+  display: flex; flex-direction: column; gap: 0.45rem; padding: 0.8rem 0.9rem;
+  border-radius: 0.7rem; background: rgba(255, 255, 255, 0.04);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.1);
+}
+.sc-cab { display: flex; align-items: baseline; gap: 0.7rem; flex-wrap: wrap; color: var(--text); }
+.sc-motivo { color: var(--orange); font-size: 0.85rem; }
+.sc-pos { color: #cbd5e1; font-size: 0.85rem; }
+.sc-fotos { max-height: 9rem; }
+.sc-acciones { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.sc-select { max-width: 17rem; }
+.sc-relanzar { margin-left: 0.4rem; }

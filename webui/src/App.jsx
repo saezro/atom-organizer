@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, isServerMode, onAnalisis, onCloud, onControlCarpeta, onControlUi, onProgress, registerPicker, whenBridgeReady } from './bridge'
 import ProgressModal from './ProgressModal'
 import PreflightModal from './PreflightModal'
+import SinColocarModal from './SinColocarModal'
 import UpdateModal from './UpdateModal'
 import FolderPicker from './FolderPicker'
 import SplashInicio from './SplashInicio'
@@ -227,6 +228,12 @@ function AppInterna() {
 
   // Estado del modal de progreso (derivado de los eventos atom:progress).
   const [modalOpen, setModalOpen] = useState(false)
+  // Fotos fuera de rango del estadillo: `sinColocarN` = grupos pendientes (botón en
+  // el modal de progreso); `sinColocarAbierto` = modal de colocación visible.
+  const [sinColocarN, setSinColocarN] = useState(0)
+  const [sinColocarAbierto, setSinColocarAbierto] = useState(false)
+  const ultimoRunRef = useRef(null) // {task, params, advanced} para «Relanzar aplicar»
+  const sinColocarRef = useRef({ indice: false, done: false })
   const [plant, setPlant] = useState('')
   const [phases, setPhases] = useState([]) // [{name, status}]
   const [progress, setProgress] = useState(0) // % de la fase activa
@@ -420,12 +427,32 @@ function AppInterna() {
       .catch(() => {})
   }, [])
 
+  // Lista los grupos pendientes; `abrir` = abrir el modal solo si hay alguno. Un error
+  // de lectura NO se traga: se registra y se deja el botón para reintentar.
+  function comprobarSinColocar(abrir) {
+    api
+      .sinColocarListar('', false)
+      .then((r) => {
+        if (!r || r.ok === false) {
+          console.error('sin_colocar_listar', (r && r.error) || 'sin respuesta')
+          setSinColocarN((n) => n || 1)
+          return
+        }
+        const n = (r.grupos || []).length
+        setSinColocarN(n)
+        if (n > 0 && abrir) setSinColocarAbierto(true)
+      })
+      .catch((e) => console.error('sin_colocar_listar', e))
+  }
+
   useEffect(() => {
     whenBridgeReady().then(() => setReady(true))
     return onProgress((d) => {
       switch (d.kind) {
         case 'plant':
           setPlant(d.text || '')
+          sinColocarRef.current = { indice: false, done: false }
+          setSinColocarN(0)
           // Un `organizar` lanzado en remoto (`/api/control/organizar`)
           // arranca `run_task` sin pasar por `startRun`: sin esto el modal
           // de progreso y el estado "ocupado" del kiosco no se enteraban
@@ -449,6 +476,13 @@ function AppInterna() {
         case 'stats':
           // Python ya reinicia los contadores por fase; aquí solo se pinta.
           setStats(d.data || null)
+          // Tras el índice (`vuelos` solo lo emite esa fase): si quedaron fotos sin
+          // asignar, se pregunta dónde van. Una sola vez por run.
+          if (d.data && d.data.vuelos != null && d.data.sin_asignar > 0
+              && !sinColocarRef.current.indice) {
+            sinColocarRef.current.indice = true
+            comprobarSinColocar(true)
+          }
           break
         case 'maquina':
           setMaquina(d.data || null)
@@ -463,6 +497,10 @@ function AppInterna() {
           break
         case 'done': {
           setRunning(false)
+          if (!sinColocarRef.current.done && !sinColocarRef.current.indice) {
+            sinColocarRef.current.done = true
+            comprobarSinColocar(false)
+          }
           const info = d.data || null
           const closed = info && info.last
           setRecursosTotales((info && info.recursos_totales) || null)
@@ -567,6 +605,7 @@ function AppInterna() {
   }
 
   function startRun(task, params, advanced) {
+    ultimoRunRef.current = { task, params, advanced }
     // Reset del estado del modal para la nueva corrida.
     setPlant('')
     setPhases([])
@@ -1092,8 +1131,27 @@ function AppInterna() {
           finished={finished}
           recursosTotales={recursosTotales}
           maquina={maquina}
+          sinColocarN={sinColocarN}
+          onSinColocar={() => setSinColocarAbierto(true)}
           onClose={() => setModalOpen(false)}
           onCancel={() => api.runCancelar()}
+        />
+      )}
+
+      {sinColocarAbierto && (
+        <SinColocarModal
+          destino=""
+          running={running}
+          onClose={() => { setSinColocarAbierto(false); comprobarSinColocar(false) }}
+          onRelanzar={
+            ultimoRunRef.current
+              ? () => {
+                  const u = ultimoRunRef.current
+                  setSinColocarAbierto(false)
+                  startRun(u.task, u.params, u.advanced)
+                }
+              : undefined
+          }
         />
       )}
 
