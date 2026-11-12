@@ -1271,6 +1271,9 @@ def run_task(
         host.ejecucion = ejecucion
         # Solo `--fase indice-reduce`: ejecución del map cuyos parciales se reducen.
         host.ejecucion_indice = str(params.get("ejecucion_indice") or "").strip()
+        # `--listado`: (uri jsonl.gz, sha256 esperado) que sustituye al listado del origen.
+        listado = params.get("listado")
+        host.listado = None if not listado else (str(listado[0]), str(listado[1]))
         pcb = _Signal(_on_log)
         pbar = _Signal(lambda i: emit("progress", int(i)))
         psum = _Signal(_on_summary)
