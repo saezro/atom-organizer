@@ -41,6 +41,80 @@ FILAS_POR_VOLCADO = 50
 SEGUNDOS_POR_VOLCADO = 60.0
 
 
+def _env_coste(nombre: str, defecto: float) -> float:
+    """Coste desde env; valor ilegible o no positivo = error (sin fallback mudo)."""
+    bruto = os.environ.get(nombre)
+    if bruto is None or not str(bruto).strip():
+        return defecto
+    try:
+        valor = float(bruto)
+    except ValueError:
+        raise ValueError(f"{nombre}={bruto!r}: no es un numero") from None
+    if not valor > 0:
+        raise ValueError(f"{nombre}={bruto!r}: debe ser > 0")
+    return valor
+
+
+#: Coste estimado por fila en vCPU*s (medido; sobreescribible por env). Solo
+#: importa la proporcion entre ambos para equilibrar las tasks.
+COSTE_FILA_RGB = _env_coste("ATOM_COSTE_FILA_RGB", 0.50)
+COSTE_FILA_TERMICA = _env_coste("ATOM_COSTE_FILA_TERMICA", 0.68)
+
+
+def coste_fila(fila) -> float:
+    """Coste de una fila segun su `tipo` (`TERMICA` o RGB/RGB_Extra). Un tipo
+    desconocido o ausente es un error: no se adivina."""
+    tipo = fila["tipo"]
+    if tipo == "TERMICA":
+        return COSTE_FILA_TERMICA
+    if tipo in ("RGB", "RGB_Extra"):
+        return COSTE_FILA_RGB
+    raise ValueError(f"fila {fila['ruta_origen']!r}: tipo {tipo!r} sin coste conocido")
+
+
+def reparto_por_coste(filas, shard_count: int) -> list[list]:
+    """Reparto LPT determinista de `filas` en `shard_count` tasks: devuelve una
+    lista por task con SUS filas.
+
+    Ordena por `(coste desc, ruta_origen)` y da cada fila a la task con menos
+    carga acumulada (empate: la de menor indice). Todas las tasks ejecutan este
+    mismo calculo por separado y llegan a la misma particion; por eso hay que
+    pasarle SIEMPRE todas las filas del manifiesto (no solo las pendientes): asi
+    el reparto es estable entre reintentos. Dentro de cada task el orden
+    intercala tipos (round-robin ponderado: se emite antes el tipo que va mas
+    atrasado respecto a su cuota), de modo que rgb y termica avanzan a la vez."""
+    k = int(shard_count)
+    if k < 1:
+        raise ValueError(f"shard_count debe ser >= 1 (llego {shard_count!r})")
+    ordenadas = sorted(filas, key=lambda f: (-coste_fila(f), f["ruta_origen"], f["id"]))
+    carga = [0.0] * k
+    por_task: list[list] = [[] for _ in range(k)]
+    for fila in ordenadas:
+        destino = min(range(k), key=lambda s: (carga[s], s))
+        carga[destino] += coste_fila(fila)
+        por_task[destino].append(fila)
+    return [_intercalar_tipos(lista) for lista in por_task]
+
+
+def _intercalar_tipos(filas: list) -> list:
+    """Round-robin ponderado por tipo, estable (orden previo dentro de cada tipo)."""
+    colas: dict[str, list] = {}
+    for f in filas:
+        colas.setdefault(f["tipo"], []).append(f)
+    if len(colas) <= 1:
+        return list(filas)
+    total = {t: len(c) for t, c in colas.items()}
+    emitidas = {t: 0 for t in colas}
+    salida = []
+    for _ in range(len(filas)):
+        # Gana el tipo con menor fraccion emitida (el mas atrasado); empate por nombre.
+        t = min((t for t in colas if emitidas[t] < total[t]),
+                key=lambda t: ((emitidas[t] + 1) / total[t], t))
+        salida.append(colas[t][emitidas[t]])
+        emitidas[t] += 1
+    return salida
+
+
 def carpeta_shards(destino: str) -> str:
     return unir(destino, ".organizado", NOMBRE_CARPETA_SHARDS)
 
@@ -84,6 +158,7 @@ class RegistroDeltas:
             raise ValueError("la fase apply necesita un identificador de ejecucion "
                              "(CLOUD_RUN_EXECUTION o --ejecucion)")
         self.destino = destino
+        self.fase = fase
         self.ruta = ruta_deltas(destino, ejecucion, shard_index, fase)
         self._cada_filas = max(1, int(cada_filas))
         self._cada_segundos = cada_segundos
@@ -170,6 +245,12 @@ class ManifiestoShard:
         self._indice = shard_index
         self._cuenta = shard_count
         self._rutas: dict[int, str] = {}
+        # Fase `apply`: reparto por coste (LPT) sobre TODAS las filas del
+        # manifiesto. `rgb`/`termica` (ejecuciones antiguas) conservan el hash.
+        self._ids_mios: "dict[int, int] | None" = None
+        if getattr(registro, "fase", None) == "apply":
+            filas_mias = reparto_por_coste(self._m.todas(), shard_count)[shard_index]
+            self._ids_mios = {int(f["id"]): n for n, f in enumerate(filas_mias)}
         # Lo ya hecho en una vida anterior de esta task: en la copia local figura
         # como hecho (si no, el guard de termicas lo daria por no procesado).
         for id_fila in sorted(registro.hechas):
@@ -179,11 +260,15 @@ class ManifiestoShard:
         return getattr(self._m, nombre)
 
     def _mia(self, fila) -> bool:
+        if self._ids_mios is not None:
+            return int(fila["id"]) in self._ids_mios
         return sharding.toca_imagen(fila["ruta_origen"], self._indice, self._cuenta)
 
     def pendientes(self, limite=None, origen=None):
         filas = [f for f in self._m.pendientes(origen=origen)
                  if self._mia(f) and f["id"] not in self._registro.hechas]
+        if self._ids_mios is not None:
+            filas.sort(key=lambda f: self._ids_mios[int(f["id"])])
         for f in filas:
             self._rutas[f["id"]] = f["ruta_origen"]
         return filas if limite is None else filas[:int(limite)]

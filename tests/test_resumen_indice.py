@@ -105,7 +105,7 @@ def _dato(ruta, ts):
 def _resumen_sintetico(tmp_path, asignaciones, dias_sin_estadillo=(), no_dji=(),
                        omitidas=(), no_disponibles=(), estadillo_sin_fecha=False):
     # una fila por imagen sin ventana, como en el índice real (pb/vuelo None = SIN_ORDENAR)
-    filas = [SimpleNamespace(ruta_origen=d.ruta, pb=None, vuelo=None)
+    filas = [SimpleNamespace(ruta_origen=d.ruta, pb=None, vuelo=None, tipo="RGB")
              for d, v in asignaciones if v is None]
     from atom_core import indice
     cfg = SimpleNamespace(input_folder="/o", output_folder=str(tmp_path))

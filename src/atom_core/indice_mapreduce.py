@@ -85,6 +85,91 @@ def hash_listado(imagenes: list[str]) -> str:
     return resumen.hexdigest()
 
 
+# ---- listado externo (`--listado`) -------------------------------------------
+
+class ErrorListado(RuntimeError):
+    """Listado externo ilegible, malformado o con hash distinto: aborta la fase.
+    NUNCA se cae a listar el origen."""
+
+
+def serializar_listado(entradas: "list[dict]") -> bytes:
+    """Contenido canonico (SIN comprimir) de un listado externo, y por tanto lo
+    que se hashea. Util para el que lo escribe; la Suite (Node) lo replica.
+
+    FORMATO del listado: fichero `.jsonl.gz` (gzip de un jsonl UTF-8). Una linea
+    por imagen fuente (ya filtrada por las extensiones fuente), SIN cabecera:
+
+        {"ruta":"gs://bucket/.../DJI_0001_T.JPG","tamano":4194304}
+
+    - `ruta`: ruta completa del origen, tal como la listaria el indice
+      (`gs://...` o ruta local absoluta). `tamano`: bytes (entero >= 0).
+    - Forma canonica (obligatoria; el lector la exige): cada linea es el JSON
+      con claves ordenadas (`ruta`, `tamano`), separadores `(",", ":")`, sin
+      escapar no-ASCII (equivale a `JSON.stringify` de Node), terminada en
+      `"\\n"` (incluida la ultima). Lineas ordenadas por `ruta` en orden de
+      bytes UTF-8 (= orden de codepoints), sin rutas repetidas.
+
+    HASH (`--hash-listado-esperado`): sha256 hexadecimal en minusculas del
+    contenido DESCOMPRIMIDO canonico anterior (los bytes tal cual, no del .gz)."""
+    lineas = sorted(entradas, key=lambda e: e["ruta"].encode("utf-8"))
+    return b"".join(
+        json.dumps({"ruta": e["ruta"], "tamano": e["tamano"]}, sort_keys=True,
+                   separators=(",", ":"), ensure_ascii=False).encode("utf-8") + b"\n"
+        for e in lineas)
+
+
+def hash_listado_externo(entradas: "list[dict]") -> str:
+    return hashlib.sha256(serializar_listado(entradas)).hexdigest()
+
+
+def leer_listado(uri: str, hash_esperado: str) -> "tuple[list[str], dict[str, int]]":
+    """Lee el listado externo `uri` (`.jsonl.gz`, formato en `serializar_listado`),
+    verifica el sha256 del contenido descomprimido contra `hash_esperado` y
+    devuelve `(rutas ordenadas, {ruta: tamano})`. Cualquier fallo (lectura, gzip,
+    hash, linea malformada, desorden, duplicados) es `ErrorListado`."""
+    import gzip  # noqa: PLC0415
+
+    from atom_core import almacen  # noqa: PLC0415 - evita ciclo
+
+    esperado = str(hash_esperado or "").strip().lower()
+    if not esperado:
+        raise ErrorListado("--listado exige --hash-listado-esperado (sha256 del listado)")
+    try:
+        with almacen.abrir_para_lectura(uri) as local:
+            with gzip.open(local, "rb") as fh:
+                contenido = fh.read()
+    except Exception as exc:  # noqa: BLE001 - se re-lanza con contexto
+        raise ErrorListado(f"no se pudo leer el listado {uri}: {exc}") from exc
+    actual = hashlib.sha256(contenido).hexdigest()
+    if actual != esperado:
+        raise ErrorListado(f"listado-externo-cambiado: esperado={esperado} actual={actual} ({uri})")
+    rutas: list[str] = []
+    tamanos: dict[str, int] = {}
+    ultima = None
+    try:
+        lineas = contenido.decode("utf-8").split("\n")
+    except UnicodeDecodeError as exc:
+        raise ErrorListado(f"listado {uri}: no es UTF-8: {exc}") from exc
+    if lineas and lineas[-1] == "":
+        lineas.pop()
+    for n, linea in enumerate(lineas, 1):
+        try:
+            dato = json.loads(linea)
+            ruta, tamano = dato["ruta"], dato["tamano"]
+            valido = (isinstance(ruta, str) and ruta and set(dato) == {"ruta", "tamano"}
+                      and isinstance(tamano, int) and not isinstance(tamano, bool) and tamano >= 0)
+        except (ValueError, KeyError, TypeError):
+            valido = False
+        if not valido:
+            raise ErrorListado(f"listado {uri}: linea {n} invalida")
+        if ultima is not None and ruta.encode("utf-8") <= ultima.encode("utf-8"):
+            raise ErrorListado(f"listado {uri}: linea {n} desordenada o repetida ({ruta})")
+        ultima = ruta
+        rutas.append(ruta)
+        tamanos[ruta] = tamano
+    return rutas, tamanos
+
+
 # ---- serialización de `_MetadatosImagen` -------------------------------------
 
 def _num(valor, campo):
@@ -270,7 +355,8 @@ def ruta_resumen(destino: str, ejecucion: str) -> str:
 
 def construir_resumen_indice(imagenes: list[str], asignadas: list[tuple[str, "str | None", "str | None"]],
                              fuera_de_orden: list[tuple[str, "str | None"]],
-                             relativa=lambda ruta: ruta) -> dict:
+                             relativa=lambda ruta: ruta,
+                             tipos: "list[str] | None" = None) -> dict:
     """Contenido de `resumen.json` (sin `version` ni `ejecucion_indice`).
 
     `imagenes`: el listado completo (de él sale `hash_listado`). `asignadas`:
@@ -278,7 +364,10 @@ def construir_resumen_indice(imagenes: list[str], asignadas: list[tuple[str, "st
     `fuera_de_orden`: `(ruta, motivo)` de toda imagen que no entra en un vuelo
     (SIN_ORDENAR y las omitidas del índice); motivo vacío = `sin-clasificar`.
     `relativa`: ruta absoluta -> ruta relativa al origen (para los ejemplos).
-    Un par = idx DJI con T y W en el mismo vuelo y carpeta de origen."""
+    Un par = idx DJI con T y W en el mismo vuelo y carpeta de origen.
+    `tipos`: `fila.tipo` de cada imagen indexada; con el se escribe
+    `n_por_tipo` = `{"rgb": n, "termica": n}` (rgb incluye RGB_Extra). Es lo que
+    la Suite usa para dimensionar el apply. Sin `tipos` la clave no se escribe."""
     from atom_core import pares as pares_mod  # noqa: PLC0415 - evita ciclo
 
     por_vuelo: dict[tuple[str, str], list[str]] = {}
@@ -302,7 +391,14 @@ def construir_resumen_indice(imagenes: list[str], asignadas: list[tuple[str, "st
     por_motivo: dict[str, list[str]] = {}
     for ruta, motivo in fuera_de_orden:
         por_motivo.setdefault((motivo or "").strip() or MOTIVO_SIN_CLASIFICAR, []).append(ruta)
-    return {
+    n_por_tipo = None
+    if tipos is not None:
+        desconocidos = {t for t in tipos if t != "TERMICA" and t not in ("RGB", "RGB_Extra")}
+        if desconocidos:
+            raise ErrorIndiceParcial(f"resumen del índice: tipo(s) desconocido(s) {sorted(desconocidos)}")
+        n_termica = sum(1 for t in tipos if t == "TERMICA")
+        n_por_tipo = {"rgb": len(tipos) - n_termica, "termica": n_termica}
+    resumen = {
         "hash_listado": hash_listado(imagenes),
         "n_imagenes": len(imagenes),
         "n_pares": sum(e["pares"] for e in pb),
@@ -315,6 +411,9 @@ def construir_resumen_indice(imagenes: list[str], asignadas: list[tuple[str, "st
              "ejemplos": [relativa(r) for r in sorted(rutas)[:MAX_EJEMPLOS_FUERA_DE_ORDEN]]}
             for motivo, rutas in sorted(por_motivo.items())],
     }
+    if n_por_tipo is not None:
+        resumen["n_por_tipo"] = n_por_tipo
+    return resumen
 
 
 def escribir_resumen_indice(destino: str, ejecucion: str, indice: dict) -> str:

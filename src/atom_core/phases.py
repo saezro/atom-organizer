@@ -1539,7 +1539,7 @@ class PipelinePhasesMixin:
         resultado = indice_mod.mapear_indice(
             cfg, self.split_images_obj.exif_management_obj, progress_callback, progress_bar,
             progress_summarize, shard_index=shard_index, shard_count=shard_count,
-            ejecucion=ejecucion)
+            ejecucion=ejecucion, listado=getattr(self, "listado", None))
         estadisticas["imagenes"] += resultado["leidas"]
         estadisticas["reduce"] = False
         if not indice_mr.parciales_presentes(cfg.output_folder, ejecucion, shard_count):
@@ -1593,7 +1593,7 @@ class PipelinePhasesMixin:
             resumen_indice = indice_mod.construir_indice(
                 cfg, adaptador, self.split_images_obj.exif_management_obj, manifiesto,
                 progress_callback, progress_bar, progress_summarize, ejecucion_id=ejecucion_id,
-                reduce_desde=reduce_desde,
+                reduce_desde=reduce_desde, listado=getattr(self, "listado", None),
                 ejecucion_resumen=str(
                     (reduce_desde or {}).get("ejecucion") or getattr(self, "ejecucion", "") or ""))
         return resumen_indice

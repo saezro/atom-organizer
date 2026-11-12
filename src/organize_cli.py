@@ -358,6 +358,21 @@ def main(argv: list[str] | None = None) -> int:
                              "imagenes con el que se genero el indice. Si el origen lista "
                              "distinto, aborta con exit 2 (`listado-cambiado: esperado=… "
                              "actual=…`) SIN escribir nada en destino. Sin el, no se comprueba.")
+    parser.add_argument("--shards", dest="shards", default=None, metavar="I,J,...",
+                        help="Reintento parcial de apply/rgb/termica: indices ORIGINALES de "
+                             "los shards a rehacer (p. ej. `3,7`). La task "
+                             "CLOUD_RUN_TASK_INDEX=i (o --shard-index) procesa el shard "
+                             "original shards[i] y reanuda desde su jsonl. Exige "
+                             "--ejecucion (la ejecucion ORIGINAL, que manda sobre "
+                             "$CLOUD_RUN_EXECUTION) y --shard-count = K ORIGINAL (el "
+                             "$CLOUD_RUN_TASK_COUNT de este reintento se ignora).")
+    parser.add_argument("--listado", dest="listado", default=None, metavar="GS_URI",
+                        help="Solo fases indice/completo: jsonl.gz con el listado de imagenes "
+                             "que SUSTITUYE al listado del origen (formato y hash en "
+                             "`atom_core.indice_mapreduce.serializar_listado`). Exige "
+                             "--hash-listado-esperado (aqui = sha256 del contenido "
+                             "descomprimido del listado). Si no coincide o no se lee: error, "
+                             "nunca se lista el origen.")
     parser.add_argument("--modo-destino", dest="modo_destino",
                         choices=["sobrescribir", "obviar"], default="sobrescribir",
                         help="Que hacer con lo que ya haya en el destino. "
@@ -392,6 +407,30 @@ def main(argv: list[str] | None = None) -> int:
         shard_index, shard_count = sharding.normalizar_shard(
             args.shard_index if args.shard_index is not None else 0,
             args.shard_count if args.shard_count is not None else 1)
+
+    if args.shards is not None:
+        if args.fase not in ("apply", "rgb", "termica"):
+            parser.error("--shards solo aplica a las fases apply/rgb/termica")
+        if not (args.ejecucion or "").strip():
+            parser.error("--shards exige --ejecucion (la ejecucion original)")
+        if args.shard_count is None:
+            parser.error("--shards exige --shard-count = K original")
+        try:
+            originales = [int(x) for x in args.shards.split(",")]
+            k_original = int(args.shard_count)
+        except ValueError:
+            parser.error("--shards debe ser una lista de enteros (`3,7`) y --shard-count un entero")
+        if (not originales or len(set(originales)) != len(originales)
+                or any(o < 0 or o >= k_original for o in originales)):
+            parser.error(f"--shards {args.shards!r}: indices repetidos o fuera de 0..{k_original - 1}")
+        try:
+            i_task = int(args.shard_index if args.shard_index is not None
+                         else os.environ.get("CLOUD_RUN_TASK_INDEX", "0"))
+        except ValueError:
+            parser.error("indice de task ilegible (--shard-index / CLOUD_RUN_TASK_INDEX)")
+        if not 0 <= i_task < len(originales):
+            parser.error(f"la task {i_task} no tiene shard: --shards lista {len(originales)}")
+        shard_index, shard_count = originales[i_task], k_original
 
     # `gs://…` viaja como STRING TAL CUAL: `Path(...).resolve()` destroza el
     # esquema (`<cwd>/gs:/bucket/x`). Las rutas locales conservan byte a byte
@@ -443,7 +482,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # Antes de crear el destino: si el listado cambió desde el índice, no se
     # escribe NADA (ni la carpeta de destino).
-    if args.hash_listado_esperado is not None:
+    if args.listado is not None:
+        if args.fase not in ("completo", "indice"):
+            parser.error("--listado solo aplica a las fases completo/indice")
+        if not (args.hash_listado_esperado or "").strip():
+            parser.error("--listado exige --hash-listado-esperado")
+    elif args.hash_listado_esperado is not None:
         if not args.hash_listado_esperado.strip():
             parser.error("--hash-listado-esperado vacío")
         if args.fase not in ("apply", "rgb", "termica"):
@@ -469,7 +513,11 @@ def main(argv: list[str] | None = None) -> int:
                     "estadillo": empaquetar_rutas(args.estadillo),
                     "etapa": args.etapa,
                     "fase": args.fase,
-                    "ejecucion": sharding.ejecucion_desde_entorno(explicita=args.ejecucion),
+                    # Con --shards la ejecucion ORIGINAL manda sobre la del entorno.
+                    "ejecucion": (args.ejecucion.strip() if args.shards is not None
+                                  else sharding.ejecucion_desde_entorno(explicita=args.ejecucion)),
+                    "listado": ([args.listado, args.hash_listado_esperado.strip().lower()]
+                                if args.listado is not None else None),
                     "ejecucion_indice": args.ejecucion_indice or "",
                     "modo_destino": args.modo_destino,
                     "shard_index": shard_index, "shard_count": shard_count}

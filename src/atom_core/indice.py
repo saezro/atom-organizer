@@ -2013,6 +2013,19 @@ def _lote_desde_parciales(imagenes: list[str], destino: str, reduce_desde: dict,
                       no_disponibles, [])
 
 
+def _imagenes_del_origen(cfg, emisor, omitidas, tamanos_origen, listado):
+    """Listado de imagenes del indice. Con `listado=(uri, hash)` se lee ese
+    jsonl.gz (verificando el hash) EN LUGAR de listar el origen; si falla, error
+    (`ErrorListado`), nunca se lista el origen como respaldo."""
+    if listado is None:
+        return _listar_imagenes(cfg.input_folder, omitidas, _Limite(emisor), tamanos_origen)
+    from atom_core import indice_mapreduce as mr  # noqa: PLC0415 - evita ciclo
+    uri, hash_esperado = listado
+    rutas, tamanos = mr.leer_listado(uri, hash_esperado)
+    tamanos_origen.update(tamanos)
+    return rutas
+
+
 def mapear_indice(
     cfg,
     exif,
@@ -2028,6 +2041,7 @@ def mapear_indice(
     timeout_reintento_s: float | None = None,
     watchdog_s: float | None = None,
     intervalo_progreso_s: float | None = None,
+    listado: "tuple[str, str] | None" = None,
 ) -> dict:
     """MAP del índice repartido: lista el origen (todas las tasks igual: lista
     ordenada), lee las cabeceras de SU tramo contiguo y escribe su parcial
@@ -2047,7 +2061,7 @@ def mapear_indice(
         intervalo_progreso_s or _env_float("ATOM_INDICE_PROGRESO_S", INTERVALO_PROGRESO_S))
     hilos = max_hilos or utils.max_io_workers()
     tamanos_origen: dict[str, int] = {}
-    imagenes = _listar_imagenes(cfg.input_folder, [], _Limite(emisor), tamanos_origen)
+    imagenes = _imagenes_del_origen(cfg, emisor, [], tamanos_origen, listado)
     cancelacion.comprobar()
     inicio, fin = mr.tramo(len(imagenes), shard_index, shard_count)
     emisor.aviso(
@@ -2109,7 +2123,8 @@ def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_s
     asignadas = [(fila.ruta_origen, fila.pb, fila.vuelo) for fila in filas]
     mr.escribir_resumen_indice(
         cfg.output_folder, ejecucion,
-        mr.construir_resumen_indice(imagenes, asignadas, fuera, relativa))
+        mr.construir_resumen_indice(imagenes, asignadas, fuera, relativa,
+                                    tipos=[fila.tipo for fila in filas]))
 
 
 def construir_indice(
@@ -2128,6 +2143,7 @@ def construir_indice(
     intervalo_progreso_s: float | None = None,
     reduce_desde: "dict | None" = None,
     ejecucion_resumen: str = "",
+    listado: "tuple[str, str] | None" = None,
 ) -> dict:
     """Construye el manifiesto completo del run: una pasada de metadatos
     sobre `cfg.input_folder`, cruzada con el estadillo, decidiendo vuelo,
@@ -2197,9 +2213,7 @@ def construir_indice(
 
     omitidas_copiandose: list[str] = []
     tamanos_origen: dict[str, int] = {}  # por ejecución (origen gs://), ver `_listar_imagenes_gcs`
-    imagenes = _listar_imagenes(
-        cfg.input_folder, omitidas_copiandose,
-        _Limite(emisor), tamanos_origen)
+    imagenes = _imagenes_del_origen(cfg, emisor, omitidas_copiandose, tamanos_origen, listado)
     cancelacion.comprobar()
     # Scoping por carpeta: cada imagen solo compite contra las ventanas del
     # estadillo cuyo directorio es su ancestro más cercano (ver
