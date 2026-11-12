@@ -18,6 +18,8 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+from atom_core import simulacion
+
 _LOG = logging.getLogger(__name__)
 
 
@@ -152,6 +154,8 @@ class AlmacenGCS:
         """Borra el objeto corrupto para que ningun paso lo de por bueno
         (existe_ruta). Devuelve un sufijo para el mensaje de error: si el borrado
         falla NO se silencia (queda un objeto malo en el bucket y hay que verlo)."""
+        if simulacion.interceptar("borrar", getattr(blob, "name", "")):
+            return ""
         try:
             blob.delete()
         except Exception as exc:  # noqa: BLE001 - se informa, no se traga
@@ -183,6 +187,8 @@ class AlmacenGCS:
         """Sube `ruta_local`. Con `if_generation_match` (0 = «no debe existir») la
         subida es condicional: si otro proceso cambió el objeto, el SDK lanza
         `PreconditionFailed` (412) y NO se sobrescribe nada."""
+        if simulacion.interceptar("publicar", destino, Path(ruta_local).stat().st_size):
+            return
         blob = self.bucket.blob(self._clave(destino))
         if metadatos:
             blob.metadata = {str(k): str(v) for k, v in metadatos.items()}
@@ -214,6 +220,8 @@ class AlmacenGCS:
                 raise OSError(f"Subida corrupta de '{ruta_local}' a '{destino}': md5 distinto{extra}")
 
     def mover(self, origen: str, destino: str) -> None:
+        if simulacion.interceptar("mover", destino):
+            return
         clave_origen = self._clave(origen)
         clave_destino = self._clave(destino)
         if clave_origen == clave_destino:
@@ -244,6 +252,8 @@ class AlmacenGCS:
         blob_origen.delete()
 
     def borrar(self, ruta: str) -> None:
+        if simulacion.interceptar("borrar", ruta):
+            return
         blob = self.bucket.blob(self._clave(ruta))
         try:
             blob.delete()

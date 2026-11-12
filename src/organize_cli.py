@@ -381,6 +381,12 @@ def main(argv: list[str] | None = None) -> int:
                              "`obviar` = deja intacto lo que ya exista en esa "
                              "ruta y no mueve esa imagen. En ningun caso se "
                              "generan copias con sufijo.")
+    parser.add_argument("--simular", dest="simular", action="store_true",
+                        help="Solo --fase apply: SIMULACION para medir tiempo y coste reales "
+                             "sin tocar la planta. Lee, calcula y decide igual que el apply "
+                             "real, pero NO escribe, copia, mueve ni borra nada en el "
+                             "bucket/destino (ni deltas ni telemetria). Unica escritura: "
+                             "<destino>/.organizado/simulaciones/<ejecucion>-task<idx>.json.")
     parser.add_argument(
         "--estadillo-manifest", dest="estadillo_manifest", default=None,
         help=("Ruta al manifest.json de la subida canonica (bucket de ENTRADA, "
@@ -407,6 +413,19 @@ def main(argv: list[str] | None = None) -> int:
         shard_index, shard_count = sharding.normalizar_shard(
             args.shard_index if args.shard_index is not None else 0,
             args.shard_count if args.shard_count is not None else 1)
+
+    if args.simular and args.fase != "apply":
+        parser.error("--simular solo aplica a --fase apply")
+    if args.simular and args.estadillo:
+        parser.error("--simular no admite --estadillo (no se ingiere nada en la Suite)")
+    if args.simular and not sharding.ejecucion_desde_entorno(explicita=args.ejecucion):
+        parser.error("--simular exige --ejecucion o $CLOUD_RUN_EXECUTION: el informe se "
+                     "nombra <ejecucion>-task<idx>.json y no puede pisar el de otra ejecucion")
+    if args.simular:
+        # ANTES de cualquier E/S o llamada del reporter: desde aqui nada escribe en planta.
+        from atom_core import simulacion
+        simulacion.activar()
+        print("SIMULACIÓN: no se escribe nada en planta", flush=True)
 
     if args.shards is not None:
         if args.fase not in ("apply", "rgb", "termica"):
@@ -462,7 +481,8 @@ def main(argv: list[str] | None = None) -> int:
     # poder organizarse igual.
     from atom_core.estadillo import detectar_estadillos, detectar_estadillos_en_padre
     rutas_autodetectadas = [] if origen_es_gcs else detectar_estadillos(str(origen))["rutas"]
-    if not rutas_autodetectadas and not args.estadillo:
+    # El apply ya no usa el estadillo (el indice lo decidio): --simular no lo exige.
+    if not rutas_autodetectadas and not args.estadillo and not args.simular:
         # NUNCA se coge el estadillo del padre en automático (decisión de
         # el responsable): si hay candidatos sueltos ahí, se avisa con
         # su ruta completa pero solo se usan pasándolos por --estadillo.
@@ -495,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
         _verificar_hash_listado(str(origen), args.hash_listado_esperado)
 
     # En GCS no hay directorios: nada que crear de antemano.
-    if not destino_es_gcs:
+    if not destino_es_gcs and not args.simular:
         destino.mkdir(parents=True, exist_ok=True)
 
     # Import aquí y no arriba: `atom_core.organize` arrastra el pipeline entero
@@ -563,7 +583,11 @@ def main(argv: list[str] | None = None) -> int:
     n_imagenes = _contar_imagenes(origen)
     secreto = os.environ.get("ORGANIZER_INGEST_SECRET")
     en_cloud_run = bool(os.environ.get("CLOUD_RUN_EXECUTION"))
-    if secreto:
+    if args.simular:
+        # Simulacion: sin RunReporter (ni alta, fase, progreso, fin ni estadillo) para
+        # que no aparezca nada en la Suite.
+        telemetria_motivo = "simulacion: telemetria a la Suite desactivada"
+    elif secreto:
         try:
             from atom_core.run_reporter import RunReporter
         except Exception as exc:  # noqa: BLE001 - imagen sin el modulo: avisar, no morir
