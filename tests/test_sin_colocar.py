@@ -408,7 +408,7 @@ def test_cli_listar_y_asignar(tanda, capsys):
 
     assert organize_cli.main(["--destino", tanda.destino, "--sin-colocar", "asignar",
                               "--grupo", gid, "--fila", "1", "--quien", "cli"]) == 0
-    res = json.loads(capsys.readouterr().out)
+    res = json.loads(capsys.readouterr().out)["resultado"]
     assert res["pendientes_apply"] == 3 and res["fila_estadillo"] == 1
 
     assert organize_cli.main(["--destino", tanda.destino, "--sin-colocar", "listar"]) == 0
@@ -421,7 +421,7 @@ def test_cli_listar_y_asignar(tanda, capsys):
     gid2 = listado["grupos"][1]["grupo_id"]
     assert organize_cli.main(["--destino", tanda.destino, "--sin-colocar", "asignar",
                               "--grupo", gid2, "--fila", "ninguna", "--quien", "cli"]) == 0
-    assert json.loads(capsys.readouterr().out)["fila_estadillo"] is None
+    assert json.loads(capsys.readouterr().out)["resultado"]["fila_estadillo"] is None
 
     # Errores: código 2, mensaje por stderr, nada por stdout.
     assert organize_cli.main(["--destino", tanda.destino, "--sin-colocar", "asignar",
@@ -455,3 +455,43 @@ def test_destino_gcs_lista_y_asigna_y_sube_el_manifiesto(tanda, bucket, tmp_path
     with pytest.raises(ErrorSinColocar):
         asignar_grupo(RAIZ_GCS, grupos[1]["grupo_id"], 99, quien="nube")
     assert bucket.generaciones[CLAVE_GCS] == generacion
+
+
+def test_cli_salida_local_listar_asignar_y_error(tanda, capsys, tmp_path):
+    tanda.indexar(FOTOS_HUECOS)
+    sal = tmp_path / "sub" / "listado.json"
+    assert organize_cli.main(["--destino", tanda.destino, "--sin-colocar", "listar",
+                              "--sin-colocar-salida", str(sal)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    en_fichero = json.loads(sal.read_text(encoding="utf-8"))
+    assert en_fichero == out and out["ok"] is True
+    assert out["zona_horaria"] == "exif-local" and len(out["grupos"]) == 3
+    assert out["filas"] and {"ejecucion", "fila", "pb", "vuelo", "fecha",
+                             "hora_inicio", "hora_fin"} <= set(out["filas"][0])
+    assert not list(sal.parent.glob("*.tmp"))
+    gid = out["grupos"][0]["grupo_id"]
+
+    sal2 = tmp_path / "asignar.json"
+    assert organize_cli.main(["--destino", tanda.destino, "--sin-colocar", "asignar", "--grupo", gid,
+                              "--fila", "1", "--quien", "cli", "--sin-colocar-salida", str(sal2)]) == 0
+    capsys.readouterr()
+    r = json.loads(sal2.read_text(encoding="utf-8"))
+    assert r["ok"] is True and r["resultado"]["pendientes_apply"] == 3
+
+    sal3 = tmp_path / "error.json"
+    assert organize_cli.main(["--destino", tanda.destino, "--sin-colocar", "asignar", "--grupo", gid,
+                              "--fila", "77", "--quien", "cli", "--sin-colocar-salida", str(sal3)]) == 2
+    capsys.readouterr()
+    e = json.loads(sal3.read_text(encoding="utf-8"))
+    assert e["ok"] is False and "fila 77 no existe" in e["error"]
+
+
+def test_cli_salida_gcs(tanda, bucket, capsys, tmp_path):
+    (tmp_path / "tmp").mkdir(exist_ok=True)  # la fixture `bucket` redirige gettempdir ahí
+    tanda.indexar(FOTOS_HUECOS)
+    destino = os.path.join(tanda.destino)
+    salida = "gs://bucket-falso/salidas/sc.json"
+    assert organize_cli.main(["--destino", destino, "--sin-colocar", "listar",
+                              "--sin-colocar-salida", salida]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert json.loads(bucket.objetos["salidas/sc.json"].decode("utf-8")) == out

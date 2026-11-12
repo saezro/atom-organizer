@@ -289,6 +289,27 @@ def grupos_sin_colocar(ruta_salida: str, *, solo_pendientes: bool = True,
 
 # --- Asignación ---------------------------------------------------------------------
 
+def filas_estadillo(ruta_salida: str, grupos: list[dict]) -> list[dict]:
+    """Filas del estadillo (de `filas_estadillo` del manifiesto) de las ejecuciones de `grupos`,
+    para el selector de fila. Sin grupos -> `[]` (no abre el manifiesto). Las horas van en
+    hora EXIF del dron (`ZONA_HORARIA`)."""
+    import json
+    if not grupos:
+        return []
+    ejecuciones = sorted({g["ejecucion"] for g in grupos if g.get("ejecucion") is not None})
+    filas: list[dict] = []
+    with _abrir(ruta_salida, escribe=False) as man:
+        for ej in ejecuciones:
+            for r in man._conexion().execute(
+                    "SELECT datos FROM filas_estadillo WHERE ejecucion = ? ORDER BY fila",
+                    (int(ej),)):
+                f = json.loads(r["datos"])
+                filas.append({"ejecucion": ej, "fila": f["fila"], "pb": f.get("pb"),
+                              "vuelo": f.get("vuelo"), "fecha": f.get("fecha"),
+                              "hora_inicio": f.get("inicio"), "hora_fin": f.get("fin")})
+    return filas
+
+
 def _fila_manifiesto(fila) -> FilaManifiesto:
     datos = {c.name: fila[c.name] for c in fields(FilaManifiesto)}
     for booleano in ("comprime", "unassigned", "meta_leida"):

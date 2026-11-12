@@ -3955,18 +3955,7 @@ class Api:
             ruta = self._destino_sin_colocar(ruta_salida)
             grupos = sc.grupos_sin_colocar(ruta, solo_pendientes=True,
                                            incluir_fotos=bool(incluir_fotos))
-            filas: list[dict] = []
-            if grupos:
-                ejecuciones = sorted({g["ejecucion"] for g in grupos if g.get("ejecucion") is not None})
-                with sc._abrir(ruta, escribe=False) as man:
-                    for ej in ejecuciones:
-                        for r in man._conexion().execute(
-                                "SELECT datos FROM filas_estadillo WHERE ejecucion = ? ORDER BY fila",
-                                (int(ej),)):
-                            f = json.loads(r["datos"])
-                            filas.append({"ejecucion": ej, "fila": f["fila"], "pb": f.get("pb"),
-                                          "vuelo": f.get("vuelo"), "fecha": f.get("fecha"),
-                                          "hora_inicio": f.get("inicio"), "hora_fin": f.get("fin")})
+            filas = sc.filas_estadillo(ruta, grupos)
             return {"ok": True, "destino": ruta, "grupos": grupos, "filas": filas,
                     "zona_horaria": sc.ZONA_HORARIA}
         except Exception as exc:  # noqa: BLE001 — se reenvía al front
