@@ -147,4 +147,19 @@ describe('PanelOrganizar', () => {
     render(<PanelOrganizar origen="/datos/vuelo" estadillos={[]} ready running={false} onRun={() => {}} />)
     expect(screen.getByTestId('falta-ejecutar').textContent).toBe('Falta: carpeta final / estadillo')
   })
+
+  it('selector de cámara RGB solo con _Z y se envía a onRun', async () => {
+    const onRun = vi.fn()
+    const props = { estadillos: ['e.xlsx'], ready: true, running: false, onRun }
+    const { rerender } = render(<PanelOrganizar origen="" {...props} />)
+    rerender(<PanelOrganizar origen="/datos/vuelo" {...props} />)
+    await waitFor(() => expect(api.detectSuffixesStart).toHaveBeenCalled())
+    emitirAnalisis({ scope: 'suffixes', kind: 'done', data: { ok: true, thermal: '_T', rgb: '', tokens: { _T: 3, _W: 3 }, total: 6 } })
+    expect(screen.queryByTestId('selector-camara-rgb')).toBeNull()
+    emitirAnalisis({ scope: 'suffixes', kind: 'done', data: { ok: true, thermal: '_T', rgb: '', tokens: { _T: 3, _W: 3, _Z: 3 }, total: 9 } })
+    expect(screen.getByTestId('selector-camara-rgb')).toBeTruthy()
+    expect(screen.getByText(/Zoom: se crea copia _CROP/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('radio', { name: 'Wide (_W)' }))
+    expect(screen.getByRole('radio', { name: 'Wide (_W)' }).getAttribute('aria-checked')).toBe('true')
+  })
 })

@@ -20,6 +20,7 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
   const [adv, setAdv] = useState(() => initialState(ADV_FIELDS))
   const [detected, setDetected] = useState(null)
   const [escaneados, setEscaneados] = useState(0)
+  const [camaraRgb, setCamaraRgb] = useState('Z') // 'Z' (por defecto) | 'W'; solo se envía si la tanda trae _Z
 
   useEffect(() => { if (onDestino && destino) onDestino(destino) }, [destino, onDestino])
 
@@ -70,6 +71,9 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
     return () => { vivo = false; off() }
   }, [origen])
 
+  // Selector de cámara RGB: solo si la autodetección ha visto ficheros `_Z` en la tanda.
+  const hayZoom = !!(detected?.ok && detected.tokens && detected.tokens._Z > 0)
+
   // El backend exige estadillo para organizar (`estadillo.py`): sin él, no se lanza.
   const canRun = ready && !running && origen && destino && !destinoFull && estadillos.length > 0
   // Por qué «Ejecutar» está deshabilitado: mismas condiciones que `canRun`.
@@ -106,6 +110,7 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
       ...(soloFallidas ? { solo_fallidas: true } : {}),
       inspeccion: nombreInspeccion, orientacion: inspeccion?.orientacion || '',
       inspeccion_id: inspeccion?.id ?? null,
+      ...(hayZoom ? { camara_rgb: camaraRgb } : {}),
     }, advanced)
   }
 
@@ -175,6 +180,30 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
           Basta con uno.
         </span>
       </div>
+
+      {hayZoom && (
+        <div className="field" data-testid="selector-camara-rgb">
+          <span className="field-label">Cámara RGB</span>
+          <div className="insp-chips" role="radiogroup" aria-label="Cámara RGB a recortar">
+            {[['Z', 'Zoom (_Z)'], ['W', 'Wide (_W)']].map(([v, txt]) => (
+              <button
+                key={v}
+                type="button"
+                role="radio"
+                aria-checked={camaraRgb === v}
+                className={'insp-chip' + (camaraRgb === v ? ' insp-chip-activo' : '')}
+                onClick={() => setCamaraRgb(v)}
+              >
+                {txt}
+              </button>
+            ))}
+          </div>
+          <span className="field-hint">
+            Zoom: se crea copia _CROP de la Z, la Wide queda sin recortar. Wide: se recorta la
+            Wide, la Z queda sin recortar.
+          </span>
+        </div>
+      )}
 
       <label className="check">
         <input type="checkbox" checked={rename} onChange={(e) => setRename(e.target.checked)} />

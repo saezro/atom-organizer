@@ -4744,3 +4744,42 @@ html.kiosk-modo body * {
 @media (prefers-reduced-motion: reduce) {
   .pu-anillo-pulso { animation: none; }
 }
+
+/* --- Config: tabla efectiva de % de recorte ------------------------------- */
+.recortes-tabla {
+  width: 100%;
+  margin: 0.6rem 0;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.recortes-tabla th {
+  text-align: left;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted, #8b93a1);
+  padding: 0.3rem 0.5rem;
+}
+.recortes-tabla td {
+  padding: 0.35rem 0.5rem;
+  border-top: 0.0625rem solid rgba(255, 255, 255, 0.08);
+  vertical-align: middle;
+}
+.recortes-pct {
+  width: 5.5rem;
+}
+.recortes-nota {
+  color: var(--muted, #8b93a1);
+  font-size: 0.78rem;
+}
+.chip-origen {
+  font-size: 0.72rem;
+  padding: 0.15rem 0.6rem;
+  border-radius: 2rem;
+  border: 0.0625rem solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+}
+.chip-origen-override {
+  background: rgba(238, 117, 58, 0.18);
+  border-color: rgba(238, 117, 58, 0.55);
+}
