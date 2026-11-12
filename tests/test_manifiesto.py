@@ -462,3 +462,35 @@ def test_insertar_muchas_nuevas_es_rapido(tmp_path):
     print(f"insertar {n}: {dur:.1f}s")
     assert res.nuevas == n
     assert dur < 60, f"{dur:.1f}s para {n} inserciones"
+
+
+def test_reduce_forma_real_destino_vacio_es_rapido(tmp_path):
+    """Forma real del reduce del índice en la nube (TOCOPILLA, 60.777 fotos):
+    rutas gs://, `DJI_<fecha>_<idx>_T/_W` con el MISMO idx repetido en varias
+    carpetas de vuelo, timestamps distintos y `ejecucion_id` NO nulo (el de la
+    ejecución abierta). Destino vacío = todas nuevas = la consulta de emparejado
+    por nombre corre por cada fila. Sin `idx_nombre_ts` era un SCAN por fila
+    (O(N^2): ~1.000 s en Cloud Run con la imagen v3.4.165 sin el índice)."""
+    import datetime as _dt
+    import time
+    manifiesto = Manifiesto(tmp_path / "manifiesto.db")
+    manifiesto.crear_esquema()
+    ejecucion = manifiesto.abrir_ejecucion("gs://b/ORIGEN", "test")
+    base = _dt.datetime(2026, 11, 4, 9, 0, 0)
+    filas = []
+    for carpeta in range(20):
+        for idx in range(1, 1001):
+            ts = (base + _dt.timedelta(days=carpeta // 4, seconds=carpeta * 3600 + idx * 2)).isoformat()
+            for sufijo, tipo in (("T", "TERMICA"), ("W", "RGB")):
+                nombre = f"DJI_20261104090000_{idx:04d}_{sufijo}.JPG"
+                filas.append(_fila(
+                    f"gs://b/ORIGEN/2026_11_0{4 + carpeta // 4}/DJI_{carpeta:03d}/{nombre}",
+                    tipo=tipo, timestamp_exif=ts, bytes_origen=900_000 + idx,
+                    ruta_salida_original=f"gs://b/SALIDA/{tipo}/PB{carpeta}/V1/{nombre}",
+                    ruta_salida_crop=None))
+    t0 = time.perf_counter()
+    res = manifiesto.insertar_o_reabrir(filas, ejecucion_id=ejecucion)
+    dur = time.perf_counter() - t0
+    manifiesto.cerrar()
+    assert res.nuevas == len(filas) and res.reabiertas_por_nombre == 0 and not res.ambiguas
+    assert dur < 30, f"{dur:.1f}s para {len(filas)} inserciones (¿falta idx_nombre_ts?)"
