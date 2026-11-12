@@ -32,6 +32,7 @@ import shutil
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import external_tools as config
 import pipeline
@@ -42,6 +43,7 @@ from atom_core import esperado as esperado_mod
 from atom_core import estadillo as estadillo_mod
 from atom_core import indice as indice_mod
 from atom_core import indice_excel
+from atom_core import resumen_apply as resumen_apply_mod
 from atom_core import indice_mapreduce as indice_mr
 from atom_core import paralelismo as paralelismo_mod
 from atom_core import apply as _apply_mod
@@ -228,6 +230,7 @@ def _emitir_telemetria(host, cfg, estadisticas: dict, pared_s: float, cpu_s: flo
         mem_limite = utils.memoria_limite_cgroup_mb()
         dato = {
             "telemetria": "organizer", "fase": fase, "ejecucion": ejecucion,
+            "ejecucion_indice": str(getattr(host, "ejecucion_indice", "") or "").strip(),
             "shard_index": shard_index, "shard_count": int(getattr(host, "shard_count", 1)),
             "imagenes": int(estadisticas.get("imagenes", 0)), "ok": ok,
             "pared_s": round(pared_s, 2), "cpu_s": round(cpu_s, 2), "vcpu": vcpu,
@@ -1511,7 +1514,8 @@ class PipelinePhasesMixin:
                     marca_apply = time.monotonic()
                     r = apply_pipeline.aplicar_pipeline(
                         vista, cfg, self.split_images_obj, progress_callback, progress_bar,
-                        progress_summarize, _ContadorRotacion())
+                        progress_summarize, _ContadorRotacion(),
+                        ejecucion=ejecucion, shard_index=shard_index)
                     estadisticas["imagenes"] += r.get("hecho", 0) + r.get("fallido", 0)
                     tiempos["Apply"] = time.monotonic() - marca_apply
                 else:
@@ -1705,6 +1709,20 @@ class PipelinePhasesMixin:
             progress_callback.emit(
                 f"\nDeltas de apply fundidos: {fusion['hechas']} hecha(s), "
                 f"{fusion['fallidas']} fallida(s), {fusion['ignoradas']} ignorada(s).\n")
+            # Telemetria de CPU de las tasks de apply -> resumen_apply.json (lo lee la Suite).
+            ejec_indice = str(getattr(self, "ejecucion_indice", "") or
+                              getattr(self, "ejecucion", "") or "").strip()
+            try:
+                if not ejec_indice:
+                    raise ValueError("sin ejecución del índice (--ejecucion-indice)")
+                ruta_res, res = resumen_apply_mod.escribir(cfg.output_folder, ejec_indice)
+                progress_callback.emit(f"\nResumen de apply: {ruta_res}\n")
+                if res["faltan_shards"] or not res["n_tasks"]:
+                    progress_callback.emit(
+                        f"\nAVISO: sin telemetría de apply para el/los shard(s) "
+                        f"{res['faltan_shards'] or 'todos'} ({res['n_tasks']} task(s) con telemetría).\n")
+            except Exception as excepcion:  # noqa: BLE001 — informativo, nunca tumba el cierre
+                progress_callback.emit(f"\nAVISO: no se pudo escribir resumen_apply.json: {excepcion}\n")
             # Marcador + ERRORES_RGB/TERMICA.csv de cada fase de apply: en `completo`
             # los emite `aplicar_*`; con apply repartido solo se pueden calcular aquí.
             for fase_apply, slug, tipos_apply in (
@@ -1717,7 +1735,23 @@ class PipelinePhasesMixin:
         cierre_mod.emitir_csvs(manifiesto, cfg, progress_callback, proyecciones=proyecciones,
                                recuentos_csv=recuentos_csv)
         csv_para_verificar = recuentos_csv if cfg.gen_meta_location else None
-        problemas = cierre_mod.verificar(manifiesto, cfg, csv_para_verificar)
+
+        # `verificar` (un listado del destino + comprobaciones) e índice Excel solo
+        # dependen de los CSV ya emitidos y no entre sí: van a la vez. El Excel es
+        # informativo: si falla, se avisa y el cierre sigue.
+        def _indice_excel() -> None:
+            try:
+                ruta_indice = indice_excel.escribir_indice(
+                    manifiesto, cfg, proyecciones, progress_callback,
+                    recuentos=cierre_mod.calcular_recuentos(manifiesto, cfg, csv_para_verificar))
+                progress_callback.emit(f"\nÍndice de la planta: {ruta_indice}\n")
+            except Exception as excepcion:  # noqa: BLE001
+                progress_callback.emit(f"\nAVISO: no se pudo generar el índice Excel: {excepcion}\n")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futuro_excel = pool.submit(_indice_excel)
+            problemas = cierre_mod.verificar(manifiesto, cfg, csv_para_verificar)
+            futuro_excel.result()
         if fase == "cierre":
             # Cierre suelto: una fila que ninguna tarea de apply reportó NO es un
             # run "interrumpido" que se avisa, es trabajo sin hacer -> ERROR.
@@ -1725,14 +1759,6 @@ class PipelinePhasesMixin:
                 (cierre_mod.PREFIJO_ERROR + p) if ("siguen 'pendiente'/'en_curso'" in p
                                                    and not p.startswith(cierre_mod.PREFIJO_ERROR)) else p
                 for p in problemas]
-        # El índice Excel es informativo: si falla, se avisa y el cierre sigue.
-        try:
-            ruta_indice = indice_excel.escribir_indice(
-                manifiesto, cfg, proyecciones, progress_callback,
-                recuentos=cierre_mod.calcular_recuentos(manifiesto, cfg, csv_para_verificar))
-            progress_callback.emit(f"\nÍndice de la planta: {ruta_indice}\n")
-        except Exception as excepcion:  # noqa: BLE001
-            progress_callback.emit(f"\nAVISO: no se pudo generar el índice Excel: {excepcion}\n")
         tiempos["Cierre"] = time.monotonic() - marca
         progress_bar.emit(100)
 

@@ -72,9 +72,16 @@ class AlmacenApply:
     def descargar(self, origen: str, local: str) -> int:
         return almacen_mod.descargar_a(origen, local)
 
-    def crear(self, local: str, destino: str) -> None:
+    def crear(self, local: str, destino: str, metadatos: "dict | None" = None) -> None:
         """Sube sin pisar; `FileExistsError` (`ChoqueDestino`) si el destino existe."""
-        almacen_mod.crear_sin_pisar(local, destino)
+        almacen_mod.crear_sin_pisar(local, destino, metadatos)
+
+    def objeto(self, destino: str) -> "tuple[int, dict] | None":
+        """`(generation, metadata)` del destino o `None` (no existe / no es gs://)."""
+        return almacen_mod.info_objeto(destino)
+
+    def reescribir(self, local: str, destino: str, generacion: int, metadatos: "dict | None") -> None:
+        almacen_mod.sobrescribir_propio(local, destino, generacion, metadatos)
 
     def md5(self, ruta: str) -> "str | None":
         return almacen_mod.md5_base64_de(ruta)
@@ -145,8 +152,14 @@ class PipelineApply:
                  progress_summarize, contador_rotacion=None, *, almacen=None, plazas=None,
                  limite_bytes=None, hilos_descarga=None, hilos_subida=None,
                  fabrica_ejecutor_rgb=None, procesar_rgb=None, convertir_termica=None,
-                 aforo=None):
+                 aforo=None, ejecucion="", shard_index=0):
         self.manifiesto = manifiesto
+        # Marca de propiedad de lo que sube esta task (ajuste A): permite reescribir
+        # SU propia salida si un reintento la regenera con bytes distintos.
+        self._ejecucion = str(ejecucion or "").strip()
+        self._metadatos = ({"atom-ejecucion": self._ejecucion, "atom-shard": str(int(shard_index))}
+                           if self._ejecucion else None)
+        self.reescrituras: list[str] = []
         self.cfg = cfg
         self.split_images_obj = split_images_obj
         self.cb = progress_callback
@@ -337,7 +350,10 @@ class PipelineApply:
 
     def _subir_sin_pisar(self, local: str, destino: str) -> None:
         try:
-            self.almacen.crear(local, destino)
+            if self._metadatos:
+                self.almacen.crear(local, destino, self._metadatos)
+            else:
+                self.almacen.crear(local, destino)
             return
         except FileExistsError:
             pass
@@ -345,6 +361,20 @@ class PipelineApply:
         md5_remoto = self.almacen.md5(destino)
         if md5_remoto and md5_remoto == md5_local:
             return  # reintento de una fila ya subida: idéntico, nada que hacer
+        if self._ejecucion:
+            info = self.almacen.objeto(destino)
+            if info is not None and info[1].get("atom-ejecucion") == self._ejecucion:
+                try:
+                    self.almacen.reescribir(local, destino, info[0], self._metadatos)
+                except almacen_mod.ChoqueDestino:
+                    pass  # cambió entre la lectura y la escritura: ya no es seguro, CHOQUE
+                else:
+                    aviso = (f"reescritura propia: {destino} (ejecución {self._ejecucion}, "
+                             f"generation {info[0]}) regenerada por un reintento")
+                    with self._lock:
+                        self.reescrituras.append(aviso)
+                    self.cb.emit(f"\n[reintento] {aviso}\n")
+                    return
         msg = (f"CHOQUE: {destino} ya existe con contenido distinto (md5 {md5_remoto} != "
                f"{md5_local}); no se sobrescribe")
         with self._lock:

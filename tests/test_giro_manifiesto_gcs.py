@@ -30,6 +30,7 @@ class _BlobGen:
             raise FileNotFoundError(self.name)
         self.size = len(self.bucket.objetos[self.name])
         self.generation = self.bucket.generaciones[self.name]
+        self.metadata = dict(getattr(self.bucket, "metadatos", {}).get(self.name, {}))
 
     def _comprobar(self, if_generation_match):
         if if_generation_match is None:
@@ -44,6 +45,9 @@ class _BlobGen:
     def upload_from_filename(self, ruta, if_generation_match=None):
         self._comprobar(if_generation_match)
         self.bucket.objetos[self.name] = open(ruta, "rb").read()
+        if not hasattr(self.bucket, "metadatos"):
+            self.bucket.metadatos = {}
+        self.bucket.metadatos[self.name] = dict(getattr(self, "metadata", None) or {})
         self.bucket.generaciones[self.name] = self.bucket.generaciones.get(self.name, 0) + 1
         if self.bucket.antes_de_subir_siguiente:
             self.bucket.antes_de_subir_siguiente = None

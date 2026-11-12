@@ -27,6 +27,7 @@ import os
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from atom_core import sharding
 from atom_core.almacen import (
@@ -113,6 +114,10 @@ def _intercalar_tipos(filas: list) -> list:
         salida.append(colas[t][emitidas[t]])
         emitidas[t] += 1
     return salida
+
+
+#: Hilos para leer los jsonl de deltas en el cierre.
+HILOS_LECTURA_DELTAS = 16
 
 
 def carpeta_shards(destino: str) -> str:
@@ -301,14 +306,18 @@ def leer_deltas(destino: str) -> list[dict]:
     base = carpeta_shards(destino)
     if not existe_ruta(base):
         return []
-    entradas: list[dict] = []
+    rutas: list[str] = []
     for ejecucion in sorted(listar_subcarpetas(base)):
         carpeta = unir(base, ejecucion)
-        ficheros = [f for f in listar_ficheros(carpeta) if f.endswith(".jsonl")]
-        ficheros.sort()
-        for nombre in ficheros:
-            entradas.extend(_leer_fichero(unir(carpeta, nombre)))
-    return entradas
+        ficheros = sorted(f for f in listar_ficheros(carpeta) if f.endswith(".jsonl"))
+        rutas.extend(unir(carpeta, nombre) for nombre in ficheros)
+    if not rutas:
+        return []
+    # Lectura en hilos (E/S pura; en `gs://` cada fichero es una descarga). `map`
+    # conserva el orden de `rutas`: mismo resultado que la lectura en serie.
+    with ThreadPoolExecutor(max_workers=min(HILOS_LECTURA_DELTAS, len(rutas))) as pool:
+        trozos = list(pool.map(_leer_fichero, rutas))
+    return [e for trozo in trozos for e in trozo]
 
 
 def resolver_deltas(entradas: list[dict]) -> dict[int, dict]:
