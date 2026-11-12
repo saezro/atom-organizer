@@ -931,6 +931,8 @@ class PipelinePhasesMixin:
                 rgb_root = os.path.join(cfg.output_folder, "RGB")
                 self.rgb_cropping_obj.reset_variables()
                 self.rgb_cropping_obj.camara_rgb = cfg.camara_rgb
+                # Zoom por TANDA, una vez antes de recortar (aunque se itere PB a PB) y verificar.
+                self.rgb_cropping_obj.fijar_zoom_tanda(rgb_root)
                 self.new_log_gui.enable_process()
 
                 if mis_pbs is None:
@@ -949,6 +951,7 @@ class PipelinePhasesMixin:
                 # escribiendo en los suyos en este mismo momento y verlos a medias
                 # daría un "no coinciden" que no es un fallo, sino una foto movida.
                 self.rgb_cropping_obj.checking_results_rgb_cropping(rgb_root, progress_callback, progress_summarize, only_pb=mis_pbs)
+                self.rgb_cropping_obj.liberar_zoom_tanda()
 
                 summarize_dict = self.rgb_cropping_obj.get_summarize()
                 self.show_summarize(summarize_dict, progress_summarize)
@@ -2248,6 +2251,7 @@ class PipelinePhasesMixin:
         self.rgb_cropping_obj.reset_variables()
         # `RgbCroppingConfig` no lleva la cámara: manda la de Config.ini (o Z por defecto).
         self.rgb_cropping_obj.camara_rgb = self.config_obj.camara_rgb
+        self.rgb_cropping_obj.fijar_zoom_tanda(cfg.output_folder)
         self.rgb_cropping_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.output_folder)
         self.new_log_gui.enable_process()
 
@@ -2257,6 +2261,7 @@ class PipelinePhasesMixin:
         processing_time = self.utils_obj.logging_time(progress_callback, processing_time, False)
 
         self.rgb_cropping_obj.checking_results_rgb_cropping(cfg.output_folder, progress_callback, progress_summarize)
+        self.rgb_cropping_obj.liberar_zoom_tanda()
 
         summarize_dict = self.rgb_cropping_obj.get_summarize()
         self.show_summarize(summarize_dict, progress_summarize)

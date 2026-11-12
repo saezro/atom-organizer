@@ -4339,7 +4339,8 @@ class RGBCropping:
         # _Z. None = sin distinción (se recorta toda la RGB, comportamiento histórico). La
         # fijan las fases del motor legado antes de recortar.
         self.camara_rgb = None
-        self._hay_zoom_tanda = None  # None = sin calcular (lo fija el recorrido raíz)
+        self._hay_zoom_tanda = None  # None = sin calcular (lo fija `fijar_zoom_tanda` o el recorrido raíz)
+        self._zoom_cache = {}
 
     def set_stop(self, stop: bool) -> None:
         """
@@ -4360,13 +4361,26 @@ class RGBCropping:
         subdirs = almacen.listar_subcarpetas(carpeta) if almacen.es_uri_gcs(carpeta) else next(os.walk(carpeta))[1]
         return any(self._carpeta_trae_zoom(almacen.unir(carpeta, d)) for d in subdirs)
 
+    def fijar_zoom_tanda(self, raiz: str) -> None:
+        """Decide UNA vez por fase si la tanda (todo el árbol bajo `raiz`) trae `_Z`, antes de
+        recortar y verificar (también si el recorrido se hace PB a PB). Sin `camara_rgb` no hace nada."""
+        if self.camara_rgb is not None:
+            self._hay_zoom_tanda = self._carpeta_trae_zoom(raiz)
+
+    def liberar_zoom_tanda(self) -> None:
+        self._hay_zoom_tanda = None
+        self._zoom_cache = {}
+
     def _hay_zoom(self, carpeta: str) -> bool:
-        """Zoom en la tanda: el valor fijado por el recorrido raíz o, sin él, el de `carpeta`."""
+        """Zoom en la tanda: el valor fijado (`fijar_zoom_tanda` o el recorrido raíz) o, sin él,
+        el de `carpeta`, calculado una sola vez por carpeta."""
         if self.camara_rgb is None:
             return False
         if self._hay_zoom_tanda is not None:
             return self._hay_zoom_tanda
-        return self._carpeta_trae_zoom(carpeta)
+        if carpeta not in self._zoom_cache:
+            self._zoom_cache[carpeta] = self._carpeta_trae_zoom(carpeta)
+        return self._zoom_cache[carpeta]
 
     def reset_variables(self) -> None:
         """
@@ -4379,6 +4393,7 @@ class RGBCropping:
         self.exif_management_obj.images_error_exif_data.clear()
         self.error_rgb_cropping = 0
         self.images_error_rgb_cropping.clear()
+        self.liberar_zoom_tanda()
 
 
     def get_summarize(self) -> dict:
@@ -4451,6 +4466,8 @@ class RGBCropping:
             return results
 
         errors = []
+        # Una sola vez (no por subcarpeta): evita recorrer el árbol N veces (red en gs://).
+        hay_zoom = self._hay_zoom(input_folder)
         for pb_folder in pb_folders:
             pb_folder_path = almacen.unir(input_folder, pb_folder)
             try:
@@ -4476,7 +4493,6 @@ class RGBCropping:
                 non_crop_images = [img for img in all_images if "CROP" not in img]
                 if self.camara_rgb is not None:
                     # Solo se espera `_CROP` de la cámara elegida (ver atom_core.camara_rgb).
-                    hay_zoom = self._hay_zoom(input_folder)
                     non_crop_images = [img for img in non_crop_images
                                        if camara_rgb_mod.se_recorta(img, self.camara_rgb, hay_zoom)]
                 n_crop = len(crop_images)
