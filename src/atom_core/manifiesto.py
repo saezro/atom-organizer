@@ -445,6 +445,10 @@ class ResultadoInsercion:
     borrados_pendientes: int = 0
 
 
+# Ajuste que marca un manifiesto cuya columna `categoria` fue añadida por migración.
+AJUSTE_CATEGORIA_MIGRADA = "categoria_migrada"
+
+
 class Manifiesto:
     """Acceso al manifiesto. Una instancia por proceso; internamente usa una
     conexión por hilo porque los objetos de sqlite3 no son compartibles entre
@@ -529,6 +533,13 @@ class Manifiesto:
                                   ("motivo_fuera", "TEXT")):
             if nombre not in existentes:
                 conexion.execute(f"ALTER TABLE imagenes ADD COLUMN {nombre} {definicion}")
+                if nombre == "categoria":
+                    # Las filas previas quedan con el default 'vuelo': la propuesta debe
+                    # saber que la columna NO es nativa y derivar la categoría.
+                    conexion.execute("CREATE TABLE IF NOT EXISTS ajustes ("
+                                     "clave TEXT PRIMARY KEY, valor TEXT NOT NULL)")
+                    conexion.execute("INSERT OR REPLACE INTO ajustes (clave, valor) "
+                                     f"VALUES ('{AJUSTE_CATEGORIA_MIGRADA}', '1')")
 
     def _recrear_con_clave(self, conexion: sqlite3.Connection) -> None:
         """Manifiesto anterior a la acumulación: `ruta_origen` era UNIQUE y no
