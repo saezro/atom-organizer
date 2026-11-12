@@ -1198,7 +1198,8 @@ class Api:
     # ---- configuración persistente (ruta ThermoViewer + % recorte por dron) -
     def read_config(self) -> dict:
         """Lee la config editable de usuario. Devuelve
-        {ruta_thermoviewer: str, percentage_by_models: {MODELO: int}}.
+        {ruta_thermoviewer: str, percentage_by_models: {MODELO|MODELO_Z: %}, camara_rgb,
+        recortes_efectivos: [...], recortes_tabla: [...]}.
         Ruta persistente (NO _MEIPASS efímero del onefile), ver external_tools."""
         try:
             from external_tools import load_config_or_default, _user_config_path
@@ -1207,6 +1208,8 @@ class Api:
             # reescribe); `recortes_efectivos` = tabla versionada + override, con su origen.
             from atom_core import recortes
             cfg["recortes_efectivos"] = recortes.tabla_efectiva(cfg["percentage_by_models"])
+            # Tabla versionada sin override: la UI la usa para volver a ella al quitar un override.
+            cfg["recortes_tabla"] = recortes.tabla_efectiva({})
             return cfg
         except Exception as exc:  # noqa: BLE001 — se reenvía al front
             return {"error": f"{type(exc).__name__}: {exc}",
@@ -1216,7 +1219,7 @@ class Api:
         """Reescribe Config.ini completo (mismo comportamiento que la ConfigWindow
         del Qt: reescritura total, no merge) en la ruta persistente. La próxima
         corrida del pipeline lo relee al construir su config_obj.
-        data = {ruta_thermoviewer: str, percentage_by_models: {MODELO: int|str}}."""
+        data = {ruta_thermoviewer: str, percentage_by_models: {MODELO|MODELO_Z: %}} (% admite decimales)."""
         try:
             import configparser
             from external_tools import _user_config_path

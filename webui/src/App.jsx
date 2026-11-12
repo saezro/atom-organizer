@@ -23,6 +23,7 @@ import { conPlazo } from './plazo'
 import useConfirmar from './trabajo/useConfirmar'
 import { SPLIT_ADVANCED } from './schema'
 import { initialState, buildParams } from './TaskBlock'
+import ConfigRecortes, { parsePct } from './ConfigRecortes'
 
 // Mismos campos avanzados que `PanelOrganizar`: el kiosco lanza el pipeline
 // con el MISMO `advanced` que el escritorio (defaults del panel + sufijos
@@ -1126,9 +1127,10 @@ function ConfigScreen({ ready }) {
   // ProgressModal/el flujo de organizar.
   const [verHistorial, setVerHistorial] = useState(false)
   const [ruta, setRuta] = useState('')
-  const [models, setModels] = useState([]) // [{model, pct}]
-  const [mName, setMName] = useState('')
-  const [mPct, setMPct] = useState('')
+  const [tablaRecortes, setTablaRecortes] = useState([]) // tabla versionada (solo lectura)
+  const [overrides, setOverrides] = useState({}) // {MODELO|MODELO_Z: texto %} del Config de usuario
+  const [cfgError, setCfgError] = useState('') // Config.ini ilegible (p.ej. camara_rgb inválida)
+  const [camaraFix, setCamaraFix] = useState('') // '' | 'Z' | 'W': corrección explícita de camara_rgb
   const [loaded, setLoaded] = useState(false)
   const [saved, setSaved] = useState(null) // null | {ok, msg}
 
@@ -1197,8 +1199,10 @@ function ConfigScreen({ ready }) {
       .readConfig()
       .then((c) => {
         setRuta(c?.ruta_thermoviewer || '')
+        setCfgError(c?.error || '')
+        setTablaRecortes(c?.recortes_tabla || [])
         const pbm = c?.percentage_by_models || {}
-        setModels(Object.entries(pbm).map(([model, pct]) => ({ model, pct: String(pct) })))
+        setOverrides(Object.fromEntries(Object.entries(pbm).map(([k, v]) => [k, String(v)])))
         setLoaded(true)
       })
       .catch(() => setLoaded(true))
@@ -1209,43 +1213,25 @@ function ConfigScreen({ ready }) {
     if (path) setRuta(path)
   }
 
-  // Añade o actualiza (case-insensitive, por modelo en MAYÚSCULAS) como el Qt.
-  function addOrUpdate() {
-    const name = mName.trim().toUpperCase()
-    const pct = parseInt(mPct, 10)
-    if (!name || Number.isNaN(pct)) return
-    setModels((prev) => {
-      const i = prev.findIndex((m) => m.model === name)
-      if (i >= 0) {
-        const next = [...prev]
-        next[i] = { model: name, pct: String(pct) }
-        return next
-      }
-      return [...prev, { model: name, pct: String(pct) }]
-    })
-    setMName('')
-    setMPct('')
-    setSaved(null)
-  }
-
-  function editItem(m) {
-    setMName(m.model)
-    setMPct(String(m.pct))
-  }
-
-  function removeItem(model) {
-    setModels((prev) => prev.filter((m) => m.model !== model))
-    setSaved(null)
-  }
-
   async function save() {
     const percentage_by_models = {}
-    for (const m of models) {
-      const pct = parseInt(m.pct, 10)
-      if (m.model && !Number.isNaN(pct)) percentage_by_models[m.model] = pct
+    for (const [clave, txt] of Object.entries(overrides)) {
+      const pct = parsePct(txt)
+      if (pct === null) {
+        setSaved({ ok: false, msg: `% inválido en ${clave}: debe estar entre 0 y 100.` })
+        return
+      }
+      percentage_by_models[clave] = pct
+    }
+    if (cfgError && !camaraFix) {
+      setSaved({ ok: false, msg: 'El Config.ini actual no es válido: elige la cámara RGB por defecto para poder guardar.' })
+      return
     }
     try {
-      const res = await api.writeConfig({ ruta_thermoviewer: ruta, percentage_by_models })
+      const res = await api.writeConfig({
+        ruta_thermoviewer: ruta, percentage_by_models, ...(camaraFix ? { camara_rgb: camaraFix } : {}),
+      })
+      if (res?.ok) { setCfgError(''); setCamaraFix('') }
       setSaved(res?.ok ? { ok: true, msg: 'Configuración guardada.' } : { ok: false, msg: res?.error || 'No se pudo guardar.' })
     } catch (e) {
       setSaved({ ok: false, msg: String(e) })
@@ -1301,63 +1287,25 @@ function ConfigScreen({ ready }) {
         extracción». Si no está en su ruta por defecto, indícalo aquí.
       </span>
 
-      <div className="field">
-        <span className="field-label">% de recorte RGB por modelo de dron</span>
-        <div className="suffix-row">
-          <div className="suffix-cell">
-            <input
-              className="glass-input"
-              type="text"
-              value={mName}
-              placeholder="Modelo (p.ej. M4T)"
-              onChange={(e) => setMName(e.target.value)}
-            />
-          </div>
-          <div className="suffix-cell">
-            <input
-              className="glass-input"
-              type="number"
-              min="0"
-              max="100"
-              value={mPct}
-              placeholder="%"
-              onChange={(e) => setMPct(e.target.value)}
-            />
-          </div>
-          <button type="button" className="btn-ghost" onClick={addOrUpdate}>
-            Añadir / actualizar
-          </button>
+      {cfgError && (
+        <div className="field" data-testid="config-invalida">
+          <span className="field-hint hint-warn">Config.ini no válido: {cfgError}</span>
+          <span className="field-label">Cámara RGB por defecto</span>
+          <select className="glass-input" value={camaraFix} onChange={(e) => setCamaraFix(e.target.value)}>
+            <option value="">Elige para corregir…</option>
+            <option value="Z">Zoom (_Z)</option>
+            <option value="W">Wide (_W)</option>
+          </select>
+          <span className="field-hint">Al guardar se reescribe el Config.ini con este valor.</span>
         </div>
-        <span className="field-hint">
-          Porcentaje de recorte automático del RGB para cada modelo. Si aparece un dron nuevo
-          no listado, añádelo aquí o el recorte automático fallará para ese modelo.
-        </span>
+      )}
 
-        {models.length > 0 ? (
-          <ul className="config-list">
-            {models.map((m) => (
-              <li key={m.model} className="config-item">
-                <button type="button" className="config-item-main" onClick={() => editItem(m)}>
-                  <span className="config-model">{m.model}</span>
-                  <span className="config-pct">{m.pct}%</span>
-                </button>
-                <button
-                  type="button"
-                  className="config-del"
-                  title="Eliminar"
-                  onClick={() => removeItem(m.model)}
-                >
-                  ✕
-                </button>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <span className="field-hint hint-warn">
-            {loaded ? 'No hay modelos configurados todavía.' : 'Cargando…'}
-          </span>
-        )}
-      </div>
+      <ConfigRecortes
+        tabla={tablaRecortes}
+        overrides={overrides}
+        onChange={(o) => { setOverrides(o); setSaved(null) }}
+        loaded={loaded}
+      />
 
       {saved && (
         <span className={`field-hint ${saved.ok ? 'hint-ok' : 'hint-warn'}`}>{saved.msg}</span>

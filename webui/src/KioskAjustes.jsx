@@ -235,7 +235,7 @@ function SeccionGeneral({ tactil, onVolver }) {
   async function guardar() {
     const percentage_by_models = {}
     for (const m of models) {
-      const pct = parseInt(m.pct, 10)
+      const pct = parseFloat(String(m.pct).replace(',', '.'))
       if (m.model && !Number.isNaN(pct)) percentage_by_models[m.model] = pct
     }
     setGuardando(true)

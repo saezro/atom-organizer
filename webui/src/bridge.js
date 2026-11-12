@@ -318,7 +318,7 @@ export const api = {
   // igualmente rechaza no-vacía). Devuelve {exists, empty, count}.
   folderIsEmpty: (path, origen) => call('folder_is_empty', path, origen || ''),
   // Configuración persistente: ruta de ThermoViewer.exe + % de recorte RGB por
-  // modelo de dron. read devuelve {ruta_thermoviewer, percentage_by_models};
+  // modelo de dron. read devuelve {ruta_thermoviewer, percentage_by_models (override), recortes_efectivos, recortes_tabla};
   // write persiste y devuelve {ok, path} | {ok:false, error}.
   readConfig: () => call('read_config'),
   writeConfig: (data) => call('write_config', data),
