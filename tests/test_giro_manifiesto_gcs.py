@@ -52,6 +52,22 @@ class _BlobGen:
         self._comprobar(if_generation_match)
         open(ruta, "wb").write(self.bucket.objetos[self.name])
 
+    @property
+    def md5_hash(self):
+        import base64
+        import hashlib
+        if self.name not in self.bucket.objetos:
+            return None
+        return base64.b64encode(hashlib.md5(self.bucket.objetos[self.name]).digest()).decode()
+
+    def rewrite(self, source, token=None, if_generation_match=None):
+        """Copia server-side (una sola vuelta: token None) con precondicion."""
+        self._comprobar(if_generation_match)
+        self.bucket.objetos[self.name] = source.bucket.objetos[source.name]
+        self.bucket.generaciones[self.name] = self.bucket.generaciones.get(self.name, 0) + 1
+        self.bucket.rewrites = getattr(self.bucket, "rewrites", 0) + 1
+        return None, len(self.bucket.objetos[self.name]), len(self.bucket.objetos[self.name])
+
     def delete(self):
         del self.bucket.objetos[self.name]
 
@@ -65,6 +81,13 @@ class _BucketGen(BucketFalso):
 
     def blob(self, nombre):
         return _BlobGen(self, nombre)
+
+    def get_blob(self, nombre):
+        if nombre not in self.objetos:
+            return None
+        b = _BlobGen(self, nombre)
+        b.reload()
+        return b
 
 
 @pytest.fixture

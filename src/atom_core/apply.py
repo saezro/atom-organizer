@@ -590,6 +590,26 @@ def _trabajo_fila(fila: dict, cfg) -> str:
     return _escribir_salidas_de_fila(fila, cfg, pipeline)
 
 
+def _trabajo_fila_local(fila: dict, cfg, entrada_local: str, carpeta_salida: str) -> list:
+    """Variante del trabajo RGB para el pipeline unificado (`apply_pipeline`): lee
+    del fichero YA descargado (`entrada_local`) y deja las salidas en
+    `carpeta_salida` (local); la subida la hace otra etapa. Función de módulo,
+    picklable. Devuelve `[(destino_final, ruta_local), ...]` en el orden de
+    escritura de siempre (`_CROP` primero, luego el original)."""
+    f = dict(fila)
+    f["ruta_origen"] = entrada_local
+    salidas = []
+    for clave in ("ruta_salida_crop", "ruta_salida_original"):
+        destino = f.get(clave)
+        if not destino:
+            continue
+        local = os.path.join(carpeta_salida, clave + "_" + os.path.basename(destino))
+        f[clave] = local
+        salidas.append((destino, local))
+    _escribir_salidas_de_fila(f, cfg, pipeline)
+    return salidas
+
+
 class _AforoDinamico:
     """Envoltorio sobre un `threading.Semaphore` cuyo número de permisos
     puede crecer o encogerse en caliente, siguiendo a
@@ -1040,6 +1060,19 @@ def _copiar_jpg_destino(origen: str, destino: str, angulo: int = 0) -> None:
     os.replace(parcial, destino)
 
 
+def _copiar_jpg_termico(ruta_origen: str, rjpeg_local: str, destino: str) -> str:
+    """Deja el `*_T.JPG` en `destino`. Origen y destino `gs://`: `rewrite`
+    server-side con `if_generation_match=0` y md5 contra el origen (sin bajar ni
+    subir bytes; ya existe con el mismo md5 = idéntico sin error; con otro md5 =
+    `ChoqueDestino`, nunca se sobrescribe). Si no, el camino de siempre byte a byte
+    desde el staging local. NUNCA toca ni recodifica el R-JPEG ni su radiometría.
+    Devuelve `"copiado"`/`"identico"`."""
+    if _es_gcs(ruta_origen) and _es_gcs(destino):
+        return almacen_mod.copiar_servidor(ruta_origen, destino)
+    _copiar_jpg_destino(rjpeg_local, destino)
+    return "copiado"
+
+
 def _publicar_tiff_girado(ruta_staging: str, destino: str, angulo: int) -> None:
     """Mueve el TIFF recién convertido (`ruta_staging`, sin girar: ver
     `_convertir_una_termica`) a su ruta final, girándolo si el ángulo del
@@ -1315,7 +1348,8 @@ def _mover_atomico_a_destino(origen_local: str, destino: str) -> None:
 
 def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji_utility: str,
                            progress_callback, progress_bar, carpeta_staging: str,
-                           copiar_exif=None) -> None:
+                           copiar_exif=None, staging_previo: "str | None" = None,
+                           diferido: "dict | None" = None) -> None:
     """Convierte la térmica de `fila` a TIFF vía
     `pipeline_obj.convert_dji_image_to_tif` (una instancia de
     `pipeline.SplitImages`), la publica ya girada en su ruta final y publica
@@ -1331,20 +1365,30 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
     salen con la MISMA orientación, como en el motor viejo.
 
     No toca el manifiesto: solo escribe en disco o lanza si algo falla, para
-    que la llamadora decida cómo marcar la fila."""
+    que la llamadora decida cómo marcar la fila.
+
+    Pipeline unificado (`apply_pipeline`): `staging_previo` = directorio ya creado
+    con el R-JPEG descargado en `in/` (no se vuelve a leer del origen) y `diferido`
+    = dict que recibe lo que habría que publicar (`subidas`: [(local, destino)],
+    `copias`: [(ruta_origen, destino, rjpeg_local)]) en vez de publicarlo aquí; el
+    staging NO se borra al acabar bien (lo borra quien sube)."""
     nombre_imagen = os.path.basename(fila["ruta_origen"])
-    staging_salida = tempfile.mkdtemp(dir=carpeta_staging, prefix="t_")
+    staging_salida = staging_previo or tempfile.mkdtemp(dir=carpeta_staging, prefix="t_")
+    terminado_bien = False
     try:
         # Staging local: el R-JPEG de origen (a menudo un montaje de Drive, lento)
         # se lee UNA sola vez; conversión, EXIF y copia del `*_T.JPG` salen de
         # esta copia. El `finally` borra todo el directorio, también en error.
         carpeta_in = os.path.join(staging_salida, "in")
         carpeta_out = os.path.join(staging_salida, "out")
-        os.makedirs(carpeta_in)
-        os.makedirs(carpeta_out)
         rjpeg_local = os.path.join(carpeta_in, nombre_imagen)
-        lectura_segura.copiar_completo(
-            fila["ruta_origen"], rjpeg_local, bytes_origen=fila.get("bytes_origen"))
+        os.makedirs(carpeta_out)
+        if staging_previo is None:
+            os.makedirs(carpeta_in)
+            lectura_segura.copiar_completo(
+                fila["ruta_origen"], rjpeg_local, bytes_origen=fila.get("bytes_origen"))
+        elif not os.path.isfile(rjpeg_local):
+            raise FileNotFoundError(f"falta el R-JPEG descargado: {rjpeg_local}")
         resultado = pipeline_obj.convert_dji_image_to_tif(
             carpeta_in, carpeta_out, nombre_imagen, exiftool_exe, dji_utility,
             progress_callback, progress_bar,
@@ -1375,18 +1419,21 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
             _publicar_tiff_girado(tiff_staging, tiff_listo, fila["angulo_giro"] or 0)
             if copiar_exif is not None:
                 copiar_exif(rjpeg_local, tiff_listo)
-            _mover_atomico_a_destino(tiff_listo, ruta_tiff_destino)
+            if diferido is None:
+                _mover_atomico_a_destino(tiff_listo, ruta_tiff_destino)
+            else:
+                diferido.setdefault("subidas", []).append((tiff_listo, ruta_tiff_destino))
 
-        # El giro del `*_T.JPG` cuelga del switch maestro de ROTACION
-        # (`gen_thumbnails`, el que apaga `--sin-rotacion`), igual que en el motor
-        # viejo (`phases.split_images`): girar destruye el APP3/4/5 del R-JPEG y con
-        # él su radiometría, así que quien pide «sin rotación» no puede acabar con
-        # R-JPEG destruidos (incidente CLARE, execution `wpv52`, 2026-08-21). El TIFF
-        # sí se gira: lo único que se pierde es que el JPG case visualmente con él.
-        angulo_jpg = (fila["angulo_giro"] or 0) if getattr(cfg, "gen_thumbnails", True) else 0
-        _copiar_jpg_destino(rjpeg_local, fila["ruta_salida_original"], angulo_jpg)
+        # El `*_T.JPG` nunca se gira ni se recodifica (ver `_copiar_jpg_destino`).
+        if diferido is None:
+            _copiar_jpg_termico(fila["ruta_origen"], rjpeg_local, fila["ruta_salida_original"])
+        else:
+            diferido.setdefault("copias", []).append(
+                (fila["ruta_origen"], fila["ruta_salida_original"], rjpeg_local))
+        terminado_bien = True
     finally:
-        shutil.rmtree(staging_salida, ignore_errors=True)
+        if diferido is None or not terminado_bien:
+            shutil.rmtree(staging_salida, ignore_errors=True)
 
 
 def _procesos_exif() -> int:
