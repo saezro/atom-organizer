@@ -50,6 +50,7 @@ from atom_core import apply as _apply_mod
 from atom_core import apply_pipeline
 from atom_core import apply_shards
 from atom_core import sharding
+from atom_core import simulacion
 from atom_core.almacen import (
     abrir_para_lectura,
     es_uri_gcs,
@@ -247,6 +248,8 @@ def _emitir_telemetria(host, cfg, estadisticas: dict, pared_s: float, cpu_s: flo
         print(linea, flush=True)
         nombre = f"{ejecucion or 'local'}-{fase}-{shard_index}.json"
         ruta = unir(cfg.output_folder, ".organizado", "telemetria", nombre)
+        if simulacion.interceptar("telemetria", ruta, len(linea) + 1):
+            return
         if es_uri_gcs(ruta):
             descriptor, tmp = tempfile.mkstemp(suffix=".json")
             os.close(descriptor)
@@ -1482,18 +1485,20 @@ class PipelinePhasesMixin:
         ejecucion = str(getattr(self, "ejecucion", "") or "").strip()
         registro = apply_shards.RegistroDeltas(cfg.output_folder, ejecucion, shard_index, fase)
         es_gcs = es_uri_gcs(cfg.output_folder)
-        if es_gcs:
-            with pipeline._LOCK_MANIFIESTO_GCS:
-                ruta_local, _generacion = pipeline._sincronizar_manifiesto_gcs(cfg.output_folder)
-            carpeta_temporal = os.path.dirname(ruta_local)
-        else:
-            origen_db = os.path.join(cfg.output_folder, NOMBRE_CARPETA_MANIFIESTO, "manifiesto.db")
-            if not os.path.exists(origen_db):
-                raise FileNotFoundError(
-                    f"No hay manifiesto en {origen_db}: la fase 'indice' tiene que correr antes.")
-            carpeta_temporal = tempfile.mkdtemp(prefix="apply_shard_")
-            ruta_local = os.path.join(carpeta_temporal, "manifiesto.db")
-            shutil.copy2(origen_db, ruta_local)
+        # "listado" de la simulacion = lectura del manifiesto/listado del destino.
+        with simulacion.fase("listado"):
+            if es_gcs:
+                with pipeline._LOCK_MANIFIESTO_GCS:
+                    ruta_local, _generacion = pipeline._sincronizar_manifiesto_gcs(cfg.output_folder)
+                carpeta_temporal = os.path.dirname(ruta_local)
+            else:
+                origen_db = os.path.join(cfg.output_folder, NOMBRE_CARPETA_MANIFIESTO, "manifiesto.db")
+                if not os.path.exists(origen_db):
+                    raise FileNotFoundError(
+                        f"No hay manifiesto en {origen_db}: la fase 'indice' tiene que correr antes.")
+                carpeta_temporal = tempfile.mkdtemp(prefix="apply_shard_")
+                ruta_local = os.path.join(carpeta_temporal, "manifiesto.db")
+                shutil.copy2(origen_db, ruta_local)
         manifiesto = Manifiesto(ruta_local)
         try:
             if not manifiesto.todas():
@@ -1524,6 +1529,11 @@ class PipelinePhasesMixin:
                         None, tiempos, tipos, con_marcador=False)
             finally:
                 registro.cerrar()
+                if simulacion.activa():
+                    ruta_informe = simulacion.escribir_informe(
+                        cfg.output_folder, ejecucion, shard_index, shard_count,
+                        extra={"deltas_no_escritos": registro.resumen_simulado()})
+                    progress_callback.emit(f"\nSIMULACIÓN: informe en {ruta_informe}\n")
             progress_bar.emit(100)
             progress_callback.emit(
                 "\n[tiempos] " + " · ".join(f"{e} {_formatear_duracion(s)}" for e, s in tiempos.items())

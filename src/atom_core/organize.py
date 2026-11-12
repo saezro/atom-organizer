@@ -72,6 +72,7 @@ from atom_core.diagnostico_maquina import (
 from atom_core.phases import PipelinePhasesMixin
 from atom_core.sharding import ETAPAS, FASES, FASES_MAPREDUCE, FASES_REPARTIBLES, normalizar_shard
 from atom_core import lock_destino
+from atom_core import simulacion
 from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO, destino_organizado, fallidas_reintentables
 from utils import (
     ROTATION_MIN_AGREEMENT_PCT,
@@ -501,7 +502,8 @@ def run_task(
         # escribible, la corrida sigue con el log del perfil y nada más.
         try:
             _destino = (params.get("destino") or params.get("output_folder") or "").strip()
-            if _destino:
+            # Simulacion: nada se escribe en el destino (ni siquiera LOGS/).
+            if _destino and not simulacion.activa():
                 _logs_destino = os.path.join(_destino, NOMBRE_CARPETA_LOGS)
                 os.makedirs(_logs_destino, exist_ok=True)
                 _run_log = _TeeLog([

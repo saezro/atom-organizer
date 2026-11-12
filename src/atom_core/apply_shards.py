@@ -29,7 +29,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from atom_core import sharding
+from atom_core import sharding, simulacion
 from atom_core.almacen import (
     abrir_para_lectura, es_uri_gcs, existe_ruta, listar_ficheros,
     listar_subcarpetas, publicar_en, unir,
@@ -173,7 +173,8 @@ class RegistroDeltas:
         self._sin_volcar = 0
         self._ultimo = reloj()
         self.error_volcado: Exception | None = None
-        if existe_ruta(self.ruta):
+        # En simulacion no se reanuda de un jsonl previo: se mide el trabajo completo.
+        if not simulacion.activa() and existe_ruta(self.ruta):
             for entrada in _leer_fichero(self.ruta):
                 self._entradas[int(entrada["id"])] = entrada
         self.hechas = {i for i, e in self._entradas.items() if e["estado"] == "hecho"}
@@ -205,6 +206,11 @@ class RegistroDeltas:
 
     def _volcar_sin_lock(self) -> None:
         texto = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in self._entradas.values())
+        if simulacion.interceptar("deltas_shard", self.ruta, len(texto.encode("utf-8"))):
+            self._sin_volcar = 0
+            self._ultimo = self._reloj()
+            self.error_volcado = None
+            return
         if es_uri_gcs(self.ruta):
             descriptor, tmp = tempfile.mkstemp(suffix=".jsonl")
             try:
@@ -223,6 +229,14 @@ class RegistroDeltas:
         self._sin_volcar = 0
         self._ultimo = self._reloj()
         self.error_volcado = None
+
+    def resumen_simulado(self) -> dict:
+        """Deltas que NO se escribieron en simulacion: recuentos y fallidas (max. 50)."""
+        with self._lock:
+            hechas = sum(1 for e in self._entradas.values() if e["estado"] == "hecho")
+            fallidas = [e for e in self._entradas.values() if e["estado"] == "fallido"]
+        return {"hechas": hechas, "fallidas": len(fallidas),
+                "fallidas_detalle": [{"id": e["id"], "motivo": e["motivo"]} for e in fallidas[:50]]}
 
     def volcar(self) -> None:
         with self._lock:

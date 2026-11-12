@@ -39,6 +39,7 @@ from atom_core import cancelacion
 from atom_core import indice as indice_mod
 from atom_core import lectura_segura
 from atom_core import paralelismo
+from atom_core import simulacion
 
 MIB = 1024 * 1024
 COLA_MIB_DEFECTO = 384
@@ -275,7 +276,9 @@ class PipelineApply:
         carpeta_in = os.path.join(t.dir, "in")
         os.makedirs(carpeta_in)
         local = os.path.join(carpeta_in, os.path.basename(fila["ruta_origen"]))
-        real = self.almacen.descargar(fila["ruta_origen"], local)
+        with simulacion.fase("lectura"):
+            real = self.almacen.descargar(fila["ruta_origen"], local)
+        simulacion.registrar_lectura(t.es_termica, real)
         esperado = int(fila.get("bytes_origen") or 0)
         if esperado and real != esperado:
             raise lectura_segura.FicheroCambiado(fila["ruta_origen"], real, esperado)
@@ -313,6 +316,10 @@ class PipelineApply:
         raise AssertionError("inalcanzable")
 
     def _procesar(self, t: _Tarea) -> None:
+        with simulacion.fase("computo"):
+            self._procesar_medido(t)
+
+    def _procesar_medido(self, t: _Tarea) -> None:
         if not self.aforo.adquirir():  # cancelado esperando aforo
             self._terminar(t)
             return
@@ -383,6 +390,10 @@ class PipelineApply:
         raise almacen_mod.ChoqueDestino(msg)
 
     def _subir(self, t: _Tarea, subidas: list, copias: list) -> None:
+        with simulacion.fase("escritura_simulada"):
+            self._subir_medido(t, subidas, copias)
+
+    def _subir_medido(self, t: _Tarea, subidas: list, copias: list) -> None:
         fila = t.fila
         piezas: list[str] = []
         if t.es_termica:
@@ -395,7 +406,9 @@ class PipelineApply:
                             self.choques.append(str(exc))
                         self.cb.emit(f"\n[choque] {exc}\n")
                         raise
-                    tam = int(fila.get("bytes_origen") or 0) or self.almacen.tamano(destino)
+                    # Simulacion: el destino no existe (no se copio); se usa el tamano de origen.
+                    tam = (int(fila.get("bytes_origen") or 0)
+                           or self.almacen.tamano(origen if simulacion.activa() else destino))
                 else:
                     self._subir_sin_pisar(rjpeg, destino)
                     tam = os.path.getsize(rjpeg)

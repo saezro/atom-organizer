@@ -27,6 +27,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from atom_core import simulacion
+
 
 @runtime_checkable
 class Almacen(Protocol):
@@ -79,6 +81,14 @@ def _normalizar(ruta: str) -> str:
     return str(ruta).replace("\\", "/").strip("/")
 
 
+def _tam(ruta_local) -> int:
+    """Bytes de un fichero local (0 si no se puede leer): solo para contarlos en simulación."""
+    try:
+        return os.path.getsize(ruta_local)
+    except OSError:
+        return 0
+
+
 class AlmacenLocal:
     """`Almacen` sobre un directorio real del disco, vía `pathlib`/`shutil`.
 
@@ -120,17 +130,23 @@ class AlmacenLocal:
         yield self._ruta(ruta)
 
     def publicar(self, ruta_local: Path, destino: str) -> None:
+        if simulacion.interceptar("publicar", destino, _tam(ruta_local)):
+            return
         ruta_destino = self._ruta(destino)
         ruta_destino.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ruta_local, ruta_destino)
 
     def mover(self, origen: str, destino: str) -> None:
+        if simulacion.interceptar("mover", destino):
+            return
         ruta_origen = self._ruta(origen)
         ruta_destino = self._ruta(destino)
         ruta_destino.parent.mkdir(parents=True, exist_ok=True)
         os.replace(ruta_origen, ruta_destino)
 
     def borrar(self, ruta: str) -> None:
+        if simulacion.interceptar("borrar", ruta):
+            return
         self._ruta(ruta).unlink()
 
     def tamano(self, ruta: str) -> int:
@@ -344,6 +360,8 @@ def publicar_en(origen_local: "str | Path", destino: str,
                              **extra)
         return
 
+    if simulacion.interceptar("publicar", destino, _tam(origen_local)):
+        return
     try:
         from pipeline import _reflink_or_copy
 
@@ -571,6 +589,8 @@ def crear_sin_pisar(local: "str | Path", destino: str, metadatos: "dict | None" 
                 raise ChoqueDestino(destino) from exc
             raise
         return
+    if simulacion.interceptar("publicar", destino, _tam(local)):
+        return
     carpeta = os.path.dirname(destino)
     if carpeta:
         os.makedirs(carpeta, exist_ok=True)
@@ -623,6 +643,8 @@ def copiar_servidor(origen: str, destino: str) -> str:
     if not getattr(blob_o, "md5_hash", None):
         raise OSError(f"el origen {origen} no trae md5: no se puede verificar la copia")
     clave_d = a_d._clave(p_d)
+    if simulacion.interceptar("copiar_servidor", destino, getattr(blob_o, "size", 0) or 0):
+        return "copiado"
     blob_d = a_d.bucket.blob(clave_d)
     try:
         token = None
