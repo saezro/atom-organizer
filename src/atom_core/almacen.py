@@ -299,7 +299,8 @@ def descargar_con_generacion(origen_gcs: str, destino_local: "str | Path") -> in
 
 
 def publicar_en(origen_local: "str | Path", destino: str,
-                if_generation_match: "int | None" = None) -> None:
+                if_generation_match: "int | None" = None,
+                metadatos: "dict | None" = None) -> None:
     """Deja el fichero `origen_local` en `destino` (ruta o URI).
 
     El origen es normalmente local (el nombre lo dice), pero desde 3790 F5 el
@@ -335,10 +336,12 @@ def publicar_en(origen_local: "str | Path", destino: str,
 
     if es_uri_gcs(destino):
         almacen, prefijo = abrir_almacen(destino)
+        extra = {"metadatos": metadatos} if metadatos else {}
         if if_generation_match is None:
-            almacen.publicar(Path(origen_local), prefijo)
+            almacen.publicar(Path(origen_local), prefijo, **extra)
         else:
-            almacen.publicar(Path(origen_local), prefijo, if_generation_match=if_generation_match)
+            almacen.publicar(Path(origen_local), prefijo, if_generation_match=if_generation_match,
+                             **extra)
         return
 
     try:
@@ -554,14 +557,15 @@ def descargar_a(origen: str, local: "str | Path") -> int:
     return os.path.getsize(local)
 
 
-def crear_sin_pisar(local: "str | Path", destino: str) -> None:
+def crear_sin_pisar(local: "str | Path", destino: str, metadatos: "dict | None" = None) -> None:
     """Publica `local` en `destino` SOLO si no existe (nunca sobrescribe).
     `gs://`: subida con `if_generation_match=0` (+ tamano/md5 de `AlmacenGCS.publicar`);
     local: copia a un temporal junto al destino y enlace duro (falla si existe).
-    Si el destino existe lanza `ChoqueDestino` (quien llama decide si es idéntico)."""
+    Si el destino existe lanza `ChoqueDestino` (quien llama decide si es idéntico).
+    `metadatos` (solo `gs://`): metadata custom del objeto (p. ej. `atom-ejecucion`)."""
     if es_uri_gcs(destino):
         try:
-            publicar_en(local, destino, if_generation_match=0)
+            publicar_en(local, destino, if_generation_match=0, metadatos=metadatos)
         except Exception as exc:
             if _es_412(exc):
                 raise ChoqueDestino(destino) from exc
@@ -580,6 +584,27 @@ def crear_sin_pisar(local: "str | Path", destino: str) -> None:
     finally:
         if os.path.exists(parcial):
             os.remove(parcial)
+
+
+def info_objeto(destino: str) -> "tuple[int, dict] | None":
+    """`(generation, metadata custom)` del objeto `gs://`; `None` si no existe o si el
+    destino no es `gs://` (no hay metadata que consultar)."""
+    if not es_uri_gcs(destino):
+        return None
+    almacen, prefijo = abrir_almacen(destino)
+    return almacen.objeto_info(prefijo)
+
+
+def sobrescribir_propio(local: "str | Path", destino: str, generacion: int,
+                        metadatos: "dict | None" = None) -> None:
+    """Reemplaza un objeto `gs://` que es salida de la propia ejecución, solo si sigue
+    en la `generation` leída (`if_generation_match`); si cambió, `ChoqueDestino`."""
+    try:
+        publicar_en(local, destino, if_generation_match=int(generacion), metadatos=metadatos)
+    except Exception as exc:
+        if _es_412(exc):
+            raise ChoqueDestino(destino) from exc
+        raise
 
 
 def copiar_servidor(origen: str, destino: str) -> str:

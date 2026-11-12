@@ -241,3 +241,46 @@ def test_rewrite_origen_sin_md5_es_error(bucket, monkeypatch):
     with pytest.raises(OSError, match="md5"):
         almacen_mod.copiar_servidor(origen, RAIZ + "/OUT/A_T.JPG")
     assert _clave(RAIZ + "/OUT/A_T.JPG") not in bucket.objetos
+
+
+# ---- Ajuste A: reescritura de salida propia en un reintento de la misma ejecucion ----
+
+def _regenerar_rgb(bucket, destino, ejecucion):
+    """Deja en el destino una salida con bytes distintos, marcada con `ejecucion`."""
+    ocupado = f"{destino}/R/DJI_0002_W.JPG"
+    _poner(bucket, ocupado, b"salida vieja de un intento previo")
+    if ejecucion is not None:
+        bucket.metadatos = {_clave(ocupado): {"atom-ejecucion": ejecucion, "atom-shard": "0"}}
+    return ocupado
+
+
+def test_reintento_misma_ejecucion_reescribe_salida_propia(bucket, tmp_path, make_dji_jpeg):
+    destino = RAIZ + "/OUT"
+    filas = _escenario(bucket, make_dji_jpeg, tmp_path, destino)
+    ocupado = _regenerar_rgb(bucket, destino, "ejec-1")
+    m = _manifiesto(tmp_path, filas)
+    gen_antes = bucket.generaciones[_clave(ocupado)]
+
+    r = _correr(m, ejecucion="ejec-1", shard_index=3)
+
+    assert r == {"hecho": 4, "fallido": 0}
+    assert bucket.objetos[_clave(ocupado)] != b"salida vieja de un intento previo"
+    assert bucket.generaciones[_clave(ocupado)] == gen_antes + 1
+    # lo nuevo lleva la marca de la ejecucion y del shard
+    assert bucket.metadatos[_clave(ocupado)] == {"atom-ejecucion": "ejec-1", "atom-shard": "3"}
+    assert bucket.metadatos[_clave(f"{destino}/R/DJI_0001_W.JPG")]["atom-shard"] == "3"
+
+
+@pytest.mark.parametrize("meta", [None, "otra-ejec"])
+def test_sin_metadata_o_otra_ejecucion_sigue_siendo_choque(bucket, tmp_path, make_dji_jpeg, meta):
+    destino = RAIZ + "/OUT"
+    filas = _escenario(bucket, make_dji_jpeg, tmp_path, destino)
+    ocupado = _regenerar_rgb(bucket, destino, meta)
+    m = _manifiesto(tmp_path, filas)
+
+    r = _correr(m, ejecucion="ejec-1", shard_index=0)
+
+    assert r["fallido"] == 1 and r["hecho"] == 3
+    assert bucket.objetos[_clave(ocupado)] == b"salida vieja de un intento previo"
+    fallida = [f for f in m.todas() if f["estado"] == "fallido"]
+    assert len(fallida) == 1 and "CHOQUE" in fallida[0]["motivo_fallo"]

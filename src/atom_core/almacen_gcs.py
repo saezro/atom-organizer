@@ -171,11 +171,21 @@ class AlmacenGCS:
         blob.download_to_filename(str(destino_local), if_generation_match=generacion)
         return generacion
 
-    def publicar(self, ruta_local: Path, destino: str, if_generation_match: int | None = None) -> None:
+    def objeto_info(self, ruta: str) -> "tuple[int, dict] | None":
+        """`(generation, metadata custom)` del objeto, o `None` si no existe."""
+        blob = self.bucket.get_blob(self._clave(ruta))
+        if blob is None:
+            return None
+        return int(blob.generation), dict(getattr(blob, "metadata", None) or {})
+
+    def publicar(self, ruta_local: Path, destino: str, if_generation_match: int | None = None,
+                 metadatos: "dict | None" = None) -> None:
         """Sube `ruta_local`. Con `if_generation_match` (0 = «no debe existir») la
         subida es condicional: si otro proceso cambió el objeto, el SDK lanza
         `PreconditionFailed` (412) y NO se sobrescribe nada."""
         blob = self.bucket.blob(self._clave(destino))
+        if metadatos:
+            blob.metadata = {str(k): str(v) for k, v in metadatos.items()}
         if if_generation_match is None:
             blob.upload_from_filename(str(ruta_local))
         else:
