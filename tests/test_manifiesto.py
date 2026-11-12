@@ -426,3 +426,39 @@ def test_clave_imagen_rutas_windows_y_gcs():
     assert nombre_de_ruta(r"E:\DCIM\DJI_0001.JPG") == "DJI_0001.JPG"
     assert nombre_de_ruta("gs://b/x/DJI_0001.JPG") == "DJI_0001.JPG"
     assert clave_imagen("/a/DJI_0001.JPG", None, None) == "DJI_0001.JPG||0"
+
+
+_CONSULTA_POR_NOMBRE = (
+    "SELECT id, estado, pb, vuelo, unassigned, ruta_salida_original, "
+    "ruta_salida_crop, ruta_salida_tiff, ruta_origen FROM imagenes "
+    "WHERE nombre_original = ? AND timestamp_exif = ? AND bytes_origen = ? "
+    "AND (? IS NULL OR ejecucion_id IS NULL OR ejecucion_id != ?)")
+
+
+def test_emparejado_por_nombre_usa_indice(tmp_path):
+    """La consulta de emparejado por nombre+EXIF+bytes corre por cada foto
+    nueva: sin índice es un SCAN de toda la tabla (O(N^2) en el reduce)."""
+    manifiesto = Manifiesto(tmp_path / "manifiesto.db")
+    manifiesto.crear_esquema()
+    plan = " ".join(str(f[3]) for f in manifiesto._conexion().execute(
+        "EXPLAIN QUERY PLAN " + _CONSULTA_POR_NOMBRE, ("a", "b", 1, 1, 1)))
+    manifiesto.cerrar()
+    assert "SEARCH" in plan and "idx_nombre_ts" in plan, plan
+
+
+def test_insertar_muchas_nuevas_es_rapido(tmp_path):
+    """20.000 fotos nuevas con EXIF no deben tardar minutos (umbral holgado)."""
+    import time
+    manifiesto = Manifiesto(tmp_path / "manifiesto.db")
+    manifiesto.crear_esquema()
+    n = 20000
+    filas = [_fila(f"/origen/DJI_{i:05d}.JPG", bytes_origen=1000 + i,
+                   ruta_salida_original=f"/d/{i}.JPG", ruta_salida_crop=f"/d/{i}_C.JPG")
+             for i in range(n)]
+    t0 = time.perf_counter()
+    res = manifiesto.insertar_o_reabrir(filas, ejecucion_id=None)
+    dur = time.perf_counter() - t0
+    manifiesto.cerrar()
+    print(f"insertar {n}: {dur:.1f}s")
+    assert res.nuevas == n
+    assert dur < 60, f"{dur:.1f}s para {n} inserciones"
