@@ -508,3 +508,120 @@ def tamano_de(ruta: str) -> int:
     local, usar esto en vez de `abrir_para_lectura(...).stat().st_size`."""
     almacen, prefijo = abrir_almacen(ruta)
     return almacen.tamano(prefijo)
+
+
+class ChoqueDestino(FileExistsError):
+    """El destino ya existe con contenido DISTINTO del que se iba a escribir: nunca
+    se sobrescribe; quien llama lo registra como error de esa fila."""
+
+
+def _es_412(exc: BaseException) -> bool:
+    return getattr(exc, "code", None) == 412 or type(exc).__name__ == "PreconditionFailed"
+
+
+def md5_base64_de(ruta: str) -> "str | None":
+    """MD5 (base64, el formato de GCS) de `ruta`: por metadatos del blob en `gs://`
+    (None si el objeto no lo trae) y calculado leyendo el fichero en local."""
+    import base64
+    import hashlib
+
+    if es_uri_gcs(ruta):
+        almacen, prefijo = abrir_almacen(ruta)
+        return almacen.md5_base64(prefijo)
+    h = hashlib.md5()
+    with open(ruta, "rb") as fh:
+        for trozo in iter(lambda: fh.read(1 << 20), b""):
+            h.update(trozo)
+    return base64.b64encode(h.digest()).decode()
+
+
+def descargar_a(origen: str, local: "str | Path") -> int:
+    """Baja `origen` (ruta o `gs://`) al fichero local `local` y devuelve sus bytes.
+    `gs://`: descarga directa a disco (el SDK verifica el checksum); sin pasar por
+    memoria."""
+    local = str(local)
+    if es_uri_gcs(origen):
+        almacen, prefijo = abrir_almacen(origen)
+        blob = almacen.bucket.blob(almacen._clave(prefijo))
+        try:
+            blob.download_to_filename(local)
+        except Exception as exc:
+            if getattr(exc, "code", None) == 404 or type(exc).__name__ == "NotFound":
+                raise FileNotFoundError(origen) from exc
+            raise
+    else:
+        shutil.copyfile(origen, local)
+    return os.path.getsize(local)
+
+
+def crear_sin_pisar(local: "str | Path", destino: str) -> None:
+    """Publica `local` en `destino` SOLO si no existe (nunca sobrescribe).
+    `gs://`: subida con `if_generation_match=0` (+ tamano/md5 de `AlmacenGCS.publicar`);
+    local: copia a un temporal junto al destino y enlace duro (falla si existe).
+    Si el destino existe lanza `ChoqueDestino` (quien llama decide si es idéntico)."""
+    if es_uri_gcs(destino):
+        try:
+            publicar_en(local, destino, if_generation_match=0)
+        except Exception as exc:
+            if _es_412(exc):
+                raise ChoqueDestino(destino) from exc
+            raise
+        return
+    carpeta = os.path.dirname(destino)
+    if carpeta:
+        os.makedirs(carpeta, exist_ok=True)
+    parcial = f"{destino}.{os.getpid()}.{id(local):x}.subiendo"
+    try:
+        shutil.copyfile(local, parcial)
+        try:
+            os.link(parcial, destino)
+        except FileExistsError as exc:
+            raise ChoqueDestino(destino) from exc
+    finally:
+        if os.path.exists(parcial):
+            os.remove(parcial)
+
+
+def copiar_servidor(origen: str, destino: str) -> str:
+    """Copia `origen` -> `destino` (ambos `gs://`) con `rewrite` server-side, sin
+    bajar ni subir bytes. `if_generation_match=0`: nunca sobrescribe. Devuelve
+    `"copiado"` o `"identico"` (ya existía con el mismo md5 y tamaño). Si existe con
+    otro contenido lanza `ChoqueDestino`. Un origen sin md5 es error (no se adivina).
+    Tras copiar se comprueba tamaño y md5 contra el origen; una copia mala se borra."""
+    if not (es_uri_gcs(origen) and es_uri_gcs(destino)):
+        raise ValueError("copiar_servidor solo vale entre gs:// y gs://")
+    a_o, p_o = abrir_almacen(origen)
+    a_d, p_d = abrir_almacen(destino)
+    blob_o = a_o.bucket.get_blob(a_o._clave(p_o))
+    if blob_o is None:
+        raise FileNotFoundError(origen)
+    if not getattr(blob_o, "md5_hash", None):
+        raise OSError(f"el origen {origen} no trae md5: no se puede verificar la copia")
+    clave_d = a_d._clave(p_d)
+    blob_d = a_d.bucket.blob(clave_d)
+    try:
+        token = None
+        while True:
+            token, _hechos, _total = blob_d.rewrite(blob_o, token=token, if_generation_match=0)
+            if token is None:
+                break
+    except Exception as exc:
+        if not _es_412(exc):
+            raise
+        existente = a_d.bucket.get_blob(clave_d)
+        if (existente is not None and existente.md5_hash == blob_o.md5_hash
+                and existente.size == blob_o.size):
+            return "identico"
+        raise ChoqueDestino(
+            f"{destino} ya existe con contenido distinto del origen {origen}; no se sobrescribe"
+        ) from exc
+    blob_d.reload()
+    if blob_d.size != blob_o.size or blob_d.md5_hash != blob_o.md5_hash:
+        try:
+            blob_d.delete()
+            extra = ""
+        except Exception as exc:  # noqa: BLE001 - se informa, no se traga
+            extra = f"; ADEMAS no se pudo borrar la copia mala ({exc})"
+        raise OSError(f"Copia server-side inconsistente {origen} -> {destino}: "
+                      f"{blob_d.size} B/md5 {blob_d.md5_hash} != {blob_o.size} B/md5 {blob_o.md5_hash}{extra}")
+    return "copiado"

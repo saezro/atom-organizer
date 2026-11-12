@@ -153,6 +153,25 @@ def _rgb_workers_env() -> Optional[int]:
     return valor if valor >= 1 else None
 
 
+def plazas_cpu_apply() -> int:
+    """Plazas del ÚNICO aforo de CPU de la fase `apply` unificada (RGB + térmica):
+    una por vCPU (`utils.cpus_efectivas`). Sobreescribible con `ATOM_APPLY_PLAZAS_CPU`
+    o `ATOM_RGB_WORKERS` (en ese orden); un valor no entero o < 1 es un error
+    explícito. La E/S (descarga/subida) queda FUERA del aforo."""
+    for nombre in ("ATOM_APPLY_PLAZAS_CPU", "ATOM_RGB_WORKERS"):
+        bruto = os.environ.get(nombre, "").strip()
+        if not bruto:
+            continue
+        try:
+            valor = int(bruto)
+        except ValueError:
+            raise ValueError(f"{nombre}={bruto!r}: no es un entero") from None
+        if valor < 1:
+            raise ValueError(f"{nombre}={bruto!r}: debe ser >= 1")
+        return valor
+    return max(1, utils.cpus_efectivas())
+
+
 @dataclass(frozen=True)
 class Medicion:
     """Una ventana de trabajo ya cerrada: cuántos trabajadores había, cuánto se

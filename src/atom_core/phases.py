@@ -45,6 +45,7 @@ from atom_core import indice_excel
 from atom_core import indice_mapreduce as indice_mr
 from atom_core import paralelismo as paralelismo_mod
 from atom_core import apply as _apply_mod
+from atom_core import apply_pipeline
 from atom_core import apply_shards
 from atom_core import sharding
 from atom_core.almacen import (
@@ -1504,9 +1505,19 @@ class PipelinePhasesMixin:
             tipos = ("rgb", "termica") if fase == "apply" else (fase,)
             tiempos: dict[str, float] = {}
             try:
-                estadisticas["imagenes"] += PipelinePhasesMixin._fase_apply(
-                    self, vista, cfg, progress_callback, progress_bar, progress_summarize,
-                    None, tiempos, tipos, con_marcador=False)
+                if fase == "apply":
+                    # Pipeline unificado: RGB y térmica solapadas en UNA task (descarga
+                    # -> aforo de CPU compartido -> subida sin pisar). Ver apply_pipeline.
+                    marca_apply = time.monotonic()
+                    r = apply_pipeline.aplicar_pipeline(
+                        vista, cfg, self.split_images_obj, progress_callback, progress_bar,
+                        progress_summarize, _ContadorRotacion())
+                    estadisticas["imagenes"] += r.get("hecho", 0) + r.get("fallido", 0)
+                    tiempos["Apply"] = time.monotonic() - marca_apply
+                else:
+                    estadisticas["imagenes"] += PipelinePhasesMixin._fase_apply(
+                        self, vista, cfg, progress_callback, progress_bar, progress_summarize,
+                        None, tiempos, tipos, con_marcador=False)
             finally:
                 registro.cerrar()
             progress_bar.emit(100)
