@@ -2174,6 +2174,32 @@ def motivo_sin_ventana(dato, dias_sin_estadillo: set, estadillo_sin_fecha: bool)
     return "fuera-de-ventana"
 
 
+_RE_JORNADA = re.compile(r"^\d{4}_\d{2}_\d{2}_")
+
+
+def _inspeccion_de_origen(base: str) -> str:
+    """Segmento de inspección del origen. La Suite solo pasa `--origen`
+    (`gs://bucket/<insp>` o `gs://bucket/<insp>/<jornada>`, jornada = `AAAA_MM_DD_...`).
+    En GCS la inspección es el primer segmento tras el bucket; en local, el último salvo
+    que sea una jornada (entonces el anterior). Si no se puede determinar: error explícito."""
+    from atom_core import indice_mapreduce as mr  # noqa: PLC0415 - evita ciclo
+
+    ruta = str(base).replace("\\", "/").strip("/")
+    if almacen.es_uri_gcs(base):
+        segs = ruta.split("/")[3:]
+        if not 1 <= len(segs) <= 2 or (len(segs) == 2 and not _RE_JORNADA.match(segs[1])):
+            raise mr.ErrorIndiceParcial(
+                f"no se puede determinar la inspección del origen {base!r}: "
+                "se esperaba gs://<bucket>/<inspección>[/<jornada>]")
+        return segs[0]
+    segs = [x for x in ruta.split("/") if x]
+    if len(segs) > 1 and _RE_JORNADA.match(segs[-1]):
+        segs = segs[:-1]
+    if not segs:
+        raise mr.ErrorIndiceParcial(f"no se puede determinar la inspección del origen {base!r}")
+    return segs[-1]
+
+
 def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_sin_estadillo,
                       no_dji, omitidas, no_disponibles, progress_callback,
                       estadillo_sin_fecha: bool = False, manifiesto=None) -> None:
@@ -2217,7 +2243,7 @@ def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_s
     if manifiesto is not None:
         import sqlite3  # noqa: PLC0415
         from atom_core import propuesta as propuesta_mod  # noqa: PLC0415 - evita ciclo
-        planta = base.rstrip("/").rsplit("/", 1)[-1]
+        planta = str(getattr(cfg, "planta", None) or "").strip() or _inspeccion_de_origen(base)
         generado = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
             manifiesto.checkpoint()
