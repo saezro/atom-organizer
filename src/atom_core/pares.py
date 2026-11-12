@@ -40,3 +40,11 @@ def paridad_tw(rutas) -> "tuple[list[str], list[str]]":
         if c:
             (t if c[1] == "T" else w).add(c[0])
     return ([f"{i:04d}" for i in sorted(t - w)], [f"{i:04d}" for i in sorted(w - t)])
+
+
+def idx_toma(nombre: str) -> "int | None":
+    """idx DJI de la toma (`_NNNN_`) para CUALQUIER sufijo T/W/V/Z, a diferencia de
+    `clave_pareja` (que deja fuera la `_Z`). Sirve para mantener juntas las fotos de una
+    misma toma (T+W+Z). None si el nombre no sigue el patrón."""
+    m = _RE_CLAVE_PAREJA.search(os.path.splitext(os.path.basename(str(nombre)))[0])
+    return int(m.group(1)) if m else None

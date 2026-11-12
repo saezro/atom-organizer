@@ -237,6 +237,36 @@ def _main_copiar(parser, args) -> int:
     return 0
 
 
+def _main_sin_colocar(parser, args) -> int:
+    """`--sin-colocar listar|asignar`: JSON por stdout (solo el JSON); errores por stderr con
+    código 2. Local o `gs://` (mismo manifiesto que el índice/apply)."""
+    from atom_core import sin_colocar
+    destino = args.destino if es_uri_gcs(args.destino) else str(Path(args.destino).expanduser().resolve())
+    try:
+        if args.sin_colocar == "listar":
+            if args.grupo or args.fila or args.quien:
+                parser.error("--grupo/--fila/--quien no aplican a --sin-colocar listar")
+            resultado = {"destino": destino, "grupos": sin_colocar.grupos_sin_colocar(
+                destino, solo_pendientes=not args.todos, incluir_fotos=args.incluir_fotos)}
+        else:
+            if not args.grupo or args.fila is None or not args.quien:
+                parser.error("--sin-colocar asignar exige --grupo, --fila y --quien")
+            texto = args.fila.strip().lower()
+            if texto in ("ninguna", "none", "null", "-"):
+                fila = None
+            else:
+                try:
+                    fila = int(texto)
+                except ValueError:
+                    parser.error(f"--fila debe ser un entero o `ninguna`: {args.fila!r}")
+            resultado = sin_colocar.asignar_grupo(destino, args.grupo, fila, quien=args.quien)
+    except (sin_colocar.ErrorSinColocar, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(resultado, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Pipeline de ATOM Organizer sin interfaz gráfica.")
@@ -400,7 +430,29 @@ def main(argv: list[str] | None = None) -> int:
               "estadillo con la subida que lo origino. Opcional: sin el, el "
               "pipeline se comporta exactamente como antes."),
     )
+    parser.add_argument(
+        "--sin-colocar", dest="sin_colocar", choices=["listar", "asignar"], default=None,
+        help=("Fotos fuera de rango del estadillo (SIN_ORDENAR). `listar`: imprime por stdout "
+              "un JSON con los grupos pendientes del --destino (con la fila anterior y "
+              "siguiente del estadillo). `asignar`: coloca un grupo (--grupo, --fila, --quien); "
+              "el apply posterior escribe las fotos. No usa --origen."))
+    parser.add_argument("--grupo", dest="grupo", default=None, metavar="GRUPO_ID",
+                        help="Con --sin-colocar asignar: id del grupo (`grupo_id` del listado).")
+    parser.add_argument("--fila", dest="fila", default=None, metavar="N|ninguna",
+                        help="Con --sin-colocar asignar: fila del estadillo (`vecino_*.fila`) o "
+                             "`ninguna` para dejar el grupo en SIN_ORDENAR a propósito.")
+    parser.add_argument("--quien", dest="quien", default=None,
+                        help="Con --sin-colocar asignar: quién asigna (queda en el manifiesto).")
+    parser.add_argument("--todos", dest="todos", action="store_true",
+                        help="Con --sin-colocar listar: incluye también los grupos ya decididos.")
+    parser.add_argument("--incluir-fotos", dest="incluir_fotos", action="store_true",
+                        help="Con --sin-colocar listar: añade `claves` de las fotos de cada grupo.")
     args = parser.parse_args(argv)
+
+    if args.sin_colocar:
+        return _main_sin_colocar(parser, args)
+    if args.grupo or args.fila or args.quien or args.todos or args.incluir_fotos:
+        parser.error("--grupo/--fila/--quien/--todos/--incluir-fotos solo aplican a --sin-colocar")
 
     if args.fase == "copiar":
         if args.origen is not None:

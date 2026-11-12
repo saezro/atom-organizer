@@ -41,6 +41,7 @@ from atom_core import estadillo as estadillo_mod
 from atom_core import errores_estadillo
 from atom_core import lectura_segura
 from atom_core import pares as pares_mod
+from atom_core import sin_colocar as sin_colocar_mod
 from atom_core.manifiesto import FilaManifiesto, Manifiesto, clave_imagen
 from rjpeg_a_tiff import EXTS_FUENTE
 
@@ -1749,6 +1750,29 @@ def _avisar_jpeg_sin_eoi(filas: list[FilaManifiesto], progress_callback) -> int:
     return len(marcadas)
 
 
+def rutas_de_salida(carpeta_destino: str, nombre_final: str, con_crop: bool,
+                    con_tiff: bool) -> "tuple[str, str | None, str | None]":
+    """`(original, _CROP | None, .tiff | None)` de una imagen en `carpeta_destino`. Regla
+    ÚNICA de nombres de salida: la usan `_construir_fila` y la colocación manual de
+    `atom_core.sin_colocar` (misma lógica de nombres/recorte que las automáticas)."""
+    original = almacen.unir(carpeta_destino, nombre_final)
+    raiz, ext = os.path.splitext(nombre_final)
+    crop = almacen.unir(carpeta_destino, f"{raiz}_CROP{ext}") if con_crop else None
+    tiff = almacen.unir(carpeta_destino, f"{raiz}.tiff") if con_tiff else None
+    return original, crop, tiff
+
+
+def _bytes_origen_de(ruta: str, tamanos_origen: "dict[str, int] | None") -> int:
+    """Tamaño de entrada de `ruta` (ver `_construir_fila`): un origen ilegible cuenta 0."""
+    try:
+        tamano = (tamanos_origen or {}).get(ruta)
+        if tamano is None:
+            tamano = almacen.tamano_de(ruta)
+        return tamano
+    except Exception:
+        return 0
+
+
 def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
                     angulos: dict[tuple[str, str, str | None], int], cfg, pipeline,
                     votos: dict | None = None,
@@ -1792,18 +1816,10 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
                 cfg.output_folder, tipo, f"PB{pb}",
                 _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v, sufijo))
 
-    ruta_salida_original = almacen.unir(carpeta_destino, nombre_final)
-
     pct_recorte = _pct_recorte(dato, tipo, cfg, pipeline, hay_zoom)
-    ruta_salida_crop = None
-    if pct_recorte is not None:
-        raiz, ext = os.path.splitext(nombre_final)
-        ruta_salida_crop = almacen.unir(carpeta_destino, f"{raiz}_CROP{ext}")
-
-    ruta_salida_tiff = None
-    if tipo == "TERMICA" and cfg.convert_to_tif:
-        raiz, _ext = os.path.splitext(nombre_final)
-        ruta_salida_tiff = almacen.unir(carpeta_destino, f"{raiz}.tiff")
+    ruta_salida_original, ruta_salida_crop, ruta_salida_tiff = rutas_de_salida(
+        carpeta_destino, nombre_final, pct_recorte is not None,
+        tipo == "TERMICA" and bool(cfg.convert_to_tif))
 
     # RGB_Extra comprime con el MISMO flag que RGB (`Pipeline.iterate_folders`,
     # pipeline.py:2829: `compress_checked` es el único condicional, sin
@@ -1814,12 +1830,7 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
     # sitio: cuando el run termina, ese fichero puede haberse movido y ya no
     # habría con qué comparar la entrega. Un origen ilegible cuenta 0 en vez
     # de tumbar el indexado entero por una estadística.
-    try:
-        bytes_origen = (tamanos_origen or {}).get(dato.ruta)
-        if bytes_origen is None:
-            bytes_origen = almacen.tamano_de(dato.ruta)
-    except Exception:
-        bytes_origen = 0
+    bytes_origen = _bytes_origen_de(dato.ruta, tamanos_origen)
 
     return FilaManifiesto(
         ruta_origen=dato.ruta,
@@ -2130,6 +2141,18 @@ def mapear_indice(
             "imagenes": imagenes, "tamanos_origen": tamanos_origen}
 
 
+def motivo_sin_ventana(dato, dias_sin_estadillo: set, estadillo_sin_fecha: bool) -> str:
+    """Motivo por el que una imagen sin ventana va a SIN_ORDENAR (`resumen.json` y grupos
+    sin colocar). `dias_sin_estadillo` = días ISO sin ninguna ventana en el estadillo."""
+    if dato.timestamp is None:
+        return "sin-fecha-exif"
+    if dato.timestamp.date().isoformat() in dias_sin_estadillo:
+        return "dia-sin-estadillo"
+    if estadillo_sin_fecha:
+        return "estadillo-sin-fecha-legible"
+    return "fuera-de-ventana"
+
+
 def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_sin_estadillo,
                       no_dji, omitidas, no_disponibles, progress_callback,
                       estadillo_sin_fecha: bool = False) -> None:
@@ -2158,15 +2181,7 @@ def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_s
     fuera: list[tuple[str, str | None]] = []
     for dato, ventana in asignaciones:
         if ventana is None:
-            if dato.timestamp is None:
-                motivo = "sin-fecha-exif"
-            elif dato.timestamp.date().isoformat() in dias:
-                motivo = "dia-sin-estadillo"
-            elif estadillo_sin_fecha:
-                motivo = "estadillo-sin-fecha-legible"
-            else:
-                motivo = "fuera-de-ventana"
-            fuera.append((dato.ruta, motivo))
+            fuera.append((dato.ruta, motivo_sin_ventana(dato, dias, estadillo_sin_fecha)))
     fuera.extend((ruta, "no-dji") for ruta, _m in no_dji)
     fuera.extend((ruta, "a-medio-copiar") for ruta in omitidas)
     fuera.extend((ruta, "no-disponible") for ruta in no_disponibles)
@@ -2175,6 +2190,49 @@ def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_s
         cfg.output_folder, ejecucion,
         mr.construir_resumen_indice(imagenes, asignadas, fuera, relativa,
                                     tipos=[fila.tipo for fila in filas]))
+
+
+def _registrar_sin_colocar(cfg, manifiesto, ejecucion_id, ventanas, ventanas_por_carpeta,
+                           ventanas_sin_carpeta, asignaciones, filas, dias_sin_estadillo,
+                           estadillo_sin_fecha, hueco_grupo_s, progress_callback) -> None:
+    """Agrupa las fotos que quedaron sin ventana y las persiste en el manifiesto para que el
+    usuario las coloque (ver `atom_core.sin_colocar`). Un fallo es un ERROR visible, no
+    silencioso, y no tumba el índice (las filas ya están insertadas)."""
+    try:
+        manifiesto.guardar_ajuste(sin_colocar_mod.AJUSTE_CRITERIO_GIRO, json.dumps(
+            {c: getattr(cfg, c) for c in sin_colocar_mod.CAMPOS_CRITERIO_GIRO}))
+        fila_de = {id(v): i for i, v in enumerate(ventanas)}
+        fichas = [sin_colocar_mod.ficha_ventana(
+            i, v, None if _es_ventana_generales(v) else _nombre_carpeta_vuelo(
+                v["pb"], v["vuelo"], cfg.include_v, v.get("sufijo")), _es_ventana_generales(v))
+            for i, v in enumerate(ventanas)]
+        ambitos: dict[int, tuple[str, list[int]]] = {}
+
+        def ambito_de(ruta: str):
+            lista = _ventanas_para_imagen(ruta, ventanas_por_carpeta, ventanas_sin_carpeta)
+            if id(lista) not in ambitos:
+                ambitos[id(lista)] = (str(id(lista)), [fila_de[id(v)] for v in lista
+                                                       if id(v) in fila_de])
+            return ambitos[id(lista)]
+
+        dias = {dia for dia, _n in dias_sin_estadillo}
+        fotos = []
+        for (dato, ventana), fila in zip(asignaciones, filas):
+            if ventana is not None:
+                continue
+            fotos.append({
+                "clave": clave_imagen(fila.ruta_origen, fila.timestamp_exif, fila.bytes_origen),
+                "ruta": dato.ruta, "nombre": dato.nombre, "tipo": fila.tipo,
+                "ts": dato.timestamp,
+                "motivo": motivo_sin_ventana(dato, dias, estadillo_sin_fecha),
+                "giro": None if dato.yaw is None else [
+                    dato.yaw, getattr(dato, "pitch", None), getattr(dato, "flight_yaw", None)]})
+        sin_colocar_mod.registrar_tanda(
+            manifiesto, ejecucion_id, fichas, fotos, ambito_de, hueco_grupo_s)
+    except Exception as error:  # noqa: BLE001 - visible, y el índice ya está escrito
+        logging.getLogger(__name__).exception("grupos sin colocar")
+        progress_callback.emit(
+            f"\nERROR: no se pudieron calcular los grupos de fotos sin colocar: {error}\n")
 
 
 def construir_indice(
@@ -2194,6 +2252,7 @@ def construir_indice(
     reduce_desde: "dict | None" = None,
     ejecucion_resumen: str = "",
     listado: "tuple[str, str] | None" = None,
+    hueco_grupo_s: float | None = None,
 ) -> dict:
     """Construye el manifiesto completo del run: una pasada de metadatos
     sobre `cfg.input_folder`, cruzada con el estadillo, decidiendo vuelo,
@@ -2218,6 +2277,9 @@ def construir_indice(
 
     `ejecucion_resumen`: carpeta `<destino>/.organizado/indice/<ejecucion>/` donde
     se deja `resumen.json` (N=1 y reduce). Vacío = no se escribe y se avisa.
+
+    `hueco_grupo_s`: hueco (s) que corta un grupo de fotos sin colocar (ver
+    `atom_core.sin_colocar`); `None` = `$ATOM_SIN_COLOCAR_HUECO_S` o 120.
     """
     progress_summarize.emit("---> SUBPROCESO: Índice")
     timeout_s = timeout_s or _env_float("ATOM_INDICE_TIMEOUT_S", TIMEOUT_FICHERO_S)
@@ -2413,6 +2475,9 @@ def construir_indice(
         emisor.progreso(n_asignadas, len(metadatos))
     emisor.progreso(len(metadatos), len(metadatos), forzar=True)
     asignaciones = _heredar_vuelo_por_pareja(asignaciones, progress_callback)
+    # Fotos que el usuario colocó a mano en una tanda/índice anterior: conservan su fila.
+    asignaciones = sin_colocar_mod.aplicar_asignaciones_manuales(
+        asignaciones, manifiesto, ventanas, tamanos_origen, progress_callback.emit)
     vuelos_equipo_discrepa = _avisar_equipo(asignaciones, progress_callback)
     reparto_vuelos: dict = {}
     votos_giro: dict = {}
@@ -2465,6 +2530,10 @@ def construir_indice(
     resultado = manifiesto.insertar_o_reabrir(
         filas, ejecucion_id=ejecucion_id,
         vuelos=[r for r in reparto_vuelos.values() if "n_total" in r])
+    _registrar_sin_colocar(
+        cfg, manifiesto, ejecucion_id, ventanas, ventanas_por_carpeta, ventanas_sin_carpeta,
+        asignaciones, filas, dias_sin_estadillo,
+        bool(ventanas) and not _fechas_estadillo(ventanas), hueco_grupo_s, progress_callback)
     for pb_u, vuelo_u, viejo, nuevo, _ in vuelos_a_unificar:
         cambia = viejo != nuevo
         n_reabiertas = manifiesto.unificar_angulo_vuelo(

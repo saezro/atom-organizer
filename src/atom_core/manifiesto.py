@@ -287,6 +287,38 @@ _SENTENCIAS_ESQUEMA = (
         valor TEXT NOT NULL
     )
     """,
+    # Fotos fuera de toda ventana del estadillo (SIN_ORDENAR) que el usuario puede
+    # colocar a mano (ver `atom_core.sin_colocar`). `filas_estadillo`: filas del
+    # estadillo de cada ejecución (JSON), destino válido de una asignación.
+    # `grupos_sin_colocar`: grupos contiguos por hora EXIF (JSON). `asignaciones_manuales`:
+    # decisión del usuario POR FOTO (clave de imagen), con `fila` NULL = dejar en
+    # SIN_ORDENAR a propósito; sobrevive a re-índices (el índice la reaplica).
+    """
+    CREATE TABLE IF NOT EXISTS filas_estadillo (
+        ejecucion INTEGER NOT NULL DEFAULT 0,
+        fila INTEGER NOT NULL,
+        datos TEXT NOT NULL,
+        PRIMARY KEY (ejecucion, fila)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS grupos_sin_colocar (
+        grupo_id TEXT PRIMARY KEY,
+        ejecucion INTEGER NOT NULL DEFAULT 0,
+        orden INTEGER NOT NULL DEFAULT 0,
+        datos TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS asignaciones_manuales (
+        clave TEXT PRIMARY KEY,
+        grupo_id TEXT,
+        fila INTEGER,
+        ventana TEXT,
+        quien TEXT NOT NULL,
+        cuando TEXT NOT NULL
+    )
+    """,
 )
 
 
@@ -1081,6 +1113,95 @@ class Manifiesto:
             return None
         fila = conexion.execute("SELECT valor FROM ajustes WHERE clave = ?", (clave,)).fetchone()
         return fila["valor"] if fila else None
+
+    # --- Fotos sin colocar (ver `atom_core.sin_colocar`) ---------------------
+
+    def filas_por_claves(self, claves: Iterable[str]) -> dict[str, sqlite3.Row]:
+        """`{clave: fila}` de las imágenes con esas claves (las que no existen no salen)."""
+        claves = list(claves)
+        resultado: dict[str, sqlite3.Row] = {}
+        conexion = self._conexion()
+        for i in range(0, len(claves), 500):
+            lote = claves[i:i + 500]
+            marcadores = ", ".join("?" for _ in lote)
+            for fila in conexion.execute(
+                    f"SELECT * FROM imagenes WHERE clave IN ({marcadores})", lote):
+                resultado[fila["clave"]] = fila
+        return resultado
+
+    def guardar_sin_colocar(self, ejecucion: int, filas_estadillo: Iterable[dict],
+                            grupos: Iterable[dict]) -> None:
+        """Sustituye las filas del estadillo de `ejecucion` y fusiona los grupos nuevos:
+        un grupo viejo que comparte alguna foto con los nuevos se reemplaza; los viejos
+        sin foto en común (tandas anteriores) se conservan mientras alguna de sus fotos
+        siga sin asignar; el resto se descarta. Las filas del estadillo de ejecuciones sin
+        grupos se podan. Una sola transacción."""
+        import json  # noqa: PLC0415
+        grupos = list(grupos)
+        nuevas = {c for g in grupos for c in g["claves"]}
+        conexion = self._conexion()
+        with conexion:
+            conexion.execute("DELETE FROM filas_estadillo WHERE ejecucion = ?", (ejecucion,))
+            for fila in filas_estadillo:
+                conexion.execute(
+                    "INSERT INTO filas_estadillo (ejecucion, fila, datos) VALUES (?, ?, ?)",
+                    (ejecucion, int(fila["fila"]), json.dumps(fila, ensure_ascii=False)))
+            for viejo in conexion.execute(
+                    "SELECT grupo_id, datos FROM grupos_sin_colocar").fetchall():
+                claves = json.loads(viejo["datos"])["claves"]
+                if nuevas.intersection(claves):
+                    conexion.execute("DELETE FROM grupos_sin_colocar WHERE grupo_id = ?",
+                                     (viejo["grupo_id"],))
+                    continue
+                pendientes = [c for c in claves if conexion.execute(
+                    "SELECT 1 FROM imagenes WHERE clave = ? AND unassigned = 1", (c,)).fetchone()]
+                if not pendientes:
+                    conexion.execute("DELETE FROM grupos_sin_colocar WHERE grupo_id = ?",
+                                     (viejo["grupo_id"],))
+            siguiente = (conexion.execute(
+                "SELECT COALESCE(MAX(orden), -1) FROM grupos_sin_colocar").fetchone()[0]) + 1
+            for i, grupo in enumerate(grupos):
+                conexion.execute(
+                    "INSERT OR REPLACE INTO grupos_sin_colocar (grupo_id, ejecucion, orden, datos) "
+                    "VALUES (?, ?, ?, ?)",
+                    (grupo["grupo_id"], ejecucion, siguiente + i,
+                     json.dumps(grupo, ensure_ascii=False)))
+            conexion.execute(
+                "DELETE FROM filas_estadillo WHERE ejecucion NOT IN "
+                "(SELECT DISTINCT ejecucion FROM grupos_sin_colocar)")
+
+    def grupos_sin_colocar_raw(self) -> list[dict]:
+        import json  # noqa: PLC0415
+        return [json.loads(f["datos"]) for f in self._conexion().execute(
+            "SELECT datos FROM grupos_sin_colocar ORDER BY orden")]
+
+    def fila_estadillo(self, ejecucion: int, fila: int) -> dict | None:
+        import json  # noqa: PLC0415
+        f = self._conexion().execute(
+            "SELECT datos FROM filas_estadillo WHERE ejecucion = ? AND fila = ?",
+            (ejecucion, int(fila))).fetchone()
+        return json.loads(f["datos"]) if f else None
+
+    def asignaciones_manuales(self) -> dict[str, dict]:
+        """`{clave: {grupo_id, fila, ventana (dict|None), quien, cuando}}`."""
+        import json  # noqa: PLC0415
+        return {
+            f["clave"]: {"grupo_id": f["grupo_id"], "fila": f["fila"],
+                         "ventana": json.loads(f["ventana"]) if f["ventana"] else None,
+                         "quien": f["quien"], "cuando": f["cuando"]}
+            for f in self._conexion().execute("SELECT * FROM asignaciones_manuales")}
+
+    def registrar_asignaciones(self, claves: Iterable[str], grupo_id: str, fila: int | None,
+                               ventana: dict | None, quien: str, cuando: str) -> None:
+        import json  # noqa: PLC0415
+        texto = json.dumps(ventana, ensure_ascii=False) if ventana is not None else None
+        conexion = self._conexion()
+        with conexion:
+            for clave in claves:
+                conexion.execute(
+                    "INSERT OR REPLACE INTO asignaciones_manuales "
+                    "(clave, grupo_id, fila, ventana, quien, cuando) VALUES (?, ?, ?, ?, ?, ?)",
+                    (clave, grupo_id, fila, texto, quien, cuando))
 
     def ultima_ejecucion_id(self) -> int | None:
         """Id de la ejecucion mas reciente (la que abrio el `indice`); `None` si
