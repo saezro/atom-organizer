@@ -317,6 +317,7 @@ def test_phases_412_en_subida_final_deja_run_fallido_y_conserva_copia(bucket_gen
     from unittest import mock
     cfg = mock.MagicMock()
     cfg.output_folder, cfg.input_folder = RAIZ, str(tmp_path / "o")
+    cfg.camara_rgb = "Z"
     with pytest.raises(Exception) as exc:
         phases_mod.PipelinePhasesMixin.organizar_plan_apply(_host_phases(tmp_path), cfg, _Sig(), _Sig(), _Sig())
     copias = glob.glob(str(tmp_path / "tmp" / "atom_manifiesto_gcs_no_subido" / "manifiesto-*-NO-SUBIDO.db"))

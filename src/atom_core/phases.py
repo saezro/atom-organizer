@@ -38,6 +38,7 @@ import external_tools as config
 import pipeline
 import utils
 from atom_core import cancelacion
+from atom_core import camara_rgb as camara_rgb_mod
 from atom_core import cierre as cierre_mod
 from atom_core import esperado as esperado_mod
 from atom_core import estadillo as estadillo_mod
@@ -301,6 +302,11 @@ class _PipelineAdaptadorPlanApply:
     @property
     def percentage_by_models(self):
         return self._host.config_obj.percentage_by_models
+
+    @property
+    def origen_porcentajes(self):
+        """{CLAVE: "tabla" | "override"} de `percentage_by_models` (para el log del índice)."""
+        return getattr(self._host.config_obj, "origen_porcentajes", {})
 
 
 class PipelinePhasesMixin:
@@ -924,6 +930,7 @@ class PipelinePhasesMixin:
 
                 rgb_root = os.path.join(cfg.output_folder, "RGB")
                 self.rgb_cropping_obj.reset_variables()
+                self.rgb_cropping_obj.camara_rgb = cfg.camara_rgb
                 self.new_log_gui.enable_process()
 
                 if mis_pbs is None:
@@ -1354,6 +1361,9 @@ class PipelinePhasesMixin:
         try:
             manifiesto.crear_esquema()
             hace_indice = fase in ("completo", "indice", "indice-reduce")
+            # Coherencia entre fases: el índice guarda la cámara; apply/cierre la leen.
+            cfg = camara_rgb_mod.fijar_camara_en_manifiesto(
+                manifiesto, cfg, hace_indice, progress_callback.emit)
             if hace_indice:
                 reabiertas = manifiesto.reabrir_huerfanas(cfg.input_folder)
                 if reabiertas:
@@ -1501,6 +1511,8 @@ class PipelinePhasesMixin:
                 shutil.copy2(origen_db, ruta_local)
         manifiesto = Manifiesto(ruta_local)
         try:
+            cfg = camara_rgb_mod.fijar_camara_en_manifiesto(
+                manifiesto, cfg, False, progress_callback.emit)
             if not manifiesto.todas():
                 raise RuntimeError(
                     f"El manifiesto de {cfg.output_folder} no tiene filas: la fase 'indice' "
@@ -2234,6 +2246,8 @@ class PipelinePhasesMixin:
         processing_time = self.utils_obj.logging_time()
 
         self.rgb_cropping_obj.reset_variables()
+        # `RgbCroppingConfig` no lleva la cámara: manda la de Config.ini (o Z por defecto).
+        self.rgb_cropping_obj.camara_rgb = self.config_obj.camara_rgb
         self.rgb_cropping_obj.total_images_number = self.utils_obj.contar_imagenes_or_tmc(cfg.output_folder)
         self.new_log_gui.enable_process()
 

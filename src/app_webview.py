@@ -1202,7 +1202,12 @@ class Api:
         Ruta persistente (NO _MEIPASS efímero del onefile), ver external_tools."""
         try:
             from external_tools import load_config_or_default, _user_config_path
-            return load_config_or_default(_user_config_path())
+            cfg = load_config_or_default(_user_config_path())
+            # `percentage_by_models` = solo el override del usuario (es lo que write_config
+            # reescribe); `recortes_efectivos` = tabla versionada + override, con su origen.
+            from atom_core import recortes
+            cfg["recortes_efectivos"] = recortes.tabla_efectiva(cfg["percentage_by_models"])
+            return cfg
         except Exception as exc:  # noqa: BLE001 — se reenvía al front
             return {"error": f"{type(exc).__name__}: {exc}",
                     "ruta_thermoviewer": "", "percentage_by_models": {}}
@@ -1222,6 +1227,13 @@ class Api:
             if pbm:
                 cfg["percentage_by_models"] = pbm
             path = _user_config_path()
+            # Reescritura total: sin esto se perdería `[cropping] camara_rgb`. Manda el del
+            # front si lo envía; si no, el que ya hay en el fichero (inválido -> ValueError).
+            from external_tools import load_config_or_default
+            from atom_core.camara_rgb import normalizar_camara, SECCION_CONFIG, CLAVE_CONFIG
+            camara = (normalizar_camara(data["camara_rgb"]) if data.get("camara_rgb")
+                      else load_config_or_default(path)["camara_rgb"])
+            cfg[SECCION_CONFIG] = {CLAVE_CONFIG: camara}
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
                 cfg.write(f)

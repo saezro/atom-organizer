@@ -7,18 +7,26 @@ import re
 # Clave única de pareja T/W: idx DJI (contador `_NNNN_`) + sufijo T|W|V (V = RGB Mavic 3T, equivale a W y se normaliza a 'W'), con `_pointN`
 # opcional (H30T). Vale `DJI_<ts>_<idx>_T`, `<fecha>_<hora>_DJI_<idx>_W` y `..._T_point1`.
 # El timestamp NO entra: T y W de un mismo disparo pueden diferir 1 s en el nombre.
-_RE_CLAVE_PAREJA = re.compile(r"_(\d+)_([TWV])(?:_point\d+)?$", re.IGNORECASE)
+_RE_CLAVE_PAREJA = re.compile(r"_(\d+)_([TWVZ])(?:_point\d+)?$", re.IGNORECASE)
 
 
-def clave_pareja(nombre: str) -> "tuple[int, str] | None":
+def clave_pareja(nombre: str, rgb: str = "W") -> "tuple[int, str] | None":
     """`(idx, 'T'|'W')` del nombre (sin carpeta ni extensión) o None si no sigue el
     patrón. Función ÚNICA de clave: la usan la paridad del índice y el cierre
     (`exif.MetaLocation.emparejar_por_idx`). El idx se reinicia entre vuelos, así que
-    solo tiene sentido dentro de la lista de UN vuelo."""
+    solo tiene sentido dentro de la lista de UN vuelo.
+
+    `rgb` = cámara RGB que forma pareja con la T: "W" (por defecto; la `_Z` NO tiene
+    clave, como siempre) o "Z" (tanda H30T en modo `camara_rgb=Z`: la `_Z` se
+    normaliza a 'W' y la `_W`/`_V` no tienen clave). Así los llamadores no cambian."""
     m = _RE_CLAVE_PAREJA.search(os.path.splitext(os.path.basename(str(nombre)))[0])
     if not m:
         return None
     suf = m.group(2).upper()
+    if suf == "Z":
+        return (int(m.group(1)), "W") if rgb == "Z" else None
+    if rgb == "Z" and suf in ("W", "V"):
+        return None
     return (int(m.group(1)), "W" if suf == "V" else suf)
 
 

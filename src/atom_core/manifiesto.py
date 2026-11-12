@@ -279,6 +279,14 @@ _SENTENCIAS_ESQUEMA = (
         PRIMARY KEY (pb, vuelo, sufijo)
     )
     """,
+    # Ajustes del run que las fases siguientes (apply, cierre) leen del manifiesto en vez
+    # de volver a resolverlos (p. ej. `camara_rgb`, ver `atom_core.camara_rgb`).
+    """
+    CREATE TABLE IF NOT EXISTS ajustes (
+        clave TEXT PRIMARY KEY,
+        valor TEXT NOT NULL
+    )
+    """,
 )
 
 
@@ -1058,6 +1066,21 @@ class Manifiesto:
                 "WHERE id = ?",
                 (datetime.datetime.now().isoformat(timespec="seconds"),
                  n_nuevas, n_saltadas, n_reintentadas, id_ejecucion))
+
+    def guardar_ajuste(self, clave: str, valor: str) -> None:
+        """Guarda (o reemplaza) un ajuste del run en el manifiesto."""
+        conexion = self._conexion()
+        conexion.execute("INSERT OR REPLACE INTO ajustes (clave, valor) VALUES (?, ?)",
+                         (clave, str(valor)))
+        conexion.commit()
+
+    def leer_ajuste(self, clave: str) -> str | None:
+        """Valor guardado, o `None` si no hay (también en manifiestos anteriores a la tabla)."""
+        conexion = self._conexion()
+        if not self._existe_tabla(conexion, "ajustes"):
+            return None
+        fila = conexion.execute("SELECT valor FROM ajustes WHERE clave = ?", (clave,)).fetchone()
+        return fila["valor"] if fila else None
 
     def ultima_ejecucion_id(self) -> int | None:
         """Id de la ejecucion mas reciente (la que abrio el `indice`); `None` si
