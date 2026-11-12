@@ -7,13 +7,13 @@ def test_load_config_or_default_missing_file(tmp_path):
     """Un ini inexistente debe devolver defaults sin lanzar excepción."""
     ini_inexistente = str(tmp_path / "no_existe.ini")
     resultado = load_config_or_default(ini_inexistente)
-    assert resultado == {"ruta_thermoviewer": "", "percentage_by_models": {}}
+    assert resultado == {"ruta_thermoviewer": "", "percentage_by_models": {}, "camara_rgb": "Z"}
 
 
 def test_load_config_or_default_empty_path():
     """Un path vacío (diálogo cancelado) debe devolver defaults sin lanzar excepción."""
     resultado = load_config_or_default("")
-    assert resultado == {"ruta_thermoviewer": "", "percentage_by_models": {}}
+    assert resultado == {"ruta_thermoviewer": "", "percentage_by_models": {}, "camara_rgb": "Z"}
 
 
 def test_load_config_or_default_missing_paths_section(tmp_path):
@@ -30,4 +30,5 @@ def test_read_load_config_instance_missing_file_no_crash(tmp_path):
     obj = ReadLoadConfig()
     obj.load_new_config(str(tmp_path / "no_existe.ini"))
     assert obj.ruta_thermoviewer == ""
-    assert obj.percentage_by_models == {}
+    assert obj.percentage_overrides == {}
+    assert obj.percentage_by_models["H30T_Z"] == 48.5  # sin override manda la tabla versionada

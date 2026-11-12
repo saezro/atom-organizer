@@ -1162,6 +1162,12 @@ class SplitImagesConfig:
     # inspección elegida o si la API de la Suite todavía no manda el campo
     # (ver `atom_core/inspecciones.py`, decisión 2026-09-28).
     orientacion: str = ""
+    # Cámara RGB que se recorta cuando la tanda trae `_W` y `_Z` ("Z" | "W";
+    # ver `atom_core.camara_rgb`). Sin `_Z` en la tanda no tiene efecto.
+    camara_rgb: str = "Z"
+    # True si la cámara vino pedida explícitamente (`--camara-rgb`), no de Config.ini/defecto:
+    # una cámara explícita que contradice la del índice guardado es error.
+    camara_rgb_explicita: bool = False
 
 
 @dataclass(frozen=True)

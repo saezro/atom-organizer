@@ -23,6 +23,7 @@ a = Analysis(
     binaries=pyexiv2_binaries,
     datas=[
         (_r('config', 'Config.ini'), 'config'),
+        (_r('config', 'recortes_modelos.csv'), 'config'),
         (_r('assets', 'Logo_atom_uas_horizonta-02.png'), '.'),
         (_r('programas_externos'), 'programas_externos'),
     ] + pyexiv2_datas + mpl_datas,

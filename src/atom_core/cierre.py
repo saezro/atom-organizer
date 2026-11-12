@@ -23,6 +23,7 @@ import utils
 from atom_core.almacen import (
     AVISO_GENERALES_SIN_CSV, es_uri_gcs, existe_ruta, listar_con_tamanos, normalizar_ruta, tamano_de, unir,
 )
+from atom_core import camara_rgb as camara_rgb_mod
 from atom_core import pares as pares_mod
 from atom_core.manifiesto import ruta_bajo_origen
 from atom_core.indice import NOMBRE_CARPETA_RGB_EXTRA, TIPOS_RGB, _es_pb_generales
@@ -297,13 +298,24 @@ def _emitir_meta_location(manifiesto, cfg, progress_callback, proyecciones=None,
         df = _publicar(images, por_nombre, _leer(images, por_nombre), nombre_csv, carpeta, False)
         _emitir_df(df, por_nombre, carpeta, nombre_csv, False)
 
+    camara = _camara_de_cfg(cfg)
+
     def _emparejado(pn_t, pn_w, pref=""):
         """Espejo de `MetaLocation.gen_meta_location_emparejado`: meta (T) y location (W)
-        del vuelo desde UNA lista de pares por idx DJI, mismo orden, misma longitud."""
+        del vuelo desde UNA lista de pares por idx DJI, mismo orden, misma longitud.
+
+        `camara_rgb=Z` y el vuelo trae `_Z`: la RGB de referencia (location) es la `_Z`
+        -la `_W` no entra en el CSV- y se empareja con la T por el idx de la `_Z`. El CSV
+        lista el original; Análisis sirve `<base>_CROP` si existe. En modo W (o sin `_Z`)
+        todo como siempre."""
+        rgb = "W"
+        if camara == "Z" and camara_rgb_mod.tanda_trae_zoom(pn_w):
+            pn_w = {n: f for n, f in pn_w.items() if camara_rgb_mod.es_zoom(n)}
+            rgb = "Z"
         imgs_t, imgs_w = natsorted(pn_t), natsorted(pn_w)
         if not imgs_t and not imgs_w:
             return
-        pares, sin_pareja, sin_patron = meta_location_obj.emparejar_por_idx(imgs_t, imgs_w)
+        pares, sin_pareja, sin_patron = meta_location_obj.emparejar_por_idx(imgs_t, imgs_w, rgb)
         if (not imgs_t or not imgs_w) or (not pares and sin_patron and not sin_pareja):
             # Vuelo solo RGB (o solo T) o sin patrón DJI: independientes, como antes del emparejado.
             _independiente(pn_w, pref + "location.csv")
@@ -467,8 +479,21 @@ def etiqueta_vuelo(pb: str, vuelo: str) -> str:
     return f"PB{pb}_V{vuelo}"
 
 
+def _nombre_fila(fila) -> str:
+    """Nombre del fichero de salida de una fila del manifiesto (vacío si no lo trae)."""
+    for clave in ("ruta_salida_original", "ruta_origen"):
+        try:
+            valor = fila[clave]
+        except (KeyError, IndexError):
+            continue
+        if valor:
+            return os.path.basename(str(valor))
+    return ""
+
+
 def recuentos_por_vuelo(filas_manifiesto, filas_csv, *, convert_to_tif: bool = False,
-                        cropping_rgb: bool = False) -> "dict[tuple[str, str], dict]":
+                        cropping_rgb: bool = False,
+                        camara_rgb: "str | None" = None) -> "dict[tuple[str, str], dict]":
     """Recuentos y veredicto de coherencia por (pb, vuelo). PURA: sin I/O.
 
     Solo filas `hecho` con vuelo asignado (las fallidas/pendientes ya se
@@ -479,10 +504,15 @@ def recuentos_por_vuelo(filas_manifiesto, filas_csv, *, convert_to_tif: bool = F
     Reglas ERROR (solo lo que aplique al vuelo):
     - convert_to_tif y T>0: n_T != n_tiff
     - cropping_rgb y W>0: n_W != n_crop
+    - `camara_rgb` ("Z"|"W", ver `atom_core.camara_rgb`) y el vuelo trae `_Z`:
+      "Z" -> la RGB del vuelo es la `_Z` (n_W cuenta solo las `_Z` y se compara
+      con su n_crop); "W" -> se espera `_CROP` en todo menos la `_Z`. Sin `_Z`
+      en el vuelo, o `camara_rgb=None`, todo como siempre.
     - CSV (si `filas_csv` no es None): T>0 -> filas_meta == n_T;
       T>0 y W>0 -> filas_location == filas_meta; solo W -> filas_location == n_W.
     """
     acum: "dict[tuple[str, str], dict]" = {}
+    rgb_por_vuelo: "dict[tuple[str, str], list[tuple[str, bool]]]" = {}
     for fila in filas_manifiesto:
         pb, vuelo = fila["pb"], fila["vuelo"]
         if fila["estado"] != "hecho" or fila["unassigned"] or not pb or not vuelo:
@@ -493,25 +523,42 @@ def recuentos_por_vuelo(filas_manifiesto, filas_csv, *, convert_to_tif: bool = F
             r["n_T"] += 1
             r["n_tiff"] += 1 if fila["ruta_salida_tiff"] else 0
         elif fila["tipo"] == "RGB":
-            r["n_W"] += 1
-            r["n_crop"] += 1 if fila["ruta_salida_crop"] else 0
+            rgb_por_vuelo.setdefault((pb, vuelo), []).append(
+                (_nombre_fila(fila), bool(fila["ruta_salida_crop"])))
+
+    etiqueta_rgb: "dict[tuple[str, str], str]" = {}
+    for clave, rgb in rgb_por_vuelo.items():
+        r = acum[clave]
+        hay_zoom = camara_rgb is not None and camara_rgb_mod.tanda_trae_zoom(n for n, _c in rgb)
+        modo_z = hay_zoom and camara_rgb_mod.normalizar_camara(camara_rgb) == "Z"
+        # Cámara "de referencia" del vuelo (la que lista el CSV location): en modo Z con
+        # `_Z`, solo las `_Z`; en cualquier otro caso, toda la RGB.
+        r["n_W"] = sum(1 for n, _c in rgb if camara_rgb_mod.es_zoom(n)) if modo_z else len(rgb)
+        r["n_crop"] = sum(1 for _n, c in rgb if c)
+        # Lo que de verdad debía recortarse según la cámara elegida.
+        r["n_esperadas_crop"] = sum(
+            1 for n, _c in rgb
+            if camara_rgb is None or camara_rgb_mod.se_recorta(n, camara_rgb, hay_zoom))
+        etiqueta_rgb[clave] = "Z" if modo_z else "W"
 
     for clave, r in acum.items():
         csv = None if filas_csv is None else filas_csv.get(clave, {})
         r["filas_meta"] = None if csv is None else int(csv.get("meta", 0))
         r["filas_location"] = None if csv is None else int(csv.get("location", 0))
         t, w, motivos = r["n_T"], r["n_W"], []
+        etq = etiqueta_rgb.get(clave, "W")
+        esperadas = r.get("n_esperadas_crop", 0)
         if convert_to_tif and t and r["n_T"] != r["n_tiff"]:
             motivos.append("tiff != T")
-        if cropping_rgb and w and r["n_W"] != r["n_crop"]:
-            motivos.append("crop != W")
+        if cropping_rgb and esperadas and esperadas != r["n_crop"]:
+            motivos.append(f"crop != {etq}")
         if csv is not None:
             if t and r["filas_meta"] != t:
                 motivos.append("meta != T")
             if t and w and r["filas_location"] != r["filas_meta"]:
                 motivos.append("location != meta")
             if w and not t and r["filas_location"] != w:
-                motivos.append("location != W")
+                motivos.append(f"location != {etq}")
         r["estado"] = "ERROR" if motivos else "OK"
         if str(r["pb"]).strip().upper() == "GENERALES":
             r["estado"], r["motivo"] = "EXCLUIDO", "FOTOS_GENERALES fuera de la regla"
@@ -523,7 +570,7 @@ def recuentos_por_vuelo(filas_manifiesto, filas_csv, *, convert_to_tif: bool = F
                 if convert_to_tif:
                     partes.append(f"tiff {r['n_tiff']}")
             if w:
-                partes.append(f"W {w}")
+                partes.append(f"{etq} {w}")
                 if cropping_rgb:
                     partes.append(f"crop {r['n_crop']}")
             if csv is not None:
@@ -537,12 +584,18 @@ def recuentos_por_vuelo(filas_manifiesto, filas_csv, *, convert_to_tif: bool = F
     return acum
 
 
+def _camara_de_cfg(cfg) -> str:
+    return camara_rgb_mod.normalizar_camara(
+        getattr(cfg, "camara_rgb", camara_rgb_mod.CAMARA_RGB_DEFECTO))
+
+
 def calcular_recuentos(manifiesto, cfg, filas_csv) -> "dict[tuple[str, str], dict]":
     """`recuentos_por_vuelo` sobre todo el manifiesto con los flags de `cfg`."""
     return recuentos_por_vuelo(
         manifiesto.todas(), filas_csv,
         convert_to_tif=bool(getattr(cfg, "convert_to_tif", False)),
-        cropping_rgb=bool(getattr(cfg, "cropping_rgb", False)))
+        cropping_rgb=bool(getattr(cfg, "cropping_rgb", False)),
+        camara_rgb=_camara_de_cfg(cfg))
 
 
 def verificar(manifiesto, cfg, recuentos_csv=None) -> list[str]:

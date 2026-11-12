@@ -64,6 +64,7 @@ import dji_worker_pool
 import dji_irp_windows
 from atom_core import errores_estadillo
 from atom_core import almacen, esperado, rjpeg, sharding, lectura_segura
+from atom_core import camara_rgb as camara_rgb_mod
 from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO, NOMBRE_FICHERO_MANIFIESTO
 
 
@@ -4334,6 +4335,11 @@ class RGBCropping:
         self.organizer_logger = organizer_logger
         self.error_rgb_cropping = 0
         self.images_error_rgb_cropping = []
+        # Cámara RGB a recortar ("Z"|"W", ver atom_core.camara_rgb) cuando la tanda trae _W y
+        # _Z. None = sin distinción (se recorta toda la RGB, comportamiento histórico). La
+        # fijan las fases del motor legado antes de recortar.
+        self.camara_rgb = None
+        self._hay_zoom_tanda = None  # None = sin calcular (lo fija el recorrido raíz)
 
     def set_stop(self, stop: bool) -> None:
         """
@@ -4344,7 +4350,24 @@ class RGBCropping:
         - stop - variable que indica si se puede llevar a cabo o no el procesado. A True se para o no arranca, y a False se lleva a cabo.
         """
         self.stop = stop
-        
+
+    def _carpeta_trae_zoom(self, carpeta: str) -> bool:
+        """¿Hay alguna `_Z` en `carpeta` o debajo (sin entrar en TERMICA)?"""
+        if os.path.basename(carpeta) == "TERMICA":
+            return False
+        if camara_rgb_mod.tanda_trae_zoom(self.utils_obj.get_images_from_dir(carpeta, ["_CROP"])):
+            return True
+        subdirs = almacen.listar_subcarpetas(carpeta) if almacen.es_uri_gcs(carpeta) else next(os.walk(carpeta))[1]
+        return any(self._carpeta_trae_zoom(almacen.unir(carpeta, d)) for d in subdirs)
+
+    def _hay_zoom(self, carpeta: str) -> bool:
+        """Zoom en la tanda: el valor fijado por el recorrido raíz o, sin él, el de `carpeta`."""
+        if self.camara_rgb is None:
+            return False
+        if self._hay_zoom_tanda is not None:
+            return self._hay_zoom_tanda
+        return self._carpeta_trae_zoom(carpeta)
+
     def reset_variables(self) -> None:
         """
         Resetea las variables necesarias para mostrar la información correctamente en la ventana de log.
@@ -4451,6 +4474,11 @@ class RGBCropping:
 
                 crop_images = [img for img in all_images if "CROP" in img]
                 non_crop_images = [img for img in all_images if "CROP" not in img]
+                if self.camara_rgb is not None:
+                    # Solo se espera `_CROP` de la cámara elegida (ver atom_core.camara_rgb).
+                    hay_zoom = self._hay_zoom(input_folder)
+                    non_crop_images = [img for img in non_crop_images
+                                       if camara_rgb_mod.se_recorta(img, self.camara_rgb, hay_zoom)]
                 n_crop = len(crop_images)
                 n_non_crop = len(non_crop_images)
                 match = n_crop == n_non_crop
@@ -4502,7 +4530,21 @@ class RGBCropping:
         """
         if os.path.basename(input_folder)== "TERMICA": # Evito realizar el proceso dentro de esta carpeta, pues dará error.
             return
-        
+
+        # Recorrido raíz: ¿la tanda (todo el árbol) trae _Z? Se decide una vez y vale para toda
+        # la recursión (la _Z vive en RGB/ZOOM y la _W en RGB/PB…, carpetas distintas).
+        es_raiz = self.camara_rgb is not None and self._hay_zoom_tanda is None
+        if es_raiz:
+            self._hay_zoom_tanda = self._carpeta_trae_zoom(input_folder)
+        try:
+            self._iterar_recorte(input_folder, progress_callback, progress_bar, percentage_cropping_dict, percentage_cropping_auto, percentage_cropping_manual)
+        finally:
+            if es_raiz:
+                self._hay_zoom_tanda = None
+
+    def _iterar_recorte(self, input_folder: str, progress_callback, progress_bar, percentage_cropping_dict, percentage_cropping_auto:bool = True, percentage_cropping_manual: int = 0) -> None:
+        if os.path.basename(input_folder)== "TERMICA":
+            return
         self.crop_centered_images(input_folder, progress_callback, progress_bar, percentage_cropping_dict, percentage_cropping_auto, percentage_cropping_manual)
         if almacen.es_uri_gcs(input_folder):
             subdirs = almacen.listar_subcarpetas(input_folder)
@@ -4510,7 +4552,7 @@ class RGBCropping:
             subdirs = next(os.walk(input_folder))[1]
         for dir in subdirs:
             if not self.stop:
-                self.iterate_folders_for_rgb_cropping(almacen.unir(input_folder,dir), progress_callback, progress_bar, percentage_cropping_dict, percentage_cropping_auto, percentage_cropping_manual)
+                self._iterar_recorte(almacen.unir(input_folder,dir), progress_callback, progress_bar, percentage_cropping_dict, percentage_cropping_auto, percentage_cropping_manual)
 
     def crop_centered_images(self,input_folder: str, progress_callback, progress_bar, percentage_cropping_dict, percentage_cropping_auto:bool = True, percentage_cropping_manual: int = 0) -> None:
         """
@@ -4527,6 +4569,11 @@ class RGBCropping:
         
         """
         images = self.utils_obj.get_images_from_dir(input_folder, ["_CROP"])  # excluir _CROP: el recorte nunca debe re-procesar sus propias salidas (evita _CROP_CROP y "image file is truncated" si el dir de salida venía sucio). Igual que renombrado (1058/1213).
+        hay_zoom = False
+        if self.camara_rgb is not None:
+            # Solo la cámara elegida se recorta cuando la tanda trae _Z; la otra se deja tal cual.
+            hay_zoom = self._hay_zoom(input_folder)
+            images = [i for i in images if camara_rgb_mod.se_recorta(i, self.camara_rgb, hay_zoom)]
         if(len(images) > 0):
             progress_callback.emit("\nAnalizando directorio: " + input_folder + "\n")
             progress_callback.emit("Procesando y recortando {0} imágenes".format(len(images)) + "\n") # Se envía información al iniciar el procesado de un directorio. Si no hay imágenes
@@ -4578,7 +4625,14 @@ class RGBCropping:
                         self.error_rgb_cropping += 1
                         self.images_error_rgb_cropping.append(ruta_imagen)
                         continue
-                    final_percentage = self.get_percentage_by_model(model.strip('\x00'), percentage_cropping_dict)
+                    clave = (camara_rgb_mod.clave_porcentaje(model, self.camara_rgb, hay_zoom)
+                             if self.camara_rgb is not None else model.strip('\x00'))
+                    try:
+                        final_percentage = self.get_percentage_by_model(clave, percentage_cropping_dict)
+                    except KeyError:
+                        raise KeyError(
+                            f"Falta la clave '{clave.strip().upper()}' en Config.ini [percentage_by_models] "
+                            f"(modelo '{model.strip(chr(0)).strip()}', imagen {image})") from None
                 else:
                     final_percentage = int(percentage_cropping_manual)
                 valid_items.append((image, final_percentage / 100))

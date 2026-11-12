@@ -381,6 +381,12 @@ def main(argv: list[str] | None = None) -> int:
                              "`obviar` = deja intacto lo que ya exista en esa "
                              "ruta y no mueve esa imagen. En ningun caso se "
                              "generan copias con sufijo.")
+    parser.add_argument("--camara-rgb", dest="camara_rgb", choices=["Z", "W"], default=None,
+                        help="Camara RGB que se recorta (_CROP) cuando la tanda trae RGB _W y "
+                             "_Z (DJI H30T). Z = solo la zoom (la _W se copia sin recortar); "
+                             "W = solo la wide (la _Z se copia sin recortar). Sin esta opcion "
+                             "manda `[cropping] camara_rgb` de Config.ini y, si no esta, Z. "
+                             "Sin _Z en la tanda no tiene efecto.")
     parser.add_argument("--simular", dest="simular", action="store_true",
                         help="Solo --fase apply: SIMULACION para medir tiempo y coste reales "
                              "sin tocar la planta. Lee, calcula y decide igual que el apply "
@@ -541,6 +547,8 @@ def main(argv: list[str] | None = None) -> int:
                     "ejecucion_indice": args.ejecucion_indice or "",
                     "modo_destino": args.modo_destino,
                     "shard_index": shard_index, "shard_count": shard_count}
+    if args.camara_rgb:
+        params["camara_rgb"] = args.camara_rgb
     avanzado: dict = {}
     if args.sin_tif:
         avanzado["convert_to_tif"] = False

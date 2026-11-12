@@ -34,6 +34,7 @@ import PIL.Image
 import exif as exif_mod
 import utils
 from atom_core import almacen
+from atom_core import camara_rgb as camara_rgb_mod
 from atom_core import cancelacion
 from atom_core import equipo as equipo_mod
 from atom_core import estadillo as estadillo_mod
@@ -1537,70 +1538,109 @@ def _validar_giro_contra_flight_yaw(asignaciones, angulos: dict, cfg) -> None:
             "tanda anterior?):\n- " + "\n- ".join(contradictorios))
 
 
-def _pct_por_modelo(modelo: str, pipeline) -> float:
+def _camara_cfg(cfg) -> str:
+    """Cámara RGB elegida (`cfg.camara_rgb`, Z|W; por defecto Z). Valor inválido -> ValueError."""
+    return camara_rgb_mod.normalizar_camara(
+        getattr(cfg, "camara_rgb", camara_rgb_mod.CAMARA_RGB_DEFECTO))
+
+
+def _tanda_trae_zoom(metadatos: list[_MetadatosImagen], cfg) -> bool:
+    """¿Alguna imagen RGB de la tanda es `_Z`? Solo entonces `camara_rgb` decide
+    qué se recorta; sin `_Z` se recorta toda la RGB como siempre."""
+    return any(camara_rgb_mod.es_zoom(d.nombre) and _clasificar_tipo(d.nombre, cfg) in TIPOS_RGB
+               for d in metadatos)
+
+
+def _pct_por_modelo(modelo: str, pipeline, clave: str | None = None) -> float:
     """Getter de dominio sobre `Pipeline.get_percentage_by_model`: mismo
-    lookup, pero un modelo sin configurar lanza `ErrorModeloSinRecorte` con
+    lookup, pero una clave sin configurar lanza `ErrorModeloSinRecorte` con
     mensaje claro en vez del `KeyError` crudo de `normalized_dict[...]`
-    (pipeline.py:4328). Red de seguridad: `construir_indice` ya valida todos
-    los modelos ANTES de llegar aquí (`_validar_modelos_recorte`); este
-    getter cubre además cualquier otro llamador directo."""
+    (pipeline.py:4328). `clave` = entrada de `[percentage_by_models]` que
+    manda (`MODELO` o `MODELO_Z`, ver `camara_rgb.clave_porcentaje`); por
+    defecto, el modelo. Red de seguridad: `construir_indice` ya valida todo
+    ANTES de llegar aquí (`_validar_modelos_recorte`); este getter cubre
+    además cualquier otro llamador directo."""
+    clave = clave or modelo
     try:
-        return pipeline.get_percentage_by_model(modelo, pipeline.percentage_by_models)
+        return pipeline.get_percentage_by_model(clave, pipeline.percentage_by_models)
     except KeyError:
         raise ErrorModeloSinRecorte(
-            f"El modelo de dron '{modelo}' no tiene % de recorte configurado "
-            "en Config.ini (sección [percentage_by_models]). Añádelo en "
-            "Configuración > Recorte automático antes de reintentar."
+            f"El modelo de dron '{modelo}' no tiene % de recorte configurado: falta la clave "
+            f"'{str(clave).strip().upper()}' en Config.ini (sección [percentage_by_models]). "
+            "Añádela en Configuración > Recorte automático antes de reintentar."
         ) from None
 
 
-def _modelos_sin_recorte_configurado(
-    metadatos: list[_MetadatosImagen], cfg, pipeline
-) -> dict[str, list[str]]:
-    """Modelos EXIF de imágenes RGB/RGB_Extra (las únicas que se recortan,
-    ver `TIPOS_RGB`) que no tienen entrada en `pipeline.percentage_by_models`.
-    Solo aplica si el recorte automático está activo: en manual no se mira
-    el modelo (`cfg.crop_percentage` manda). Devuelve
-    `{modelo: [nombres de ejemplo]}`, vacío si no falta nada."""
+def _claves_de_recorte(metadatos: list[_MetadatosImagen], cfg) -> dict[str, list[str]]:
+    """`{clave de [percentage_by_models]: [nombres]}` de las imágenes RGB/RGB_Extra que
+    de verdad se van a recortar en modo automático (ver `TIPOS_RGB` y
+    `camara_rgb.se_recorta`): `MODELO` (wide / genérica) o `MODELO_Z` (zoom, modo
+    `camara_rgb=Z` con `_Z` en la tanda). Vacío si el recorte no está activo o es manual."""
     if not cfg.cropping_rgb or not cfg.cropping_mode_auto:
         return {}
-    conocidos = {str(k).strip().upper() for k in (pipeline.percentage_by_models or {}).keys()}
-    faltantes: dict[str, list[str]] = {}
+    camara = _camara_cfg(cfg)
+    hay_zoom = _tanda_trae_zoom(metadatos, cfg)
+    claves: dict[str, list[str]] = {}
     for dato in metadatos:
         if _clasificar_tipo(dato.nombre, cfg) not in TIPOS_RGB:
             continue
         if not dato.modelo:
             continue
+        if not camara_rgb_mod.se_recorta(dato.nombre, camara, hay_zoom):
+            continue
         modelo = str(dato.modelo).strip("\x00").strip().upper()
-        if modelo and modelo not in conocidos:
-            faltantes.setdefault(modelo, []).append(dato.nombre)
-    return faltantes
+        if not modelo:
+            continue
+        claves.setdefault(camara_rgb_mod.clave_porcentaje(modelo, camara, hay_zoom)
+                          if hay_zoom else modelo, []).append(dato.nombre)
+    return claves
+
+
+def _modelos_sin_recorte_configurado(
+    metadatos: list[_MetadatosImagen], cfg, pipeline
+) -> dict[str, list[str]]:
+    """Claves de recorte (`MODELO` / `MODELO_Z`) que faltan, tanto en la tabla
+    versionada como en el override del Config.ini (`pipeline.percentage_by_models`
+    ya es la unión). Devuelve `{clave: [nombres de ejemplo]}`, vacío si no falta nada."""
+    conocidos = {str(k).strip().upper() for k in (pipeline.percentage_by_models or {}).keys()}
+    return {c: n for c, n in _claves_de_recorte(metadatos, cfg).items() if c not in conocidos}
+
+
+def _recortes_usados(metadatos: list[_MetadatosImagen], cfg, pipeline) -> list[dict]:
+    """De dónde sale cada % que se va a aplicar: `[{clave, porcentaje, origen, imagenes}]`,
+    origen = "tabla" (config/recortes_modelos.csv) | "override" (Config.ini de usuario)."""
+    pcts = {str(k).strip().upper(): v for k, v in (pipeline.percentage_by_models or {}).items()}
+    origenes = getattr(pipeline, "origen_porcentajes", None) or {}
+    return [{"clave": c, "porcentaje": pcts.get(c), "origen": origenes.get(c, "?"), "imagenes": len(n)}
+            for c, n in sorted(_claves_de_recorte(metadatos, cfg).items())]
 
 
 def _validar_modelos_recorte(metadatos: list[_MetadatosImagen], cfg, pipeline) -> None:
     """Aborta pronto, ANTES de montar ninguna fila del índice, si el recorte
-    automático de RGB está activo y alguna imagen trae un modelo EXIF sin %
-    configurado. Se llama justo tras leer los metadatos (ya son datos
+    automático de RGB está activo y alguna imagen que se va a recortar trae un
+    modelo EXIF sin % configurado (clave `MODELO` o `MODELO_Z`, la que toque
+    según `camara_rgb`). Se llama justo tras leer los metadatos (ya son datos
     gratis: `dato.modelo` viene del mismo EXIF que se lee para todo lo
     demás), no repite lectura de disco. Ver `ErrorModeloSinRecorte`."""
     faltantes = _modelos_sin_recorte_configurado(metadatos, cfg, pipeline)
     if not faltantes:
         return
     detalle = "; ".join(
-        f"'{modelo}' (p.ej. {ejemplos[0]}"
+        f"'{clave}' (p.ej. {ejemplos[0]}"
         + (f" y {len(ejemplos) - 1} más" if len(ejemplos) > 1 else "")
         + ")"
-        for modelo, ejemplos in sorted(faltantes.items())
+        for clave, ejemplos in sorted(faltantes.items())
     )
     raise ErrorModeloSinRecorte(
         "El recorte automático de RGB está activado pero hay modelo(s) de "
-        f"dron sin % de recorte configurado en Config.ini: {detalle}. "
+        f"dron sin % de recorte configurado en Config.ini (clave que falta): {detalle}. "
         "Añádelos en Configuración > Recorte automático (sección "
         "[percentage_by_models]) antes de reintentar."
     )
 
 
-def _pct_recorte(dato: _MetadatosImagen, tipo: str, cfg, pipeline) -> float | None:
+def _pct_recorte(dato: _MetadatosImagen, tipo: str, cfg, pipeline,
+                 hay_zoom: bool = False) -> float | None:
     """El % de recorte aplica a RGB y RGB_Extra (el recorte centrado es cosa
     de `RGBCropping`, nunca de la térmica; ver `TIPOS_RGB`:
     `iterate_folders_for_rgb_cropping`, pipeline.py:4003, recorre TODO el
@@ -1609,12 +1649,20 @@ def _pct_recorte(dato: _MetadatosImagen, tipo: str, cfg, pipeline) -> float | No
     es automático; en manual, el valor de la interfaz (`cfg.crop_percentage`)
     manda sin mirar el modelo.
 
+    `hay_zoom`: la tanda trae `_Z`. Entonces `cfg.camara_rgb` decide QUÉ se
+    recorta (Z: solo la `_Z`; W: todo menos la `_Z`) y devuelve `None` para lo
+    que no se recorta (se copia tal cual, sin `_CROP`); la zoom usa la clave
+    `MODELO_Z`. Sin `_Z` en la tanda, comportamiento de siempre.
+
     Devuelve una FRACCIÓN 0-1, no un porcentaje: `ImageProcessConfig.
     crop_centered_pct` (pipeline.py:199) multiplica directamente por el ancho
     y el alto. Devolver aquí el porcentaje crudo (70) hacía que el recorte
     pidiese 8000*70 x 6000*70 px y Pillow abortase con
     `DecompressionBombError`, dejando todas las RGB en SIN_ORDENAR."""
     if tipo not in TIPOS_RGB or not cfg.cropping_rgb:
+        return None
+    camara = _camara_cfg(cfg)
+    if not camara_rgb_mod.se_recorta(dato.nombre, camara, hay_zoom):
         return None
     if cfg.cropping_mode_auto:
         if not dato.modelo:
@@ -1624,7 +1672,8 @@ def _pct_recorte(dato: _MetadatosImagen, tipo: str, cfg, pipeline) -> float | No
         # y no de `cfg` (`SplitImagesConfig` no lo lleva). Aquí se pide al mismo
         # `pipeline` que ya agrupa el resto de funciones reutilizadas: es quien
         # tiene que exponerlo como `pipeline.percentage_by_models`.
-        pct = _pct_por_modelo(dato.modelo, pipeline)
+        clave = camara_rgb_mod.clave_porcentaje(dato.modelo, camara, hay_zoom)
+        pct = _pct_por_modelo(dato.modelo, pipeline, clave)
         if pct is None:
             return None
         return float(pct) / 100
@@ -1703,7 +1752,8 @@ def _avisar_jpeg_sin_eoi(filas: list[FilaManifiesto], progress_callback) -> int:
 def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
                     angulos: dict[tuple[str, str, str | None], int], cfg, pipeline,
                     votos: dict | None = None,
-                    tamanos_origen: "dict[str, int] | None" = None) -> FilaManifiesto:
+                    tamanos_origen: "dict[str, int] | None" = None,
+                    hay_zoom: bool = False) -> FilaManifiesto:
     tipo = _clasificar_tipo(dato.nombre, cfg)
     unassigned = ventana is None
 
@@ -1744,7 +1794,7 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
 
     ruta_salida_original = almacen.unir(carpeta_destino, nombre_final)
 
-    pct_recorte = _pct_recorte(dato, tipo, cfg, pipeline)
+    pct_recorte = _pct_recorte(dato, tipo, cfg, pipeline, hay_zoom)
     ruta_salida_crop = None
     if pct_recorte is not None:
         raiz, ext = os.path.splitext(nombre_final)
@@ -2348,6 +2398,11 @@ def construir_indice(
     # (donde antes reventaba con `KeyError` crudo, imagen a imagen). Ver
     # `ErrorModeloSinRecorte`.
     _validar_modelos_recorte(metadatos, cfg, pipeline)
+    recortes_usados = _recortes_usados(metadatos, cfg, pipeline)
+    for r in recortes_usados:
+        progress_callback.emit(
+            f"\nRecorte {r['clave']} = {r['porcentaje']} % (origen: {r['origen']}; "
+            f"{r['imagenes']} imagen(es))\n")
 
     asignaciones = []
     emisor.iniciar("Asignar vuelos", len(metadatos), barra=(80, 10))
@@ -2390,11 +2445,16 @@ def construir_indice(
     _validar_giro_contra_flight_yaw(asignaciones, angulos, cfg)
 
     filas = []
+    hay_zoom = _tanda_trae_zoom(metadatos, cfg)
+    if hay_zoom and cfg.cropping_rgb:
+        progress_callback.emit(
+            f"\nRGB _W y _Z en la tanda: se recorta SOLO la cámara {_camara_cfg(cfg)} "
+            "(ajuste camara_rgb); la otra se copia sin _CROP.\n")
     emisor.iniciar("Construir filas", len(asignaciones), barra=(90, 8))
     for n_filas, (dato, ventana) in enumerate(asignaciones, 1):
         cancelacion.comprobar()
         filas.append(_construir_fila(dato, ventana, angulos, cfg, pipeline, votos_giro,
-                                   tamanos_origen))
+                                   tamanos_origen, hay_zoom))
         emisor.progreso(n_filas, len(asignaciones))
     emisor.progreso(len(asignaciones), len(asignaciones), forzar=True)
     filas = _desambiguar_colisiones_generales(filas, manifiesto.rutas_salida_por_clave())
@@ -2487,4 +2547,5 @@ def construir_indice(
         "no_disponibles": no_disponibles,
         "dias_sin_estadillo": dias_sin_estadillo,
         "no_dji": no_dji,
+        "recortes_usados": recortes_usados,
     }

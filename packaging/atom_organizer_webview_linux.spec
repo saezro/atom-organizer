@@ -68,6 +68,7 @@ a = Analysis(
     datas=[
         (_r('webui', 'dist'), 'webui/dist'),          # UI React buildeada (npm run build)
         (_r('config', 'Config.ini'), 'config'),
+        (_r('config', 'recortes_modelos.csv'), 'config'),
         (_r('assets', 'Logo_atom_uas_horizonta-02.png'), '.'),
         (_r('assets'), 'assets'),
         (_r('programas_externos'), 'programas_externos'),  # DJI/ libdirp.so + deps (Linux)

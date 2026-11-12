@@ -5,10 +5,15 @@ FeatureUnavailableError se define como subclase local (no depende de utils.Exter
 para evitar import circular entre general_functions.utils y general_functions.platform_tools).
 """
 import configparser
+import logging
 import os
 import platform
 import shutil
 import sys
+
+from atom_core.camara_rgb import CAMARA_RGB_DEFECTO, CLAVE_CONFIG, SECCION_CONFIG, normalizar_camara
+
+logger = logging.getLogger(__name__)
 
 
 class FeatureUnavailableError(RuntimeError):
@@ -58,11 +63,66 @@ def _user_config_path() -> str:
         base = os.path.join(os.path.expanduser("~"), ".config", "atom-organizer")
     path = os.path.join(base, "Config.ini")
     if not os.path.exists(path):
-        os.makedirs(base, exist_ok=True)
         bundled = resource_path("config", "Config.ini")  # el .spec lo empaqueta → seed
+        os.makedirs(base, exist_ok=True)
         if os.path.exists(bundled):
             shutil.copy(bundled, path)
+    elif path not in _CONFIGS_MIGRADOS:
+        _CONFIGS_MIGRADOS.add(path)
+        try:
+            quitadas = migrar_overrides_heredados(path)
+            if quitadas:
+                logger.warning("Config.ini %s: quitados overrides que eran el default sembrado "
+                               "(ahora manda config/recortes_modelos.csv): %s", path, ", ".join(quitadas))
+        except Exception:  # noqa: BLE001 — el arranque no cae, pero el fallo queda en el log
+            logger.exception("No se pudo migrar el Config.ini de usuario %s", path)
     return path
+
+
+#: Rutas de Config.ini ya migradas en este proceso.
+_CONFIGS_MIGRADOS: set = set()
+
+#: Defaults que el Config.ini empaquetado sembraba antes de existir `recortes_modelos.csv`.
+_PORCENTAJES_SEMBRADOS_ANTIGUOS = {
+    "MAVIC2-ENTERPRISE-ADVANCED": 70, "M4T": 48, "M30T": 65, "M3T": 71, "XT2": 50}
+
+
+def migrar_overrides_heredados(ruta: str) -> list[str]:
+    """Quita de `[percentage_by_models]` del Config.ini de usuario las entradas cuyo valor es
+    IGUAL al default antiguo sembrado (no son decisión del usuario; ahora manda la tabla).
+    Valores distintos se conservan como override. Edición de texto (conserva comentarios,
+    mayúsculas y saltos de línea), con backup previo `Config.ini.bak-<fecha>`. Idempotente.
+    Devuelve las claves quitadas."""
+    with open(ruta, "r", encoding="utf-8", errors="surrogateescape", newline="") as f:
+        texto = f.read()
+    lineas = texto.splitlines(keepends=True)
+    seccion, quitadas, resto = None, [], []
+    for linea in lineas:
+        t = linea.strip()
+        if t.startswith("[") and t.endswith("]"):
+            seccion = t[1:-1].strip().lower()
+        elif seccion == "percentage_by_models" and t and t[0] not in "#;" and ("=" in t or ":" in t):
+            clave, _, valor = t.replace(":", "=", 1).partition("=") if "=" not in t else t.partition("=")
+            clave = clave.strip().upper()
+            try:
+                numero = float(valor.strip().replace(",", "."))
+            except ValueError:
+                numero = None
+            if clave in _PORCENTAJES_SEMBRADOS_ANTIGUOS and numero == _PORCENTAJES_SEMBRADOS_ANTIGUOS[clave]:
+                quitadas.append(clave)
+                continue
+        resto.append(linea)
+    if not quitadas:
+        return []
+    from datetime import datetime  # noqa: PLC0415
+    backup = f"{ruta}.bak-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    shutil.copy2(ruta, backup)
+    tmp = ruta + ".tmp"
+    with open(tmp, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
+        f.write("".join(resto))
+    os.replace(tmp, ruta)
+    logger.warning("Backup del Config.ini antes de migrar: %s", backup)
+    return quitadas
 
 
 def user_log_dir() -> str:
@@ -238,6 +298,15 @@ def resolve_tool(name: str) -> str:
     raise ValueError(f"Herramienta desconocida: {name}")
 
 
+def _parse_porcentaje(clave: str, valor):
+    """Ver `atom_core.recortes.parse_porcentaje`; el error cita la sección."""
+    from atom_core.recortes import parse_porcentaje  # noqa: PLC0415
+    try:
+        return parse_porcentaje(clave, valor)
+    except ValueError as e:
+        raise ValueError(f"[percentage_by_models] {e}") from None
+
+
 def load_config_or_default(file_name: str) -> dict:
     """
     Carga un archivo de configuración .ini y devuelve un dict con los valores encontrados,
@@ -247,7 +316,7 @@ def load_config_or_default(file_name: str) -> dict:
     ---------
     - file_name - ruta del archivo .ini a cargar. Puede ser "" o None (p.ej. diálogo cancelado).
     """
-    defaults = {"ruta_thermoviewer": "", "percentage_by_models": {}}
+    defaults = {"ruta_thermoviewer": "", "percentage_by_models": {}, "camara_rgb": CAMARA_RGB_DEFECTO}
 
     if not file_name or not os.path.exists(file_name):
         return defaults
@@ -260,9 +329,15 @@ def load_config_or_default(file_name: str) -> dict:
         resultado["ruta_thermoviewer"] = configuracion["paths"]["ruta_thermoviewer"]
 
     if "percentage_by_models" in configuracion:
+        # Admite decimales (`H30T_Z = 48.5`); los enteros se conservan como int.
         resultado["percentage_by_models"] = {
-            key.upper(): int(value) for key, value in configuracion["percentage_by_models"].items()
+            key.upper(): _parse_porcentaje(key, value)
+            for key, value in configuracion["percentage_by_models"].items()
         }
+
+    # Cámara RGB a recortar cuando la tanda trae _W y _Z (ver atom_core.camara_rgb).
+    if SECCION_CONFIG in configuracion and CLAVE_CONFIG in configuracion[SECCION_CONFIG]:
+        resultado["camara_rgb"] = normalizar_camara(configuracion[SECCION_CONFIG][CLAVE_CONFIG])
 
     return resultado
 
@@ -271,9 +346,16 @@ class ReadLoadConfig:
 
     def __init__(self) -> None:
         self.ruta_thermoviewer = ""
-        self.percentage_by_models = {}
+        self.percentage_by_models = {}   # EFECTIVO: tabla versionada + override del usuario
+        self.origen_porcentajes = {}     # {CLAVE: "tabla" | "override"}
+        self.percentage_overrides = {}   # solo lo que hay en [percentage_by_models] del usuario
+        self.camara_rgb = CAMARA_RGB_DEFECTO
 
     def load_new_config(self, file_name: str):
         valores = load_config_or_default(file_name)
         self.ruta_thermoviewer = valores["ruta_thermoviewer"]
-        self.percentage_by_models = valores["percentage_by_models"]
+        from atom_core import recortes  # noqa: PLC0415
+        self.percentage_overrides = valores["percentage_by_models"]
+        self.percentage_by_models, self.origen_porcentajes = recortes.porcentajes_efectivos(
+            self.percentage_overrides)
+        self.camara_rgb = valores["camara_rgb"]

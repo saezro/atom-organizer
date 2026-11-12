@@ -59,6 +59,7 @@ import exif as meta_location
 import pipeline
 import utils
 from atom_core import cancelacion
+from atom_core import camara_rgb as camara_rgb_mod
 from atom_core.apply import STATS_APPLY_PREFIX, STATS_ERRORES_PREFIX, limpiar_parciales_huerfanos
 from atom_core.indice import STATS_INDICE_PREFIX
 from atom_core.progress_stats import StatsTracker
@@ -279,6 +280,14 @@ def _default_split_config(params: dict) -> SplitImagesConfig:
         # se ve horas despues contando objetos en el bucket.
         raise ValueError(f"modo_destino desconocido: {modo_destino!r}")
 
+    # Cámara RGB a recortar si la tanda trae _W y _Z: arg del job/CLI > Config.ini > Z.
+    # Inválida -> ValueError (nunca se corrige en silencio).
+    camara_explicita = bool(params.get("camara_rgb"))
+    if camara_explicita:
+        camara_rgb = camara_rgb_mod.normalizar_camara(params["camara_rgb"])
+    else:
+        camara_rgb = config.load_config_or_default(config._user_config_path())["camara_rgb"]
+
     return SplitImagesConfig(
         input_folder=origen, output_folder=destino,
         end_rgb_extra_files="", end_thermo_files=thermo, end_rgb_files="",
@@ -310,6 +319,7 @@ def _default_split_config(params: dict) -> SplitImagesConfig:
         # como opción a un clic; el giro sigue siendo común al TIFF (`rotar_arrays_termicos`).
         convert_to_tif_create_gray_scale_images=False,
         modo_destino=modo_destino,
+        camara_rgb=camara_rgb, camara_rgb_explicita=camara_explicita,
     )
 
 

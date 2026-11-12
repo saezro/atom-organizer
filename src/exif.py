@@ -1224,16 +1224,16 @@ class MetaLocation:
                 self.iterate_folders(unir(input_folder, dir), filename, progress_callback, progress_bar,csv_folder, flight_height, calculate_proyected_distance)
 
     @staticmethod
-    def _clave_idx_dji(nombre: str, sufijo: str) -> int | None:
+    def _clave_idx_dji(nombre: str, sufijo: str, rgb: str = "W") -> int | None:
         """Índice DJI del nombre si sigue el patrón y su sufijo es `sufijo` (None si no).
         Usa la clave ÚNICA `atom_core.pares.clave_pareja` (la misma que la paridad del índice)."""
         from atom_core.pares import clave_pareja  # noqa: PLC0415
-        c = clave_pareja(nombre)
+        c = clave_pareja(nombre, rgb)
         if c is None or c[1] != sufijo:
             return None
         return c[0]
 
-    def emparejar_por_idx(self, imagenes_t: list[str], imagenes_w: list[str]):
+    def emparejar_por_idx(self, imagenes_t: list[str], imagenes_w: list[str], rgb: str = "W"):
         """Empareja térmicas y RGB. Criterio: timestamp del nombre (±2 s, 1:1, prioridad al idx DJI coherente con
         el desfase del vuelo); lo que no case se empareja por idx coherente (con aviso); sin timestamps, solo por idx.
         Devuelve `(pares, sin_pareja, sin_patron)`: `pares` = [(t, w)] en orden cronológico (ts, idx DJI);
@@ -1242,7 +1242,7 @@ class MetaLocation:
         def indexar(imgs, suf):
             por_idx, sin_patron = {}, []
             for im in imgs:
-                k = self._clave_idx_dji(im, suf)
+                k = self._clave_idx_dji(im, suf, rgb)
                 if k is None:
                     sin_patron.append(im)
                 else:
@@ -1295,7 +1295,7 @@ class MetaLocation:
             import bisect as _bisect  # noqa: PLC0415
             import datetime as _dt  # noqa: PLC0415
             idx_t = {n: self._clave_idx_dji(n, "T") for n in todas_t}
-            idx_w = {n: self._clave_idx_dji(n, "W") for n in todas_w}
+            idx_w = {n: self._clave_idx_dji(n, "W", rgb) for n in todas_w}
             d0 = desfase if desfase is not None else 0
             ws = sorted((v, n) for n, v in ts_all_w.items() if v is not None)
             claves = [v for v, _ in ws]
