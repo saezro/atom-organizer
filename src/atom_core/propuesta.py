@@ -149,17 +149,21 @@ def construir_propuesta(ruta_db: str, resumen: dict, planta: str, generado: str)
     hay_zoom = any(f["tipo"] in TIPOS_RGB and camara_rgb_mod.es_zoom(f["ruta_origen"]) for f in filas)
     rgb = "Z" if (str(ajuste or "").strip().upper() == "Z" and hay_zoom) else "W"
 
-    # Fuente de la categoría: la columna si existe y es coherente con la estructura;
-    # si falta (manifiesto antiguo) o una fila migrada con el default 'vuelo' la
-    # contradice (sin asignar / PB GENERALES), se deriva con la regla de la FASE 1.
-    fuente = "derivada-v1"
-    if con_columna:
+    # Fuente de la categoría: la columna nativa; se deriva con la regla de la FASE 1 SOLO si
+    # el manifiesto no tiene columnas o si `_migrar_columnas` las añadió (marca en `ajustes`).
+    # Columna nativa que contradice la estructura = ErrorPropuesta, nunca fallback silencioso.
+    migrada = False
+    if con_columna and tiene_ajustes:
+        con = _abrir_ro(ruta_db)
+        try:
+            migrada = con.execute("SELECT 1 FROM ajustes WHERE clave = 'categoria_migrada'").fetchone() is not None
+        finally:
+            con.close()
+    fuente = "columna" if (con_columna and not migrada) else "derivada-v1"
+    if fuente == "columna":
         for f in filas:
             if f["categoria"] not in CATEGORIAS_COLUMNA:
                 raise ErrorPropuesta(f"categoria desconocida en el manifiesto: {f['categoria']!r}")
-        if not any(f["categoria"] == "vuelo" and (f["unassigned"] or _es_pb_generales(f["pb"]))
-                   for f in filas):
-            fuente = "columna"
     if fuente == "columna":
         for f in filas:
             if f["unassigned"] != (f["categoria"] == "sin_ordenar"):
