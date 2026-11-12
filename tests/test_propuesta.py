@@ -73,6 +73,12 @@ def _crear(tmp_path, vuelos=None, filas_extra=(), con_sin_ordenar=True):
                        "ORDER BY ruta_origen").fetchall()
     m.guardar_sin_colocar(1, [], [{"grupo_id": "g1", "motivo": "fuera-de-ventana",
                                    "claves": [rows[0]["clave"], rows[1]["clave"]]}]) if rows else None
+    con.execute("UPDATE imagenes SET categoria='fotos_generales' WHERE pb='GENERALES'")
+    con.execute("UPDATE imagenes SET categoria='sin_ordenar', motivo_fuera='sin-clasificar' "
+                "WHERE unassigned=1")
+    for r in rows[:2]:
+        con.execute("UPDATE imagenes SET motivo_fuera='fuera-de-ventana' WHERE clave=?", (r["clave"],))
+    con.commit()
     m.cerrar()
     return db
 
@@ -328,7 +334,7 @@ def test_propuesta_columna_sin_motivo_en_fila_sin_ordenar_lanza(tmp_path):
     db = _crear(tmp_path)
     import sqlite3
     con = sqlite3.connect(db)
-    con.execute("UPDATE imagenes SET categoria='sin_ordenar' WHERE unassigned=1")
+    con.execute("UPDATE imagenes SET categoria='sin_ordenar', motivo_fuera=NULL WHERE unassigned=1")
     con.execute("UPDATE imagenes SET categoria='fotos_generales' WHERE pb='GENERALES'")
     con.commit()
     con.close()
@@ -344,8 +350,25 @@ def test_propuesta_manifiesto_antiguo_deriva_v1(tmp_path):
     assert {f["categoria"] for f in p["fuera_de_vuelo"]} == {"fotos_generales", "sin_ordenar"}
 
 
-def test_propuesta_columna_default_contradice_estructura_cae_a_derivada(tmp_path):
-    """Manifiesto migrado: filas antiguas con default 'vuelo' pese a unassigned."""
+def test_propuesta_columna_nativa_contradice_estructura_lanza(tmp_path):
+    """Columnas nativas con fila 'vuelo' pese a unassigned: error explícito, sin derivar."""
     db = _crear(tmp_path)
+    import sqlite3
+    con = sqlite3.connect(db)
+    con.execute("UPDATE imagenes SET categoria='vuelo' WHERE unassigned=1")
+    con.commit()
+    con.close()
+    with pytest.raises(ErrorPropuesta, match="incoherente"):
+        construir_propuesta(db, _resumen(), "T", GEN)
+
+
+def test_propuesta_manifiesto_migrado_deriva_v1(tmp_path):
+    """Manifiesto antiguo al que `_migrar_columnas` añadió categoria: marca en ajustes -> deriva."""
+    db = _crear(tmp_path)
+    _borrar_columnas_categoria(db)
+    m = Manifiesto(db)
+    m.crear_esquema()  # migra: añade columnas y marca
+    assert m.leer_ajuste("categoria_migrada") == "1"
+    m.cerrar()
     p = construir_propuesta(db, _resumen(), "T", GEN)
     assert p["fuente_categoria"] == "derivada-v1"
