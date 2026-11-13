@@ -222,6 +222,9 @@ def test_cli_local_sin_ui_va_como_nube(tmp_path, monkeypatch):
         _indexar(tmp_path, FOTOS, env="1", destino=params["destino"])
         return {"status": "ok"}
 
+    llamadas_pausa = []
+    monkeypatch.setattr(ri, "pausar_si_armada",
+                        lambda *a, **k: llamadas_pausa.append((a, k)), raising=False)
     from atom_core import organize
     monkeypatch.setattr(organize, "run_task", _fake_run_task, raising=False)
     monkeypatch.setattr(organize_cli, "run_task", _fake_run_task, raising=False)
@@ -229,6 +232,7 @@ def test_cli_local_sin_ui_va_como_nube(tmp_path, monkeypatch):
                                 "--estadillo", str(estadillo), "--fase", "completo",
                                 "--quiet", "--json"])
     assert codigo != 2
+    assert llamadas_pausa == []     # la CLI sin UI nunca espera: no llama a la pausa
     assert visto == {"modo": "inmediato", "armada": False, "fase": "completo"}
     propuesta = _json(mr.ruta_propuesta(destino, EJEC))
     assert propuesta["revision_indice"]["resultado"] == "inmediata"
