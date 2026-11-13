@@ -1260,7 +1260,7 @@ function ConfigScreen({ ready }) {
         setCfgError(c?.error || '')
         setTablaRecortes(c?.recortes_tabla || [])
         const pbm = c?.percentage_by_models || {}
-        setOverrides(Object.fromEntries(Object.entries(pbm).map(([k, v]) => [k, String(v)])))
+        setOverrides(Object.fromEntries(Object.entries(pbm).map(([k, v]) => [k, v == null ? '-' : String(v)])))
         setLoaded(true)
       })
       .catch(() => setLoaded(true))

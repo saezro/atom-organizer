@@ -535,8 +535,13 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
                 # Caja en coordenadas del `img` SIN girar; el giro (si toca)
                 # lo aplica `_guardar_atomico`/`_procesar_y_guardar_imagen`
                 # DESPUÉS del crop, en la misma llamada — ver docstring.
-                caja = _caja_recorte_termico(img.width, img.height, fila["pct_recorte"])
-                _guardar_atomico(img, ruta_crop, transpose, caja, calidad_crop,
+                # `pct_recorte` None con `_CROP` = centinela «sin recorte»: copia íntegra.
+                caja = (None if fila["pct_recorte"] is None else
+                        _caja_recorte_termico(img.width, img.height, fila["pct_recorte"]))
+                # Sin caja ni giro `_procesar_y_guardar_imagen` cerraría `img` (aún
+                # hace falta para el original): se le pasa una copia.
+                _guardar_atomico(img.copy() if caja is None else img, ruta_crop,
+                                 transpose, caja, calidad_crop,
                                  pipeline_mod, etapa_encode="encode_crop",
                                  bloque_xmp=bloque_xmp)
                 escritas.append(ruta_crop)

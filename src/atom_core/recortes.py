@@ -9,6 +9,11 @@ cámara W (wide / genérica) y `MODELO_Z` la zoom; si existe, GANA sobre la tabl
 El resultado se aplana al diccionario histórico `{CLAVE: %}` (`MODELO` /
 `MODELO_Z`) que el resto del motor ya consume, junto con `{CLAVE: origen}`
 ("tabla" | "override") para dejar en el log de dónde salió cada %.
+
+Centinela "no recortar": el porcentaje `-` (o vacío) significa «esta cámara no se
+recorta: el `_CROP` se genera igualmente, como copia íntegra del original (sin
+caja de recorte)». Se representa como `porcentaje = None` (la clave existe, así
+que no cuenta como «sin configurar»).
 """
 from __future__ import annotations
 
@@ -28,10 +33,14 @@ def ruta_tabla_empaquetada() -> str:
     return resource_path("config", NOMBRE_TABLA)
 
 
-def parse_porcentaje(clave: str, valor) -> "int | float":
-    """`"48.5"` -> 48.5; `"70"` -> 70 (int). Coma decimal admitida. Fuera de (0, 100] -> ValueError."""
+def parse_porcentaje(clave: str, valor) -> "int | float | None":
+    """`"48.5"` -> 48.5; `"70"` -> 70 (int). Coma decimal admitida. Fuera de (0, 100] -> ValueError.
+    Centinela `"-"` o cadena vacía -> None (sin recorte: `_CROP` = copia íntegra)."""
+    texto = "" if valor is None else str(valor).strip()
+    if texto in ("", "-"):
+        return None
     try:
-        numero = float(str(valor).strip().replace(",", "."))
+        numero = float(texto.replace(",", "."))
     except ValueError:
         raise ValueError(f"{clave}: '{valor}' no es un número") from None
     if not 0 < numero <= 100:

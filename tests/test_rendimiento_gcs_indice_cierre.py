@@ -125,7 +125,7 @@ def test_indice_gcs_rellena_meta_leida_sin_reload_ni_tamano_por_blob(bucket, tmp
     pipe.nombre_destino.return_value = "x.JPG"
     with mock.patch.object(indice.almacen, "tamano_de", side_effect=AssertionError("reload por blob")):
         with mock.patch.object(indice, "_clasificar_tipo", return_value="RGB"), \
-                mock.patch.object(indice, "_pct_recorte", return_value=None):
+                mock.patch.object(indice, "_resolver_recorte", return_value=(False, None)):
             fila = indice._construir_fila(datos[0], None, {}, cfg, pipe, None, tamanos)
     assert fila.bytes_origen == len(bucket.objetos["PLANTA/INSP/ORIGEN/DJI_0001_W.JPG"])
     assert bucket.reloads == 0
