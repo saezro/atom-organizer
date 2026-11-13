@@ -3,6 +3,7 @@ import { api, onAnalisis } from '../bridge'
 import { SPLIT_ADVANCED } from '../schema'
 import { Field, initialState, buildParams } from '../TaskBlock'
 import PasoCarpeta from './PasoCarpeta'
+import { avisoSufijoRgb } from './avisoSufijoRgb'
 
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
 const ADV_FIELDS = SPLIT_ADVANCED.flatMap((s) => s.fields)
@@ -77,6 +78,9 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
 
   // Selector de cámara RGB: solo si la autodetección ha visto ficheros `_Z` en la tanda.
   const hayZoom = !!(detected?.ok && detected.tokens && detected.tokens._Z > 0)
+
+  // Aviso no bloqueante: sufijo RGB escrito que no existe en la tanda autodetectada.
+  const avisoRgb = avisoSufijoRgb(adv.end_rgb_files, detected)
 
   // Recorte Z: solo aplica con cámara Zoom elegida y tanda con _Z.
   const recorteZActivo = hayZoom && camaraRgb === 'Z'
@@ -193,6 +197,7 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
               : `No pude deducir el sufijo de los nombres${detected.error ? ` (${detected.error})` : ''}. Ponlo a mano según el dron.`}
           </span>
         )}
+        {avisoRgb && <span className="field-hint hint-warn">{avisoRgb}</span>}
         <span className="field-hint">
           Se rellena solo al elegir la carpeta origen. Las imágenes que acaben en el
           sufijo térmico van a TÉRMICA y el resto a RGB (o al revés con el sufijo RGB).
