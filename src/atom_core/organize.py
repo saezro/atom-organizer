@@ -1376,6 +1376,8 @@ def run_task(
         balance = _balance_de_bytes(cfg)
         if balance is not None:
             payload_done["balance_bytes"] = balance
+        # Auditoría de la revisión del índice (`None` sin flag o sin pendientes).
+        payload_done["revision_indice"] = getattr(host, "revision_indice", None)
         emit("done", payload_done)
     except cancelacion.RunCancelado as cancelada:
         # Cancelado por el usuario: ni error ni éxito. Estado propio

@@ -122,6 +122,7 @@ def test_timeout_aplica_solo_alta_y_audita(tanda):
         assert audit["espera_s"] == 0.2
         assert len(audit["aplicadas"]) == 1 and len(audit["dudosas"]) == 1
         assert audit["inicio"] and audit["fin"]
+        assert audit["aplicadas"][0]["origen"] == "sin respuesta en 0 min"
     finally:
         man.cerrar()
     assert len(eventos) == 1
@@ -230,6 +231,7 @@ def test_cola_aceptar_y_continuar_con_alta(tanda):
         assert res["resultado"] == "respondida" and len(res["aplicadas"]) == 1
         [(_c, a)] = man.asignaciones_manuales().items()
         assert a["quien"] == "ana@pc"
+        assert [x["origen"] for x in res["aplicadas"]] == ["ana@pc"]
     finally:
         man.cerrar()
 
@@ -241,6 +243,7 @@ def test_cola_continuar_con_alta_firma_humana(tanda):
         assert res["resultado"] == "respondida" and len(res["aplicadas"]) == 1
         [(_c, a)] = man.asignaciones_manuales().items()
         assert not a["quien"].startswith("auto:") and "@" in a["quien"]
+        assert res["aplicadas"][0]["origen"] == "aceptada al continuar"
     finally:
         man.cerrar()
 
