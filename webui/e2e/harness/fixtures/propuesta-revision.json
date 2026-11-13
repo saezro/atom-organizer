@@ -1,0 +1,606 @@
+{
+  "version": 1,
+  "ejecucion_indice": "arnes-1",
+  "hash_listado": "arnes",
+  "planta": "PRUEBA",
+  "totales": {
+    "n_imagenes": 2848,
+    "bytes": 17088000000,
+    "n_pb": 3,
+    "n_vuelos": 6,
+    "n_sin_ordenar": 40
+  },
+  "vuelos": [
+    {
+      "pb": "1",
+      "vuelo": "1",
+      "sufijo": "",
+      "estado": "ok",
+      "angulo": 0,
+      "n_total": 840,
+      "n_90": 0,
+      "n_270": 0,
+      "n_0": 420,
+      "n_imagenes": 840,
+      "bytes": 5040000000,
+      "n_con_exif": 840,
+      "n_pares": 420,
+      "n_rgb": 420,
+      "n_termica": 420,
+      "pct_ganadora": 100,
+      "version_algoritmo": "arnes-1",
+      "inicio_exif": "2026-05-04T08:58:00",
+      "fin_exif": "2026-05-04T10:40:00"
+    },
+    {
+      "pb": "1",
+      "vuelo": "2",
+      "sufijo": "",
+      "estado": "ok",
+      "angulo": 0,
+      "n_total": 320,
+      "n_90": 0,
+      "n_270": 0,
+      "n_0": 160,
+      "n_imagenes": 320,
+      "bytes": 1920000000,
+      "n_con_exif": 320,
+      "n_pares": 160,
+      "n_rgb": 160,
+      "n_termica": 160,
+      "pct_ganadora": 100,
+      "version_algoritmo": "arnes-1",
+      "inicio_exif": "2026-05-04T11:10:00",
+      "fin_exif": "2026-05-04T11:50:00"
+    },
+    {
+      "pb": "2",
+      "vuelo": "1",
+      "sufijo": "",
+      "estado": "ok",
+      "angulo": 270,
+      "n_total": 360,
+      "n_90": 0,
+      "n_270": 180,
+      "n_0": 0,
+      "n_imagenes": 360,
+      "bytes": 2160000000,
+      "n_con_exif": 360,
+      "n_pares": 180,
+      "n_rgb": 180,
+      "n_termica": 180,
+      "pct_ganadora": 100,
+      "version_algoritmo": "arnes-1",
+      "inicio_exif": "2026-05-04T11:20:00",
+      "fin_exif": "2026-05-04T12:05:00"
+    },
+    {
+      "pb": "3",
+      "vuelo": "1",
+      "sufijo": "",
+      "estado": "ok",
+      "angulo": 90,
+      "n_total": 350,
+      "n_90": 175,
+      "n_270": 0,
+      "n_0": 0,
+      "n_imagenes": 350,
+      "bytes": 2100000000,
+      "n_con_exif": 350,
+      "n_pares": 175,
+      "n_rgb": 175,
+      "n_termica": 175,
+      "pct_ganadora": 100,
+      "version_algoritmo": "arnes-1",
+      "inicio_exif": "2026-05-04T14:00:00",
+      "fin_exif": "2026-05-04T14:45:00"
+    },
+    {
+      "pb": "2",
+      "vuelo": "2",
+      "sufijo": "",
+      "estado": "ok",
+      "angulo": 0,
+      "n_total": 598,
+      "n_90": 0,
+      "n_270": 0,
+      "n_0": 300,
+      "n_imagenes": 598,
+      "bytes": 3588000000,
+      "n_con_exif": 598,
+      "n_pares": 298,
+      "n_rgb": 300,
+      "n_termica": 298,
+      "pct_ganadora": 100,
+      "version_algoritmo": "arnes-1",
+      "inicio_exif": "2026-05-05T09:30:00",
+      "fin_exif": "2026-05-05T10:15:00"
+    },
+    {
+      "pb": "3",
+      "vuelo": "2",
+      "sufijo": "",
+      "estado": "ok",
+      "angulo": 0,
+      "n_total": 380,
+      "n_90": 0,
+      "n_270": 0,
+      "n_0": 190,
+      "n_imagenes": 380,
+      "bytes": 2280000000,
+      "n_con_exif": 380,
+      "n_pares": 190,
+      "n_rgb": 190,
+      "n_termica": 190,
+      "pct_ganadora": 100,
+      "version_algoritmo": "arnes-1",
+      "inicio_exif": "2026-05-05T10:00:00",
+      "fin_exif": "2026-05-05T10:50:00"
+    }
+  ],
+  "fuera_de_vuelo": [
+    {
+      "categoria": "sin_ordenar",
+      "motivo": "fuera-de-ventana",
+      "n_imagenes": 34,
+      "bytes": 204000000
+    },
+    {
+      "categoria": "sin_ordenar",
+      "motivo": "sin-fecha-exif",
+      "n_imagenes": 6,
+      "bytes": 36000000
+    }
+  ],
+  "revision_indice": {
+    "version": 1,
+    "modo": "inmediato",
+    "resultado": "inmediata",
+    "aplicadas": [
+      {
+        "id": "g1:2:vecino",
+        "grupo_id": "g1",
+        "n_fotos": 6,
+        "fila": 1,
+        "pb": "3",
+        "vuelo": "2",
+        "motivo": "vecino",
+        "distancia_s": 45,
+        "confianza": "alta",
+        "explicacion": "vecino PB3/V2 a 45 s; el siguiente a 14 min"
+      }
+    ],
+    "sin_aplicar": [
+      {
+        "id": "g2:3:vecino",
+        "grupo_id": "g2",
+        "n_fotos": 14,
+        "fila": 2,
+        "pb": "1",
+        "vuelo": "2",
+        "motivo": "vecino",
+        "distancia_s": 200,
+        "confianza": "media",
+        "explicacion": "vecino PB1/V2 a 200 s"
+      },
+      {
+        "id": "g3:5:vecino",
+        "grupo_id": "g3",
+        "n_fotos": 14,
+        "fila": 5,
+        "pb": "2",
+        "vuelo": "2",
+        "motivo": "vecino",
+        "distancia_s": 90,
+        "confianza": "baja",
+        "explicacion": "ambos vecinos dentro del umbral"
+      }
+    ],
+    "avisos": [
+      "AVISO: 14 fotos quedan en SIN_ORDENAR sin decisión (vecino; confianza media)"
+    ]
+  },
+  "_arnes": {
+    "horas": {
+      "1|1": [
+        {
+          "hora": 8,
+          "n_rgb": 8,
+          "n_t": 8,
+          "n_otro": 0
+        },
+        {
+          "hora": 9,
+          "n_rgb": 247,
+          "n_t": 247,
+          "n_otro": 0
+        },
+        {
+          "hora": 10,
+          "n_rgb": 165,
+          "n_t": 165,
+          "n_otro": 0
+        }
+      ],
+      "1|2": [
+        {
+          "hora": 11,
+          "n_rgb": 160,
+          "n_t": 160,
+          "n_otro": 0
+        }
+      ],
+      "2|1": [
+        {
+          "hora": 11,
+          "n_rgb": 100,
+          "n_t": 100,
+          "n_otro": 0
+        },
+        {
+          "hora": 12,
+          "n_rgb": 80,
+          "n_t": 80,
+          "n_otro": 0
+        }
+      ],
+      "3|1": [
+        {
+          "hora": 14,
+          "n_rgb": 175,
+          "n_t": 175,
+          "n_otro": 0
+        }
+      ],
+      "2|2": [
+        {
+          "hora": 9,
+          "n_rgb": 200,
+          "n_t": 199,
+          "n_otro": 0
+        },
+        {
+          "hora": 10,
+          "n_rgb": 100,
+          "n_t": 99,
+          "n_otro": 0
+        }
+      ],
+      "3|2": [
+        {
+          "hora": 10,
+          "n_rgb": 190,
+          "n_t": 190,
+          "n_otro": 0
+        }
+      ]
+    },
+    "libres": [
+      {
+        "clave": "PRUEBA/g1/IMG_0001.jpg",
+        "nombre": "IMG_0001.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-04T10:50:00",
+        "grupo_id": "g1",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g1/IMG_0002.tif",
+        "nombre": "IMG_0002.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-04T10:50:03",
+        "grupo_id": "g1",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g1/IMG_0003.jpg",
+        "nombre": "IMG_0003.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-04T10:50:06",
+        "grupo_id": "g1",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g1/IMG_0004.tif",
+        "nombre": "IMG_0004.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-04T10:50:09",
+        "grupo_id": "g1",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g1/IMG_0005.jpg",
+        "nombre": "IMG_0005.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-04T10:50:12",
+        "grupo_id": "g1",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g1/IMG_0006.tif",
+        "nombre": "IMG_0006.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-04T10:50:15",
+        "grupo_id": "g1",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g2/IMG_0007.jpg",
+        "nombre": "IMG_0007.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-04T12:30:00",
+        "grupo_id": "g2",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g2/IMG_0008.tif",
+        "nombre": "IMG_0008.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-04T12:30:04",
+        "grupo_id": "g2",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g2/IMG_0009.jpg",
+        "nombre": "IMG_0009.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-04T12:30:08",
+        "grupo_id": "g2",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g2/IMG_0010.tif",
+        "nombre": "IMG_0010.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-04T12:30:12",
+        "grupo_id": "g2",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g2/IMG_0011.jpg",
+        "nombre": "IMG_0011.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-04T12:30:16",
+        "grupo_id": "g2",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g2/IMG_0012.tif",
+        "nombre": "IMG_0012.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-04T12:30:20",
+        "grupo_id": "g2",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g2/IMG_0013.jpg",
+        "nombre": "IMG_0013.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-04T12:30:24",
+        "grupo_id": "g2",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g2/IMG_0014.tif",
+        "nombre": "IMG_0014.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-04T12:30:28",
+        "grupo_id": "g2",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g2/IMG_0015.jpg",
+        "nombre": "IMG_0015.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-04T12:30:32",
+        "grupo_id": "g2",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g2/IMG_0016.tif",
+        "nombre": "IMG_0016.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-04T12:30:36",
+        "grupo_id": "g2",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g2/IMG_0017.jpg",
+        "nombre": "IMG_0017.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-04T12:30:40",
+        "grupo_id": "g2",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g2/IMG_0018.tif",
+        "nombre": "IMG_0018.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-04T12:30:44",
+        "grupo_id": "g2",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g2/IMG_0019.jpg",
+        "nombre": "IMG_0019.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-04T12:30:48",
+        "grupo_id": "g2",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g2/IMG_0020.tif",
+        "nombre": "IMG_0020.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-04T12:30:52",
+        "grupo_id": "g2",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g3/IMG_0021.jpg",
+        "nombre": "IMG_0021.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-05T11:30:00",
+        "grupo_id": "g3",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g3/IMG_0022.tif",
+        "nombre": "IMG_0022.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-05T11:30:05",
+        "grupo_id": "g3",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g3/IMG_0023.jpg",
+        "nombre": "IMG_0023.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-05T11:30:10",
+        "grupo_id": "g3",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g3/IMG_0024.tif",
+        "nombre": "IMG_0024.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-05T11:30:15",
+        "grupo_id": "g3",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g3/IMG_0025.jpg",
+        "nombre": "IMG_0025.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-05T11:30:20",
+        "grupo_id": "g3",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g3/IMG_0026.tif",
+        "nombre": "IMG_0026.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-05T11:30:25",
+        "grupo_id": "g3",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g3/IMG_0027.jpg",
+        "nombre": "IMG_0027.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-05T11:30:30",
+        "grupo_id": "g3",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g3/IMG_0028.tif",
+        "nombre": "IMG_0028.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-05T11:30:35",
+        "grupo_id": "g3",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g3/IMG_0029.jpg",
+        "nombre": "IMG_0029.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-05T11:30:40",
+        "grupo_id": "g3",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g3/IMG_0030.tif",
+        "nombre": "IMG_0030.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-05T11:30:45",
+        "grupo_id": "g3",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g3/IMG_0031.jpg",
+        "nombre": "IMG_0031.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-05T11:30:50",
+        "grupo_id": "g3",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g3/IMG_0032.tif",
+        "nombre": "IMG_0032.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-05T11:30:55",
+        "grupo_id": "g3",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g3/IMG_0033.jpg",
+        "nombre": "IMG_0033.jpg",
+        "tipo": "RGB",
+        "ts": "2026-05-05T11:31:00",
+        "grupo_id": "g3",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/g3/IMG_0034.tif",
+        "nombre": "IMG_0034.tif",
+        "tipo": "TERMICA",
+        "ts": "2026-05-05T11:31:05",
+        "grupo_id": "g3",
+        "motivo": "fuera-de-ventana"
+      },
+      {
+        "clave": "PRUEBA/sin-fecha/IMG_S0.jpg",
+        "nombre": "IMG_S0.jpg",
+        "tipo": "RGB",
+        "ts": null,
+        "grupo_id": "g4",
+        "motivo": "sin-fecha-exif"
+      },
+      {
+        "clave": "PRUEBA/sin-fecha/IMG_S1.jpg",
+        "nombre": "IMG_S1.jpg",
+        "tipo": "RGB",
+        "ts": null,
+        "grupo_id": "g4",
+        "motivo": "sin-fecha-exif"
+      },
+      {
+        "clave": "PRUEBA/sin-fecha/IMG_S2.jpg",
+        "nombre": "IMG_S2.jpg",
+        "tipo": "RGB",
+        "ts": null,
+        "grupo_id": "g4",
+        "motivo": "sin-fecha-exif"
+      },
+      {
+        "clave": "PRUEBA/sin-fecha/IMG_S3.jpg",
+        "nombre": "IMG_S3.jpg",
+        "tipo": "RGB",
+        "ts": null,
+        "grupo_id": "g4",
+        "motivo": "sin-fecha-exif"
+      },
+      {
+        "clave": "PRUEBA/sin-fecha/IMG_S4.jpg",
+        "nombre": "IMG_S4.jpg",
+        "tipo": "RGB",
+        "ts": null,
+        "grupo_id": "g4",
+        "motivo": "sin-fecha-exif"
+      },
+      {
+        "clave": "PRUEBA/sin-fecha/IMG_S5.jpg",
+        "nombre": "IMG_S5.jpg",
+        "tipo": "RGB",
+        "ts": null,
+        "grupo_id": "g4",
+        "motivo": "sin-fecha-exif"
+      }
+    ],
+    "espera": {
+      "estado": "esperando",
+      "deadline_epoch": null,
+      "espera_min": 30
+    }
+  }
+}
