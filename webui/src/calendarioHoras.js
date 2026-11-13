@@ -336,3 +336,44 @@ export function motivosAviso(v) {
   if (![0, 90, 270].includes(v.angulo)) motivos.push('sin giro');
   return motivos;
 }
+
+// Calendario del backend (`revision_indice_calendario`, spec §5) -> Modelo de RevisionIndiceModal.
+// `deadline_epoch` llega en SEGUNDOS (time.time()); el modal compara con `Date.now()` en ms.
+// Sin fallbacks: una respuesta sin `ok` o sin las listas esperadas lanza; lo que el calendario
+// no puede pintar (horas ambiguas, giro sin voto, filas sin hora) sale en `avisos`, nunca se calla.
+export function modeloDesdeCalendario(json, { esperaMin = null } = {}) {
+  if (!json || json.ok !== true) throw new Error(`calendario no disponible: ${json?.error ?? 'respuesta sin ok'}`);
+  for (const k of ['vuelos', 'libres', 'recomendaciones']) {
+    if (!Array.isArray(json[k])) throw new Error(`calendario inválido: falta la lista '${k}'`);
+  }
+  const avisos = [];
+  const suma = (horas, campo) => horas.reduce((a, h) => a + (h[campo] ?? 0), 0);
+  const vuelos = [];
+  for (const v of json.vuelos) {
+    const horas = Array.isArray(v.horas) ? v.horas : [];
+    if (v.inicio == null || v.fin == null) {
+      if ((v.n_total ?? 0) > 0) avisos.push(`La fila ${v.fila} (PB${v.pb} · V${v.vuelo}) tiene ${v.n_total} fotos pero el estadillo no da su hora: no se pinta.`);
+      continue;
+    }
+    if ((v.n_giro_desconocido ?? 0) > 0) {
+      avisos.push(`${v.n_giro_desconocido} fotos de PB${v.pb} · V${v.vuelo}${v.sufijo ?? ''} no tienen giro conocido (sin voto o fuera de 0/90/270).`);
+    }
+    vuelos.push({
+      pb: v.pb, vuelo: v.vuelo, sufijo: v.sufijo ?? '', inicio: v.inicio, fin: v.fin, angulo: v.angulo,
+      n_rgb: suma(horas, 'n_rgb'), n_t: suma(horas, 'n_t'), horas, fila: v.fila,
+      n_giro_desconocido: v.n_giro_desconocido ?? 0,
+    });
+  }
+  for (const a of json.horas_sin_fila ?? []) {
+    avisos.push(`Fotos de PB${a.pb} · V${a.vuelo} cuya hora no decide la fila del estadillo: no se asignan a ninguna fila.`);
+  }
+  const rec = (r) => ({
+    id: r.id, grupo_id: r.grupo_id, n_fotos: r.n_fotos, fila: r.fila, pb: r.pb, vuelo: r.vuelo,
+    motivo: r.motivo, distancia_s: r.distancia_s, confianza: r.confianza, explicacion: r.explicacion, aplicada: false,
+  });
+  const e = json.espera;
+  const espera = e && e.activa && e.deadline_epoch != null
+    ? { estado: e.estado, deadline_epoch: e.deadline_epoch * 1000, espera_min: esperaMin ?? undefined }
+    : null;
+  return { vuelos, libres: json.libres, recomendaciones: json.recomendaciones.map(rec), espera, avisos };
+}

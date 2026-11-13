@@ -325,6 +325,15 @@ export const api = {
     call('sin_colocar_listar', destino || '', !!incluirFotos),
   sinColocarAsignar: (grupoId, fila, destino) =>
     call('sin_colocar_asignar', grupoId, fila ?? null, destino || ''),
+  // Revisión del índice (calendario de fotos sin colocar): mismas funciones que la ruta HTTP
+  // `/api/control/revision/*`. `destino` vacío = el del último run.
+  revisionIndiceEstado: () => call('revision_indice_estado'),
+  revisionIndiceCalendario: (destino) => call('revision_indice_calendario', destino || ''),
+  revisionIndiceAsignar: (claves, fila, destino) =>
+    call('revision_indice_asignar', claves, fila ?? null, destino || ''),
+  revisionIndiceAceptar: (ids, destino) => call('revision_indice_aceptar', ids, destino || ''),
+  revisionIndiceLatido: () => call('revision_indice_latido'),
+  revisionIndiceContinuar: (modo) => call('revision_indice_continuar', modo),
   // Configuración persistente: ruta de ThermoViewer.exe + % de recorte RGB por
   // modelo de dron. read devuelve {ruta_thermoviewer, percentage_by_models (override), recortes_efectivos, recortes_tabla};
   // write persiste y devuelve {ok, path} | {ok:false, error}.

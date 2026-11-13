@@ -58,6 +58,10 @@ class _ApiControl:
     def _store_pin(self):
         return self._store
 
+    def revision_indice_estado(self):
+        return {"ok": True, "activa": False, "estado": None, "deadline_epoch": None,
+                "inactividad_s": None}
+
     def list_dir(self, path=None):
         assert path is None
         return {"ok": True, "path": None, "dirs": self.discos, "files": []}
@@ -360,6 +364,7 @@ def test_estado_happy_path(servidor):
         "fase": None,
         "progreso": None,
         "ultimo_error": None,
+        "revision": None,
     }
 
 
@@ -371,6 +376,7 @@ def test_estado_sin_carpeta_fijada(servidor):
     assert body == {
         "carpeta": None, "estadillo": None, "en_curso": False,
         "fase": None, "progreso": None, "ultimo_error": None,
+        "revision": None,
     }
 
 

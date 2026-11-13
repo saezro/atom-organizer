@@ -30,6 +30,7 @@ import BarraEstado from './BarraEstado.jsx'
 import BannerConexion from './BannerConexion.jsx'
 import Avatar from './Avatar.jsx'
 import { APPS } from './apps/registry.js'
+import RevisionIndiceModal from './RevisionIndiceModal.jsx'
 
 // Tiempos de la reproduccion visual de `accionRemota` (control remoto del
 // kiosco, Task «se ve como se mueve a los sitios»): pasos de navegacion
@@ -54,7 +55,7 @@ export function derivarDestino(carpeta) {
   return `${sinBarraFinal}_ORGANIZADO`
 }
 
-export default function KioskScreen({
+function KioskScreenInterna({
   status,
   carpeta,
   onPickCarpeta,
@@ -1350,5 +1351,17 @@ export default function KioskScreen({
         />
       )}
     </div>
+  )
+}
+
+// Revisión del índice en la Pi: `revision = {modelo, api}` mientras el run espera respuesta. Es el
+// mismo `RevisionIndiceModal` que el escritorio, encima de cualquier paso del kiosco (la pantalla
+// tiene varios `return` tempranos, por eso va en un envoltorio y no dentro de ella).
+export default function KioskScreen({ revision = null, ...props }) {
+  return (
+    <>
+      <KioskScreenInterna {...props} />
+      {revision ? <RevisionIndiceModal modelo={revision.modelo} api={revision.api} /> : null}
+    </>
   )
 }
