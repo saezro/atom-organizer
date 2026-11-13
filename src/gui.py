@@ -433,7 +433,8 @@ class ConfigWindow(QtWidgets.QWidget, config_gui.Ui_Form):
         if "percentage_by_models" in configuracion:
             for model, percentage in configuracion["percentage_by_models"].items():
                 # Formatear la línea como "MODELO: XX%"
-                line_text = f"{model.upper()}: {percentage}%"
+                # None = centinela `-` (sin recorte): se muestra `-`, no `None%`.
+                line_text = f"{model.upper()}: {'-' if percentage is None else str(percentage) + '%'}"
                 self.list_rgb_cropping_percentage_by_models.addItem(line_text)
     
     def add_model_percentage_to_list(self) -> None:

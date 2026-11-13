@@ -31,4 +31,5 @@ def test_read_load_config_instance_missing_file_no_crash(tmp_path):
     obj.load_new_config(str(tmp_path / "no_existe.ini"))
     assert obj.ruta_thermoviewer == ""
     assert obj.percentage_overrides == {}
-    assert obj.percentage_by_models["H30T_Z"] == 48.5  # sin override manda la tabla versionada
+    assert obj.percentage_by_models["H30T"] == 48.5  # sin override manda la tabla versionada
+    assert "H30T_Z" in obj.percentage_by_models and obj.percentage_by_models["H30T_Z"] is None  # centinela

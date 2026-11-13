@@ -294,7 +294,7 @@ def test_tabla_empaquetada_valores_actuales():
     t = recortes.cargar_tabla()
     assert {(m, c): d["porcentaje"] for (m, c), d in t.items()} == {
         ("MAVIC2-ENTERPRISE-ADVANCED", "W"): 70, ("M4T", "W"): 48, ("M30T", "W"): 65,
-        ("M3T", "W"): 71, ("XT2", "W"): 50, ("H30T", "Z"): 48.5,
+        ("M3T", "W"): 71, ("XT2", "W"): 50, ("H30T", "Z"): None,
         ("H30T", "W"): 48.5}
 
 
@@ -329,7 +329,7 @@ def test_read_load_config_une_tabla_y_override(tmp_path):
     c = ReadLoadConfig()
     c.load_new_config(str(ini))
     assert c.percentage_by_models["M4T"] == 52 and c.origen_porcentajes["M4T"] == "override"
-    assert c.percentage_by_models["H30T_Z"] == 48.5 and c.origen_porcentajes["H30T_Z"] == "tabla"
+    assert "H30T_Z" in c.percentage_by_models and c.percentage_by_models["H30T_Z"] is None and c.origen_porcentajes["H30T_Z"] == "tabla"
     assert c.percentage_overrides == {"M4T": 52}
 
 
@@ -493,3 +493,53 @@ def test_webserver_expone_sin_colocar_y_config_de_recortes():
     from atom_core.webserver import METODOS_EXPUESTOS, METODOS_REMOTOS
     assert {"sin_colocar_listar", "sin_colocar_asignar", "read_config", "write_config"} <= METODOS_EXPUESTOS
     assert not {"sin_colocar_listar", "sin_colocar_asignar", "write_config"} & METODOS_REMOTOS  # solo local
+
+
+# ---- centinela «no recortar» (`-`) ----------------------------------------------
+
+def test_parse_porcentaje_centinela_es_none():
+    from atom_core import recortes
+    assert recortes.parse_porcentaje("H30T_Z", "-") is None
+    assert recortes.parse_porcentaje("H30T_Z", "") is None
+    assert recortes.parse_porcentaje("H30T_Z", " - ") is None
+    assert recortes.parse_porcentaje("H30T_Z", "48,5") == 48.5
+    for malo in ("abc", "0", "101"):
+        with pytest.raises(ValueError):
+            recortes.parse_porcentaje("H30T_Z", malo)
+
+
+def test_clave_con_centinela_genera_crop_copia_integra(tmp_path):
+    filas, m, cfg = _indice(tmp_path, ["DJI_0001_W.JPG", "DJI_0001_Z.JPG"], {"H30T_Z": None}, camara="Z")
+    z = filas["DJI_0001_Z.JPG"]
+    assert z["pct_recorte"] is None and z["ruta_salida_crop"].endswith("_CROP.JPG")
+    assert not filas["DJI_0001_W.JPG"]["ruta_salida_crop"]
+    _aplicar({"z": z}, cfg)
+    with PILImage.open(z["ruta_salida_crop"]) as c, PILImage.open(z["ruta_salida_original"]) as o:
+        assert c.size == o.size == (400, 300)
+
+
+def test_clave_ausente_sigue_lanzando_error_modelo_sin_recorte(tmp_path):
+    # Distinto del centinela: H30T_Z no está en el dict (ni como None) => error.
+    with pytest.raises(ErrorModeloSinRecorte):
+        _indice(tmp_path, ["DJI_0001_W.JPG", "DJI_0001_Z.JPG"], {"H30T": 70}, camara="Z")
+
+
+def test_ruta_legacy_con_centinela_copia_integra(tmp_path):
+    from unittest.mock import MagicMock
+    rgb = RGBCropping_para_test()
+    carpeta = tmp_path / "RGB"
+    ruta = _imagen_real(str(carpeta), "DJI_0001_W.JPG")
+    rgb.exif_management_obj = MagicMock()
+    rgb.exif_management_obj.get_model.return_value = "H30T"
+    cb = MagicMock()
+    rgb.crop_centered_images(str(carpeta), cb, cb, {"H30T": None}, True, 0)
+    assert rgb.error_rgb_cropping == 0
+    with PILImage.open(str(carpeta / "DJI_0001_W_CROP.JPG")) as c:
+        assert c.size == (400, 300)
+    with pytest.raises(KeyError):
+        rgb.crop_centered_images(str(carpeta), cb, cb, {"OTRO": 70}, True, 0)
+
+
+def RGBCropping_para_test():
+    from unittest.mock import MagicMock
+    return pipeline_real.RGBCropping(MagicMock())

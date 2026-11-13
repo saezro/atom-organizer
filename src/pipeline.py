@@ -4631,7 +4631,7 @@ class RGBCropping:
                 with ThreadPoolExecutor(max_workers=_hilos) as _ex:
                     modelos = dict(zip(images, _ex.map(_leer_modelo, images)))
 
-            valid_items = []  # (image, crop_centered_pct fraccional 0-1) de las imágenes con porcentaje resuelto correctamente.
+            valid_items = []  # (image, crop_centered_pct fraccional 0-1, o None = copia íntegra) de las imágenes con porcentaje resuelto correctamente.
             for image in images:
                 if percentage_cropping_auto:
                     ruta_imagen = almacen.unir(input_folder, image)
@@ -4651,7 +4651,10 @@ class RGBCropping:
                             f"(modelo '{model.strip(chr(0)).strip()}', imagen {image})") from None
                 else:
                     final_percentage = int(percentage_cropping_manual)
-                valid_items.append((image, final_percentage / 100))
+                # `final_percentage` None = centinela `-` (clave presente, sin recorte):
+                # `crop_centered_pct=None` => `_CROP` como copia íntegra. Una clave
+                # AUSENTE ya ha lanzado KeyError arriba.
+                valid_items.append((image, None if final_percentage is None else final_percentage / 100))
 
             def _worker_args_fn(item):
                 image, pct = item
@@ -4738,6 +4741,12 @@ class RGBCropping:
                     return None
                 # self.organizer_logger.logger.info(f"El modelo es: {model}")
                 final_percentage = self.get_percentage_by_model(model.strip('\x00'), percentage_cropping_dict)
+
+            if final_percentage is None:
+                # Centinela `-` (clave presente, sin recorte): `_CROP` = copia íntegra.
+                file_splitted = os.path.splitext(image_full_path)
+                image.save((file_splitted[0] + "_CROP" + file_splitted[1]))
+                return image
 
             # self.organizer_logger.logger.info(f"El porcentaje es: {final_percentage}")
             width = orig_width * (final_percentage/100)

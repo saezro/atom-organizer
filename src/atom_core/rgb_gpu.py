@@ -180,8 +180,11 @@ def aplicar(filas, cfg, pipeline_mod, apply_mod, cerrar_fila, fallback_cpu,
                     q_crop = pipeline_mod._ROTATION_JPEG_QUALITY if angulo else apply_mod._CROP_JPEG_QUALITY
                     salidas = []
                     if fila["ruta_salida_crop"]:
-                        l, t, r, b = apply_mod._caja_recorte_termico(w, h, fila["pct_recorte"])
+                        l, t, r, b = ((0, 0, w, h) if fila["pct_recorte"] is None else
+                                      apply_mod._caja_recorte_termico(w, h, fila["pct_recorte"]))
                         crop = cp.ascontiguousarray(_rot(cp, arr[t:b, l:r], angulo))
+                        if fila["pct_recorte"] is None and not angulo:
+                            crop = crop.copy()  # evita que crop y orig sean el mismo array en el batch
                         salidas.append((q_crop, fila["ruta_salida_crop"], crop))
                     orig = cp.ascontiguousarray(_rot(cp, arr, angulo))
                     salidas.append((q_orig, fila["ruta_salida_original"], orig))

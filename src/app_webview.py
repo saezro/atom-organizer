@@ -1227,7 +1227,7 @@ class Api:
             cfg = configparser.ConfigParser()
             cfg.optionxform = str  # no forzar minúsculas en las claves de modelo
             cfg["paths"] = {"ruta_thermoviewer": str(data.get("ruta_thermoviewer", "") or "")}
-            pbm = {str(k).upper(): str(v) for k, v in (data.get("percentage_by_models") or {}).items()}
+            pbm = {str(k).upper(): ('-' if v is None else str(v)) for k, v in (data.get("percentage_by_models") or {}).items()}
             if pbm:
                 cfg["percentage_by_models"] = pbm
             path = _user_config_path()

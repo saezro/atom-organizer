@@ -10,8 +10,11 @@ export function claveDe(modelo, camara) {
 }
 
 // "48,5" / "48.5" -> 48.5; fuera de (0, 100] o no numérico -> null.
+// "-" (o null/None del backend) = sin recorte -> devuelve '-'.
 export function parsePct(txt) {
-  const t = String(txt ?? '').trim().replace(',', '.')
+  const t = String(txt ?? '-').trim().replace(',', '.')
+  if (t === '' ) return null
+  if (t === '-' || t.toLowerCase() === 'none' || t.toLowerCase() === 'null') return '-'
   if (!/^\d+(\.\d+)?$/.test(t)) return null
   const n = Number(t)
   return n > 0 && n <= 100 ? n : null
@@ -26,11 +29,11 @@ export function parClave(clave) {
 export function filasRecortes(tabla, overrides) {
   const filas = new Map()
   for (const r of tabla || []) {
-    filas.set(claveDe(r.modelo, r.camara), { ...r, clave: claveDe(r.modelo, r.camara), origen: 'tabla', pct: String(r.porcentaje) })
+    filas.set(claveDe(r.modelo, r.camara), { ...r, clave: claveDe(r.modelo, r.camara), origen: 'tabla', pct: r.porcentaje == null ? '-' : String(r.porcentaje) })
   }
   for (const [clave, pct] of Object.entries(overrides || {})) {
     const previa = filas.get(clave)
-    filas.set(clave, { ...parClave(clave), clave, origen: 'override', pct: String(pct), nota: previa?.nota || '' })
+    filas.set(clave, { ...parClave(clave), clave, origen: 'override', pct: pct == null ? '-' : String(pct), nota: previa?.nota || '' })
   }
   return [...filas.values()].sort((a, b) => a.modelo.localeCompare(b.modelo) || a.camara.localeCompare(b.camara))
 }
@@ -90,7 +93,7 @@ export default function ConfigRecortes({ tabla, overrides, onChange, loaded }) {
                       onChange={(e) => setPct(r.clave, e.target.value)}
                     />
                   ) : (
-                    <span className="config-pct">{r.pct}%</span>
+                    <span className="config-pct">{r.pct === '-' ? 'sin recorte' : `${r.pct}%`}</span>
                   )}
                 </td>
                 <td><span className={`chip-origen chip-origen-${r.origen}`}>{r.origen}</span></td>

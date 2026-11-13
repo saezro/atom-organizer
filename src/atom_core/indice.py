@@ -1675,14 +1675,22 @@ def _pct_recorte(dato: _MetadatosImagen, tipo: str, cfg, pipeline,
     y el alto. Devolver aquí el porcentaje crudo (70) hacía que el recorte
     pidiese 8000*70 x 6000*70 px y Pillow abortase con
     `DecompressionBombError`, dejando todas las RGB en SIN_ORDENAR."""
+    return _resolver_recorte(dato, tipo, cfg, pipeline, hay_zoom)[1]
+
+
+def _resolver_recorte(dato: _MetadatosImagen, tipo: str, cfg, pipeline,
+                      hay_zoom: bool = False) -> "tuple[bool, float | None]":
+    """`(genera_crop, fracción)`. `genera_crop` False = ni `_CROP`. Centinela
+    `-` en la tabla de recortes (valor `None` con la clave presente) =
+    `(True, None)`: se genera el `_CROP` como copia íntegra, sin caja de recorte."""
     if tipo not in TIPOS_RGB or not cfg.cropping_rgb:
-        return None
+        return False, None
     camara = _camara_cfg(cfg)
     if not camara_rgb_mod.se_recorta(dato.nombre, camara, hay_zoom):
-        return None
+        return False, None
     if cfg.cropping_mode_auto:
         if not dato.modelo:
-            return None
+            return False, None
         # El diccionario modelo->% viene de `Config.ini` (`external_tools.py`),
         # que hoy cuelga del host de fases como `config_obj.percentage_by_models`
         # y no de `cfg` (`SplitImagesConfig` no lo lleva). Aquí se pide al mismo
@@ -1691,9 +1699,9 @@ def _pct_recorte(dato: _MetadatosImagen, tipo: str, cfg, pipeline,
         clave = camara_rgb_mod.clave_porcentaje(dato.modelo, camara, hay_zoom)
         pct = _pct_por_modelo(dato.modelo, pipeline, clave)
         if pct is None:
-            return None
-        return float(pct) / 100
-    return float(cfg.crop_percentage) / 100
+            return True, None
+        return True, float(pct) / 100
+    return True, float(cfg.crop_percentage) / 100
 
 
 def campos_posicion(dato: _MetadatosImagen) -> dict:
@@ -1835,9 +1843,9 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
                 cfg.output_folder, tipo, f"PB{pb}",
                 _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v, sufijo))
 
-    pct_recorte = _pct_recorte(dato, tipo, cfg, pipeline, hay_zoom)
+    genera_crop, pct_recorte = _resolver_recorte(dato, tipo, cfg, pipeline, hay_zoom)
     ruta_salida_original, ruta_salida_crop, ruta_salida_tiff = rutas_de_salida(
-        carpeta_destino, nombre_final, pct_recorte is not None,
+        carpeta_destino, nombre_final, genera_crop,
         tipo == "TERMICA" and bool(cfg.convert_to_tif))
 
     # RGB_Extra comprime con el MISMO flag que RGB (`Pipeline.iterate_folders`,
@@ -2529,8 +2537,9 @@ def construir_indice(
     recortes_usados = _recortes_usados(metadatos, cfg, pipeline)
     for r in recortes_usados:
         progress_callback.emit(
-            f"\nRecorte {r['clave']} = {r['porcentaje']} % (origen: {r['origen']}; "
-            f"{r['imagenes']} imagen(es))\n")
+            f"\nRecorte {r['clave']} = "
+            + ("sin recorte" if r["porcentaje"] is None else f"{r['porcentaje']} %")
+            + f" (origen: {r['origen']}; {r['imagenes']} imagen(es))\n")
 
     asignaciones = []
     emisor.iniciar("Asignar vuelos", len(metadatos), barra=(80, 10))
