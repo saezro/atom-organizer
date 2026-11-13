@@ -104,6 +104,8 @@ def test_subir_resultado_hace_flush_final_aunque_subir_falle(tmp_path):
     carpeta = tmp_path / "salida"
     (carpeta / "CSVs").mkdir(parents=True)
     (carpeta / "CSVs" / "V1_meta.csv").write_bytes(b"m")
+    (carpeta / ".organizado").mkdir()
+    (carpeta / ".organizado" / "manifiesto.db").write_bytes(b"x")  # raíz organizada
 
     def subir(plan, prov, *, manifest, **k):
         for it in plan.items:

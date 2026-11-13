@@ -3699,7 +3699,11 @@ class Api:
     def resultado_prechequeo(self, destino: str) -> dict:
         """Prechequeo de la carpeta de salida antes de subir (`prechequeo_resultado.prechequear`)."""
         try:
-            from atom_core import prechequeo_resultado
+            from atom_core import prechequeo_resultado, subida_resultado as sr
+            try:
+                destino = str(sr.resolver_raiz(destino)[0])
+            except sr.SubidaResultadoError:
+                pass  # sin manifiesto: el check `manifiesto` lo reporta como error
             return prechequeo_resultado.prechequear(destino)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "checks": [{"id": "prechequeo", "titulo": "Prechequeo",
@@ -3769,6 +3773,15 @@ class Api:
             return {"started": False, "reason": "Elige una inspección: sin ella no hay destino en el bucket."}
         if not Path(folder or "").is_dir():
             return {"started": False, "reason": "La carpeta de salida no existe."}
+        # Raíz real ANTES de lock/telemetría/cola: todo (telemetría, cola, nombre de
+        # inspección) usa la raíz resuelta, no la carpeta elegida.
+        try:
+            raiz, aviso_raiz = sr.resolver_raiz(folder)
+        except sr.SinManifiestoError as exc:
+            return {"started": False, "reason": str(exc)}
+        if aviso_raiz:
+            logger.info("resultado_subir: %s", aviso_raiz)
+        folder = str(raiz)
         # Credencial ANTES de abrir run/efectos: sin login no se crea nada.
         try:
             auth = self._get_auth()

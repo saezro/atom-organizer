@@ -162,6 +162,10 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
   // de ella para que no haya ningún fotograma con botones activos antes de arrancar el cálculo.
   const [hecho, setHecho] = useState(null)
   const [errorEstado, setErrorEstado] = useState('')
+  // Sin manifiesto del organizado (ni en la carpeta ni hacia arriba): subida bloqueada + motivo.
+  const [bloqueo, setBloqueo] = useState('')
+  const [avisoRaiz, setAvisoRaiz] = useState('')
+  const [raizReal, setRaizReal] = useState('')  // raíz a la que el backend ajusta la carpeta elegida
   const ultimaSel = useRef(null)
   // «Al terminar, subir el resto»: lo ejecuta el backend al acabar urgentes (marcada por defecto).
   const [encadenar, setEncadenar] = useState(true)
@@ -256,6 +260,8 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
     setDesglose(null)
     setSinClasDestino(null)
     setErrorEstado('')
+    setBloqueo('')
+    setAvisoRaiz('')
     setHecho(null)
     if (!(ready && carpeta && inspeccionId) || sinCred || subiendo) return undefined
     if (typeof api.resultadoInspeccionarDestino !== 'function') {
@@ -273,6 +279,13 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
         .then((d) => {
           if (!vivo) return
           if (!d || typeof d !== 'object') throw new Error('respuesta vacía del backend')
+          if (d.sin_manifiesto) {
+            setBloqueo(d.error || 'No hay manifiesto del organizado: no se puede subir.')
+            setHecho(clave)
+            return
+          }
+          setAvisoRaiz(d.aviso_raiz || '')
+          setRaizReal(d.aviso_raiz ? (d.raiz || '') : '')
           if (d.ok === false) throw new Error(d.error || 'No se pudo inspeccionar el destino en el bucket.')
           setDesglose(d.desglose || null)
           setSinClasDestino(Array.isArray(d.sin_clasificar_lista) ? d.sin_clasificar_lista : null)
@@ -286,7 +299,7 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
     }, retraso)
     return () => { vivo = false; clearTimeout(t); ctl.abort() }
   }, [ready, carpeta, inspeccionId, sinCred, subiendo, tick])
-  const puede = ready && carpeta && inspeccionId && !subiendo && !sinCred
+  const puede = ready && carpeta && inspeccionId && !subiendo && !sinCred && !bloqueo
   // Sin cifras no se sube: las acciones esperan al cálculo del estado.
   const sinCifras = calculando
 
@@ -346,6 +359,11 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
   // «Confirmar y subir» del aviso previo. Con «Sobrescribir todo» marcada pide una segunda
   // confirmación con los totales del grupo (urgentes y, si se sube, resto).
   async function confirmarYSubir(d) {
+    // Raíz ajustada: se sube la raíz de la salida, no la carpeta elegida -> confirmación explícita.
+    if (avisoRaiz) {
+      const okRaiz = await confirmar(`Se subirá ${raizReal || 'la raíz de la salida organizada'}, no la carpeta elegida. ¿Continuar?`)
+      if (!okRaiz) return
+    }
     if (!forzar) { lanzar(); return }
     const g = d?.desglose || desglose
     const conResto = modo === 'normal' || (encadenar && (g?.resto?.total || 0) > 0)
@@ -439,6 +457,8 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
       {calculando && (
         <span className="field-hint sub-calculando" role="status" aria-live="polite"><Spinner /> Calculando estado…</span>
       )}
+      {bloqueo && <span className="field-hint hint-warn" role="alert">Subida bloqueada: {bloqueo}</span>}
+      {avisoRaiz && !bloqueo && <span className="field-hint hint-warn" role="status">{avisoRaiz}</span>}
       {errorEstado && (
         <span className="field-hint hint-warn sub-error-estado" role="alert">
           No se pudo calcular el estado: {errorEstado}{' '}
