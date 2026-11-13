@@ -136,6 +136,19 @@ def test_nube_aplica_alta_al_momento(tmp_path, monkeypatch):
     assert "aplicada recomendación" in texto and "AVISO:" in texto
 
 
+def test_auditoria_inmediata_conserva_origen_de_cada_aplicada(tmp_path, monkeypatch):
+    destino, _m = _indexar(tmp_path, FOTOS, "1", monkeypatch)
+    man = _manifiesto(destino)
+    try:
+        ejecucion = man.grupos_sin_colocar_raw()[0]["ejecucion"]
+        datos = ri.leer_auditoria(man, ejecucion)
+    finally:
+        man.cerrar()
+    assert datos["aplicadas"]
+    for fila in datos["aplicadas"]:
+        assert fila["origen"] == "aplicada al momento, sin canal de respuesta"
+
+
 def test_nube_sin_pendientes_bloque_sin_pendientes(tmp_path, monkeypatch):
     destino, mensajes = _indexar(tmp_path, [("DJI_0001_D.JPG", _t(10, 5, 0))], "1", monkeypatch)
     _resumen, propuesta = _salida(destino)

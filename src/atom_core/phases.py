@@ -1851,13 +1851,20 @@ class PipelinePhasesMixin:
             progress_callback.emit("\n" + _info_ajenas + "\n")
         # Marcador propio del cierre: fallidas de CUALQUIER tipo de ESTE
         # run, para que el estado final sea 'errors' aunque no sean RGB/TERMICA.
+        # Revisión del índice: lo ya decidido (auditoría de `ajustes`, nada se recalcula). Sus
+        # ERROR cuentan como errores del cierre y sus AVISO como avisos; sin auditoría, nada.
+        auditoria = revision_indice_mod.leer_auditoria(manifiesto, ejecucion_id)
+        self.revision_indice = auditoria
+        lineas_revision = revision_indice_mod.lineas_auditoria(auditoria)
+        errores_revision = [l for l in lineas_revision if l.startswith("ERROR:")]
+        avisos_revision = [l for l in lineas_revision if l.startswith("AVISO:")]
         try:
             emitir_errores_fase(manifiesto, cfg, progress_callback, "Cierre",
                                 "CIERRE", None, ejecucion_id=ejecucion_id, cierre=True,
-                                n_extra=n_coherencia,
+                                n_extra=n_coherencia + len(errores_revision),
                                 detalle_errores=[p[len(cierre_mod.PREFIJO_ERROR):]
-                                                 for p in errores_cierre],
-                                detalle_avisos=list(avisos_cierre))
+                                                 for p in errores_cierre] + errores_revision,
+                                detalle_avisos=list(avisos_cierre) + avisos_revision)
         except Exception as excepcion_marcador:  # noqa: BLE001
             progress_callback.emit(
                 f"\nERROR no se pudo emitir el marcador de errores del cierre: "
@@ -1873,7 +1880,14 @@ class PipelinePhasesMixin:
             progress_callback.emit(
                 f"\nAVISO: día {dia} sin estadillo ({n_fotos} fotos) → "
                 "irán a SIN_ORDENAR\n")
-        n_avisos = (1 if no_dji else 0) + len(dias_sin_est)
+        # Las mismas líneas de la aplicación se repiten aquí; sin auditoría no se emite nada.
+        for linea in lineas_revision:
+            progress_callback.emit(f"\n{linea}\n")
+        if errores_revision:
+            progress_callback.emit(
+                f"\nHA HABIDO ERRORES: la revisión del índice terminó con "
+                f"{len(errores_revision)} error(es) (detalle arriba).\n")
+        n_avisos = (1 if no_dji else 0) + len(dias_sin_est) + len(avisos_revision)
         no_disp = (resumen_indice or {}).get("no_disponibles") or []
         if no_disp:
             progress_callback.emit(
@@ -1882,7 +1896,7 @@ class PipelinePhasesMixin:
                 "descargar) y NO se han organizado:\n")
             for ruta in no_disp:
                 progress_callback.emit(f"  - {ruta}\n")
-        elif not problemas:
+        elif not problemas and not errores_revision:
             if n_avisos:
                 progress_callback.emit(
                     f"\nOrganizado completado con {n_avisos} aviso(s).\n")

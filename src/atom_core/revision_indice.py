@@ -92,9 +92,23 @@ def _resumen(rec: dict) -> dict:
     return {**{k: v for k, v in rec.items() if k != "claves"}, "n_fotos": len(rec["claves"])}
 
 
+def _n_fotos(rec: dict) -> int:
+    return rec["n_fotos"] if "n_fotos" in rec else len(rec["claves"])
+
+
 def _aviso(rec: dict, explicacion: str) -> str:
-    return (f"AVISO: {len(rec['claves'])} fotos quedan en SIN_ORDENAR sin decisión "
+    return (f"AVISO: {_n_fotos(rec)} fotos quedan en SIN_ORDENAR sin decisión "
             f"({rec['motivo']}; confianza {rec['confianza']}: {explicacion})")
+
+
+def _aviso_huerfanas(grupo_id, motivo, n: int) -> str:
+    return (f"AVISO: {n} fotos del grupo {grupo_id} quedan en SIN_ORDENAR sin decisión "
+            f"({motivo}: sin recomendación)")
+
+
+def _linea_aplicada(rec: dict, origen: str) -> str:
+    return (f"Revisión del índice · aplicada recomendación: {_n_fotos(rec)} fotos → "
+            f"PB{rec['pb']}/V{rec['vuelo']} fila {rec['fila']} ({rec['explicacion']}) [{origen}]")
 
 
 def aplicar_seguras(man: Manifiesto, ruta_salida: str, ejecucion_id: int, quien: str,
@@ -152,7 +166,7 @@ def aplicar_seguras(man: Manifiesto, ruta_salida: str, ejecucion_id: int, quien:
                 continue
             resto = [c for c in rec["claves"] if c not in hechas]
             if hechas:
-                aplicadas.append(_resumen({**rec, "claves": hechas}))
+                aplicadas.append({**_resumen({**rec, "claves": hechas}), "origen": origen})
                 claves_aplicadas.extend(hechas)
                 destinos.update({rutas[c]: (rec["pb"], rec["vuelo"]) for c in hechas if c in rutas})
             if resto or not hechas:
@@ -163,11 +177,10 @@ def aplicar_seguras(man: Manifiesto, ruta_salida: str, ejecucion_id: int, quien:
                           f"{type(error).__name__}: {error}")
             emit(avisos[-1])
             continue
-        aplicadas.append(_resumen(rec))
+        aplicadas.append({**_resumen(rec), "origen": origen})
         claves_aplicadas.extend(rec["claves"])
         destinos.update({rutas[c]: (rec["pb"], rec["vuelo"]) for c in rec["claves"] if c in rutas})
-        emit(f"Revisión del índice · aplicada recomendación: {len(rec['claves'])} fotos → "
-             f"PB{rec['pb']}/V{rec['vuelo']} fila {rec['fila']} ({rec['explicacion']}) [{origen}]")
+        emit(_linea_aplicada(rec, origen))
     # Pendientes de la ejecución que ninguna recomendación cubre: nunca en silencio.
     cubiertas = {c for rec in recs for c in rec["claves"]}
     manuales = man.asignaciones_manuales()
@@ -183,8 +196,7 @@ def aplicar_seguras(man: Manifiesto, ruta_salida: str, ejecucion_id: int, quien:
         sin_aplicar.append({"grupo_id": grupo["grupo_id"], "motivo": grupo["motivo"],
                             "confianza": None, "explicacion": "sin recomendación",
                             "n_fotos": len(huerfanas)})
-        avisos.append(f"AVISO: {len(huerfanas)} fotos del grupo {grupo['grupo_id']} quedan en "
-                      f"SIN_ORDENAR sin decisión ({grupo['motivo']}: sin recomendación)")
+        avisos.append(_aviso_huerfanas(grupo["grupo_id"], grupo["motivo"], len(huerfanas)))
         emit(avisos[-1])
     return {"aplicadas": aplicadas, "sin_aplicar": sin_aplicar, "avisos": avisos,
             "claves_aplicadas": claves_aplicadas, "destinos": destinos,
@@ -215,6 +227,36 @@ def guardar_auditoria(man: Manifiesto, ejecucion_id: int, datos: dict) -> None:
 def leer_auditoria(man: Manifiesto, ejecucion_id: int) -> dict | None:
     valor = man.leer_ajuste(_clave_auditoria(ejecucion_id))
     return None if valor is None else json.loads(valor)
+
+
+def lineas_auditoria(auditoria: dict | None) -> list[str]:
+    """Líneas de cierre de una auditoría: las mismas que se emitieron al aplicar (una por
+    aplicada, un `AVISO:` por dudosa) y, si el resultado fue `error`, un `ERROR:` con el
+    motivo (más uno por cada `continuar` fallido). `None`/`sin_pendientes` no dicen nada."""
+    if not auditoria:
+        return []
+    resultado = auditoria.get("resultado")
+    lineas: list[str] = []
+    for rec in auditoria.get("aplicadas") or []:
+        # El origen es el que se registró al aplicar; si falta (auditoría de una versión
+        # anterior) se dice, nunca se reconstruye.
+        origen = rec.get("origen") or "origen no registrado"
+        if rec.get("pb") is None:       # asignación manual: sin recomendación detrás
+            lineas.append(f"Revisión del índice · asignadas {_n_fotos(rec)} fotos del grupo "
+                          f"{rec.get('grupo_id')} a la fila {rec.get('fila')} [{origen}]")
+            continue
+        lineas.append(_linea_aplicada(rec, origen))
+    for rec in auditoria.get("dudosas") or []:
+        if rec.get("confianza") is None:
+            lineas.append(_aviso_huerfanas(rec.get("grupo_id"), rec.get("motivo"), _n_fotos(rec)))
+        else:
+            lineas.append(_aviso(rec, rec["explicacion"]))
+    if resultado == "error" or auditoria.get("error"):
+        lineas.append(f"ERROR: la revisión del índice terminó con un error: "
+                      f"{auditoria.get('error') or 'sin detalle'}")
+    for e in auditoria.get("errores") or []:
+        lineas.append(f"ERROR: la revisión del índice: petición fallida: {e}")
+    return lineas
 
 
 # --- Pausa de escritorio -------------------------------------------------------------------
@@ -309,8 +351,7 @@ def _sin_decision(man: Manifiesto, ruta_salida: str, ejecucion_id: int, emit) ->
             sin_aplicar.append({"grupo_id": grupo["grupo_id"], "motivo": grupo["motivo"],
                                 "confianza": None, "explicacion": "sin recomendación",
                                 "n_fotos": len(huerfanas)})
-            avisos.append(f"AVISO: {len(huerfanas)} fotos del grupo {grupo['grupo_id']} quedan "
-                          f"en SIN_ORDENAR sin decisión ({grupo['motivo']}: sin recomendación)")
+            avisos.append(_aviso_huerfanas(grupo["grupo_id"], grupo["motivo"], len(huerfanas)))
     for aviso in avisos:
         emit(aviso)
     return sin_aplicar, avisos
@@ -343,7 +384,7 @@ def _asignar(man: Manifiesto, ruta_salida: str, peticion: dict) -> dict:
     for grupo_id, cs in por_grupo.items():
         sin_colocar.asignar_fotos(man, ruta_salida, grupo_id, cs, peticion.get("fila"), quien)
         hechas.append({"grupo_id": grupo_id, "n_fotos": len(cs), "fila": peticion.get("fila"),
-                       "quien": quien})
+                       "quien": quien, "origen": quien})
     return {"aplicadas": hechas}
 
 
@@ -365,7 +406,7 @@ def _aceptar(man: Manifiesto, ruta_salida: str, ejecucion_id: int, peticion: dic
         rec = recs[i]
         sin_colocar.asignar_fotos(man, ruta_salida, rec["grupo_id"], rec["claves"], rec["fila"],
                                   quien)
-        hechas.append({**_resumen(rec), "quien": quien})
+        hechas.append({**_resumen(rec), "quien": quien, "origen": quien})
     return {"aplicadas": hechas}
 
 

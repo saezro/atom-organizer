@@ -2376,7 +2376,9 @@ def _revision_al_momento(manifiesto, cfg, ejecucion_id, progress_callback):
             "inicio": inicio.isoformat(timespec="seconds"),
             "fin": datetime.datetime.now(sin_colocar_mod._MADRID).isoformat(timespec="seconds"),
             "resultado": bloque["resultado"], "modo": "inmediato", "espera_s": 0,
-            "aplicadas": bloque["aplicadas"], "dudosas": bloque["sin_aplicar"]})
+            "aplicadas": [{**f, "origen": r.get("origen")}
+                          for f, r in zip(bloque["aplicadas"], res["aplicadas"])],
+            "dudosas": bloque["sin_aplicar"]})
     except Exception as error:  # noqa: BLE001 - visible; lo aplicado se conserva
         log.exception("revisión del índice: auditoría")
         aviso = f"ERROR: no se pudo guardar la auditoría de la revisión del índice: {error}"
