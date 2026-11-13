@@ -294,7 +294,8 @@ def test_tabla_empaquetada_valores_actuales():
     t = recortes.cargar_tabla()
     assert {(m, c): d["porcentaje"] for (m, c), d in t.items()} == {
         ("MAVIC2-ENTERPRISE-ADVANCED", "W"): 70, ("M4T", "W"): 48, ("M30T", "W"): 65,
-        ("M3T", "W"): 71, ("XT2", "W"): 50, ("H30T", "Z"): 48.5}
+        ("M3T", "W"): 71, ("XT2", "W"): 50, ("H30T", "Z"): 48.5,
+        ("H30T", "W"): 48.5}
 
 
 def test_override_gana_a_la_tabla_y_se_sabe_el_origen(tmp_path):
