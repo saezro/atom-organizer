@@ -114,7 +114,18 @@ _RUTA_CONTROL_ORGANIZAR = "/api/control/organizar"
 _RUTA_CONTROL_ESTADO = "/api/control/estado"
 _RUTA_CONTROL_CANCELAR = "/api/control/cancelar"
 _RUTA_CONTROL_LOGIN = "/api/control/login"
+# Revision del indice (pausa del run con calendario de fotos sin colocar): llaman a los
+# mismos `Api.revision_indice_*` que el escritorio (misma cola, mismo hilo del run).
+_RUTA_CONTROL_REV_ESTADO = "/api/control/revision/estado"
+_RUTA_CONTROL_REV_CALENDARIO = "/api/control/revision/calendario"
+_RUTA_CONTROL_REV_ASIGNAR = "/api/control/revision/asignar"
+_RUTA_CONTROL_REV_ACEPTAR = "/api/control/revision/aceptar"
+_RUTA_CONTROL_REV_CONTINUAR = "/api/control/revision/continuar"
+_RUTAS_CONTROL_REV_POST = frozenset({
+    _RUTA_CONTROL_REV_ASIGNAR, _RUTA_CONTROL_REV_ACEPTAR, _RUTA_CONTROL_REV_CONTINUAR,
+})
 _RUTAS_CONTROL = frozenset({
+    _RUTA_CONTROL_REV_ESTADO, _RUTA_CONTROL_REV_CALENDARIO, *_RUTAS_CONTROL_REV_POST,
     _RUTA_CONTROL_DISCOS, _RUTA_CONTROL_CARPETAS, _RUTA_CONTROL_CARPETA,
     _RUTA_CONTROL_ORGANIZAR, _RUTA_CONTROL_ESTADO, _RUTA_CONTROL_CANCELAR,
     _RUTA_CONTROL_LOGIN,
@@ -648,6 +659,11 @@ def _handler_factory(api, dist_dir: str, sink):
                 return self._control_carpetas_get()
             if ruta == _RUTA_CONTROL_ESTADO:
                 return self._control_estado_get()
+            if ruta == _RUTA_CONTROL_REV_ESTADO:
+                return self._json_cors(200, {"ok": True, "revision": self._control_revision()})
+            if ruta == _RUTA_CONTROL_REV_CALENDARIO:
+                res = api.revision_indice_calendario("")
+                return self._json_cors(200 if res.get("ok", True) else 400, res)
             return self._json_cors(404, {"ok": False, "error": "ruta desconocida"})
 
         def _control_discos_get(self) -> None:
@@ -677,6 +693,33 @@ def _handler_factory(api, dist_dir: str, sink):
                 })
             return self._json_cors(200, resultado)
 
+        def _control_revision(self):
+            """Pausa de revision del indice para `/estado`: `None` sin pausa; si no,
+            `{estado, deadline_epoch, inactividad_s}`. Un fallo se enseña (`{"error"}`),
+            nunca se confunde con "sin pausa"."""
+            res = api.revision_indice_estado()
+            if not res.get("ok"):
+                return {"error": res.get("error") or "estado de revisión ilegible"}
+            if not res.get("activa"):
+                return None
+            return {"estado": res.get("estado"), "deadline_epoch": res.get("deadline_epoch"),
+                    "inactividad_s": res.get("inactividad_s")}
+
+        def _control_revision_post(self, ruta: str, cuerpo: dict) -> None:
+            """asignar/aceptar/continuar: sin pausa abierta -> 409 `sin_revision`."""
+            if self._control_revision() is None:
+                return self._json_cors(409, {"ok": False, "codigo": "sin_revision"})
+            if ruta == _RUTA_CONTROL_REV_ASIGNAR:
+                res = api.revision_indice_asignar(cuerpo.get("claves"), cuerpo.get("fila"))
+            elif ruta == _RUTA_CONTROL_REV_ACEPTAR:
+                res = api.revision_indice_aceptar(cuerpo.get("ids"))
+            else:
+                res = api.revision_indice_continuar(cuerpo.get("modo"))
+            if not res.get("ok"):
+                return self._json_cors(400, {"ok": False, "error": res.get("error")})
+            sink.dispatch("atom:control_ui", {"accion": "revision"})
+            return self._json_cors(200, {"ok": True, "resultado": res.get("resultado")})
+
         def _control_estado_get(self) -> None:
             carpeta = api._carpeta_trabajo_actual()
             estadillo = None
@@ -692,6 +735,7 @@ def _handler_factory(api, dist_dir: str, sink):
                 "fase": getattr(api, "_control_fase", None),
                 "progreso": getattr(api, "_control_progreso", None),
                 "ultimo_error": getattr(api, "_control_ultimo_error", None),
+                "revision": self._control_revision(),
             })
 
         def _control_post(self, ruta: str) -> None:
@@ -700,7 +744,7 @@ def _handler_factory(api, dist_dir: str, sink):
                 return self._json_cors(http_code, {"ok": False, "codigo": codigo})
 
             cuerpo: dict = {}
-            if ruta == _RUTA_CONTROL_CARPETA:
+            if ruta == _RUTA_CONTROL_CARPETA or ruta in _RUTAS_CONTROL_REV_POST:
                 content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
                 if content_type != "application/json":
                     return self._json_cors(415, {"ok": False, "codigo": "content_type_invalido"})
@@ -717,6 +761,8 @@ def _handler_factory(api, dist_dir: str, sink):
                 if not isinstance(cuerpo, dict):
                     cuerpo = {}
 
+            if ruta in _RUTAS_CONTROL_REV_POST:
+                return self._control_revision_post(ruta, cuerpo)
             if ruta == _RUTA_CONTROL_CARPETA:
                 return self._control_carpeta_post(cuerpo)
             if ruta == _RUTA_CONTROL_ORGANIZAR:

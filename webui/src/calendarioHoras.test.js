@@ -1,11 +1,11 @@
-import { test, expect } from 'vitest';
+import { test, expect, describe, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 const assert = { equal: (a, b) => expect(a).toBe(b), deepEqual: (a, b) => expect(a).toEqual(b), ok: (v, m) => expect(v, m).toBeTruthy(), throws: (f) => expect(f).toThrow() };
 import {
   parsearHoraCamara, lunesDe, diasDelRango, semanasDe, segmentosDeVuelo, layoutDia, rangoHoras,
   diasVisibles, iconoGiro, textoParidad, formatearGb, formatearHora, etiquetaVuelo, colorDePb,
   tooltipVotos, contarVuelosDia, altoHoraPx, minDuracionParaAlto, anchosColumnas, etiquetaCompacta, formatoBloque,
-  textoHorasBloque, motivosAviso, tooltipVuelo, anchoBloquePx, ANCHO_MIN_BLOQUE_PX, PALETA_PB, ANCHO_MIN_DIA_PX, ALTO_HORA_PX, MIN_DURACION_MIN,
+  modeloDesdeCalendario, textoHorasBloque, motivosAviso, tooltipVuelo, anchoBloquePx, ANCHO_MIN_BLOQUE_PX, PALETA_PB, ANCHO_MIN_DIA_PX, ALTO_HORA_PX, MIN_DURACION_MIN,
 } from './calendarioHoras.js';
 
 const vuelo = (ini, fin, extra = {}) => ({ pb: '24', vuelo: '1', sufijo: '', inicio_exif: ini, fin_exif: fin, ...extra });
@@ -201,3 +201,42 @@ test('motivosAviso: RGB distinto de T, sin giro, ambos, ninguno', () => {
   assert.deepEqual(motivosAviso({ n_rgb: 10, n_t: 10, angulo: null }), ['sin giro']);
   assert.deepEqual(motivosAviso({ n_rgb: 10, n_t: 8, angulo: undefined }), ['RGB ≠ T', 'sin giro']);
 });
+
+describe('modeloDesdeCalendario', () => {
+  const base = () => ({
+    ok: true, espera: { activa: true, estado: 'esperando', deadline_epoch: 1000, inactividad_s: 0 },
+    vuelos: [
+      { fila: 1, pb: 3, vuelo: 2, sufijo: null, inicio: '2026-06-01T10:00:00', fin: '2026-06-01T10:30:00', angulo: 90,
+        n_total: 5, n_giro_desconocido: 2,
+        horas: [{ hora: '2026-06-01T10', n_rgb: 2, n_t: 3, n_otro: 0 }] },
+      { fila: 2, pb: 4, vuelo: 1, inicio: null, fin: null, n_total: 7, horas: [] },
+    ],
+    libres: [], horas_sin_fila: [{ pb: 5, vuelo: 1, horas: [] }],
+    recomendaciones: [{ id: 'g:1:vecino', grupo_id: 'g', n_fotos: 2, fila: 1, pb: 3, vuelo: 2, motivo: 'vecino', distancia_s: 10, confianza: 'alta', explicacion: 'x' }],
+  })
+
+  it('mapea vuelos, recomendaciones y espera (epoch s -> ms)', () => {
+    const m = modeloDesdeCalendario(base(), { esperaMin: 30 })
+    expect(m.vuelos).toHaveLength(1)
+    expect(m.vuelos[0]).toMatchObject({ pb: 3, vuelo: 2, sufijo: '', n_rgb: 2, n_t: 3, fila: 1 })
+    expect(m.recomendaciones[0]).toMatchObject({ id: 'g:1:vecino', grupo_id: 'g', aplicada: false })
+    expect(m.espera).toEqual({ estado: 'esperando', deadline_epoch: 1_000_000, espera_min: 30 })
+  })
+
+  it('avisa de giro desconocido, filas sin hora y horas sin fila (nunca en silencio)', () => {
+    const { avisos } = modeloDesdeCalendario(base())
+    expect(avisos.some((a) => /2 fotos.*giro/.test(a))).toBe(true)
+    expect(avisos.some((a) => /fila 2.*no se pinta/.test(a))).toBe(true)
+    expect(avisos.some((a) => /PB5/.test(a))).toBe(true)
+  })
+
+  it('respuesta con error o sin listas lanza', () => {
+    expect(() => modeloDesdeCalendario({ ok: false, error: 'x' })).toThrow(/x/)
+    expect(() => modeloDesdeCalendario({ ok: true, vuelos: [] })).toThrow(/libres/)
+  })
+
+  it('sin pausa activa no hay espera', () => {
+    const j = base(); j.espera = { activa: false, estado: null, deadline_epoch: null }
+    expect(modeloDesdeCalendario(j).espera).toBeNull()
+  })
+})

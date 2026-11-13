@@ -81,6 +81,9 @@ export default function RevisionIndiceModal({ modelo, api, ahora = () => Date.no
             AVISO: {enVuelo.length} {enVuelo.length === 1 ? 'tramo de fotos sin colocar cae' : 'tramos de fotos sin colocar caen'} dentro de la franja de un vuelo del estadillo; revisa las horas de cámara.
           </p>
         ) : null}
+        {(modelo.avisos ?? []).map((a, i) => (
+          <p key={i} className="pm-status warn ri-aviso" role="alert" data-testid="ri-aviso-dato">AVISO: {a}</p>
+        ))}
         {error ? <p className="pm-status err" role="alert">✗ {error}</p> : null}
 
         {sinPendientes ? (

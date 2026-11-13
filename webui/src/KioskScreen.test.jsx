@@ -985,3 +985,31 @@ describe('KioskScreen — pantalla de resultado', () => {
     expect(onCerrarResultado).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('Revisión del índice en la Pi', () => {
+  it('con `revision` abre el modal con su cuenta atrás', () => {
+    const modelo = {
+      vuelos: [], libres: [], recomendaciones: [],
+      espera: { estado: 'esperando', deadline_epoch: Date.now() + 5 * 60 * 1000, espera_min: 30 },
+    }
+    const apiRev = { latido: vi.fn(), asignar: vi.fn(), aceptar: vi.fn(), continuar: vi.fn(), cancelar: vi.fn() }
+    render(<KioskScreen {...baseProps({ revision: { modelo, api: apiRev } })} />)
+    expect(screen.getByRole('dialog', { name: 'Revisión del índice' })).toBeTruthy()
+    expect(screen.getByTestId('ri-cuenta-atras').textContent).toMatch(/Se continuará solo en \d+:\d{2}/)
+  })
+
+  it('sin `revision` no hay modal', () => {
+    render(<KioskScreen {...baseProps()} />)
+    expect(screen.queryByRole('dialog', { name: 'Revisión del índice' })).toBeNull()
+  })
+
+  it('la cuenta atrás es la restante real (no reinicia a 30:00)', () => {
+    const modelo = {
+      vuelos: [], libres: [], recomendaciones: [],
+      espera: { estado: 'esperando', deadline_epoch: Date.now() + 4 * 60 * 1000, espera_min: 30 },
+    }
+    const apiRev = { latido: vi.fn(), asignar: vi.fn(), aceptar: vi.fn(), continuar: vi.fn(), cancelar: vi.fn() }
+    render(<KioskScreen {...baseProps({ revision: { modelo, api: apiRev } })} />)
+    expect(screen.getByTestId('ri-cuenta-atras').textContent).toMatch(/en [34]:\d{2}/)
+  })
+})

@@ -3,6 +3,9 @@ import { api, isServerMode, onAnalisis, onCloud, onControlCarpeta, onControlUi, 
 import ProgressModal from './ProgressModal'
 import PreflightModal from './PreflightModal'
 import SinColocarModal from './SinColocarModal'
+import RevisionIndiceModal from './RevisionIndiceModal'
+import { modeloDesdeCalendario } from './calendarioHoras'
+import { leerEsperaMin, esperaGuardada, guardarEsperaMin, ESPERA_REVISION_DEFECTO_MIN } from './revisionEspera'
 import UpdateModal from './UpdateModal'
 import FolderPicker from './FolderPicker'
 import SplashInicio from './SplashInicio'
@@ -233,7 +236,12 @@ function AppInterna() {
   const [sinColocarN, setSinColocarN] = useState(0)
   const [sinColocarAbierto, setSinColocarAbierto] = useState(false)
   const ultimoRunRef = useRef(null) // {task, params, advanced} para «Relanzar aplicar»
-  const sinColocarRef = useRef({ indice: false, done: false })
+  const sinColocarRef = useRef({ indice: false, done: false, revision: false })
+  // Revisión del índice (evento `revision`): `revisionModelo` = Modelo del calendario con el modal
+  // abierto; `revisionFallo` = no se pudo leer el calendario (se dice, el run sigue esperando).
+  const [revisionModelo, setRevisionModelo] = useState(null)
+  const [revisionFallo, setRevisionFallo] = useState(null)
+  const revisionEsperaMinRef = useRef(null)
   const [plant, setPlant] = useState('')
   const [phases, setPhases] = useState([]) // [{name, status}]
   const [progress, setProgress] = useState(0) // % de la fase activa
@@ -433,6 +441,9 @@ function AppInterna() {
     api
       .sinColocarListar('', false)
       .then((r) => {
+        // Carrera stats -> revision: si la pausa del índice ya está abierta, esta respuesta tardía
+        // NO puede abrir SinColocarModal (escribiría al manifiesto fuera de la cola del run).
+        if (sinColocarRef.current.revision) return
         if (!r || r.ok === false) {
           console.error('sin_colocar_listar', (r && r.error) || 'sin respuesta')
           setSinColocarN((n) => n || 1)
@@ -445,14 +456,75 @@ function AppInterna() {
       .catch((e) => console.error('sin_colocar_listar', e))
   }
 
+  // Lee el calendario del backend y abre/refresca el modal de revisión. Un fallo NO se traga.
+  async function cargarRevision() {
+    try {
+      const json = await api.revisionIndiceCalendario('')
+      setRevisionModelo(modeloDesdeCalendario(json, { esperaMin: revisionEsperaMinRef.current }))
+      setRevisionFallo(null)
+      return { ok: true }
+    } catch (e) {
+      const msg = e?.message ? e.message : String(e)
+      console.error('revision_indice_calendario', msg)
+      setRevisionFallo(msg)
+      return { ok: false, error: msg }
+    }
+  }
+
+  // `api` del modal de revisión: acciones sobre el run + refresco del calendario tras cada una.
+  const revisionApi = {
+    latido: () => {
+      Promise.resolve(api.revisionIndiceLatido()).catch((e) => console.error('revision_indice_latido', e))
+    },
+    asignar: async (claves, fila) => {
+      const r = await api.revisionIndiceAsignar(claves, fila, '')
+      if (!r?.ok) return r
+      return cargarRevision()
+    },
+    aceptar: async (ids) => {
+      const r = await api.revisionIndiceAceptar(ids, '')
+      if (!r?.ok) return r
+      return cargarRevision()
+    },
+    continuar: async (modo) => {
+      const r = await api.revisionIndiceContinuar(modo)
+      if (r?.ok) setRevisionModelo(null)
+      return r
+    },
+    cancelar: async () => {
+      await api.runCancelar()
+      return { ok: true }
+    },
+  }
+
+  // Recarga/reconexión durante la pausa: el evento `revision` ya pasó, se consulta el estado real.
+  // El calendario trae el `deadline_epoch` vigente (la cuenta atrás no se reinicia).
+  useEffect(() => {
+    if (!ready) return
+    Promise.resolve()
+      .then(() => api.revisionIndiceEstado())
+      .then((r) => {
+        if (r?.ok && r.activa && r.estado === 'esperando') {
+          sinColocarRef.current.revision = true
+          setSinColocarAbierto(false)
+          return cargarRevision()
+        }
+        if (r && r.ok === false) console.error('revision_indice_estado', r.error)
+      })
+      .catch((e) => console.error('revision_indice_estado', e))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready])
+
   useEffect(() => {
     whenBridgeReady().then(() => setReady(true))
     return onProgress((d) => {
       switch (d.kind) {
         case 'plant':
           setPlant(d.text || '')
-          sinColocarRef.current = { indice: false, done: false }
+          sinColocarRef.current = { indice: false, done: false, revision: false }
           setSinColocarN(0)
+          setRevisionModelo(null)
+          setRevisionFallo(null)
           // Un `organizar` lanzado en remoto (`/api/control/organizar`)
           // arranca `run_task` sin pasar por `startRun`: sin esto el modal
           // de progreso y el estado "ocupado" del kiosco no se enteraban
@@ -466,7 +538,17 @@ function AppInterna() {
         case 'plan':
           setPhases((d.data || []).map((name) => ({ name, status: 'pending' })))
           break
+        case 'revision':
+          // La pausa del índice sustituye a «fotos sin colocar»: un solo sitio donde decidir.
+          sinColocarRef.current.revision = true
+          setSinColocarAbierto(false)
+          revisionEsperaMinRef.current = d.data?.espera_s != null ? d.data.espera_s / 60 : null
+          cargarRevision()
+          break
         case 'phase':
+          // El run sigue: la pausa terminó (respondida, desatendida o cancelada).
+          setRevisionModelo(null)
+          setRevisionFallo(null)
           setProgress(0)
           setPhases((prev) => advancePhases(prev, d.data))
           break
@@ -479,7 +561,7 @@ function AppInterna() {
           // Tras el índice (`vuelos` solo lo emite esa fase): si quedaron fotos sin
           // asignar, se pregunta dónde van. Una sola vez por run.
           if (d.data && d.data.vuelos != null && d.data.sin_asignar > 0
-              && !sinColocarRef.current.indice) {
+              && !sinColocarRef.current.indice && !sinColocarRef.current.revision) {
             sinColocarRef.current.indice = true
             comprobarSinColocar(true)
           }
@@ -497,6 +579,8 @@ function AppInterna() {
           break
         case 'done': {
           setRunning(false)
+          setRevisionModelo(null)
+          setRevisionFallo(null)
           if (!sinColocarRef.current.done && !sinColocarRef.current.indice) {
             sinColocarRef.current.done = true
             comprobarSinColocar(false)
@@ -620,11 +704,24 @@ function AppInterna() {
     // `estadillo` viaja como array por toda la UI (así es como se arma el
     // modal previo), pero el bridge/backend sigue esperando un único string
     // por ese campo: se empaqueta justo antes de mandarlo.
-    const sendParams = Array.isArray(params.estadillo)
-      ? { ...params, estadillo: empaquetarRutas(params.estadillo) }
-      : params
     ;(async () => {
       try {
+        // Espera de la pausa de revisión (ajuste del front, no Config.ini): solo el organizador.
+        const base = Array.isArray(params.estadillo)
+          ? { ...params, estadillo: empaquetarRutas(params.estadillo) }
+          : params
+        // Solo si el usuario guardó un valor: sin él los params son idénticos a los de siempre.
+        // Un valor guardado ilegible NO bloquea organizar (puede que la revisión esté apagada):
+        // se avisa en el log del proceso y se omite.
+        let sendParams = base
+        if (task === 'split_images') {
+          const e = esperaGuardada()
+          if (e.error) {
+            setDetail((l) => anexarLog(l, `AVISO: ajuste «Esperar mi respuesta tras el índice» ilegible (${e.error}); si la revisión del índice está activa se usará la espera por defecto del servidor.`))
+          } else if (e.min != null) {
+            sendParams = { ...base, revision_indice: { ...(base.revision_indice || {}), espera_min: e.min } }
+          }
+        }
         // Con plazo: si el bridge se queda colgado, `runTask` no resuelve nunca
         // y el modal se quedaba en "Preparando…" sin botón para salir.
         const res = await conPlazo(
@@ -1095,6 +1192,7 @@ function AppInterna() {
               resultado={kioskResultado}
               onCerrarResultado={() => setKioskResultado(null)}
               onRunTask={(task, params) => run(task, params, null)}
+              revision={revisionModelo ? { modelo: revisionModelo, api: revisionApi } : null}
             />
           </KioskGuard>
         ) : section === 'trabajo' ? (
@@ -1136,6 +1234,28 @@ function AppInterna() {
           onClose={() => setModalOpen(false)}
           onCancel={() => api.runCancelar()}
         />
+      )}
+
+      {!kiosco && revisionModelo && <RevisionIndiceModal modelo={revisionModelo} api={revisionApi} />}
+
+      {revisionFallo && !revisionModelo && (
+        <div className="pm-overlay ri-overlay" role="dialog" aria-modal="true" aria-label="Revisión del índice">
+          <div className="pm-card">
+            <h2 className="pm-title">Revisión del índice: fotos sin colocar</h2>
+            <p className="pm-status err" role="alert" data-testid="ri-fallo">
+              ✗ No se pudo leer el calendario: {revisionFallo}. El proceso sigue esperando tu respuesta.
+            </p>
+            <div className="pm-actions">
+              <button type="button" className="btn-ghost" onClick={() => cargarRevision()}>Reintentar</button>
+              <button type="button" className="btn-run" onClick={async () => {
+                const r = await api.revisionIndiceContinuar('tal_cual')
+                if (r?.ok) setRevisionFallo(null)
+                else setRevisionFallo(r?.error || 'no se pudo continuar')
+              }}>Continuar tal cual</button>
+              <button type="button" className="btn-ghost" onClick={() => api.runCancelar()}>Cancelar run</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {sinColocarAbierto && (
@@ -1247,6 +1367,21 @@ function ConfigScreen({ ready }) {
       )
     } catch (e) {
       setRenderSaved({ ok: false, msg: String(e) })
+    }
+  }
+
+  // «Esperar mi respuesta tras el índice (min)»: ajuste del front (localStorage), ver revisionEspera.js.
+  const [esperaTxt, setEsperaTxt] = useState(() => {
+    try { return String(leerEsperaMin()) } catch { return String(ESPERA_REVISION_DEFECTO_MIN) }
+  })
+  const [esperaMsg, setEsperaMsg] = useState(null) // null | {ok, msg}
+  function guardarEspera() {
+    try {
+      const n = guardarEsperaMin(esperaTxt)
+      setEsperaTxt(String(n))
+      setEsperaMsg({ ok: true, msg: `Se esperará ${n} min tras el índice.` })
+    } catch (e) {
+      setEsperaMsg({ ok: false, msg: e?.message ? e.message : String(e) })
     }
   }
 
@@ -1372,6 +1507,26 @@ function ConfigScreen({ ready }) {
       <button className="btn-run" disabled={!ready} onClick={save}>
         Guardar configuración
       </button>
+
+      <div className="field">
+        <span className="field-label">Esperar mi respuesta tras el índice (min)</span>
+        <input
+          className="glass-input"
+          type="number"
+          min="1"
+          aria-label="Esperar mi respuesta tras el índice (min)"
+          value={esperaTxt}
+          onChange={(e) => { setEsperaTxt(e.target.value); setEsperaMsg(null) }}
+          onBlur={guardarEspera}
+        />
+        <span className="field-hint">
+          Si hay fotos sin colocar, el proceso espera tu respuesta este tiempo sin actividad; después
+          aplica solo las recomendaciones de confianza alta. Por defecto {ESPERA_REVISION_DEFECTO_MIN} min.
+        </span>
+        {esperaMsg && (
+          <span className={`field-hint ${esperaMsg.ok ? 'hint-ok' : 'hint-warn'}`}>{esperaMsg.msg}</span>
+        )}
+      </div>
 
       <div className="field">
         <span className="field-label">Aceleración gráfica</span>
