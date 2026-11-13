@@ -22,6 +22,7 @@ import logging
 import os
 import queue
 import re
+import socket
 import sys
 import threading
 import time
@@ -41,6 +42,7 @@ from atom_core import estadillo as estadillo_mod
 from atom_core import errores_estadillo
 from atom_core import lectura_segura
 from atom_core import pares as pares_mod
+from atom_core import revision_indice as revision_indice_mod
 from atom_core import sin_colocar as sin_colocar_mod
 from atom_core.manifiesto import FilaManifiesto, Manifiesto, clave_imagen
 from rjpeg_a_tiff import EXTS_FUENTE
@@ -2252,12 +2254,19 @@ def _inspeccion_de_origen(base: str) -> str:
 
 def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_sin_estadillo,
                       no_dji, omitidas, no_disponibles, progress_callback,
-                      estadillo_sin_fecha: bool = False, manifiesto=None) -> None:
+                      estadillo_sin_fecha: bool = False, manifiesto=None,
+                      recolocadas: "dict[str, tuple[str, str]] | None" = None,
+                      revision: "dict | None" = None) -> None:
     """`resumen.json` del índice (ver `indice_mapreduce.construir_resumen_indice`).
 
     `estadillo_sin_fecha`: hay ventanas pero ninguna con fecha legible; las
     fotos sin ventana se clasifican `estadillo-sin-fecha-legible`. El detalle
-    del motivo no-DJI no viaja: el resumen solo admite `(ruta, motivo)`."""
+    del motivo no-DJI no viaja: el resumen solo admite `(ruta, motivo)`.
+
+    `recolocadas`: `ruta_origen -> (pb, vuelo)` de las fotos que la revisión del índice
+    colocó al momento (nube/CLI): salen de `fuera` y entran en `asignadas`, para que
+    `n_sin_ordenar` y `propuesta.json` sean coherentes con el manifiesto. `revision`, si no
+    es None, se publica como `propuesta["revision_indice"]` (bloque aditivo)."""
     from atom_core import indice_mapreduce as mr  # noqa: PLC0415 - evita ciclo
 
     if not str(ejecucion or "").strip():
@@ -2275,14 +2284,16 @@ def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_s
         return norm[len(base):] if norm.startswith(base) else ruta
 
     dias = {dia for dia, _n in dias_sin_estadillo}
+    recolocadas = recolocadas or {}
     fuera: list[tuple[str, str | None]] = []
     for dato, ventana in asignaciones:
-        if ventana is None:
+        if ventana is None and dato.ruta not in recolocadas:
             fuera.append((dato.ruta, motivo_sin_ventana(dato, dias, estadillo_sin_fecha)))
     fuera.extend((ruta, "no-dji") for ruta, _m in no_dji)
     fuera.extend((ruta, "a-medio-copiar") for ruta in omitidas)
     fuera.extend((ruta, "no-disponible") for ruta in no_disponibles)
-    asignadas = [(fila.ruta_origen, fila.pb, fila.vuelo) for fila in filas]
+    asignadas = [(fila.ruta_origen, *recolocadas.get(fila.ruta_origen, (fila.pb, fila.vuelo)))
+                 for fila in filas]
     resumen = mr.construir_resumen_indice(
         imagenes, asignadas, fuera, relativa,
         tipos=[fila.tipo for fila in filas],
@@ -2305,7 +2316,73 @@ def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_s
             raise mr.ErrorIndiceParcial(f"propuesta-indice-invalida: {exc}") from exc
     mr.escribir_resumen_indice(cfg.output_folder, ejecucion, resumen)
     if propuesta is not None:
+        if revision is not None:
+            propuesta["revision_indice"] = revision
         mr.escribir_propuesta_indice(cfg.output_folder, ejecucion, propuesta)
+
+
+_CAMPOS_REVISION = ("id", "grupo_id", "n_fotos", "fila", "pb", "vuelo", "motivo",
+                    "distancia_s", "confianza", "explicacion")
+
+
+def _fila_revision(rec: dict) -> dict:
+    """Forma del bloque `revision_indice`: todas las claves, `None` si el dato no existe."""
+    return {campo: rec.get(campo) for campo in _CAMPOS_REVISION}
+
+
+def _revision_al_momento(manifiesto, cfg, ejecucion_id, progress_callback):
+    """Nube y CLI local sin UI: aplica al momento las recomendaciones seguras (alta) con el
+    MISMO manifiesto del run y devuelve `(recolocadas, bloque)`; `(None, None)` si el modo
+    no es `inmediato` (flag apagado = comportamiento de siempre). Un fallo es un `ERROR:`
+    visible, queda en el bloque y no tumba el índice (las filas ya están insertadas), salvo
+    incoherencia irrecuperable (fotos aplicadas sin poder saber cuáles): aborta con error
+    explícito."""
+    if revision_indice_mod.modo() != "inmediato":
+        return None, None
+    inicio = datetime.datetime.now(sin_colocar_mod._MADRID)
+    quien = ("auto:recomendacion-alta (aplicada al momento, sin canal de respuesta)@"
+             + socket.gethostname())
+
+    def emitir(texto: str) -> None:
+        progress_callback.emit(f"\n{texto}\n")
+    log = logging.getLogger(__name__)
+    try:
+        res = revision_indice_mod.aplicar_seguras(
+            manifiesto, cfg.output_folder, ejecucion_id, quien, emitir)
+    except Exception as error:  # noqa: BLE001 - visible, y el índice ya está escrito
+        log.exception("revisión del índice")
+        aviso = f"ERROR: la revisión del índice falló y no se aplicó nada seguro: {error}"
+        emitir(aviso)
+        return None, {"version": 1, "modo": "inmediato", "resultado": "inmediata",
+                      "aplicadas": [], "sin_aplicar": [], "avisos": [aviso]}
+    # A partir de aquí las fotos YA están asignadas: ningún fallo posterior puede devolver
+    # `(None, bloque_error)` ni ocultar lo aplicado.
+    avisos = list(res["avisos"])
+    if res.get("incoherente"):
+        # Decisión intencionada: sin saber qué fotos quedaron asignadas no hay resumen veraz.
+        raise RuntimeError(
+            "fotos aplicadas pero resumen incoherente: la revisión del índice no pudo comprobar "
+            "qué fotos quedaron asignadas tras un fallo a mitad; revisa SIN_ORDENAR. "
+            + "; ".join(avisos))
+    recolocadas = dict(res["destinos"])
+    hubo = bool(res["aplicadas"] or res["sin_aplicar"] or avisos)
+    bloque = {"version": 1, "modo": "inmediato",
+              "resultado": "inmediata" if hubo else "sin_pendientes",
+              "aplicadas": [_fila_revision(r) for r in res["aplicadas"]],
+              "sin_aplicar": [_fila_revision(r) for r in res["sin_aplicar"]],
+              "avisos": avisos}
+    try:
+        revision_indice_mod.guardar_auditoria(manifiesto, ejecucion_id, {
+            "inicio": inicio.isoformat(timespec="seconds"),
+            "fin": datetime.datetime.now(sin_colocar_mod._MADRID).isoformat(timespec="seconds"),
+            "resultado": bloque["resultado"], "modo": "inmediato", "espera_s": 0,
+            "aplicadas": bloque["aplicadas"], "dudosas": bloque["sin_aplicar"]})
+    except Exception as error:  # noqa: BLE001 - visible; lo aplicado se conserva
+        log.exception("revisión del índice: auditoría")
+        aviso = f"ERROR: no se pudo guardar la auditoría de la revisión del índice: {error}"
+        bloque["avisos"].append(aviso)
+        emitir(aviso)
+    return recolocadas, bloque
 
 
 def _registrar_sin_colocar(cfg, manifiesto, ejecucion_id, ventanas, ventanas_por_carpeta,
@@ -2661,6 +2738,9 @@ def construir_indice(
         cfg, manifiesto, ejecucion_id, ventanas, ventanas_por_carpeta, ventanas_sin_carpeta,
         asignaciones, filas, dias_sin_estadillo,
         bool(ventanas) and not _fechas_estadillo(ventanas), hueco_grupo_s, progress_callback)
+    # Único punto escritor (N=1 o reduce; el map usa `mapear_indice`, que no pasa por aquí).
+    recolocadas, revision = _revision_al_momento(
+        manifiesto, cfg, ejecucion_id, progress_callback)
     for pb_u, vuelo_u, viejo, nuevo, _ in vuelos_a_unificar:
         cambia = viejo != nuevo
         n_reabiertas = manifiesto.unificar_angulo_vuelo(
@@ -2726,7 +2806,7 @@ def construir_indice(
         cfg, ejecucion_resumen, imagenes, asignaciones, filas, dias_sin_estadillo,
         no_dji, omitidas_copiandose, no_disponibles, progress_callback,
         estadillo_sin_fecha=bool(ventanas) and not _fechas_estadillo(ventanas),
-        manifiesto=manifiesto)
+        manifiesto=manifiesto, recolocadas=recolocadas, revision=revision)
 
     progress_bar.emit(100)
     return {

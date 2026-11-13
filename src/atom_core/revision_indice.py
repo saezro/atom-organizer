@@ -35,7 +35,19 @@ def activa(env=os.environ, params: dict | None = None) -> bool:
     """Flag de release. `params["revision_indice"]["activa"]`, si existe, manda sobre el entorno."""
     bloque = (params or {}).get("revision_indice")
     if isinstance(bloque, dict) and "activa" in bloque:
-        return bool(bloque["activa"])
+        valor = bloque["activa"]
+        if isinstance(valor, str):   # bool("false") sería True: la cadena se interpreta
+            texto = valor.strip().lower()
+            if texto in ("1", "true"):
+                return True
+            if texto in ("", "0", "false"):
+                return False
+            raise ValueError(
+                f"params.revision_indice.activa ilegible: {valor!r} (se esperaba true/false).")
+        if isinstance(valor, bool):
+            return valor
+        raise ValueError(
+            f"params.revision_indice.activa ilegible: {valor!r} (se esperaba true/false).")
     return str(env.get(ENV_ACTIVA, "")).strip() == "1"
 
 
@@ -86,12 +98,24 @@ def aplicar_seguras(man: Manifiesto, ruta_salida: str, ejecucion_id: int, quien:
     origen = _origen_de(quien)
     recs = recomendar(man, ruta_salida, ejecucion_id, umbrales_desde_entorno())
     aplicadas: list[dict] = []
+    claves_aplicadas: list[str] = []
+    destinos: dict[str, tuple] = {}     # ruta_origen -> (pb, vuelo) de cada foto aplicada
+    incoherente = False
     sin_aplicar: list[dict] = []
     avisos: list[str] = []
     for rec in recs:
         if rec["confianza"] != "alta":
             sin_aplicar.append(_resumen(rec))
             avisos.append(_aviso(rec, rec["explicacion"]))
+            emit(avisos[-1])
+            continue
+        try:
+            rutas = {c: f["ruta_origen"] for c, f in man.filas_por_claves(rec["claves"]).items()}
+        except Exception as error:  # noqa: BLE001 - sin rutas no se aplica: nada se ha tocado
+            sin_aplicar.append(_resumen(rec))
+            avisos.append(f"ERROR: {len(rec['claves'])} fotos: no se pudo leer el manifiesto "
+                          f"antes de aplicar la recomendación ({rec['motivo']}): "
+                          f"{type(error).__name__}: {error}")
             emit(avisos[-1])
             continue
         try:
@@ -102,7 +126,36 @@ def aplicar_seguras(man: Manifiesto, ruta_salida: str, ejecucion_id: int, quien:
             avisos.append(_aviso(rec, f"{rec['explicacion']}; no se pudo aplicar: {error}"))
             emit(avisos[-1])
             continue
+        except Exception as error:  # noqa: BLE001 - nunca en silencio: ERROR visible y sigue
+            # `asignar_fotos` no es atómico: puede haber asignado parte antes de fallar.
+            try:
+                filas = man.filas_por_claves(rec["claves"])
+                hechas = [c for c in rec["claves"] if c in filas and not filas[c]["unassigned"]]
+            except Exception as error2:  # noqa: BLE001 - estado real desconocido: se dice
+                avisos.append(
+                    f"ERROR: {len(rec['claves'])} fotos: no se pudo aplicar la recomendación "
+                    f"({rec['motivo']}): {type(error).__name__}: {error}; y no se pudo "
+                    f"comprobar cuántas quedaron asignadas: {type(error2).__name__}: {error2}")
+                sin_aplicar.append(_resumen(rec))
+                incoherente = True      # puede haber fotos asignadas que no sabemos cuáles
+                emit(avisos[-1])
+                continue
+            resto = [c for c in rec["claves"] if c not in hechas]
+            if hechas:
+                aplicadas.append(_resumen({**rec, "claves": hechas}))
+                claves_aplicadas.extend(hechas)
+                destinos.update({rutas[c]: (rec["pb"], rec["vuelo"]) for c in hechas if c in rutas})
+            if resto or not hechas:
+                sin_aplicar.append(_resumen({**rec, "claves": resto or rec["claves"]}))
+            avisos.append(f"ERROR: {len(hechas)} de {len(rec['claves'])} fotos quedaron "
+                          f"asignadas y {len(resto)} siguen en SIN_ORDENAR: la aplicación de la "
+                          f"recomendación ({rec['motivo']}) falló a mitad: "
+                          f"{type(error).__name__}: {error}")
+            emit(avisos[-1])
+            continue
         aplicadas.append(_resumen(rec))
+        claves_aplicadas.extend(rec["claves"])
+        destinos.update({rutas[c]: (rec["pb"], rec["vuelo"]) for c in rec["claves"] if c in rutas})
         emit(f"Revisión del índice · aplicada recomendación: {len(rec['claves'])} fotos → "
              f"PB{rec['pb']}/V{rec['vuelo']} fila {rec['fila']} ({rec['explicacion']}) [{origen}]")
     # Pendientes de la ejecución que ninguna recomendación cubre: nunca en silencio.
@@ -123,7 +176,9 @@ def aplicar_seguras(man: Manifiesto, ruta_salida: str, ejecucion_id: int, quien:
         avisos.append(f"AVISO: {len(huerfanas)} fotos del grupo {grupo['grupo_id']} quedan en "
                       f"SIN_ORDENAR sin decisión ({grupo['motivo']}: sin recomendación)")
         emit(avisos[-1])
-    return {"aplicadas": aplicadas, "sin_aplicar": sin_aplicar, "avisos": avisos}
+    return {"aplicadas": aplicadas, "sin_aplicar": sin_aplicar, "avisos": avisos,
+            "claves_aplicadas": claves_aplicadas, "destinos": destinos,
+            "incoherente": incoherente}
 
 
 def _clave_auditoria(ejecucion_id: int) -> str:
