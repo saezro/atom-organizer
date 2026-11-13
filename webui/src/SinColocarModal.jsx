@@ -191,11 +191,22 @@ export default function SinColocarModal({ destino, onClose, onRelanzar, running 
         {aviso && (
           <p className="pm-status warn" role="status">
             ⚠ {aviso.texto} Hay que relanzar «aplicar» para que se coloquen.{' '}
-            {onRelanzar && (
-              <button type="button" className="btn-run sc-relanzar" disabled={running}
-                onClick={onRelanzar}>
-                Relanzar aplicar
-              </button>
+            {onRelanzar ? (
+              <>
+                <button type="button" className="btn-run sc-relanzar" disabled={running}
+                  onClick={onRelanzar}>
+                  Relanzar aplicar
+                </button>
+                {running && (
+                  <span className="pm-stats" data-testid="sc-relanzar-espera">
+                    {' '}Disponible al terminar el proceso actual.
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="pm-stats" data-testid="sc-relanzar-manual">
+                Relanza desde la pantalla de organizar{running ? ', cuando termine el proceso actual' : ''}.
+              </span>
             )}
           </p>
         )}

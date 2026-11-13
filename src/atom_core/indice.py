@@ -1157,6 +1157,31 @@ def _rgb_pareja(cfg, hay_zoom: bool) -> str:
     return "Z" if hay_zoom and _camara_cfg(cfg) == "Z" else "W"
 
 
+def _etiqueta_estadillo(ventana: dict) -> str:
+    """`PB11_V1` (mismo formato que el cierre; GENERALES -> `FOTOS_GENERALES (<planta>)`)."""
+    from atom_core import cierre
+    return cierre.etiqueta_vuelo(ventana.get("pb", ""), ventana.get("vuelo", ""))
+
+
+def _aviso_estadillo_corta_par(etiqueta: str, grupo: dict) -> str:
+    """AVISO visible: una foto cuya hora cae fuera de la franja de su vuelo sigue a su
+    térmica (el estadillo corta el par). Agrupado por vuelo: recuento + primeros 3 nombres."""
+    v = grupo["ventana"]
+    fmt = lambda t: t.strftime("%H:%M:%S") if hasattr(t, "strftime") else "?"  # noqa: E731
+    ini = fmt(v.get("inicio_exacto", v.get("inicio")))
+    fin = fmt(v.get("fin_exacto", v.get("fin")))
+    fotos = grupo["fotos"]
+    if len(fotos) == 1:
+        idx, dato = fotos[0]
+        return (f"\nAVISO: Estadillo: {etiqueta} corta el par {idx}: {dato.nombre} "
+                f"({fmt(dato.timestamp)}) fuera de la franja de su vuelo {ini}–{fin}; va con su térmica. "
+                f"Revisa el estadillo.\n")
+    nombres = ", ".join(f"{d.nombre} ({fmt(d.timestamp)})" for _, d in fotos[:3])
+    resto = f" (+{len(fotos) - 3} más)" if len(fotos) > 3 else ""
+    return (f"\nAVISO: Estadillo: {etiqueta} corta {len(fotos)} pares: {nombres}{resto} "
+            f"fuera de la franja de su vuelo {ini}–{fin}; van con su térmica. Revisa el estadillo.\n")
+
+
 def _heredar_vuelo_por_pareja(asignaciones: list[tuple[_MetadatosImagen, dict | None]],
                               progress_callback=None,
                               rgb: str = "W") -> list[tuple[_MetadatosImagen, dict | None]]:
@@ -1184,6 +1209,7 @@ def _heredar_vuelo_por_pareja(asignaciones: list[tuple[_MetadatosImagen, dict | 
             con_w.add(k)
     resultado = []
     heredadas = ambiguas = t_sin_vuelo_w_con = 0
+    cortes: dict[str, dict] = {}
     for dato, ventana in asignaciones:
         clave = _clave_toma(dato.nombre, rgb)
         if clave and clave[1] == "W":
@@ -1204,6 +1230,11 @@ def _heredar_vuelo_por_pareja(asignaciones: list[tuple[_MetadatosImagen, dict | 
                             and abs((dato.timestamp - ts_t).total_seconds()) <= _SEGUNDOS_MAX_PAREJA_TW):
                         ventana = de_t
                         heredadas += 1
+                        etiqueta = _etiqueta_estadillo(de_t)
+                        fecha = (candidatas[0][0].timestamp.date().isoformat()
+                                 if candidatas[0][0].timestamp is not None else "")
+                        grupo = cortes.setdefault((etiqueta, fecha), {"ventana": de_t, "fotos": []})
+                        grupo["fotos"].append((pares_mod.idx_toma(dato.nombre), dato))
                     else:
                         ambiguas += 1
         resultado.append((dato, ventana))
@@ -1217,6 +1248,8 @@ def _heredar_vuelo_por_pareja(asignaciones: list[tuple[_MetadatosImagen, dict | 
         if heredadas:
             progress_callback.emit(
                 f"\nÍndice · {heredadas} RGB (W) asignadas al vuelo de su térmica (T) por índice DJI.\n")
+        for (etiqueta, _fecha), grupo in sorted(cortes.items(), key=lambda kv: kv[0]):
+            progress_callback.emit(_aviso_estadillo_corta_par(etiqueta, grupo))
         if ambiguas:
             progress_callback.emit(
                 f"\nAVISO: Índice · {ambiguas} RGB (W) NO heredan el vuelo de su térmica (T): "

@@ -26,7 +26,7 @@ from atom_core.almacen import (
 from atom_core import camara_rgb as camara_rgb_mod
 from atom_core import pares as pares_mod
 from atom_core.manifiesto import ruta_bajo_origen
-from atom_core.indice import NOMBRE_CARPETA_RGB_EXTRA, TIPOS_RGB, _es_pb_generales
+from atom_core.indice import _SEGUNDOS_MAX_PAREJA_TW, NOMBRE_CARPETA_RGB_EXTRA, TIPOS_RGB, _es_pb_generales
 
 logger = logging.getLogger(__name__)
 
@@ -493,6 +493,56 @@ def _nombre_fila(fila) -> str:
     return ""
 
 
+def _valor_fila(fila, clave):
+    try:
+        return fila[clave]
+    except (KeyError, IndexError):
+        return None
+
+
+def _pares_partidos(filas_manifiesto, modo_z: bool = False) -> "dict[tuple[str, str], list[tuple[str, str]]]":
+    """Por (pb, vuelo): `[(nombre_RGB, destino)]` de las RGB cuya T está en ese vuelo pero
+    que están en SIN_ORDENAR u otro vuelo (par partido por la franja del estadillo).
+    Pareja = mismo idx DJI de toma (`pares.idx_toma`) en la misma carpeta de origen, solo
+    con la RGB de la cámara elegida (`modo_z`: `_Z`; si no, las no-`_Z`) y a <= 5 s de la T
+    (mismo criterio que `indice._SEGUNDOS_MAX_PAREJA_TW`; si falta algún timestamp no se
+    puede descartar por hora)."""
+    rgb_por_toma: "dict[tuple[str, int], list]" = {}
+    for fila in filas_manifiesto:
+        origen = _valor_fila(fila, "ruta_origen")
+        if fila["tipo"] != "RGB" or fila["estado"] != "hecho" or not origen:
+            continue
+        if camara_rgb_mod.es_zoom(origen) != modo_z:
+            continue
+        idx = pares_mod.idx_toma(origen)
+        if idx is not None:
+            rgb_por_toma.setdefault((os.path.dirname(str(origen)), idx), []).append(fila)
+    partidos: "dict[tuple[str, str], list[tuple[str, str]]]" = {}
+    for fila in filas_manifiesto:
+        origen = _valor_fila(fila, "ruta_origen")
+        if (fila["tipo"] != "TERMICA" or fila["estado"] != "hecho" or fila["unassigned"]
+                or not fila["pb"] or not fila["vuelo"] or not origen):
+            continue
+        idx = pares_mod.idx_toma(origen)
+        if idx is None:
+            continue
+        ts_t = _datetime_captura(_valor_fila(fila, "timestamp_exif"))
+        for rgb in rgb_por_toma.get((os.path.dirname(str(origen)), idx), []):
+            ts_r = _datetime_captura(_valor_fila(rgb, "timestamp_exif"))
+            if (ts_t is not None and ts_r is not None
+                    and abs((ts_r - ts_t).total_seconds()) > _SEGUNDOS_MAX_PAREJA_TW):
+                continue
+            if rgb["unassigned"] or not rgb["pb"] or not rgb["vuelo"]:
+                destino = "SIN_ORDENAR"
+            elif (rgb["pb"], rgb["vuelo"]) != (fila["pb"], fila["vuelo"]):
+                destino = etiqueta_vuelo(rgb["pb"], rgb["vuelo"])
+            else:
+                continue
+            partidos.setdefault((fila["pb"], fila["vuelo"]), []).append(
+                (os.path.basename(str(_valor_fila(rgb, "ruta_origen"))), destino))
+    return partidos
+
+
 def recuentos_por_vuelo(filas_manifiesto, filas_csv, *, convert_to_tif: bool = False,
                         cropping_rgb: bool = False,
                         camara_rgb: "str | None" = None,
@@ -516,6 +566,8 @@ def recuentos_por_vuelo(filas_manifiesto, filas_csv, *, convert_to_tif: bool = F
     - CSV (si `filas_csv` no es None): T>0 -> filas_meta == n_T;
       T>0 y W>0 -> filas_location == filas_meta; solo W -> filas_location == n_W.
     """
+    filas_manifiesto = list(filas_manifiesto)
+    partidos = None
     acum: "dict[tuple[str, str], dict]" = {}
     rgb_por_vuelo: "dict[tuple[str, str], list[tuple[str, bool]]]" = {}
     for fila in filas_manifiesto:
@@ -587,6 +639,16 @@ def recuentos_por_vuelo(filas_manifiesto, filas_csv, *, convert_to_tif: bool = F
                 if w:
                     partes.append(f"location {r['filas_location']}")
             r["motivo"] = f"{', '.join(partes)} ({'; '.join(motivos)})"
+            if "meta != T" in motivos:
+                if partidos is None:
+                    partidos = _pares_partidos(
+                        filas_manifiesto,
+                        hay_zoom and camara_rgb_mod.normalizar_camara(camara_rgb) == "Z")
+                lista = partidos.get(clave, [])
+                if lista:
+                    r["motivo"] += "; par partido: " + ", ".join(
+                        f"{n} en {d}" for n, d in lista[:3]) + (
+                        f" (+{len(lista) - 3} más)" if len(lista) > 3 else "")
         else:
             r["motivo"] = ""
     return acum
