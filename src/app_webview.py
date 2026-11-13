@@ -3992,6 +3992,156 @@ class Api:
         except Exception as exc:  # noqa: BLE001 — se reenvía al front
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    # ---- revisión del índice (calendario de fotos sin colocar) ---------------
+    _REVISION_TIMEOUT_S = 60.0
+
+    @staticmethod
+    def _revision_espera_s(params: dict) -> float:
+        """Espera de la pausa en segundos: `params.revision_indice.espera_min`, si no
+        `ATOM_REVISION_ESPERA_MIN`, si no 30 min. Ilegible o <= 0: `ValueError` visible."""
+        bloque = (params or {}).get("revision_indice")
+        bruto = bloque.get("espera_min") if isinstance(bloque, dict) else None
+        origen = "params.revision_indice.espera_min"
+        if bruto is None:
+            bruto, origen = os.environ.get("ATOM_REVISION_ESPERA_MIN"), "ATOM_REVISION_ESPERA_MIN"
+        if bruto is None or str(bruto).strip() == "":
+            return 30 * 60.0
+        try:
+            minutos = float(bruto)
+        except (TypeError, ValueError):
+            raise ValueError(f"{origen} ilegible: {bruto!r} (minutos, > 0).") from None
+        if not minutos > 0:
+            raise ValueError(f"{origen} inválido: {bruto!r} (minutos, > 0).")
+        return minutos * 60.0
+
+    def _armar_revision_indice(self, task: str, params: dict) -> bool:
+        """Arma la pausa de revisión del índice si el run la admite: `split_images`, fase
+        `completo`, un solo shard y flag activo. Devuelve si quedó armada (quien arma desarma
+        en su `finally`). Compartido por todos los orígenes del run (escritorio, Pi, control
+        remoto): todos pasan por `_run_task_worker`."""
+        if task != "split_images":
+            return False
+        from atom_core import revision_indice
+        from atom_core.sharding import normalizar_shard
+        if str(params.get("fase") or "completo") != "completo":
+            return False
+        _indice, shard_count = normalizar_shard(
+            params.get("shard_index", 0), params.get("shard_count", 1))
+        if shard_count != 1 or not revision_indice.activa(params=params):
+            return False
+        revision_indice.armar(
+            self._revision_espera_s(params),
+            lambda evento: self._push({"kind": "revision", "data": evento}))
+        return True
+
+    def _revision_pausa_activa(self) -> bool:
+        """True si hay pausa abierta (peticiones por la cola). Armada pero sin pausa (el run
+        aún está en índice/apply y tiene el manifiesto abierto): `RuntimeError` visible, nunca
+        un segundo manifiesto."""
+        from atom_core import revision_indice
+        if revision_indice.estado()["activa"]:
+            return True
+        if revision_indice.armada():
+            raise RuntimeError("el run aún no ha llegado a la revisión del índice (o ya salió "
+                               "de ella): espera a que se abra la pausa.")
+        return False
+
+    @staticmethod
+    def _lista_de_textos(valor, nombre: str) -> list:
+        if not isinstance(valor, (list, tuple)) or not all(isinstance(v, str) for v in valor):
+            raise ValueError(f"{nombre} debe ser una lista de textos: {valor!r}")
+        return list(valor)
+
+    def _revision_via_cola(self, peticion: dict) -> dict:
+        """Manda `peticion` al hilo del run y espera su resultado (60 s). Error visible."""
+        from concurrent.futures import TimeoutError as _Timeout
+        from atom_core import revision_indice
+        futuro = revision_indice.enviar(peticion)
+        try:
+            return futuro.result(timeout=self._REVISION_TIMEOUT_S)
+        except _Timeout:
+            raise RuntimeError(
+                f"el run no respondió en {int(self._REVISION_TIMEOUT_S)} s: la petición puede "
+                "no haberse aplicado; vuelve a consultar el calendario.") from None
+
+    def revision_indice_estado(self) -> dict:
+        """`{ok, activa, estado, deadline_epoch, inactividad_s}` de la pausa en curso."""
+        try:
+            from atom_core import revision_indice
+            return {"ok": True, **revision_indice.estado()}
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def revision_indice_calendario(self, ruta_salida: str = "") -> dict:
+        """JSON del calendario (spec §5) del destino. Error -> `{ok: False, error}`."""
+        try:
+            from atom_core import calendario_revision
+            return calendario_revision.calendario(self._destino_sin_colocar(ruta_salida))
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def revision_indice_asignar(self, claves: list, fila=None, ruta_salida: str = "") -> dict:
+        """Mete `claves` en la fila `fila` (int) o las deja en SIN_ORDENAR (`None`). Con la
+        pausa activa va por la cola del run; sin ella, directo al manifiesto."""
+        try:
+            from atom_core import revision_indice, sin_colocar as sc
+            if fila is not None:
+                if isinstance(fila, bool) or not isinstance(fila, (int, str)):
+                    raise ValueError(f"fila debe ser un entero o None: {fila!r}")
+                fila = int(fila)
+            peticion = {"op": "asignar", "claves": self._lista_de_textos(claves, "claves"), "fila": fila,
+                        "quien": revision_indice._firma_humana()}
+            if self._revision_pausa_activa():
+                res = self._revision_via_cola(peticion)
+            else:
+                ruta = self._destino_sin_colocar(ruta_salida)
+                with sc._abrir(ruta, escribe=True) as man:
+                    res = revision_indice._asignar(man, ruta, peticion)
+            logger.info("revision_indice_asignar: %s fotos fila=%s quien=%s",
+                        len(peticion["claves"]), fila, peticion["quien"])
+            return {"ok": True, "resultado": res}
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def revision_indice_aceptar(self, ids: list, ruta_salida: str = "") -> dict:
+        """Acepta recomendaciones por id. Con pausa activa por la cola; sin ella, directo."""
+        try:
+            from atom_core import revision_indice, sin_colocar as sc
+            peticion = {"op": "aceptar", "ids": self._lista_de_textos(ids, "ids"),
+                        "quien": revision_indice._firma_humana()}
+            if self._revision_pausa_activa():
+                res = self._revision_via_cola(peticion)
+            else:
+                ruta = self._destino_sin_colocar(ruta_salida)
+                with sc._abrir(ruta, escribe=True) as man:
+                    ejecucion = man.ultima_ejecucion_id()
+                    if ejecucion is None:
+                        raise sc.ErrorSinColocar(f"el manifiesto de {ruta} no tiene ejecución.")
+                    res = revision_indice._aceptar(man, ruta, ejecucion, peticion)
+            return {"ok": True, "resultado": res}
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def revision_indice_latido(self) -> dict:
+        """Reinicia la cuenta atrás de inactividad (cada interacción del usuario)."""
+        try:
+            from atom_core import revision_indice
+            revision_indice.latido()
+            return {"ok": True}
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def revision_indice_continuar(self, modo: str) -> dict:
+        """Termina la pausa: `tal_cual` o `con_alta` (aplica antes las de alta confianza).
+        Sin pausa en curso es un error visible."""
+        try:
+            if not self._revision_pausa_activa():
+                raise RuntimeError("no hay una revisión del índice en espera: nada que continuar.")
+            res = self._revision_via_cola({"op": "continuar", "modo": modo})
+            return {"ok": True, "resultado": res}
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
     # ---- disparo del pipeline ---------------------------------------------
     def run_organize(self, params: dict, advanced: dict | None = None) -> dict:
         """Atajo de la pantalla principal: "Organizar completo". `advanced` son
@@ -4065,6 +4215,7 @@ class Api:
 
         # Telemetría hacia `/organizer` (etapa="organizacion"). Fail-open total.
         tele = self._telemetria_org_iniciar(task, params)
+        revision_armada = False
 
         try:
             # Import perezoso: atom_core arrastra gui.py/PySide → no lo cargamos
@@ -4080,6 +4231,7 @@ class Api:
 
             if task == "split_images":
                 params = self._mover_estadillo_espera_si_toca(params)
+            revision_armada = self._armar_revision_indice(task, params)
             run_task(task, params, emit, advanced or None)
             if task == "split_images":
                 try:
@@ -4095,6 +4247,9 @@ class Api:
             emit("done", {"status": "cancelled", "cancelled": True,
                           "mensaje": "Cancelado por el usuario"})
         finally:
+            if revision_armada:
+                from atom_core import revision_indice
+                revision_indice.desarmar()
             self._running = False
             cancelacion.limpiar()  # no dejar la bandera armada tras cancelar
             # Sin esto, lo que quedara en el buffer cuando el pipeline deja de
@@ -4285,7 +4440,7 @@ class Api:
             return
         with self._push_lock:
             self._push_buf.append(detail)
-            urgente = detail.get("kind") in ("plan", "phase", "stats", "done")
+            urgente = detail.get("kind") in ("plan", "phase", "stats", "done", "revision")
             ahora = time.monotonic()
             if not urgente and len(self._push_buf) < self._PUSH_MAX_BUFER \
                     and (ahora - self._push_last) < self._PUSH_INTERVALO:

@@ -60,6 +60,8 @@ METODOS_EXPUESTOS = frozenset({
     "estadillo_espera_carpeta",
     "carpeta_trabajo_fijar",
     "sin_colocar_listar", "sin_colocar_asignar",
+    "revision_indice_estado", "revision_indice_calendario", "revision_indice_asignar",
+    "revision_indice_aceptar", "revision_indice_latido", "revision_indice_continuar",
 })
 
 # Rutas HTTP a medida (no pasan por el mecanismo generico `/api/<metodo>` de
