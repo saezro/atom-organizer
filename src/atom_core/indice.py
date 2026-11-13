@@ -1701,7 +1701,9 @@ def _resolver_recorte(dato: _MetadatosImagen, tipo: str, cfg, pipeline,
         if pct is None:
             return True, None
         return True, float(pct) / 100
-    return True, float(cfg.crop_percentage) / 100
+    # Manual: el % manual se aplica a la W y a la Z por igual (la tabla no pinta nada).
+    pct = camara_rgb_mod.pct_manual(cfg.crop_percentage)
+    return True, None if pct is None else pct / 100
 
 
 def campos_posicion(dato: _MetadatosImagen) -> dict:
@@ -2534,6 +2536,8 @@ def construir_indice(
     # (donde antes reventaba con `KeyError` crudo, imagen a imagen). Ver
     # `ErrorModeloSinRecorte`.
     _validar_modelos_recorte(metadatos, cfg, pipeline)
+    if cfg.cropping_rgb and not cfg.cropping_mode_auto:
+        camara_rgb_mod.pct_manual(cfg.crop_percentage)  # error claro antes de procesar
     recortes_usados = _recortes_usados(metadatos, cfg, pipeline)
     for r in recortes_usados:
         progress_callback.emit(

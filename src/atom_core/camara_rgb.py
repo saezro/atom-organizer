@@ -57,6 +57,33 @@ def se_recorta(nombre: str, camara: str, hay_zoom: bool) -> bool:
     return zoom if normalizar_camara(camara) == "Z" else not zoom
 
 
+class ErrorPorcentajeManual(ValueError):
+    """% de recorte manual no numérico o fuera de [0, 100]."""
+
+
+def pct_manual(valor) -> "float | None":
+    """% manual de la interfaz (0-100) -> `float`, o `None` = SIN recorte.
+    `0`, vacío y el centinela `-` equivalen a sin recorte (`_CROP` = copia
+    íntegra). No numérico o fuera de [0, 100] -> `ErrorPorcentajeManual`
+    (error claro antes de procesar, no un fallo por imagen)."""
+    if valor is None:
+        return None
+    txt = str(valor).strip()
+    if txt in ("", "-"):
+        return None
+    try:
+        pct = float(txt.replace(",", "."))
+    except ValueError:
+        raise ErrorPorcentajeManual(
+            f"El % de recorte manual '{txt}' no es un número. Usa un valor entre 0 y 100 "
+            "(0 o '-' = sin recorte).") from None
+    if pct != pct or pct < 0 or pct > 100:
+        raise ErrorPorcentajeManual(
+            f"El % de recorte manual {txt} está fuera de rango: debe estar entre 0 y 100 "
+            "(0 o '-' = sin recorte).")
+    return None if pct == 0 else pct
+
+
 def clave_porcentaje(modelo: str, camara: str, hay_zoom: bool) -> str:
     """Clave de `[percentage_by_models]` que manda para recortar una RGB de
     `modelo`: `MODELO_Z` si se recorta la zoom, `MODELO` en cualquier otro caso

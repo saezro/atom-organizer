@@ -4570,6 +4570,11 @@ class RGBCropping:
             if not self.stop:
                 self._iterar_recorte(almacen.unir(input_folder,dir), progress_callback, progress_bar, percentage_cropping_dict, percentage_cropping_auto, percentage_cropping_manual)
 
+    def _pct_manual_imagen(self, input_folder: str, image: str, percentage_cropping_dict, percentage_cropping_manual):
+        """% (0-100) o None (sin recorte) en modo manual. 0/vacío/`-` = None. El % manual
+        se aplica igual a W y Z (la tabla `MODELO_Z` no interviene en manual)."""
+        return camara_rgb_mod.pct_manual(percentage_cropping_manual)
+
     def crop_centered_images(self,input_folder: str, progress_callback, progress_bar, percentage_cropping_dict, percentage_cropping_auto:bool = True, percentage_cropping_manual: int = 0) -> None:
         """
         Función que recorre todas las imágenes JPG que se encuentren an la carpeta de entrada input_folder y llama después a la función crop_centered_image para aplicar el recorte
@@ -4597,6 +4602,8 @@ class RGBCropping:
             self.organizer_logger.logger.info(f"Analizando directorio: {input_folder}")
             self.organizer_logger.logger.info(f"Procesando y recortando {len(images)} imágenes")
 
+        if not percentage_cropping_auto:
+            camara_rgb_mod.pct_manual(percentage_cropping_manual)  # error claro antes de procesar
         if not self.stop:  # Se comprueba que no se quiere parar el proceso desde la ventana del log antes de lanzar el batch completo.
             def _advance_progress():
                 self.current_image_number += 1
@@ -4650,7 +4657,8 @@ class RGBCropping:
                             f"Falta la clave '{clave.strip().upper()}' en Config.ini [percentage_by_models] "
                             f"(modelo '{model.strip(chr(0)).strip()}', imagen {image})") from None
                 else:
-                    final_percentage = int(percentage_cropping_manual)
+                    final_percentage = self._pct_manual_imagen(
+                        input_folder, image, percentage_cropping_dict, percentage_cropping_manual)
                 # `final_percentage` None = centinela `-` (clave presente, sin recorte):
                 # `crop_centered_pct=None` => `_CROP` como copia íntegra. Una clave
                 # AUSENTE ya ha lanzado KeyError arriba.
@@ -4728,7 +4736,10 @@ class RGBCropping:
         try:
             # Obtener dimensiones de la imagen original
             orig_width, orig_height = image.size
-            final_percentage = int(percentage_cropping_manual)
+            final_percentage = None
+            if not percentage_cropping_auto:
+                final_percentage = self._pct_manual_imagen(
+                    input_folder, image_name, percentage_cropping_dict, percentage_cropping_manual)
 
             # self.organizer_logger.logger.info(f"La imagen es: {image_name}")
 
