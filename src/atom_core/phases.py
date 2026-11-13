@@ -47,6 +47,7 @@ from atom_core import indice_excel
 from atom_core import resumen_apply as resumen_apply_mod
 from atom_core import indice_mapreduce as indice_mr
 from atom_core import paralelismo as paralelismo_mod
+from atom_core import revision_indice as revision_indice_mod
 from atom_core import apply as _apply_mod
 from atom_core import apply_pipeline
 from atom_core import apply_shards
@@ -1398,6 +1399,17 @@ class PipelinePhasesMixin:
                         estadisticas["imagenes"] += ((resumen_indice or {}).get("nuevas", 0)
                                                      + (resumen_indice or {}).get("reintentadas", 0))
                     cancelacion.comprobar()
+                if fase == "completo" and revision_indice_mod.armada():
+                    revision = PipelinePhasesMixin._fase_revision(
+                        self, manifiesto, cfg, ejecucion_id, progress_callback,
+                        progress_summarize)
+                    if revision is not None and resumen_indice is not None:
+                        resumen_indice = {
+                            **resumen_indice,
+                            "dias_sin_estadillo": revision_indice_mod.dias_sin_estadillo_restantes(
+                                manifiesto, resumen_indice.get("dias_sin_estadillo") or [])}
+                    tiempos["Revisión del índice"] = time.monotonic() - marca
+                    marca = time.monotonic()
                 if fase == "completo":
                     estadisticas["imagenes"] += PipelinePhasesMixin._fase_apply(
                         self, manifiesto, cfg, progress_callback, progress_bar,
@@ -1638,6 +1650,19 @@ class PipelinePhasesMixin:
                     (reduce_desde or {}).get("ejecucion") or getattr(self, "ejecucion", "") or ""))
         return resumen_indice
 
+
+    def _fase_revision(self, manifiesto, cfg, ejecucion_id, progress_callback,
+                       progress_summarize) -> dict | None:
+        """Fase `revision` (solo `completo` con la pausa armada): espera la respuesta sobre las
+        fotos sin colocar y aplica lo decidido. Devuelve el resumen de la pausa o `None` (sin
+        pendientes). Cancelar (`RunCancelado`) sale del run sin cierre."""
+        progress_summarize.emit("---> SUBPROCESO: Revisión del índice")
+        cancelacion.comprobar()
+
+        def emitir(texto: str) -> None:
+            progress_callback.emit(f"\n{texto}\n")
+        return revision_indice_mod.pausar_si_armada(
+            manifiesto, cfg, ejecucion_id, emitir, None)
 
     def _fase_apply(self, manifiesto, cfg, progress_callback, progress_bar, progress_summarize,
                     ejecucion_id, tiempos, tipos=("rgb", "termica"), con_marcador=True) -> int:

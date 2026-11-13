@@ -59,6 +59,7 @@ import exif as meta_location
 import pipeline
 import utils
 from atom_core import cancelacion
+from atom_core import revision_indice
 from atom_core import camara_rgb as camara_rgb_mod
 from atom_core.apply import STATS_APPLY_PREFIX, STATS_ERRORES_PREFIX, limpiar_parciales_huerfanos
 from atom_core.indice import STATS_INDICE_PREFIX
@@ -349,6 +350,8 @@ def _default_split_config(params: dict) -> SplitImagesConfig:
 # corrió.
 _SPLIT_PHASES = (
     ("split", lambda c: True, "Índice"),
+    # Solo si la app armó la pausa de revisión (escritorio/kiosco/control remoto).
+    ("split", lambda c: revision_indice.armada(), "Revisión del índice"),
     ("split", lambda c: True, "Imágenes RGB"),
     ("split", lambda c: True, "Conversión térmica"),
     ("split", lambda c: True, "Cierre"),
