@@ -29,6 +29,11 @@ class _AuthPwd:
         return True
 
 
+def _marcar_organizado(raiz):
+    (raiz / ".organizado").mkdir(exist_ok=True)
+    (raiz / ".organizado" / "manifiesto.db").write_bytes(b"x")
+
+
 @pytest.fixture
 def api(monkeypatch, tmp_path):
     a = aw.Api(broker=True)
@@ -38,6 +43,7 @@ def api(monkeypatch, tmp_path):
     monkeypatch.setattr(cola_subidas, "_ruta_cola", lambda: tmp_path / "cola.json")
     a.eventos = []
     monkeypatch.setattr(a, "_push_resultado", a.eventos.append)
+    _marcar_organizado(tmp_path)  # contrato: resultado_subir resuelve la raíz (con manifiesto)
     return a
 
 
@@ -464,3 +470,23 @@ def test_iniciar_del_run_resultado_lleva_items_y_bytes_total(api, monkeypatch, t
     assert r is rep
     assert rep.kw["etapa"] == "subida" and rep.kw["inspeccion_id"] == 7
     assert rep.kw["items_total"] == 1 and rep.kw["bytes_total"] == 10
+
+
+def test_sin_manifiesto_no_arranca_ni_toma_lock(api, monkeypatch, tmp_path):
+    sub = tmp_path / "otra" / "x"
+    sub.mkdir(parents=True)
+    # tmp_path tiene manifiesto: se borra para que ni la carpeta ni sus padres lo tengan
+    (tmp_path / ".organizado" / "manifiesto.db").unlink()
+    monkeypatch.setattr(sr, "subir_resultado", lambda *a, **k: pytest.fail("no debe subir"))
+    r = api.resultado_subir(str(sub), 7)
+    assert r["started"] is False and "manifiesto" in r["reason"]
+    assert api._subiendo_resultado is False
+
+
+def test_raiz_resuelta_se_propaga_a_subir_y_cola(api, monkeypatch, tmp_path):
+    sub = tmp_path / "ESTADILLOS"
+    sub.mkdir()
+    vistos = []
+    monkeypatch.setattr(sr, "subir_resultado", lambda destino, *a, **k: vistos.append(str(destino)) or _resumen("urgencia"))
+    api.resultado_subir(str(sub), 7, "urgencia", False)
+    assert vistos == [str(tmp_path.resolve())]

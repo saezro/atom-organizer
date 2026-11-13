@@ -14,7 +14,13 @@ from atom_core.manifiesto import Manifiesto, NOMBRE_CARPETA_MANIFIESTO, NOMBRE_F
 PREFIJO = "KL05/INSPECCIONES/TERMICA_MODULOS/2026/"
 
 
-def _arbol(raiz: Path, ficheros: dict[str, bytes]) -> Path:
+def _arbol(raiz: Path, ficheros: dict[str, bytes], manifiesto: bool = True) -> Path:
+    # La subida exige `.organizado/manifiesto.db` en la raíz (o por encima).
+    if manifiesto:
+        m = raiz / NOMBRE_CARPETA_MANIFIESTO / NOMBRE_FICHERO_MANIFIESTO
+        if not m.exists():
+            m.parent.mkdir(parents=True, exist_ok=True)
+            m.write_bytes(b"x")
     for rel, datos in ficheros.items():
         p = raiz / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -55,7 +61,9 @@ SALIDA_TIPICA = {
     ("CSVs/sub/V1_meta.csv", None),
     ("ESTADILLOS/sub/x.xlsx", None),
     ("RGB_Extra/PB1/V1/X.JPG", None),
-    ("RGB/PB1/V1/A_Z.JPG", None),
+    ("RGB/PB1/V1/A_Z.JPG", sr.NORMAL),
+    ("RGB/PB1/V1/A_Z_CROP.JPG", sr.URGENTE),
+    ("RGB/PB1/V1/A_Z.png", None),
     ("TERMICA/PB1/V1/A_T.png", None),
     ("RGB/A_W.JPG", sr.NORMAL),
     ("suelto.txt", None),
@@ -757,3 +765,69 @@ def test_inspeccionar_destino_carpeta_inexistente_y_log(tmp_path, caplog):
     assert r["ok"] is False and r["error"] == f"La carpeta {falsa} no existe o no es accesible"
     msgs = " | ".join(caplog.messages)
     assert "inspeccionar_destino: inicio" in msgs and "inspeccionar_destino: FALLO" in msgs
+
+
+def _con_manifiesto(raiz: Path) -> Path:
+    (raiz / NOMBRE_CARPETA_MANIFIESTO).mkdir(parents=True, exist_ok=True)
+    (raiz / NOMBRE_CARPETA_MANIFIESTO / NOMBRE_FICHERO_MANIFIESTO).write_bytes(b"x")
+    return raiz
+
+
+def test_resolver_raiz_sube_hasta_organizado(tmp_path):
+    raiz = _con_manifiesto(tmp_path / "salida")
+    (raiz / "ESTADILLOS").mkdir()
+    r, aviso = sr.resolver_raiz(raiz / "ESTADILLOS")
+    assert r == raiz and "Raíz ajustada" in aviso and str(raiz) in aviso
+    assert sr.resolver_raiz(raiz) == (raiz, "")
+
+
+def test_resolver_raiz_sin_manifiesto_bloquea(tmp_path):
+    (tmp_path / "x" / "ESTADILLOS").mkdir(parents=True)
+    with pytest.raises(sr.SinManifiestoError):
+        sr.resolver_raiz(tmp_path / "x" / "ESTADILLOS")
+
+
+def test_subir_resultado_sin_manifiesto_bloquea(tmp_path):
+    _arbol(tmp_path, {"RGB/PB1/V1/A_W.JPG": b"w"}, manifiesto=False)
+    with pytest.raises(sr.SinManifiestoError):
+        sr.subir_resultado(tmp_path, 1, sr.MODO_URGENCIA, None, proveedor=object())
+
+
+def test_inspeccionar_destino_sin_manifiesto(tmp_path):
+    r = sr.inspeccionar_destino(tmp_path, 1, None, proveedor=object())
+    assert r["ok"] is False and r["sin_manifiesto"] is True and "manifiesto" in r["error"]
+
+
+def test_inspeccionar_destino_ajusta_raiz(tmp_path):
+    raiz = _con_manifiesto(tmp_path / "salida")
+    (raiz / "ESTADILLOS").mkdir()
+
+    class P:
+        def prefijo_destino(self): return PREFIJO
+        def listar_remotos(self, prefix): return {}
+
+    r = sr.inspeccionar_destino(raiz / "ESTADILLOS", 1, None, proveedor=P())
+    assert r["ok"] is True and r["raiz"] == str(raiz) and "Raíz ajustada" in r["aviso_raiz"]
+
+
+def test_resolver_raiz_limita_ascenso_a_3_niveles(tmp_path):
+    raiz = _con_manifiesto(tmp_path / "salida")
+    ok = raiz / "a" / "b" / "c"
+    ok.mkdir(parents=True)
+    assert sr.resolver_raiz(ok)[0] == raiz.resolve()
+    lejos = ok / "d"
+    lejos.mkdir()
+    with pytest.raises(sr.SinManifiestoError):
+        sr.resolver_raiz(lejos)
+
+
+@pytest.mark.parametrize("rel,esperado", [
+    ("RGB/A_Z_point0.jpg", sr.NORMAL),
+    ("RGB/A_Z_point0_CROP.jpg", sr.URGENTE),
+    ("RGB/A_W_point1.JPG", sr.NORMAL),
+    ("TERMICA/A_T_point0.tiff", sr.URGENTE),
+    ("TERMICA/A_T_point0.jpg", sr.NORMAL),
+    ("RGB/A_W_crop.jpg", sr.URGENTE),
+])
+def test_clasificar_sufijo_point(rel, esperado):
+    assert sr.clasificar(rel, frozenset([rel])) == esperado

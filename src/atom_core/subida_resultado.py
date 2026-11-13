@@ -78,15 +78,15 @@ def clasificar(rel: str, rels: frozenset | set = frozenset()) -> str | None:
         # Duplicado de CSVs/ SOLO si el gemelo existe; si no, no se pierde en silencio.
         return OMITIDO_DUPLICADO if f"CSVs/{nombre}" in rels else None
     if top == "TERMICA" and len(partes) >= 2:
-        if bajo.endswith("_t.tiff"):
+        if _RE_TERM_URGENTE.search(bajo):
             return URGENTE
-        if bajo.endswith("_t.jpg"):
+        if _RE_TERM_NORMAL.search(bajo):
             return NORMAL
     elif top == "RGB" and len(partes) >= 2:
-        if bajo.endswith(("_w_crop.jpg", "_v_crop.jpg")):
-            return URGENTE
-        if bajo.endswith(("_w.jpg", "_v.jpg")):
-            return NORMAL
+        # `_z` = modo zoom (H30T). La ingesta de la Suite en RGB/ no filtra sufijo.
+        m = _RE_RGB.search(bajo)
+        if m:
+            return URGENTE if m.group(2) else NORMAL
     elif top == "CSVs":
         if len(partes) == 2 and (bajo.endswith("_meta.csv") or bajo.endswith("_location.csv")):
             return URGENTE
@@ -97,6 +97,12 @@ def clasificar(rel: str, rels: frozenset | set = frozenset()) -> str | None:
     elif len(partes) == 1 and nombre.startswith("INDICE_") and bajo.endswith(".xlsx"):
         return NORMAL
     return None
+
+
+# H30T: sufijo opcional `_point<N>` tras el token (`X_Z_point0_CROP.jpg`).
+_RE_RGB = re.compile(r"_(w|v|z)(?:_point\d+)?(_crop)?\.jpg$", re.IGNORECASE)
+_RE_TERM_URGENTE = re.compile(r"_t(?:_point\d+)?\.tiff$", re.IGNORECASE)
+_RE_TERM_NORMAL = re.compile(r"_t(?:_point\d+)?\.jpg$", re.IGNORECASE)
 
 
 def nombre_oculto(nombre: str) -> bool:
@@ -236,6 +242,30 @@ MAX_PAGINAS_RESULTADO = 2000
 
 class SubidaResultadoError(RuntimeError):
     """Fallo de la subida del resultado que la UI debe enseñar tal cual."""
+
+
+class SinManifiestoError(SubidaResultadoError):
+    """Ni la carpeta elegida ni sus padres tienen `.organizado/manifiesto.db`."""
+
+
+MAX_ASCENSO_RAIZ = 3  # niveles máximos que se sube buscando el manifiesto
+
+
+def resolver_raiz(destino) -> tuple[Path, str]:
+    """Raíz real de la salida organizada: la carpeta elegida o, si no tiene
+    `.organizado/manifiesto.db`, el primer ancestro que sí (p. ej. el usuario eligió
+    `.../ESTADILLOS`). Devuelve `(raiz, aviso)`; `aviso` vacío si no hubo ajuste.
+    Sin manifiesto en ninguna: `SinManifiestoError` (no se sube nada a ciegas)."""
+    destino = Path(destino).resolve()
+    marca = Path(NOMBRE_CARPETA_MANIFIESTO) / NOMBRE_FICHERO_MANIFIESTO
+    for cand in (destino, *destino.parents[:MAX_ASCENSO_RAIZ]):
+        if (cand / marca).is_file():
+            if cand == destino:
+                return destino, ""
+            return cand, f"Raíz ajustada a {cand}: la carpeta elegida ({destino}) está dentro de una salida organizada."
+    raise SinManifiestoError(
+        f"No hay manifiesto del organizado (.organizado/manifiesto.db) en {destino} ni en las "
+        f"{MAX_ASCENSO_RAIZ} carpetas superiores: elige la carpeta raíz de la salida organizada. No se sube.")
 
 
 @dataclass
@@ -548,9 +578,12 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
     destino = Path(destino)
     if not destino.is_dir():
         raise SubidaResultadoError("La carpeta de salida no existe.")
+    destino, aviso_raiz = resolver_raiz(destino)
     proveedor = proveedor or ProveedorResultado(auth, inspeccion_id, forzar=forzar)
     prefijo = proveedor.prefijo_destino()
     sel = seleccionar(destino, prefijo)
+    if aviso_raiz:
+        sel.avisos.insert(0, aviso_raiz)
     (destino / NOMBRE_CARPETA_MANIFIESTO).mkdir(parents=True, exist_ok=True)
     manifest = cu.Manifest(destino / NOMBRE_CARPETA_MANIFIESTO / NOMBRE_MANIFIESTO_SUBIDA)
 
@@ -742,11 +775,15 @@ def inspeccionar_destino(destino, inspeccion_id: int, auth, *, proveedor=None) -
     de credencial NO se silencia: `ok=False` con `error`.
     """
     base = {"ok": True, "existe": False, "n_objetos": 0, "bytes": 0, "sobrescribe": [],
-            "prefijo": None, "error": None, "detalle": ""}
+            "prefijo": None, "error": None, "detalle": "", "sin_manifiesto": False,
+            "raiz": None, "aviso_raiz": ""}
     logger.info("inspeccionar_destino: inicio carpeta=%s inspeccion=%s", destino, inspeccion_id)
     try:
         if not Path(destino).is_dir():
             raise SubidaResultadoError(f"La carpeta {destino} no existe o no es accesible")
+        destino, aviso_raiz = resolver_raiz(destino)
+        base["raiz"] = str(destino)
+        base["aviso_raiz"] = aviso_raiz
         proveedor = proveedor or ProveedorResultado(auth, inspeccion_id)
         prefijo = proveedor.prefijo_destino()
         base["prefijo"] = prefijo
@@ -776,7 +813,8 @@ def inspeccionar_destino(destino, inspeccion_id: int, auth, *, proveedor=None) -
     except cu.ListadoTruncado as exc:
         base.update(ok=False, existe=None, error=str(exc), detalle=f"No verificable: {exc}")
     except SubidaResultadoError as exc:
-        base.update(ok=False, existe=None, error=str(exc), detalle=f"No se pudo inspeccionar el destino: {exc}")
+        base.update(ok=False, existe=None, error=str(exc), detalle=f"No se pudo inspeccionar el destino: {exc}",
+                    sin_manifiesto=isinstance(exc, SinManifiestoError))
     except Exception as exc:  # noqa: BLE001 - estado visible, nunca silencioso
         base.update(ok=False, existe=None, error=f"{type(exc).__name__}: {exc}",
                     detalle=f"No se pudo inspeccionar el destino: {exc}")

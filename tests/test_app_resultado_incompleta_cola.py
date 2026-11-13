@@ -39,6 +39,8 @@ def _api(monkeypatch, tmp_path, resumen):
 def _lanzar(api, tmp_path):
     carpeta = tmp_path / "salida"
     carpeta.mkdir(exist_ok=True)
+    (carpeta / ".organizado").mkdir(exist_ok=True)
+    (carpeta / ".organizado" / "manifiesto.db").write_bytes(b"x")
     assert api.resultado_subir(str(carpeta), 7, sr.MODO_URGENCIA, False)["started"]
     for _ in range(200):
         if not api._subiendo_resultado:
@@ -111,6 +113,8 @@ def test_drenar_no_cuenta_intento_si_ya_hay_subida_en_curso(monkeypatch, tmp_pat
     api, _rep, _e = _api(monkeypatch, tmp_path, sr.ResumenResultado(modo=sr.MODO_URGENCIA, prefijo="P/"))
     carpeta = tmp_path / "salida"
     carpeta.mkdir()
+    (carpeta / ".organizado").mkdir()
+    (carpeta / ".organizado" / "manifiesto.db").write_bytes(b"x")
     cola.encolar(str(carpeta), "@resultado", 7, tipo=cola.TIPO_RESULTADO)
     monkeypatch.setattr(api._credencial, "actual", lambda: {"estado": aw.ESTADO_OK})
     api._subiendo_resultado = True   # subida en curso: resultado_subir -> started False

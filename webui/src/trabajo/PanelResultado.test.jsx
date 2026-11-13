@@ -70,6 +70,36 @@ describe('textoVelocidad / textoEta', () => {
 })
 
 describe('PanelResultado', () => {
+  it('sin manifiesto: botones deshabilitados y motivo visible', async () => {
+    api.resultadoInspeccionarDestino.mockResolvedValue({ ok: false, sin_manifiesto: true, error: 'No hay manifiesto del organizado (.organizado/manifiesto.db) en /x' })
+    render(<PanelResultado carpeta="/x" inspeccionId={7} ready />)
+    expect(await screen.findByText(/Subida bloqueada: No hay manifiesto/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Publicar urgentes' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Subir todo' })).toBeDisabled()
+  })
+
+  it('raíz ajustada: muestra el aviso', async () => {
+    api.resultadoInspeccionarDestino.mockResolvedValue({ ok: true, existe: false, n_objetos: 0, bytes: 0, sobrescribe: [], aviso_raiz: 'Raíz ajustada a /salida: algo' })
+    render(<PanelResultado carpeta="/salida/ESTADILLOS" inspeccionId={7} ready />)
+    expect(await screen.findByText(/Raíz ajustada a \/salida/)).toBeTruthy()
+  })
+
+  it('raíz ajustada: pide confirmación explícita antes de subir', async () => {
+    api.resultadoInspeccionarDestino.mockResolvedValue({ ok: true, existe: false, n_objetos: 0, bytes: 0, sobrescribe: [], raiz: '/salida', aviso_raiz: 'Raíz ajustada a /salida: algo' })
+    render(<PanelResultado carpeta="/salida/ESTADILLOS" inspeccionId={7} ready />)
+    await screen.findByText(/Raíz ajustada a \/salida/)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Publicar urgentes' })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Publicar urgentes' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar y subir' }))
+    expect(await screen.findByText(/Se subirá \/salida, no la carpeta elegida/)).toBeInTheDocument()
+    expect(api.resultadoSubir).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'No' }))
+    expect(api.resultadoSubir).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar y subir' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Sí' }))
+    await waitFor(() => expect(api.resultadoSubir).toHaveBeenCalled())
+  })
+
   it('con Urgencia por defecto, el botón lanza resultadoSubir(carpeta, id, urgencia, seguir=true con la casilla por defecto)', async () => {
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     await publicar()
