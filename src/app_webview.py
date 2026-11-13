@@ -3998,11 +3998,17 @@ class Api:
     @staticmethod
     def _revision_espera_s(params: dict) -> float:
         """Espera de la pausa en segundos: `params.revision_indice.espera_min`, si no
-        `ATOM_REVISION_ESPERA_MIN`, si no 30 min. Ilegible o <= 0: `ValueError` visible."""
+        el ajuste guardado (`revision.json`), si no `ATOM_REVISION_ESPERA_MIN`, si no 30 min.
+        Ilegible o <= 0: `ValueError` visible."""
         bloque = (params or {}).get("revision_indice")
         bruto = bloque.get("espera_min") if isinstance(bloque, dict) else None
         origen = "params.revision_indice.espera_min"
         if bruto is None:
+            # Ajuste guardado desde Ajustes (lo ven también los runs remotos y de la Pi).
+            from atom_core import revision_indice
+            guardado = revision_indice.leer_espera_min()
+            if guardado is not None:
+                return guardado * 60.0
             bruto, origen = os.environ.get("ATOM_REVISION_ESPERA_MIN"), "ATOM_REVISION_ESPERA_MIN"
         if bruto is None or str(bruto).strip() == "":
             return 30 * 60.0
@@ -4065,10 +4071,21 @@ class Api:
                 "no haberse aplicado; vuelve a consultar el calendario.") from None
 
     def revision_indice_estado(self) -> dict:
-        """`{ok, activa, estado, deadline_epoch, inactividad_s}` de la pausa en curso."""
+        """`{ok, disponible, activa, estado, deadline_epoch, inactividad_s}` de la pausa en curso.
+        `disponible` = flag de release `ATOM_REVISION_INDICE` encendido: la UI solo enseña los
+        ajustes de la revisión (y manda `params.revision_indice`) si es True."""
         try:
             from atom_core import revision_indice
-            return {"ok": True, **revision_indice.estado()}
+            return {"ok": True, "disponible": revision_indice.activa(), **revision_indice.estado()}
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def revision_indice_guardar_espera(self, minutos) -> dict:
+        """Guarda el ajuste «esperar mi respuesta» en el backend, para que lo use cualquier
+        origen del run (incluido el control remoto). Error visible, nunca guardado a medias."""
+        try:
+            from atom_core import revision_indice
+            return {"ok": True, "espera_min": revision_indice.guardar_espera_min(minutos)}
         except Exception as exc:  # noqa: BLE001 — se reenvía al front
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 

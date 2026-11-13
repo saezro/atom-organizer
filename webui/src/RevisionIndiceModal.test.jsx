@@ -104,4 +104,30 @@ describe('RevisionIndiceModal', () => {
     render(<RevisionIndiceModal modelo={modeloBase({ libres: [], recomendaciones: [], espera: null })} api={apiFalsa()} />)
     expect(screen.getByText(/No quedan fotos sin colocar ni recomendaciones/)).toBeTruthy()
   })
+
+  it('«Dejar en SIN_ORDENAR» manda fila null; no hay opción engañosa de «Fotos generales»', async () => {
+    const api = apiFalsa()
+    render(<RevisionIndiceModal modelo={modeloBase()} api={api} ahora={() => 1_000_000} />)
+    expect(screen.queryByText('Fotos generales')).toBeNull()
+    fireEvent.click(screen.getByTestId('ri-tramo-t0'))
+    fireEvent.change(screen.getByLabelText('Vuelo destino'), { target: { value: 'sin_ordenar' } })
+    fireEvent.click(screen.getByText('Meter tramo en vuelo'))
+    await waitFor(() => expect(api.asignar).toHaveBeenCalledWith(['PRUEBA/f1.jpg', 'PRUEBA/f2.jpg', 'PRUEBA/f3.jpg'], null))
+  })
+  it('una fila de generales del estadillo se elige por su fila real', async () => {
+    const api = apiFalsa()
+    const m = modeloBase()
+    m.vuelos = [...m.vuelos, { ...vuelo('GEN', '1', '2026-05-04T13:00:00', '2026-05-04T14:00:00', 5), generales: true }]
+    render(<RevisionIndiceModal modelo={m} api={api} ahora={() => 1_000_000} />)
+    expect(screen.getByText(/Fila 5 · PBGEN · V1 · fotos generales/)).toBeTruthy()
+    fireEvent.click(screen.getByTestId('ri-tramo-t0'))
+    fireEvent.change(screen.getByLabelText('Vuelo destino'), { target: { value: '5' } })
+    fireEvent.click(screen.getByText('Meter tramo en vuelo'))
+    await waitFor(() => expect(api.asignar).toHaveBeenCalledWith(expect.any(Array), 5))
+  })
+  it('desatendida sin dato de espera no inventa los 30 min', () => {
+    const m = modeloBase({ espera: { estado: 'desatendida', deadline_epoch: 1 } })
+    render(<RevisionIndiceModal modelo={m} api={apiFalsa()} ahora={() => 1_000_000} />)
+    expect(screen.getByTestId('ri-desatendida').textContent).toMatch(/^Sin respuesta durante la espera: aplicada/)
+  })
 })

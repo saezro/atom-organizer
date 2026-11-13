@@ -34,3 +34,19 @@ export function esperaGuardada() {
   if (bruto == null) return { min: null, error: null }
   try { return { min: validarEsperaMin(bruto), error: null } } catch (e) { return { min: null, error: e.message } }
 }
+
+// Params del run con la espera del ajuste. Solo `split_images` y solo si el backend dice que la
+// revisión está disponible (flag encendido): con el flag apagado los params son los de siempre.
+// Devuelve `{params, aviso}`; `aviso` = ajuste ilegible (se dice en el log, el run no se bloquea).
+export function paramsConEspera(task, base, disponible) {
+  if (task !== 'split_images' || disponible !== true) return { params: base, aviso: null }
+  const e = esperaGuardada()
+  if (e.error) {
+    return {
+      params: base,
+      aviso: `AVISO: ajuste «Esperar mi respuesta tras el índice» ilegible (${e.error}); si la revisión del índice está activa se usará la espera por defecto del servidor.`,
+    }
+  }
+  if (e.min == null) return { params: base, aviso: null }
+  return { params: { ...base, revision_indice: { ...(base.revision_indice || {}), espera_min: e.min } }, aviso: null }
+}

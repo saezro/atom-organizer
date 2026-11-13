@@ -30,7 +30,6 @@ import BarraEstado from './BarraEstado.jsx'
 import BannerConexion from './BannerConexion.jsx'
 import Avatar from './Avatar.jsx'
 import { APPS } from './apps/registry.js'
-import RevisionIndiceModal from './RevisionIndiceModal.jsx'
 
 // Tiempos de la reproduccion visual de `accionRemota` (control remoto del
 // kiosco, Task «se ve como se mueve a los sitios»): pasos de navegacion
@@ -1354,14 +1353,64 @@ function KioskScreenInterna({
   )
 }
 
-// Revisión del índice en la Pi: `revision = {modelo, api}` mientras el run espera respuesta. Es el
-// mismo `RevisionIndiceModal` que el escritorio, encima de cualquier paso del kiosco (la pantalla
+// Revisión del índice en la Pi: `revision = {modelo, api}` mientras el run espera respuesta. En la Pi
+// NO hay calendario (poco espacio, decisión de Rodrigo): solo un aviso con «Confirmar», que acepta
+// la propuesta tal cual (`api.continuar('con_alta')`: aplica las de confianza alta y deja el resto en
+// SIN_ORDENAR, lo mismo que al vencer la espera). Va encima de cualquier paso del kiosco (la pantalla
 // tiene varios `return` tempranos, por eso va en un envoltorio y no dentro de ella).
+function RevisionConfirmarPi({ modelo, api }) {
+  const [t, setT] = useState(() => Date.now())
+  const [ocupado, setOcupado] = useState(false)
+  const [error, setError] = useState(null)
+  useEffect(() => {
+    const id = setInterval(() => setT(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  const espera = modelo.espera
+  const restante = espera?.estado === 'esperando' && espera.deadline_epoch != null
+    ? Math.max(0, Math.round((espera.deadline_epoch - t) / 1000)) : null
+  const pendientes = (modelo.recomendaciones ?? []).filter((r) => !r.aplicada)
+  const altas = pendientes.filter((r) => r.confianza === 'alta').length
+  const confirmar = async () => {
+    setOcupado(true)
+    setError(null)
+    try {
+      const res = await api.continuar('con_alta')
+      if (!res?.ok) setError(res?.error || 'error desconocido')
+    } catch (e) {
+      setError(e?.message ? e.message : String(e))
+    } finally {
+      setOcupado(false)
+    }
+  }
+  return (
+    <div className="pm-overlay" role="dialog" aria-modal="true" aria-label="Revisión del índice">
+      <div className="pm-card">
+        <h2 className="pm-title">Fotos sin colocar</h2>
+        <p data-testid="kiosk-revision-texto">
+          Hay {(modelo.libres ?? []).length} fotos sin colocar. Al confirmar se aplican las recomendaciones de
+          confianza alta ({altas}) y el resto queda en SIN_ORDENAR.
+        </p>
+        {restante != null ? (
+          <p className="pm-status warn" role="status" data-testid="ri-cuenta-atras">
+            Se continuará solo en {Math.floor(restante / 60)}:{String(restante % 60).padStart(2, '0')} si no tocas nada.
+          </p>
+        ) : null}
+        {error ? <p className="pm-status err" role="alert">✗ {error}</p> : null}
+        <div className="pm-actions">
+          <button type="button" className="btn-run" data-testid="kiosk-revision-confirmar"
+                  disabled={ocupado} onClick={confirmar}>Confirmar</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function KioskScreen({ revision = null, ...props }) {
   return (
     <>
       <KioskScreenInterna {...props} />
-      {revision ? <RevisionIndiceModal modelo={revision.modelo} api={revision.api} /> : null}
+      {revision ? <RevisionConfirmarPi modelo={revision.modelo} api={revision.api} /> : null}
     </>
   )
 }

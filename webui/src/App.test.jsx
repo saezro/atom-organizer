@@ -10,7 +10,7 @@
  * carpeta → la app comprueba qué hay que subir) y no sobre el estado interno:
  * cualquier excepción por el camino, se llame como se llame, lo pone rojo.
  */
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -20,6 +20,10 @@ const api = {
   revisionIndiceCalendario: vi.fn(),
   revisionIndiceEstado: vi.fn(async () => ({ ok: true, activa: false, estado: null })),
   revisionIndiceLatido: vi.fn(async () => ({ ok: true })),
+  revisionIndiceAsignar: vi.fn(),
+  revisionIndiceGuardarEspera: vi.fn(async (n) => ({ ok: true, espera_min: n })),
+  renderEstado: vi.fn(async () => ({ modo: 'auto', activa: true })),
+  estadoUpdate: vi.fn(async () => ({ ok: true, update_available: false, current: '3.4.24', latest: '3.4.24' })),
   revisionIndiceContinuar: vi.fn(async () => ({ ok: true })),
   sinColocarListar: vi.fn(async () => ({ ok: true, grupos: [{ grupo_id: 'g1' }], filas: [] })),
   runCancelar: vi.fn(async () => ({})),
@@ -192,5 +196,88 @@ describe('Revisión del índice en App', () => {
     const txt = (await screen.findByTestId('ri-cuenta-atras')).textContent
     const [, m] = /en (\d+):/.exec(txt)
     expect(Number(m)).toBeLessThanOrEqual(9)
+  })
+
+  it('un asignar fallido recarga el calendario (pudo escribir a medias) y enseña el error', async () => {
+    api.revisionIndiceCalendario.mockResolvedValue(calendario())
+    api.revisionIndiceAsignar.mockResolvedValue({ ok: false, error: 'asignación a medias: 1 de 2 grupos' })
+    render(<App />)
+    await waitFor(() => expect(progreso.cb).toBeTruthy())
+    await act(async () => { progreso.cb({ kind: 'revision', data: { estado: 'esperando', espera_s: 1800 } }) })
+    await screen.findByRole('dialog', { name: 'Revisión del índice' })
+    const antes = api.revisionIndiceCalendario.mock.calls.length
+    await act(async () => { screen.getByTestId('ri-tramo-t0').click() })
+    await act(async () => { fireEvent.change(screen.getByLabelText('Vuelo destino'), { target: { value: '1' } }) })
+    await act(async () => { screen.getByText('Meter tramo en vuelo').click() })
+    await waitFor(() => expect(api.revisionIndiceAsignar).toHaveBeenCalled())
+    await waitFor(() => expect(api.revisionIndiceCalendario.mock.calls.length).toBe(antes + 1))
+    expect((await screen.findAllByText(/asignación a medias/)).length).toBeGreaterThan(0)
+  })
+
+  it('al reconectar el SSE con la pausa abierta recupera el modal', async () => {
+    api.revisionIndiceCalendario.mockResolvedValue(calendario())
+    render(<App />)
+    await waitFor(() => expect(api.revisionIndiceEstado).toHaveBeenCalled())
+    expect(screen.queryByRole('dialog', { name: 'Revisión del índice' })).toBeNull()
+    api.revisionIndiceEstado.mockResolvedValueOnce({ ok: true, activa: true, estado: 'esperando' })
+    await act(async () => { window.dispatchEvent(new CustomEvent('atom:sse_reconectado')) })
+    expect(await screen.findByRole('dialog', { name: 'Revisión del índice' })).toBeTruthy()
+  })
+
+  it('al reconectar el SSE sin pausa cierra un modal obsoleto (el evento phase se perdió)', async () => {
+    api.revisionIndiceCalendario.mockResolvedValue(calendario())
+    render(<App />)
+    await waitFor(() => expect(progreso.cb).toBeTruthy())
+    await act(async () => { progreso.cb({ kind: 'revision', data: { estado: 'esperando', espera_s: 1800 } }) })
+    await screen.findByRole('dialog', { name: 'Revisión del índice' })
+    await act(async () => { window.dispatchEvent(new CustomEvent('atom:sse_reconectado')) })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Revisión del índice' })).toBeNull())
+  })
+})
+
+describe('Ajustes · espera de la revisión del índice', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+  })
+  async function irAAjustes() {
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('tab', { name: 'Ajustes' }))
+    await screen.findByText('Actualizaciones')
+    return user
+  }
+
+  it('flag apagado: no se ve el campo ni se guarda nada', async () => {
+    api.revisionIndiceEstado.mockResolvedValue({ ok: true, disponible: false, activa: false, estado: null })
+    await irAAjustes()
+    expect(screen.queryByLabelText('Esperar mi respuesta tras el índice (min)')).toBeNull()
+    expect(api.revisionIndiceGuardarEspera).not.toHaveBeenCalled()
+  })
+
+  it('flag encendido: campo visible; blur sin cambios no guarda; con cambio guarda en front y backend', async () => {
+    api.revisionIndiceEstado.mockResolvedValue({ ok: true, disponible: true, activa: false, estado: null })
+    const user = await irAAjustes()
+    const campo = await screen.findByLabelText('Esperar mi respuesta tras el índice (min)')
+    await user.click(campo)
+    await user.tab()
+    expect(localStorage.getItem('atom.revision_indice.espera_min')).toBeNull()
+    expect(api.revisionIndiceGuardarEspera).not.toHaveBeenCalled()
+    await user.clear(campo)
+    await user.type(campo, '12')
+    await user.tab()
+    await waitFor(() => expect(api.revisionIndiceGuardarEspera).toHaveBeenCalledWith(12))
+    expect(localStorage.getItem('atom.revision_indice.espera_min')).toBe('12')
+  })
+
+  it('si el backend no guarda, se dice (los runs remotos no lo usarán)', async () => {
+    api.revisionIndiceEstado.mockResolvedValue({ ok: true, disponible: true, activa: false, estado: null })
+    api.revisionIndiceGuardarEspera.mockResolvedValueOnce({ ok: false, error: 'disco lleno' })
+    const user = await irAAjustes()
+    const campo = await screen.findByLabelText('Esperar mi respuesta tras el índice (min)')
+    await user.clear(campo)
+    await user.type(campo, '9')
+    await user.tab()
+    expect((await screen.findByText(/no en el equipo.*disco lleno/)).textContent).toMatch(/runs remotos/)
   })
 })

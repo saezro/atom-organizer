@@ -361,7 +361,7 @@ export function modeloDesdeCalendario(json, { esperaMin = null } = {}) {
     vuelos.push({
       pb: v.pb, vuelo: v.vuelo, sufijo: v.sufijo ?? '', inicio: v.inicio, fin: v.fin, angulo: v.angulo,
       n_rgb: suma(horas, 'n_rgb'), n_t: suma(horas, 'n_t'), horas, fila: v.fila,
-      n_giro_desconocido: v.n_giro_desconocido ?? 0,
+      n_giro_desconocido: v.n_giro_desconocido ?? 0, generales: v.generales === true,
     });
   }
   for (const a of json.horas_sin_fila ?? []) {
@@ -373,7 +373,7 @@ export function modeloDesdeCalendario(json, { esperaMin = null } = {}) {
   });
   const e = json.espera;
   const espera = e && e.activa && e.deadline_epoch != null
-    ? { estado: e.estado, deadline_epoch: e.deadline_epoch * 1000, espera_min: esperaMin ?? undefined }
+    ? { estado: e.estado, deadline_epoch: e.deadline_epoch * 1000, espera_min: esperaMin ?? (e.espera_s != null ? e.espera_s / 60 : undefined) }
     : null;
   return { vuelos, libres: json.libres, recomendaciones: json.recomendaciones.map(rec), espera, avisos };
 }

@@ -62,6 +62,7 @@ METODOS_EXPUESTOS = frozenset({
     "sin_colocar_listar", "sin_colocar_asignar",
     "revision_indice_estado", "revision_indice_calendario", "revision_indice_asignar",
     "revision_indice_aceptar", "revision_indice_latido", "revision_indice_continuar",
+    "revision_indice_guardar_espera",
 })
 
 # Rutas HTTP a medida (no pasan por el mecanismo generico `/api/<metodo>` de
@@ -707,8 +708,13 @@ def _handler_factory(api, dist_dir: str, sink):
 
         def _control_revision_post(self, ruta: str, cuerpo: dict) -> None:
             """asignar/aceptar/continuar: sin pausa abierta -> 409 `sin_revision`."""
-            if self._control_revision() is None:
+            revision = self._control_revision()
+            if revision is None:
                 return self._json_cors(409, {"ok": False, "codigo": "sin_revision"})
+            if "error" in revision:
+                # No se pudo leer el estado: ni «sin revisión» (409) ni se aplica a ciegas.
+                return self._json_cors(500, {"ok": False, "codigo": "revision_estado_ilegible",
+                                             "error": revision["error"]})
             if ruta == _RUTA_CONTROL_REV_ASIGNAR:
                 res = api.revision_indice_asignar(cuerpo.get("claves"), cuerpo.get("fila"))
             elif ruta == _RUTA_CONTROL_REV_ACEPTAR:

@@ -109,8 +109,10 @@ def test_nube_aplica_alta_al_momento(tmp_path, monkeypatch):
     [aplicada] = bloque["aplicadas"]
     assert aplicada["confianza"] == "alta" and aplicada["n_fotos"] == 1
     assert (aplicada["fila"], aplicada["pb"], aplicada["vuelo"]) == (0, "1", "1")
-    assert set(aplicada) == {"id", "grupo_id", "n_fotos", "fila", "pb", "vuelo", "motivo",
-                             "distancia_s", "confianza", "explicacion"}
+    assert set(aplicada) == {"id", "grupo_id", "n_fotos", "fila", "pb", "vuelo", "sufijo", "motivo",
+                             "motivo_fuera", "distancia_s", "confianza", "explicacion"}
+    assert aplicada["motivo"] in ("vecino", "par-partido")
+    assert aplicada["motivo_fuera"] == "fuera-de-ventana"
     [dudosa] = bloque["sin_aplicar"]
     assert dudosa["confianza"] == "media" and set(dudosa) == set(aplicada)
     assert len(bloque["avisos"]) == 1 and bloque["avisos"][0].startswith("AVISO:")

@@ -57,6 +57,65 @@ def activa(env=os.environ, params: dict | None = None) -> bool:
     return str(env.get(ENV_ACTIVA, "")).strip() == "1"
 
 
+# --- Ajuste «esperar mi respuesta (min)» persistido en el backend ---------------------------
+# Lo guarda la pantalla de Ajustes de la app. Vive aparte de `Config.ini` (`write_config` lo
+# reescribe entero) y lo leen TODOS los orígenes del run (escritorio, Pi y control remoto: el
+# remoto no pasa por el front, así que sin esto ignoraría el ajuste).
+MAX_ESPERA_MIN = 24 * 60
+
+
+def validar_espera_min(valor) -> float:
+    """Minutos > 0 y <= 1440 (como el front). Otra cosa: `ValueError` visible."""
+    if isinstance(valor, bool):
+        raise ValueError(f"espera inválida: {valor!r} (minutos, > 0 y como mucho {MAX_ESPERA_MIN}).")
+    try:
+        minutos = float(valor)
+    except (TypeError, ValueError):
+        raise ValueError(f"espera ilegible: {valor!r} (minutos, > 0).") from None
+    if not (0 < minutos <= MAX_ESPERA_MIN):
+        raise ValueError(f"espera inválida: {valor!r} (minutos, > 0 y como mucho {MAX_ESPERA_MIN}).")
+    return minutos
+
+
+def ruta_ajustes() -> str:
+    """`revision.json`, junto a `Config.ini`."""
+    from external_tools import _user_config_path  # noqa: PLC0415 - solo la app lo tiene
+    return os.path.join(os.path.dirname(_user_config_path()), "revision.json")
+
+
+def leer_espera_min(ruta: str | None = None) -> float | None:
+    """Espera guardada (minutos) o `None` si no hay fichero. Fichero ilegible: `ValueError`."""
+    ruta = ruta or ruta_ajustes()
+    if not os.path.exists(ruta):
+        return None
+    try:
+        with open(ruta, "r", encoding="utf-8") as f:
+            datos = json.load(f)
+        if not isinstance(datos, dict) or "espera_min" not in datos:
+            raise ValueError("falta `espera_min`")
+        return validar_espera_min(datos["espera_min"])
+    except (OSError, ValueError) as error:
+        raise ValueError(f"ajuste de espera ilegible en {ruta}: {error}") from error
+
+
+def guardar_espera_min(valor, ruta: str | None = None) -> float:
+    """Valida y guarda (escritura atómica). Un fallo se propaga: nunca se guarda a medias."""
+    import tempfile  # noqa: PLC0415
+    minutos = validar_espera_min(valor)
+    destino = ruta or ruta_ajustes()
+    base = os.path.dirname(destino)
+    os.makedirs(base, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix="revision.", suffix=".json.tmp", dir=base)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"espera_min": minutos}, f)
+        os.replace(tmp, destino)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return minutos
+
+
 def armar(espera_s: float = 1800, on_evento=None) -> None:
     global _ARMADA, _ESPERA_S, _ON_EVENTO
     with _LOCK:
@@ -195,12 +254,18 @@ def aplicar_seguras(man: Manifiesto, ruta_salida: str, ejecucion_id: int, quien:
             continue
         sin_aplicar.append({"grupo_id": grupo["grupo_id"], "motivo": grupo["motivo"],
                             "confianza": None, "explicacion": "sin recomendación",
-                            "n_fotos": len(huerfanas)})
+                            "motivo_fuera": grupo["motivo"], "n_fotos": len(huerfanas)})
         avisos.append(_aviso_huerfanas(grupo["grupo_id"], grupo["motivo"], len(huerfanas)))
         emit(avisos[-1])
     return {"aplicadas": aplicadas, "sin_aplicar": sin_aplicar, "avisos": avisos,
             "claves_aplicadas": claves_aplicadas, "destinos": destinos,
             "incoherente": incoherente}
+
+
+def _errores_de(res: dict) -> list[str]:
+    """Líneas `ERROR:` de un `aplicar_seguras`: van a la auditoría (`errores`) para que el cierre
+    las cuente; los `AVISO:` ya constan en `dudosas`."""
+    return [a for a in res.get("avisos") or [] if a.startswith("ERROR:")]
 
 
 def dias_sin_estadillo_restantes(man: Manifiesto, dias: list) -> list:
@@ -255,7 +320,9 @@ def lineas_auditoria(auditoria: dict | None) -> list[str]:
         lineas.append(f"ERROR: la revisión del índice terminó con un error: "
                       f"{auditoria.get('error') or 'sin detalle'}")
     for e in auditoria.get("errores") or []:
-        lineas.append(f"ERROR: la revisión del índice: petición fallida: {e}")
+        # Una línea `ERROR:` de la aplicación se repite tal cual; una petición fallida se explica.
+        lineas.append(e if str(e).startswith("ERROR:")
+                      else f"ERROR: la revisión del índice: petición fallida: {e}")
     return lineas
 
 
@@ -292,7 +359,7 @@ def estado() -> dict:
         inactivo = time.monotonic() - _ESPERANDO["ultima"]
         return {"activa": True, "estado": actual,
                 "deadline_epoch": time.time() + (_ESPERANDO["espera_s"] - inactivo),
-                "inactividad_s": inactivo}
+                "inactividad_s": inactivo, "espera_s": _ESPERANDO["espera_s"]}
 
 
 def enviar(peticion: dict) -> Future:
@@ -350,7 +417,7 @@ def _sin_decision(man: Manifiesto, ruta_salida: str, ejecucion_id: int, emit) ->
         if huerfanas:
             sin_aplicar.append({"grupo_id": grupo["grupo_id"], "motivo": grupo["motivo"],
                                 "confianza": None, "explicacion": "sin recomendación",
-                                "n_fotos": len(huerfanas)})
+                                "motivo_fuera": grupo["motivo"], "n_fotos": len(huerfanas)})
             avisos.append(_aviso_huerfanas(grupo["grupo_id"], grupo["motivo"], len(huerfanas)))
     for aviso in avisos:
         emit(aviso)
@@ -365,7 +432,9 @@ def _aplicar_final(man: Manifiesto, ruta_salida: str, ejecucion_id: int, espera_
     return aplicar_seguras(man, ruta_salida, ejecucion_id, quien, emit, parcial=parcial)
 
 
-def _asignar(man: Manifiesto, ruta_salida: str, peticion: dict) -> dict:
+def _asignar(man: Manifiesto, ruta_salida: str, peticion: dict, parcial: list | None = None) -> dict:
+    """`parcial`, si se da, es la lista en la que se acumula cada grupo YA escrito (la misma que
+    se devuelve en `aplicadas`): si un grupo posterior falla, quien llama conserva lo escrito."""
     quien = peticion.get("quien")
     if not quien:
         raise ValueError("asignar: falta `quien` (firma de quien decide).")
@@ -380,15 +449,24 @@ def _asignar(man: Manifiesto, ruta_salida: str, peticion: dict) -> dict:
             f"{len(ajenas)} foto(s) no están en ningún grupo sin colocar (p. ej. {ajenas[0]}).")
     for c in claves:
         por_grupo.setdefault(dueno[c], []).append(c)
-    hechas = []
+    hechas = parcial if parcial is not None else []
     for grupo_id, cs in por_grupo.items():
-        sin_colocar.asignar_fotos(man, ruta_salida, grupo_id, cs, peticion.get("fila"), quien)
+        try:
+            sin_colocar.asignar_fotos(man, ruta_salida, grupo_id, cs, peticion.get("fila"), quien)
+        except Exception as error:  # noqa: BLE001 - se dice qué quedó ya escrito, nunca en silencio
+            if not hechas:
+                raise
+            raise sin_colocar.ErrorSinColocar(
+                f"asignación a medias: {len(hechas)} de {len(por_grupo)} grupos ya quedaron "
+                f"asignados; falló el grupo {grupo_id}: {type(error).__name__}: {error}") from error
         hechas.append({"grupo_id": grupo_id, "n_fotos": len(cs), "fila": peticion.get("fila"),
                        "quien": quien, "origen": quien})
     return {"aplicadas": hechas}
 
 
-def _aceptar(man: Manifiesto, ruta_salida: str, ejecucion_id: int, peticion: dict) -> dict:
+def _aceptar(man: Manifiesto, ruta_salida: str, ejecucion_id: int, peticion: dict,
+             parcial: list | None = None) -> dict:
+    """`parcial`: igual que en `_asignar` (cada recomendación escrita se acumula al momento)."""
     quien = peticion.get("quien")
     if not quien:
         raise ValueError("aceptar: falta `quien` (firma de quien decide).")
@@ -401,11 +479,18 @@ def _aceptar(man: Manifiesto, ruta_salida: str, ejecucion_id: int, peticion: dic
     if desconocidas:
         raise sin_colocar.ErrorSinColocar(
             f"recomendación(es) inexistente(s) o ya resueltas: {', '.join(desconocidas)}.")
-    hechas = []
+    hechas = parcial if parcial is not None else []
     for i in ids:
         rec = recs[i]
-        sin_colocar.asignar_fotos(man, ruta_salida, rec["grupo_id"], rec["claves"], rec["fila"],
-                                  quien)
+        try:
+            sin_colocar.asignar_fotos(man, ruta_salida, rec["grupo_id"], rec["claves"],
+                                      rec["fila"], quien)
+        except Exception as error:  # noqa: BLE001 - se dice qué quedó ya escrito, nunca en silencio
+            if not hechas:
+                raise
+            raise sin_colocar.ErrorSinColocar(
+                f"aceptación a medias: {len(hechas)} de {len(ids)} recomendaciones ya quedaron "
+                f"aplicadas; falló {i}: {type(error).__name__}: {error}") from error
         hechas.append({**_resumen(rec), "quien": quien, "origen": quien})
     return {"aplicadas": hechas}
 
@@ -473,6 +558,7 @@ def pausar_si_armada(man: Manifiesto, cfg, ejecucion_id: int, emit, on_evento=No
                 finally:
                     aplicadas.extend(nuevas)    # lo ya escrito consta aunque falle a mitad
                 resultado, sin_aplicar = "desatendida", res["sin_aplicar"]
+                errores.extend(_errores_de(res))
                 break
     except Exception as error:
         # Un fallo real NO es una cancelación: auditoría `error` con el motivo, y se propaga.
@@ -516,18 +602,22 @@ def _procesar(man, ruta, ejecucion_id, peticion, futuro, aplicadas, emit,
         _ESPERANDO["ultima"] = time.monotonic()
     try:
         op = peticion.get("op")
-        if op == "asignar":
-            res = _asignar(man, ruta, peticion)
-        elif op == "aceptar":
-            res = _aceptar(man, ruta, ejecucion_id, peticion)
+        if op == "asignar" or op == "aceptar":
+            nuevas: list[dict] = []
+            try:
+                if op == "asignar":
+                    res = _asignar(man, ruta, peticion, parcial=nuevas)
+                else:
+                    res = _aceptar(man, ruta, ejecucion_id, peticion, parcial=nuevas)
+            finally:
+                aplicadas.extend(nuevas)    # lo ya escrito consta en la auditoría aunque falle a mitad
+            futuro.set_result(res)
+            return None
         elif op == "continuar":
             return _continuar(man, ruta, ejecucion_id, peticion, futuro, aplicadas, emit,
                               errores)
         else:
             raise ValueError(f"operación desconocida: {op!r} (asignar, aceptar o continuar).")
-        aplicadas.extend(res["aplicadas"])
-        futuro.set_result(res)
-        return None
     except Exception as error:  # noqa: BLE001 - visible para quien lo pidió, el run sigue
         with _LOCK:
             _ESPERANDO["estado"] = "esperando"      # un `continuar` fallido no cierra la pausa
@@ -556,6 +646,8 @@ def _continuar(man, ruta, ejecucion_id, peticion, futuro, aplicadas, emit,
         finally:
             aplicadas.extend(nuevas)    # lo ya escrito consta en la auditoría aunque falle
         sin_aplicar = res["sin_aplicar"]
+        if errores is not None:
+            errores.extend(_errores_de(res))
     else:
         sin_aplicar, _avisos = _sin_decision(man, ruta, ejecucion_id, emit)
     futuro.set_result({"resultado": "respondida", "aplicadas": list(aplicadas),
