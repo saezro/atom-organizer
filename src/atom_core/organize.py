@@ -288,13 +288,19 @@ def _default_split_config(params: dict) -> SplitImagesConfig:
     else:
         camara_rgb = config.load_config_or_default(config._user_config_path())["camara_rgb"]
 
+    # Recorte: en la UI de escritorio llega por `advanced` (`replace(cfg, **coerced)`,
+    # que pisa esto); aquí se respeta si llega en `params` (job/CLI). Sin ellos:
+    # automático por tabla, como siempre.
+    cropping_mode_auto = bool(params.get("cropping_mode_auto", True))
+    crop_percentage = str(params.get("crop_percentage", "0"))
+
     return SplitImagesConfig(
         input_folder=origen, output_folder=destino,
         end_rgb_extra_files="", end_thermo_files=thermo, end_rgb_files="",
         estad=estad, choose_mode_size=False, max_size="0",
         compress_rgb=True, compress_level=40, rename_images=rename,
         mismatch_hours=0, mismatch_minutes=0, organize_images=bool(estad),
-        cropping_rgb=True, cropping_mode_auto=True, crop_percentage="0",
+        cropping_rgb=True, cropping_mode_auto=cropping_mode_auto, crop_percentage=crop_percentage,
         gen_meta_location=True, gen_thumbnails=True, seconds_range=30.0,
         include_v=True, calculate_proyected_distance=False, flight_height=0.0,
         gen_thumbnails_rotate_90=False, gen_thumbnails_add_to_angle=ROTATION_YAW_MARGIN,
