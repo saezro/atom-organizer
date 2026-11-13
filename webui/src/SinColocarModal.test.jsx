@@ -68,6 +68,30 @@ describe('SinColocarModal', () => {
     expect(onRelanzar).toHaveBeenCalled()
   })
 
+  async function colocarAnterior(props) {
+    api.sinColocarListar
+      .mockResolvedValueOnce({ ok: true, grupos: [grupo()], filas })
+      .mockResolvedValue({ ok: true, grupos: [], filas: [] })
+    api.sinColocarAsignar.mockResolvedValue({
+      ok: true, resultado: { pendientes_apply: 5, recolocadas: 0, avisos: [] },
+    })
+    render(<SinColocarModal destino="/out" onClose={() => {}} {...props} />)
+    fireEvent.click(await screen.findByText(/Colocar en fila anterior/))
+    await screen.findByText(/No quedan fotos sin colocar/)
+  }
+
+  it('con el proceso en marcha el botón está deshabilitado y explica por qué', async () => {
+    await colocarAnterior({ onRelanzar: vi.fn(), running: true })
+    expect(screen.getByText('Relanzar aplicar').disabled).toBe(true)
+    expect(screen.getByTestId('sc-relanzar-espera').textContent).toMatch(/Disponible al terminar/)
+  })
+
+  it('sin onRelanzar (run remoto) avisa de relanzar desde organizar', async () => {
+    await colocarAnterior({ running: false })
+    expect(screen.queryByText('Relanzar aplicar')).toBeNull()
+    expect(screen.getByTestId('sc-relanzar-manual').textContent).toMatch(/Relanza desde la pantalla de organizar/)
+  })
+
   it('«Dejar en SIN_ORDENAR» manda fila null y no pide relanzar', async () => {
     api.sinColocarListar.mockResolvedValue({ ok: true, grupos: [grupo()], filas })
     api.sinColocarAsignar.mockResolvedValue({ ok: true, resultado: { pendientes_apply: 5 } })
