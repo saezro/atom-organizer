@@ -407,10 +407,14 @@ def asignar_grupo(ruta_salida: str, grupo_id: str, fila_estadillo: int | None, *
                                        or not isinstance(fila_estadillo, int)):
         raise ErrorSinColocar(f"fila_estadillo debe ser un entero o None: {fila_estadillo!r}")
     with _abrir(ruta_salida, escribe=True) as man:
-        return _asignar(man, ruta_salida, grupo_id, fila_estadillo, quien)
+        return asignar_fotos(man, ruta_salida, grupo_id, None, fila_estadillo, quien)
 
 
-def _asignar(man: Manifiesto, ruta_salida: str, grupo_id: str, fila_estadillo, quien: str) -> dict:
+def asignar_fotos(man: Manifiesto, ruta_salida: str, grupo_id: str, claves: list[str] | None,
+                  fila_estadillo: int | None, quien: str) -> dict:
+    """Como `asignar_grupo` pero sobre un subconjunto `claves` del grupo (`None` = todo el
+    grupo), con el manifiesto ya abierto para escribir. Una clave que no es del grupo es
+    `ErrorSinColocar` (nada se escribe). Las demás fotos del grupo quedan pendientes."""
     from atom_core import indice as ind  # noqa: PLC0415 - evita ciclo
     grupo = next((g for g in man.grupos_sin_colocar_raw() if g["grupo_id"] == grupo_id), None)
     if grupo is None:
@@ -422,7 +426,15 @@ def _asignar(man: Manifiesto, ruta_salida: str, grupo_id: str, fila_estadillo, q
             raise ErrorSinColocar(
                 f"la fila {fila_estadillo} no existe en el estadillo del grupo {grupo_id} "
                 f"(ejecución {grupo['ejecucion']}).")
-    claves = list(grupo["claves"])
+    del_grupo = list(grupo["claves"])
+    if claves is None:
+        claves = del_grupo
+    else:
+        claves = list(claves)
+        ajenas = [c for c in claves if c not in set(del_grupo)]
+        if ajenas:
+            raise ErrorSinColocar(
+                f"{len(ajenas)} foto(s) no son del grupo {grupo_id} (p. ej. {ajenas[0]}).")
     filas = man.filas_por_claves(claves)
     ausentes = [c for c in claves if c not in filas]
     if ausentes:
@@ -470,16 +482,20 @@ def _asignar(man: Manifiesto, ruta_salida: str, grupo_id: str, fila_estadillo, q
             if ficha is None:
                 carpeta = almacen.unir(ruta_salida, ind.NOMBRE_CARPETA_SIN_ORDENAR, base.tipo)
                 cambios = dict(pb=None, vuelo=None, angulo_giro=0, angulo_version=None,
-                               giro_voto=None, equipo_estadillo=None, unassigned=True)
+                               giro_voto=None, equipo_estadillo=None, unassigned=True,
+                               categoria=ind._categoria_de_fila(True, False))   # motivo_fuera se conserva
             else:
-                if ficha["generales"] or ind._es_pb_generales(ficha["pb"]):
+                es_generales = bool(ficha["generales"] or ind._es_pb_generales(ficha["pb"]))
+                if es_generales:
                     carpeta = almacen.unir(ruta_salida, ind.NOMBRE_CARPETA_GENERALES)
                 else:
                     carpeta = almacen.unir(ruta_salida, base.tipo, f"PB{ficha['pb']}",
                                            ficha["carpeta_vuelo"])
                 cambios = dict(pb=ficha["pb"], vuelo=ficha["vuelo"], angulo_giro=angulo,
                                angulo_version=version, giro_voto=votos.get(clave),
-                               equipo_estadillo=ficha.get("equipo"), unassigned=False)
+                               equipo_estadillo=ficha.get("equipo"), unassigned=False,
+                               categoria=ind._categoria_de_fila(False, es_generales),
+                               motivo_fuera=None)
             original, crop, tiff = ind.rutas_de_salida(
                 carpeta, nombre_final, bool(base.ruta_salida_crop), bool(base.ruta_salida_tiff))
             nuevas.setdefault(filas[clave]["ejecucion_id"], []).append(replace(

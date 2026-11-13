@@ -1851,9 +1851,8 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
         timestamp=dato.timestamp)
     nombre_final = nombre_nuevo if nombre_nuevo else dato.nombre
 
-    categoria = "vuelo"
+    categoria = _categoria_de_fila(unassigned, False if unassigned else _es_pb_generales(ventana["pb"]))
     if unassigned:
-        categoria = "sin_ordenar"
         pb = vuelo = None
         angulo_giro = 0
         angulo_version = None
@@ -1862,7 +1861,6 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
         angulo_version = None
         pb, vuelo = ventana["pb"], ventana["vuelo"]
         if _es_pb_generales(pb):
-            categoria = "fotos_generales"
             # Fotos de contexto, no de un vuelo: carpeta HERMANA de
             # TERMICA/RGB/RGB_Extra, plana (sin PB/vuelo) y sin girar -no hay
             # consenso de ángulo posible sin línea de vuelo real. El recorte
@@ -1919,6 +1917,14 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
         categoria=categoria,
         motivo_fuera=motivo_fuera if unassigned else None,
     )
+
+
+def _categoria_de_fila(unassigned: bool, es_generales: bool) -> str:
+    """Categoría del manifiesto de una foto: la regla única del índice y de la recolocación
+    manual (`sin_colocar`)."""
+    if unassigned:
+        return "sin_ordenar"
+    return "fotos_generales" if es_generales else "vuelo"
 
 
 def _con_sufijo(ruta: str, contador: int) -> str:

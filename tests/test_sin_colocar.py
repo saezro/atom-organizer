@@ -495,3 +495,76 @@ def test_cli_salida_gcs(tanda, bucket, capsys, tmp_path):
                               "--sin-colocar-salida", salida]) == 0
     out = json.loads(capsys.readouterr().out)
     assert json.loads(bucket.objetos["salidas/sc.json"].decode("utf-8")) == out
+
+
+def _grupo_y_claves(tanda):
+    a = grupos_sin_colocar(tanda.destino)[0]
+    m = tanda.manifiesto()
+    try:
+        claves = list(next(g for g in m.grupos_sin_colocar_raw()
+                           if g["grupo_id"] == a["grupo_id"])["claves"])
+    finally:
+        m.cerrar()
+    return a["grupo_id"], claves
+
+
+def test_asignar_fotos_subconjunto_deja_el_resto_pendiente(tanda):
+    tanda.indexar(FOTOS_HUECOS)
+    gid, claves = _grupo_y_claves(tanda)
+    assert len(claves) == 3
+    m = tanda.manifiesto()
+    try:
+        res = sin_colocar.asignar_fotos(m, tanda.destino, gid, [claves[0]], 1, "rodrigo_saez")
+    finally:
+        m.cerrar()
+    assert res["n_fotos"] == 1
+    m = tanda.manifiesto()
+    try:
+        filas = m.filas_por_claves(claves)
+    finally:
+        m.cerrar()
+    estados = [(filas[c]["pb"], filas[c]["vuelo"], filas[c]["unassigned"]) for c in claves]
+    assert estados[0] == ("1", "2", 0)
+    assert [e[2] for e in estados[1:]] == [1, 1]
+    assert gid in {g["grupo_id"] for g in grupos_sin_colocar(tanda.destino)}
+
+
+def test_asignar_fotos_clave_ajena_al_grupo_es_error(tanda):
+    tanda.indexar(FOTOS_HUECOS)
+    gid, claves = _grupo_y_claves(tanda)
+    ajena = tanda.rutas["DJI_0004_D.JPG"]
+    assert ajena not in claves
+    m = tanda.manifiesto()
+    try:
+        with pytest.raises(ErrorSinColocar):
+            sin_colocar.asignar_fotos(m, tanda.destino, gid, [claves[0], ajena], 1, "x")
+        assert m.asignaciones_manuales() == {}
+    finally:
+        m.cerrar()
+
+
+def test_asignar_actualiza_categoria_y_motivo(tanda):
+    estadillo = ESTADILLO + [("GENERALES", "1", "2024:06:01", "13:00:00", "13:10:00")]
+    ventanas = dict(VENTANAS)
+    ventanas[("2024:06:01", "13:00:00", "13:10:00")] = (_t(13, 0), _t(13, 10))
+    tanda.indexar(FOTOS_HUECOS, estadillo=estadillo, ventanas=ventanas)
+    a = grupos_sin_colocar(tanda.destino)[0]
+    gid = a["grupo_id"]
+    nombre = "DJI_0001_D.JPG"
+    motivo0 = tanda.filas()[nombre]["motivo_fuera"]
+    assert tanda.filas()[nombre]["categoria"] == "sin_ordenar"
+    asignar_grupo(tanda.destino, gid, 1, quien="x")
+    f = tanda.filas()[nombre]
+    assert f["categoria"] == "vuelo" and f["motivo_fuera"] is None
+    asignar_grupo(tanda.destino, gid, 2, quien="x")
+    assert tanda.filas()[nombre]["categoria"] == "fotos_generales"
+    asignar_grupo(tanda.destino, gid, None, quien="x")
+    f = tanda.filas()[nombre]
+    assert f["categoria"] == "sin_ordenar" and f["unassigned"] == 1
+    # None directo desde el estado inicial conserva el motivo del índice.
+    assert motivo0 is not None
+    b = [g for g in grupos_sin_colocar(tanda.destino) if g["grupo_id"] != gid][0]
+    otro = tanda.filas()["DJI_0004_D.JPG"]["motivo_fuera"]
+    asignar_grupo(tanda.destino, b["grupo_id"], None, quien="x")
+    g = tanda.filas()["DJI_0004_D.JPG"]
+    assert g["categoria"] == "sin_ordenar" and g["motivo_fuera"] == otro and otro is not None
