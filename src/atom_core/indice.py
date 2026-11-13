@@ -1851,7 +1851,8 @@ def _construir_fila(dato: _MetadatosImagen, ventana: dict | None,
         timestamp=dato.timestamp)
     nombre_final = nombre_nuevo if nombre_nuevo else dato.nombre
 
-    categoria = _categoria_de_fila(unassigned, False if unassigned else _es_pb_generales(ventana["pb"]))
+    es_generales = not unassigned and _es_pb_generales(ventana["pb"])
+    categoria = _categoria_de_fila(unassigned, es_generales)
     if unassigned:
         pb = vuelo = None
         angulo_giro = 0

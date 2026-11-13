@@ -555,16 +555,71 @@ def test_asignar_actualiza_categoria_y_motivo(tanda):
     assert tanda.filas()[nombre]["categoria"] == "sin_ordenar"
     asignar_grupo(tanda.destino, gid, 1, quien="x")
     f = tanda.filas()[nombre]
-    assert f["categoria"] == "vuelo" and f["motivo_fuera"] is None
+    assert f["categoria"] == "vuelo" and f["motivo_fuera"] == motivo0   # se conserva
     asignar_grupo(tanda.destino, gid, 2, quien="x")
     assert tanda.filas()[nombre]["categoria"] == "fotos_generales"
     asignar_grupo(tanda.destino, gid, None, quien="x")
     f = tanda.filas()[nombre]
     assert f["categoria"] == "sin_ordenar" and f["unassigned"] == 1
+    assert motivo0 is not None and f["motivo_fuera"] == motivo0
     # None directo desde el estado inicial conserva el motivo del índice.
-    assert motivo0 is not None
     b = [g for g in grupos_sin_colocar(tanda.destino) if g["grupo_id"] != gid][0]
     otro = tanda.filas()["DJI_0004_D.JPG"]["motivo_fuera"]
     asignar_grupo(tanda.destino, b["grupo_id"], None, quien="x")
     g = tanda.filas()["DJI_0004_D.JPG"]
     assert g["categoria"] == "sin_ordenar" and g["motivo_fuera"] == otro and otro is not None
+
+
+def _resumen_de(destino):
+    """resumen.json mínimo coherente con el manifiesto (solo filas de vuelo, sin pares)."""
+    m = Manifiesto(os.path.join(destino, ".organizado", "manifiesto.db"))
+    try:
+        filas = list(m.todas())
+    finally:
+        m.cerrar()
+    vuelos: dict = {}
+    for f in filas:
+        if not f["unassigned"] and f["categoria"] == "vuelo":
+            vuelos[(f["pb"], f["vuelo"])] = vuelos.get((f["pb"], f["vuelo"]), 0) + 1
+    return {"version": 1, "ejecucion_indice": "e1", "hash_listado": "h",
+            "n_imagenes": len(filas), "n_pares": 0, "n_pb": 1, "n_vuelos": len(vuelos),
+            "n_sin_ordenar": sum(1 for f in filas if f["unassigned"]),
+            "pb": [{"pb": pb, "vuelo": v, "imagenes": n, "pares": 0}
+                   for (pb, v), n in vuelos.items()],
+            "fuera_de_orden": []}
+
+
+def test_recolocar_ida_y_vuelta_mantiene_la_propuesta_valida(tanda):
+    from atom_core.propuesta import construir_propuesta  # noqa: PLC0415
+    estadillo = ESTADILLO + [("GENERALES", "1", "2024:06:01", "13:00:00", "13:10:00")]
+    ventanas = dict(VENTANAS)
+    ventanas[("2024:06:01", "13:00:00", "13:10:00")] = (_t(13, 0), _t(13, 10))
+    tanda.indexar(FOTOS_HUECOS, estadillo=estadillo, ventanas=ventanas)
+    ruta_db = os.path.join(tanda.destino, ".organizado", "manifiesto.db")
+    gid = grupos_sin_colocar(tanda.destino)[0]["grupo_id"]
+
+    def comprobar():
+        resumen = _resumen_de(tanda.destino)
+        prop = construir_propuesta(ruta_db, resumen, "P", "2026-11-13T00:00:00")
+        assert prop["totales"]["n_sin_ordenar"] == sum(
+            1 for f in tanda.filas().values() if f["unassigned"])
+
+    comprobar()
+    for fila in (1, None, 2):
+        asignar_grupo(tanda.destino, gid, fila, quien="x")
+        comprobar()
+
+
+def test_asignar_fotos_claves_vacias_error_y_repetidas_se_deduplican(tanda):
+    tanda.indexar(FOTOS_HUECOS)
+    gid, claves = _grupo_y_claves(tanda)
+    m = tanda.manifiesto()
+    try:
+        with pytest.raises(ErrorSinColocar):
+            sin_colocar.asignar_fotos(m, tanda.destino, gid, [], 1, "x")
+        assert m.asignaciones_manuales() == {}
+        res = sin_colocar.asignar_fotos(
+            m, tanda.destino, gid, [claves[0], claves[0], claves[1]], 1, "x")
+        assert res["n_fotos"] == 2
+    finally:
+        m.cerrar()
