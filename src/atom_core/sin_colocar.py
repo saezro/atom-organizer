@@ -327,15 +327,14 @@ class _Avisos:
         self.mensajes.append(str(texto).strip())
 
 
-def _angulo_de_vuelo(man: Manifiesto, ruta_salida: str, ficha: dict, grupo: dict,
+def _resolver_angulo(man: Manifiesto, ruta_salida: str, ficha: dict, grupo: dict,
                      claves: list[str], avisos: _Avisos):
-    """`(angulo, version, {clave: voto})` para colocar `claves` en la fila `ficha`. Un solo
-    ángulo por vuelo: el consenso vigente de `vuelos` manda; si no hay, el de las filas ya
-    colocadas; si tampoco, se calcula (mismo código que el índice) con las fotos del grupo y
-    se guarda en `vuelos`. Un ángulo que contradice FlightYaw es error (`ErrorGiroContradictorio`)."""
+    """`(angulo, version, {clave: voto}, guardar)` para colocar `claves` en la fila `ficha`;
+    `guardar` es el consenso nuevo a persistir en `vuelos` (o None). NO escribe: la
+    escritura es de `_angulo_de_vuelo`. Un ángulo que contradice FlightYaw es `ErrorSinColocar`."""
     from atom_core import indice as ind  # noqa: PLC0415 - evita ciclo
     if ind._es_pb_generales(ficha["pb"]) or ficha["generales"]:
-        return 0, None, {}
+        return 0, None, {}, None
     bruto = man.leer_ajuste(AJUSTE_CRITERIO_GIRO)
     if bruto is None:
         raise ErrorSinColocar(
@@ -376,9 +375,27 @@ def _angulo_de_vuelo(man: Manifiesto, ruta_salida: str, ficha: dict, grupo: dict
         ind._validar_giro_contra_flight_yaw(asignaciones, {clave_v: angulo}, cfg)
     except ind.ErrorGiroContradictorio as error:
         raise ErrorSinColocar(str(error)) from error
+    return angulo, version, {c: votos.get(id(d)) for c, d in datos.items()}, guardar
+
+
+def angulo_propuesto(man: Manifiesto, ruta_salida: str, ficha: dict, grupo: dict,
+                     claves: list[str]) -> int:
+    """Ángulo con el que se colocarían `claves` en `ficha`, de SOLO LECTURA (no guarda
+    `vuelos`). Contradecir FlightYaw o faltar el criterio de giro es `ErrorSinColocar`."""
+    return _resolver_angulo(man, ruta_salida, ficha, grupo, claves, _Avisos())[0]
+
+
+def _angulo_de_vuelo(man: Manifiesto, ruta_salida: str, ficha: dict, grupo: dict,
+                     claves: list[str], avisos: _Avisos):
+    """`(angulo, version, {clave: voto})` para colocar `claves` en la fila `ficha`. Un solo
+    ángulo por vuelo: el consenso vigente de `vuelos` manda; si no hay, el de las filas ya
+    colocadas; si tampoco, se calcula (mismo código que el índice) con las fotos del grupo y
+    se guarda en `vuelos`. Un ángulo que contradice FlightYaw es error (`ErrorSinColocar`)."""
+    angulo, version, votos, guardar = _resolver_angulo(
+        man, ruta_salida, ficha, grupo, claves, avisos)
     if guardar is not None:
         man.guardar_vuelos([guardar])
-    return angulo, version, {c: votos.get(id(d)) for c, d in datos.items()}
+    return angulo, version, votos
 
 
 def asignar_grupo(ruta_salida: str, grupo_id: str, fila_estadillo: int | None, *,
@@ -430,8 +447,11 @@ def asignar_fotos(man: Manifiesto, ruta_salida: str, grupo_id: str, claves: list
     if claves is None:
         claves = del_grupo
     else:
-        claves = list(claves)
-        ajenas = [c for c in claves if c not in set(del_grupo)]
+        claves = list(dict.fromkeys(claves))    # sin repetidas, en orden
+        if not claves:
+            raise ErrorSinColocar(f"claves vacías para el grupo {grupo_id}: nada que asignar.")
+        propias = set(del_grupo)
+        ajenas = [c for c in claves if c not in propias]
         if ajenas:
             raise ErrorSinColocar(
                 f"{len(ajenas)} foto(s) no son del grupo {grupo_id} (p. ej. {ajenas[0]}).")
@@ -494,8 +514,9 @@ def asignar_fotos(man: Manifiesto, ruta_salida: str, grupo_id: str, claves: list
                 cambios = dict(pb=ficha["pb"], vuelo=ficha["vuelo"], angulo_giro=angulo,
                                angulo_version=version, giro_voto=votos.get(clave),
                                equipo_estadillo=ficha.get("equipo"), unassigned=False,
-                               categoria=ind._categoria_de_fila(False, es_generales),
-                               motivo_fuera=None)
+                               categoria=ind._categoria_de_fila(False, es_generales))
+                # motivo_fuera se conserva: las filas colocadas lo ignoran (`propuesta.py`) y
+                # así una vuelta a SIN_ORDENAR sigue teniendo motivo.
             original, crop, tiff = ind.rutas_de_salida(
                 carpeta, nombre_final, bool(base.ruta_salida_crop), bool(base.ruta_salida_tiff))
             nuevas.setdefault(filas[clave]["ejecucion_id"], []).append(replace(
