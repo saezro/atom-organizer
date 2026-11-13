@@ -26,6 +26,8 @@ PAYLOADS: dict[str, frozenset[str]] = {
     "XT2": frozenset({"M200", "M300"}),
     "ZH20T": frozenset({"M300", "M350"}),
     "H20T": frozenset({"M300", "M350"}),
+    "ZH30T": frozenset({"M300", "M350"}),
+    "H30T": frozenset({"M300", "M350"}),
 }
 
 
