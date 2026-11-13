@@ -5,7 +5,7 @@ import PreflightModal from './PreflightModal'
 import SinColocarModal from './SinColocarModal'
 import RevisionIndiceModal from './RevisionIndiceModal'
 import { modeloDesdeCalendario } from './calendarioHoras'
-import { leerEsperaMin, esperaGuardada, guardarEsperaMin, ESPERA_REVISION_DEFECTO_MIN } from './revisionEspera'
+import { leerEsperaMin, esperaGuardada, guardarEsperaMin, paramsConEspera, ESPERA_REVISION_DEFECTO_MIN } from './revisionEspera'
 import UpdateModal from './UpdateModal'
 import FolderPicker from './FolderPicker'
 import SplashInicio from './SplashInicio'
@@ -242,6 +242,8 @@ function AppInterna() {
   const [revisionModelo, setRevisionModelo] = useState(null)
   const [revisionFallo, setRevisionFallo] = useState(null)
   const revisionEsperaMinRef = useRef(null)
+  // Flag de release de la revisión (lo dice el backend, `disponible`): apagado = ni ajuste ni params.
+  const [revisionDisponible, setRevisionDisponible] = useState(false)
   const [plant, setPlant] = useState('')
   const [phases, setPhases] = useState([]) // [{name, status}]
   const [progress, setProgress] = useState(0) // % de la fase activa
@@ -478,12 +480,13 @@ function AppInterna() {
     },
     asignar: async (claves, fila) => {
       const r = await api.revisionIndiceAsignar(claves, fila, '')
-      if (!r?.ok) return r
+      // Un fallo a medias puede haber escrito parte: se relee el calendario y se devuelve el error.
+      if (!r?.ok) { await cargarRevision(); return r }
       return cargarRevision()
     },
     aceptar: async (ids) => {
       const r = await api.revisionIndiceAceptar(ids, '')
-      if (!r?.ok) return r
+      if (!r?.ok) { await cargarRevision(); return r }
       return cargarRevision()
     },
     continuar: async (modo) => {
@@ -499,19 +502,33 @@ function AppInterna() {
 
   // Recarga/reconexión durante la pausa: el evento `revision` ya pasó, se consulta el estado real.
   // El calendario trae el `deadline_epoch` vigente (la cuenta atrás no se reinicia).
-  useEffect(() => {
-    if (!ready) return
-    Promise.resolve()
+  // `alReconectar`: tras reconectar el SSE también pudo terminar la pausa mientras estaba caído (el
+  // evento `phase` se perdió): si el backend ya no la tiene abierta, se cierra el modal obsoleto.
+  function consultarEstadoRevision(alReconectar) {
+    return Promise.resolve()
       .then(() => api.revisionIndiceEstado())
       .then((r) => {
+        setRevisionDisponible(r?.ok === true && r.disponible === true)
         if (r?.ok && r.activa && r.estado === 'esperando') {
           sinColocarRef.current.revision = true
           setSinColocarAbierto(false)
           return cargarRevision()
         }
         if (r && r.ok === false) console.error('revision_indice_estado', r.error)
+        else if (alReconectar && r?.ok && !r.activa) {
+          setRevisionModelo(null)
+          setRevisionFallo(null)
+        }
       })
       .catch((e) => console.error('revision_indice_estado', e))
+  }
+
+  useEffect(() => {
+    if (!ready) return undefined
+    consultarEstadoRevision(false)
+    const alReconectar = () => { consultarEstadoRevision(true) }
+    window.addEventListener('atom:sse_reconectado', alReconectar)
+    return () => window.removeEventListener('atom:sse_reconectado', alReconectar)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready])
 
@@ -713,15 +730,8 @@ function AppInterna() {
         // Solo si el usuario guardó un valor: sin él los params son idénticos a los de siempre.
         // Un valor guardado ilegible NO bloquea organizar (puede que la revisión esté apagada):
         // se avisa en el log del proceso y se omite.
-        let sendParams = base
-        if (task === 'split_images') {
-          const e = esperaGuardada()
-          if (e.error) {
-            setDetail((l) => anexarLog(l, `AVISO: ajuste «Esperar mi respuesta tras el índice» ilegible (${e.error}); si la revisión del índice está activa se usará la espera por defecto del servidor.`))
-          } else if (e.min != null) {
-            sendParams = { ...base, revision_indice: { ...(base.revision_indice || {}), espera_min: e.min } }
-          }
-        }
+        const { params: sendParams, aviso } = paramsConEspera(task, base, revisionDisponible)
+        if (aviso) setDetail((l) => anexarLog(l, aviso))
         // Con plazo: si el bridge se queda colgado, `runTask` no resuelve nunca
         // y el modal se quedaba en "Preparando…" sin botón para salir.
         const res = await conPlazo(
@@ -1206,7 +1216,7 @@ function AppInterna() {
         ) : section === 'herramientas' ? (
           <HerramientasScreen running={running} onRun={run} />
         ) : (
-          <ConfigScreen ready={ready} />
+          <ConfigScreen ready={ready} revisionDisponible={revisionDisponible} />
         )}
       </main>
 
@@ -1298,7 +1308,7 @@ function textoUpdate(upd) {
   return `Estás en la última versión (${upd.current}).`
 }
 
-function ConfigScreen({ ready }) {
+function ConfigScreen({ ready, revisionDisponible }) {
   // Historial de procesos: sustituye el contenido de la card por
   // `HistorialRuns` en vez de abrir un modal — mismo patrón que el resto de
   // Ajustes (pantalla completa, no popups), y así no interfiere con
@@ -1375,11 +1385,17 @@ function ConfigScreen({ ready }) {
     try { return String(leerEsperaMin()) } catch { return String(ESPERA_REVISION_DEFECTO_MIN) }
   })
   const [esperaMsg, setEsperaMsg] = useState(null) // null | {ok, msg}
-  function guardarEspera() {
+  async function guardarEspera() {
     try {
+      // Blur sin cambios: no se guarda nada (un valor nunca tocado no debe viajar en los params).
+      const g = esperaGuardada()
+      if (!g.error && String(g.min ?? ESPERA_REVISION_DEFECTO_MIN) === String(esperaTxt).trim()) return
       const n = guardarEsperaMin(esperaTxt)
       setEsperaTxt(String(n))
-      setEsperaMsg({ ok: true, msg: `Se esperará ${n} min tras el índice.` })
+      // También en el backend: los runs lanzados por control remoto no pasan por este front.
+      const r = await api.revisionIndiceGuardarEspera(n)
+      if (r?.ok) setEsperaMsg({ ok: true, msg: `Se esperará ${n} min tras el índice.` })
+      else setEsperaMsg({ ok: false, msg: `Guardado en esta pantalla, pero no en el equipo (los runs remotos no lo usarán): ${r?.error || 'sin respuesta'}` })
     } catch (e) {
       setEsperaMsg({ ok: false, msg: e?.message ? e.message : String(e) })
     }
@@ -1508,25 +1524,27 @@ function ConfigScreen({ ready }) {
         Guardar configuración
       </button>
 
-      <div className="field">
-        <span className="field-label">Esperar mi respuesta tras el índice (min)</span>
-        <input
-          className="glass-input"
-          type="number"
-          min="1"
-          aria-label="Esperar mi respuesta tras el índice (min)"
-          value={esperaTxt}
-          onChange={(e) => { setEsperaTxt(e.target.value); setEsperaMsg(null) }}
-          onBlur={guardarEspera}
-        />
-        <span className="field-hint">
-          Si hay fotos sin colocar, el proceso espera tu respuesta este tiempo sin actividad; después
-          aplica solo las recomendaciones de confianza alta. Por defecto {ESPERA_REVISION_DEFECTO_MIN} min.
-        </span>
-        {esperaMsg && (
-          <span className={`field-hint ${esperaMsg.ok ? 'hint-ok' : 'hint-warn'}`}>{esperaMsg.msg}</span>
-        )}
-      </div>
+      {revisionDisponible && (
+        <div className="field">
+          <span className="field-label">Esperar mi respuesta tras el índice (min)</span>
+          <input
+            className="glass-input"
+            type="number"
+            min="1"
+            aria-label="Esperar mi respuesta tras el índice (min)"
+            value={esperaTxt}
+            onChange={(e) => { setEsperaTxt(e.target.value); setEsperaMsg(null) }}
+            onBlur={guardarEspera}
+          />
+          <span className="field-hint">
+            Si hay fotos sin colocar, el proceso espera tu respuesta este tiempo sin actividad; después
+            aplica solo las recomendaciones de confianza alta. Por defecto {ESPERA_REVISION_DEFECTO_MIN} min.
+          </span>
+          {esperaMsg && (
+            <span className={`field-hint ${esperaMsg.ok ? 'hint-ok' : 'hint-warn'}`}>{esperaMsg.msg}</span>
+          )}
+        </div>
+      )}
 
       <div className="field">
         <span className="field-label">Aceleración gráfica</span>

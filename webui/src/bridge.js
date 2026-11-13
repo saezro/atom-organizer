@@ -158,6 +158,7 @@ export function whenBridgeReady() {
 }
 
 let fuenteEventos = null
+export const EVENTO_SSE_RECONECTADO = 'atom:sse_reconectado'
 
 function conectarEventos() {
   if (fuenteEventos) return
@@ -167,6 +168,13 @@ function conectarEventos() {
   // acepta como alternativa para clientes no loopback.
   const url = tokenRemotoActual ? `/events?t=${encodeURIComponent(tokenRemotoActual)}` : '/events'
   fuenteEventos = new EventSource(url)
+  // Tras una caída y reconexión del SSE se pierden los eventos que pasaron entre medias (p. ej. la
+  // apertura de la pausa de revisión): se avisa a la UI para que consulte el estado real.
+  let yaAbierto = false
+  fuenteEventos.addEventListener('open', () => {
+    if (yaAbierto) window.dispatchEvent(new CustomEvent(EVENTO_SSE_RECONECTADO))
+    yaAbierto = true
+  })
   for (const canal of ['atom:progress', 'atom:update', 'atom:cloud', 'atom:resultado', 'atom:analisis', 'atom:control_carpeta', 'atom:control_ui']) {
     fuenteEventos.addEventListener(canal, (e) => {
       window.dispatchEvent(new CustomEvent(canal, { detail: JSON.parse(e.data) }))
@@ -333,6 +341,7 @@ export const api = {
     call('revision_indice_asignar', claves, fila ?? null, destino || ''),
   revisionIndiceAceptar: (ids, destino) => call('revision_indice_aceptar', ids, destino || ''),
   revisionIndiceLatido: () => call('revision_indice_latido'),
+  revisionIndiceGuardarEspera: (minutos) => call('revision_indice_guardar_espera', minutos),
   revisionIndiceContinuar: (modo) => call('revision_indice_continuar', modo),
   // Configuración persistente: ruta de ThermoViewer.exe + % de recorte RGB por
   // modelo de dron. read devuelve {ruta_thermoviewer, percentage_by_models (override), recortes_efectivos, recortes_tabla};

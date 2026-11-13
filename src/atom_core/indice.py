@@ -2321,8 +2321,10 @@ def _escribir_resumen(cfg, ejecucion: str, imagenes, asignaciones, filas, dias_s
         mr.escribir_propuesta_indice(cfg.output_folder, ejecucion, propuesta)
 
 
-_CAMPOS_REVISION = ("id", "grupo_id", "n_fotos", "fila", "pb", "vuelo", "motivo",
-                    "distancia_s", "confianza", "explicacion")
+# `motivo` = origen de la recomendación (vecino|par-partido); `motivo_fuera` = motivo del grupo
+# sin colocar (el de `fuera_de_vuelo[].motivo` de la propuesta); `sufijo` = el del vuelo destino.
+_CAMPOS_REVISION = ("id", "grupo_id", "n_fotos", "fila", "pb", "vuelo", "sufijo", "motivo",
+                    "motivo_fuera", "distancia_s", "confianza", "explicacion")
 
 
 def _fila_revision(rec: dict) -> dict:

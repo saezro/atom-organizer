@@ -59,7 +59,8 @@ export default function RevisionIndiceModal({ modelo, api, ahora = () => Date.no
   const esperando = espera?.estado === 'esperando' && espera.deadline_epoch != null
   const restante = esperando ? Math.max(0, Math.round((espera.deadline_epoch - t) / 1000)) : null
   const desatendida = espera?.estado === 'desatendida'
-  const minutos = espera?.espera_min ?? 30
+  // Sin dato de la espera no se inventa un número (antes: 30 por defecto).
+  const minutos = espera?.espera_min ?? null
   const sinPendientes = !libres.length && !recomendaciones.length
 
   return (
@@ -73,7 +74,7 @@ export default function RevisionIndiceModal({ modelo, api, ahora = () => Date.no
         ) : null}
         {desatendida ? (
           <p className="pm-status warn ri-aviso" role="alert" data-testid="ri-desatendida">
-            Sin respuesta en {minutos} min: aplicada {aplicadas.length} {aplicadas.length === 1 ? 'recomendación' : 'recomendaciones'} de confianza alta; {sinAplicar.length} quedan en SIN_ORDENAR.
+            Sin respuesta{minutos != null ? ` en ${Number(minutos.toFixed(2))} min` : ' durante la espera'}: aplicada {aplicadas.length} {aplicadas.length === 1 ? 'recomendación' : 'recomendaciones'} de confianza alta; {sinAplicar.length} quedan en SIN_ORDENAR.
           </p>
         ) : null}
         {enVuelo.length ? (
@@ -96,11 +97,11 @@ export default function RevisionIndiceModal({ modelo, api, ahora = () => Date.no
             <div className="ri-meter">
               <select className="sc-select" aria-label="Vuelo destino" value={fila} onChange={(e) => { api.latido(); setFila(e.target.value) }}>
                 <option value="">Elige vuelo…</option>
-                {vuelos.map((v) => <option key={v.fila} value={v.fila}>{`Fila ${v.fila} · ${etiquetaVuelo(v)}`}</option>)}
-                <option value="generales">Fotos generales</option>
+                {vuelos.map((v) => <option key={v.fila} value={v.fila}>{`Fila ${v.fila} · ${etiquetaVuelo(v)}${v.generales ? ' · fotos generales' : ''}`}</option>)}
+                <option value="sin_ordenar">Dejar en SIN_ORDENAR (sin vuelo)</option>
               </select>
               <button type="button" className="btn-ghost" disabled={ocupado || !tramo || fila === ''}
-                      onClick={() => ejecutar(() => api.asignar(tramo.claves, fila === 'generales' ? null : Number(fila)))}>
+                      onClick={() => ejecutar(() => api.asignar(tramo.claves, fila === 'sin_ordenar' ? null : Number(fila)))}>
                 Meter tramo en vuelo
               </button>
               {recTramo ? (

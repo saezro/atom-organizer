@@ -998,6 +998,30 @@ describe('Revisión del índice en la Pi', () => {
     expect(screen.getByTestId('ri-cuenta-atras').textContent).toMatch(/Se continuará solo en \d+:\d{2}/)
   })
 
+  it('es solo un aviso con «Confirmar» (sin calendario) que acepta la propuesta tal cual', async () => {
+    const modelo = {
+      vuelos: [{ pb: '1', vuelo: '1', sufijo: '', inicio: 'a', fin: 'b', fila: 1, horas: [] }],
+      libres: [{ clave: 'k' }, { clave: 'k2' }],
+      recomendaciones: [{ id: 'r1', confianza: 'alta', aplicada: false }, { id: 'r2', confianza: 'media', aplicada: false }],
+      espera: { estado: 'esperando', deadline_epoch: Date.now() + 5 * 60 * 1000, espera_min: 30 },
+    }
+    const apiRev = { latido: vi.fn(), asignar: vi.fn(), aceptar: vi.fn(), continuar: vi.fn().mockResolvedValue({ ok: true }), cancelar: vi.fn() }
+    render(<KioskScreen {...baseProps({ revision: { modelo, api: apiRev } })} />)
+    expect(screen.getByTestId('kiosk-revision-texto').textContent).toMatch(/2 fotos sin colocar.*alta \(1\)/)
+    expect(screen.queryByText('Meter tramo en vuelo')).toBeNull()
+    await userEvent.click(screen.getByTestId('kiosk-revision-confirmar'))
+    expect(apiRev.continuar).toHaveBeenCalledWith('con_alta')
+    expect(apiRev.asignar).not.toHaveBeenCalled()
+  })
+
+  it('si confirmar falla se enseña el error', async () => {
+    const modelo = { vuelos: [], libres: [], recomendaciones: [], espera: null }
+    const apiRev = { continuar: vi.fn().mockResolvedValue({ ok: false, error: 'boom' }) }
+    render(<KioskScreen {...baseProps({ revision: { modelo, api: apiRev } })} />)
+    await userEvent.click(screen.getByTestId('kiosk-revision-confirmar'))
+    expect((await screen.findByRole('alert')).textContent).toMatch(/boom/)
+  })
+
   it('sin `revision` no hay modal', () => {
     render(<KioskScreen {...baseProps()} />)
     expect(screen.queryByRole('dialog', { name: 'Revisión del índice' })).toBeNull()

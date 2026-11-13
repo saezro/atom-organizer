@@ -77,3 +77,23 @@ def test_exigen_pin(servidor, metodo, ruta):
     else:
         status, body, _ = _post_json(base, ruta, {})
     assert status == 401 and body["codigo"] == "pin_invalido"
+
+
+@pytest.mark.parametrize("ruta,payload", [
+    ("asignar", {"claves": ["a"], "fila": 1}), ("aceptar", {"ids": ["x"]}),
+    ("continuar", {"modo": "tal_cual"}),
+])
+def test_estado_ilegible_no_es_409_ni_se_aplica(servidor, ruta, payload):
+    """Si no se puede leer el estado de la revisión no se dice «sin revisión» (409) ni se actúa
+    a ciegas: 500 con el error visible y sin llamar al método de escritura."""
+    _, api, base = servidor
+    _fijar_pin(api)
+    api.revision_indice_estado = lambda: {"ok": False, "error": "RuntimeError: roto"}
+    llamado = []
+    for nombre in ("asignar", "aceptar", "continuar"):
+        setattr(api, f"revision_indice_{nombre}", lambda *a, **k: llamado.append(1) or {"ok": True})
+    status, body, _ = _post_json(base, f"/api/control/revision/{ruta}", payload, H)
+    assert status == 500
+    assert body["ok"] is False and body["codigo"] == "revision_estado_ilegible"
+    assert "roto" in body["error"]
+    assert llamado == []

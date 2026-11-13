@@ -223,6 +223,23 @@ describe('modeloDesdeCalendario', () => {
     expect(m.espera).toEqual({ estado: 'esperando', deadline_epoch: 1_000_000, espera_min: 30 })
   })
 
+  it('generales viaja del calendario al Modelo', () => {
+    const j = base()
+    j.vuelos[0].generales = true
+    expect(modeloDesdeCalendario(j).vuelos[0].generales).toBe(true)
+    delete j.vuelos[0].generales
+    expect(modeloDesdeCalendario(j).vuelos[0].generales).toBe(false)
+  })
+
+  it('espera_min: el del evento si lo hay; si no, la espera_s real del backend (tras recuperar la pausa)', () => {
+    const j = base()
+    j.espera = { ...j.espera, espera_s: 600 }
+    expect(modeloDesdeCalendario(j, { esperaMin: 5 }).espera.espera_min).toBe(5)
+    expect(modeloDesdeCalendario(j, { esperaMin: null }).espera.espera_min).toBe(10)
+    delete j.espera.espera_s
+    expect(modeloDesdeCalendario(j).espera.espera_min).toBeUndefined()
+  })
+
   it('avisa de giro desconocido, filas sin hora y horas sin fila (nunca en silencio)', () => {
     const { avisos } = modeloDesdeCalendario(base())
     expect(avisos.some((a) => /2 fotos.*giro/.test(a))).toBe(true)

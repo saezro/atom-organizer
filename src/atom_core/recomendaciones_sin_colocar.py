@@ -139,7 +139,8 @@ def _recomendacion(grupo: dict, ficha: dict, claves: list[str], motivo: str, dis
                    confianza: str, explicacion: str) -> dict:
     return {"id": f"{grupo['grupo_id']}:{ficha['fila']}:{motivo}", "grupo_id": grupo["grupo_id"],
             "claves": list(claves), "fila": ficha["fila"], "pb": ficha["pb"],
-            "vuelo": ficha["vuelo"], "motivo": motivo, "distancia_s": round(distancia, 3),
+            "vuelo": ficha["vuelo"], "sufijo": ficha.get("sufijo"), "motivo": motivo,
+            "motivo_fuera": grupo["motivo"], "distancia_s": round(distancia, 3),
             "confianza": confianza, "explicacion": explicacion, "_grupo": grupo, "_ficha": ficha}
 
 
