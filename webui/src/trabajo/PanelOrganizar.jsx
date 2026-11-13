@@ -22,6 +22,10 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
   const [escaneados, setEscaneados] = useState(0)
   const [camaraRgb, setCamaraRgb] = useState('Z') // 'Z' (por defecto) | 'W'; solo se envía si la tanda trae _Z
 
+  // Recorte de la Z (vista simple): 'auto' (tabla) | 'ninguno' (copia íntegra) | 'pct'.
+  const [recorteZ, setRecorteZ] = useState('auto')
+  const [recorteZPct, setRecorteZPct] = useState('')
+
   useEffect(() => { if (onDestino && destino) onDestino(destino) }, [destino, onDestino])
 
   const setAdvField = (name, value) => setAdv((s) => ({ ...s, [name]: value }))
@@ -74,8 +78,14 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
   // Selector de cámara RGB: solo si la autodetección ha visto ficheros `_Z` en la tanda.
   const hayZoom = !!(detected?.ok && detected.tokens && detected.tokens._Z > 0)
 
+  // Recorte Z: solo aplica con cámara Zoom elegida y tanda con _Z.
+  const recorteZActivo = hayZoom && camaraRgb === 'Z'
+  const pctNum = Number(String(recorteZPct).replace(',', '.'))
+  const pctInvalido = recorteZActivo && recorteZ === 'pct'
+    && (String(recorteZPct).trim() === '' || !Number.isFinite(pctNum) || pctNum < 0 || pctNum > 100)
+
   // El backend exige estadillo para organizar (`estadillo.py`): sin él, no se lanza.
-  const canRun = ready && !running && origen && destino && !destinoFull && estadillos.length > 0
+  const canRun = ready && !running && origen && destino && !destinoFull && estadillos.length > 0 && !pctInvalido
   // Por qué «Ejecutar» está deshabilitado: mismas condiciones que `canRun`.
   const falta = []
   if (!ready) falta.push('conexión con ATOM')
@@ -83,6 +93,7 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
   if (!destino) falta.push('carpeta final')
   else if (destinoFull) falta.push('carpeta final vacía (la elegida tiene archivos)')
   if (estadillos.length === 0) falta.push('estadillo')
+  if (pctInvalido) falta.push('porcentaje de recorte Z (0-100)')
 
   // Re-consulta las fallidas si cambia el origen con el destino ya elegido
   // (solo cuentan las del MISMO origen).
@@ -97,6 +108,14 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
 
   function handleRun(soloFallidas = false) {
     const advanced = buildParams(ADV_FIELDS, adv)
+    // Quién manda: la vista simple SOBRESCRIBE cropping_mode_auto/crop_percentage de
+    // Avanzado solo cuando cámara=Z y la tanda trae _Z; en cualquier otro caso
+    // mandan los valores de Avanzado. «Automático» = comportamiento de siempre.
+    if (recorteZActivo) {
+      if (recorteZ === 'auto') { advanced.cropping_mode_auto = true; advanced.crop_percentage = '0' }
+      else if (recorteZ === 'ninguno') { advanced.cropping_mode_auto = false; advanced.crop_percentage = '0' }
+      else { advanced.cropping_mode_auto = false; advanced.crop_percentage = String(pctNum) }
+    }
     // Nombre de la inspección ya elegida en el paso anterior, para que el
     // modal de progreso muestre eso (lo que el operador reconoce) en vez del
     // fichero de estadillo. `_derive_plant` lo prioriza en el backend; si no
@@ -201,6 +220,43 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
           <span className="field-hint">
             Zoom: se crea copia _CROP de la Z, la Wide queda sin recortar. Wide: se recorta la
             Wide, la Z queda sin recortar.
+          </span>
+        </div>
+      )}
+
+      {recorteZActivo && (
+        <div className="field" data-testid="selector-recorte-z">
+          <span className="field-label">Recorte Z</span>
+          <div className="insp-chips" role="radiogroup" aria-label="Recorte de la cámara Zoom">
+            {[['auto', 'Automático (tabla)'], ['ninguno', 'Sin recorte'], ['pct', 'Con %']].map(([v, txt]) => (
+              <button
+                key={v}
+                type="button"
+                role="radio"
+                aria-checked={recorteZ === v}
+                className={'insp-chip' + (recorteZ === v ? ' insp-chip-activo' : '')}
+                onClick={() => setRecorteZ(v)}
+              >
+                {txt}
+              </button>
+            ))}
+          </div>
+          {recorteZ === 'pct' && (
+            <input
+              type="number" min="0" max="100" step="any"
+              className="glass-input"
+              aria-label="Porcentaje de recorte Z"
+              placeholder="0-100"
+              value={recorteZPct}
+              onChange={(e) => setRecorteZPct(e.target.value)}
+            />
+          )}
+          {pctInvalido && (
+            <span className="field-hint" role="alert">El porcentaje debe estar entre 0 y 100.</span>
+          )}
+          <span className="field-hint">
+            Automático: según la tabla de modelos. Sin recorte: la copia _CROP es íntegra.
+            Con %: recorte manual fijo. Sustituye lo de Avanzado mientras la cámara sea Zoom.
           </span>
         </div>
       )}

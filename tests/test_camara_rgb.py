@@ -543,3 +543,15 @@ def test_ruta_legacy_con_centinela_copia_integra(tmp_path):
 def RGBCropping_para_test():
     from unittest.mock import MagicMock
     return pipeline_real.RGBCropping(MagicMock())
+
+
+def test_default_split_config_respeta_recorte_de_params():
+    """3.4.170: el recorte (auto/manual/%) llega a la cfg si viene en params."""
+    from atom_core.organize import _default_split_config
+    base = {"origen": "/i", "destino": "/o", "camara_rgb": "Z"}
+    c = _default_split_config(base)
+    assert c.cropping_mode_auto is True and c.crop_percentage == "0"  # default
+    c = _default_split_config({**base, "cropping_mode_auto": False, "crop_percentage": "0"})
+    assert c.cropping_mode_auto is False and c.crop_percentage == "0"
+    c = _default_split_config({**base, "cropping_mode_auto": False, "crop_percentage": "48.5"})
+    assert c.cropping_mode_auto is False and c.crop_percentage == "48.5"
