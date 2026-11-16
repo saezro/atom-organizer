@@ -7,12 +7,14 @@
 use pyo3::prelude::*;
 
 pub mod error;
+pub mod jpeg_sonda;
 pub mod termica;
 pub mod tiff_f32;
 
 /// Versión del contrato Python<->Rust. Subir al romper firmas o al añadir una
-/// fase. 2 = fase `termica` (T1).
-pub const ABI: u32 = 2;
+/// fase. 2 = fase `termica` (T1). 3 = sonda
+/// libjpeg-turbo (P).
+pub const ABI: u32 = 3;
 
 /// Versión del crate (Cargo.toml).
 #[pyfunction]
@@ -35,6 +37,10 @@ fn atom_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<termica::TermicaStats>()?;
     m.add_function(wrap_pyfunction!(termica::termica_procesar, m)?)?;
     m.add_function(wrap_pyfunction!(termica::libjpeg_turbo_version, m)?)?;
+    // Sonda de paridad libjpeg-turbo (P, ABI 3).
+    m.add_function(wrap_pyfunction!(jpeg_sonda::jpeg_sonda_codificar, m)?)?;
+    m.add_function(wrap_pyfunction!(jpeg_sonda::jpeg_sonda_decodificar, m)?)?;
+    m.add_function(wrap_pyfunction!(jpeg_sonda::jpeg_sonda_rotar, m)?)?;
     Ok(())
 }
 
@@ -43,8 +49,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn abi_es_dos() {
-        assert_eq!(version_abi(), 2);
+    fn abi_es_tres() {
+        assert_eq!(version_abi(), 3);
     }
 
     #[test]

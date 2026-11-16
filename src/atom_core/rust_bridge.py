@@ -20,7 +20,8 @@ FASES: tuple[str, ...] = ("termica", "indice", "rgb")
 
 # Debe coincidir con ``ABI`` en rust/atom_rs/src/lib.rs.
 # 2 = fase ``termica`` (T1): una wheel ABI 1 no trae ``termica_procesar``.
-ABI_ESPERADA: int = 2
+# 3 = sonda libjpeg-turbo (P).
+ABI_ESPERADA: int = 3
 
 # Símbolos que ``atom_rs`` debe exponer para cada fase activa. Se validan en
 # ``modulo()`` (arranque de ``organize.run_task`` y cada ``exigir``), así una
