@@ -535,6 +535,9 @@ def reconciliar(plan: UploadPlan, remotos: dict[str, RemoteObject],
     """
     pendientes: list[UploadItem] = []
     hechos: list[UploadItem] = []
+    # Contadores en vez de una línea de log por fichero (eran ~miles de DEBUG/WARNING).
+    n_tam = n_cambiado = n_md5 = 0
+    ej_md5 = None
 
     for item in plan.items:
         remoto = remotos.get(item.remote)
@@ -546,27 +549,32 @@ def reconciliar(plan: UploadPlan, remotos: dict[str, RemoteObject],
         # sin eso, `upload_file` mandaría la precondición `ifGenerationMatch=0`
         # y GCS respondería 412 justo a la resubida que se está forzando aquí.
         if remoto.size != item.size:
-            _log.debug("resubo %s: tamaño distinto (local %d, bucket %d)",
-                       item.remote, item.size, remoto.size)
+            n_tam += 1
             pendientes.append(replace(item, sobrescribir=True))
             continue
 
         conocido = manifest is not None and manifest.md5_de(item) != ""
         if conocido and not manifest.is_done(item):
-            _log.info("resubo %s: el fichero local ha cambiado desde que se "
-                      "subió", item.remote)
+            n_cambiado += 1
             pendientes.append(replace(item, sobrescribir=True))
             continue
 
         md5_local = manifest.md5_de(item) if manifest is not None else ""
         if md5_local and remoto.md5 and md5_local != remoto.md5:
-            _log.warning("resubo %s: el MD5 del bucket no coincide con el del "
-                         "manifiesto (bucket %s, manifiesto %s)",
-                         item.remote, remoto.md5, md5_local)
+            n_md5 += 1
+            if ej_md5 is None:
+                ej_md5 = (item.remote, remoto.md5, md5_local)
             pendientes.append(replace(item, sobrescribir=True))
             continue
 
         hechos.append(item)
+
+    if n_tam or n_cambiado or n_md5:
+        _log.info("reconciliar: se resuben %d por tamaño distinto, %d por cambio local desde "
+                  "la subida, %d por MD5 distinto del manifiesto", n_tam, n_cambiado, n_md5)
+    if n_md5:
+        _log.warning("resubo %d fichero(s): el MD5 del bucket no coincide con el del "
+                     "manifiesto (p. ej. %s: bucket %s, manifiesto %s)", n_md5, *ej_md5)
 
     if not permitir_sobrescribir:
         pisar = [it.remote for it in pendientes if it.sobrescribir]
@@ -1162,7 +1170,6 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
     total = item.size
     session_uri: str | None = None
     delay = 1.0
-    empezado = time.monotonic()
     refrescado_403 = False
 
     def _med(clave: str, valor: float) -> None:
@@ -1228,10 +1235,7 @@ def upload_file(item: UploadItem, provider: UrlProvider, *,
                     if on_bytes is not None:
                         on_bytes(len(chunk))
 
-            duracion = time.monotonic() - empezado
-            _log.debug("subido %s (%.1f MB en %.1fs%s)", item.remote,
-                       total / 1024 ** 2, duracion,
-                       f", {attempt} reintento(s)" if attempt else "")
+            # Sin log por fichero: el progreso y el resumen final los da `upload_plan`.
             t_md = time.monotonic()
             md5 = _file_md5_b64(item.local)
             _med("disco_s", time.monotonic() - t_md)

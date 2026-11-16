@@ -3843,10 +3843,13 @@ class Api:
                     self._log_subida("subida resultado: modo: sobrescribir todo (forzar resubida) · %s · inspeccion %s",
                                      folder, inspeccion_id)
                 reporter = self._telemetria_resultado_iniciar(inspeccion_id, folder, modos[0])
+                inventario = None  # listado fresco de la pasada anterior (misma ejecución)
                 for i, m in enumerate(modos):
                     resumen = sr.subir_resultado(
                         folder, int(inspeccion_id), m, auth, on_estado=lambda e: self._on_estado_resultado(reporter, e),
-                        should_stop=lambda: self._cancel_resultado, forzar=bool(forzar))
+                        should_stop=lambda: self._cancel_resultado, forzar=bool(forzar),
+                        remotos=inventario)
+                    inventario = resumen.remotos_finales
                     sigue, motivo_resto = False, ""
                     if i < len(modos) - 1:
                         sigue, motivo_resto = sr.decidir_resto(resumen, self._encadenar_resto)
@@ -3937,7 +3940,7 @@ class Api:
             totales: dict = {}
             try:
                 from atom_core import subida_resultado as sr
-                sel = sr.seleccionar(folder, "")
+                sel = sr.seleccionar(folder, "", avisar=False)
                 items = list(sel.urgentes) + (list(sel.resto) if modo == sr.MODO_NORMAL else [])
                 totales = {"items_total": len(items), "bytes_total": sum(it.size for it in items)}
             except Exception as exc:  # noqa: BLE001 - los totales son accesorios

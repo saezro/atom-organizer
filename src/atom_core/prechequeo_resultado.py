@@ -267,7 +267,7 @@ def _chk_colisiones(ctx):
 
 
 def _chk_sin_clasificar(ctx):
-    sel = subida_resultado.seleccionar(ctx["destino"], "")
+    sel = subida_resultado.seleccionar(ctx["destino"], "", avisar=False)
     if sel.avisos:
         return _res(AVISO, _ejemplos(sel.avisos, 10))
     return _res(OK, "Todo está clasificado.")

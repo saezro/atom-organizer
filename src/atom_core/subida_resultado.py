@@ -200,7 +200,7 @@ class Seleccion:
     avisos: list = field(default_factory=list)
 
 
-def seleccionar(destino, prefijo: str) -> Seleccion:
+def seleccionar(destino, prefijo: str, *, avisar: bool = True) -> Seleccion:
     """Recorre la salida con `build_plan` (sin filtro de extensiones) y reparte."""
     destino = Path(destino)
     plan = cu.build_plan(destino, prefijo, suffixes=())  # () = sin filtro; ya salta `.organizado`
@@ -225,10 +225,14 @@ def seleccionar(destino, prefijo: str) -> Seleccion:
         else:
             sel.sin_clasificar += 1
             sel.sin_clasificar_lista.append({"ruta": rel, "motivo": motivo_sin_clasificar(rel)})
-            logger.warning("resultado: sin clasificar %s", rel)
     if sel.omitidos_duplicado:
         logger.info("resultado: %d *_location/_meta.csv fuera de CSVs/ omitidos (duplicados de CSVs/)",
                     sel.omitidos_duplicado)
+    if sel.sin_clasificar and avisar:
+        # Un solo aviso por selección (antes uno por fichero, repetido en cada escaneo).
+        ej = ", ".join(f["ruta"] for f in sel.sin_clasificar_lista[:5])
+        logger.warning("resultado: %d fichero(s) sin clasificar (no se suben); p. ej. %s",
+                       sel.sin_clasificar, ej)
     if sel.sin_clasificar:
         sel.avisos.append(f"{sel.sin_clasificar} fichero(s) sin clasificar: no se suben (ver log).")
     return sel
@@ -571,6 +575,8 @@ class ResumenResultado:
     verificado: bool = True
     # El listado del bucket no cabió (truncado): ni ok ni re-encolable.
     truncado: bool = False
+    # Inventario fresco del destino tras subir (None si no se pudo). No se serializa.
+    remotos_finales: dict | None = None
     # Métricas de la pasada: {duracion_s, urgentes|resto: {subidos, omitidos, pendientes,
     # bytes_subidos, bytes_omitidos, por_tipo, vuelos}, conflictos_n}.
     metricas: dict = field(default_factory=dict)
@@ -627,7 +633,9 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
                     on_estado: Callable[[dict], None] | None = None,
                     should_stop: Callable[[], bool] | None = None,
                     concurrency: int = cu.DEFAULT_CONCURRENCY, simular: bool = False,
-                    subir=cu.upload_plan, forzar: bool = False) -> ResumenResultado:
+                    subir=cu.upload_plan, forzar: bool = False,
+                    remotos: dict | None = None,
+                    on_progress: Callable[[str], None] | None = None) -> ResumenResultado:
     """Sube la salida organizada. Urgencia = solo urgentes; normal = urgentes y luego resto.
 
     Una sola cola: urgentes primero. Lo que el bucket ya tiene (mismo contenido) se
@@ -636,6 +644,14 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
 
     `forzar=True` = «Sobrescribir todo (forzar resubida)»: no se salta nada ni se marcan
     conflictos; se pisan en el bucket los objetos existentes (ver `particionar`).
+
+    `remotos`: inventario del destino ya consultado EN ESTA MISMA EJECUCIÓN (p. ej. el
+    listado de verificación de la pasada anterior de la cadena urgentes→normal, en
+    `ResumenResultado.remotos_finales`). Con él no se vuelve a escanear el destino al
+    empezar. No pasar inventarios antiguos.
+
+    `on_progress` recibe (además del INFO al log) la línea de progreso global de la
+    subida: ficheros hechos/total, bytes hechos/total, MB/s y ETA (≤1 cada ~5 s o ~5 %).
     """
     if modo not in MODOS:
         raise ValueError(f"modo desconocido: {modo!r}")
@@ -717,13 +733,43 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
             "por_pb": por_pb.lista(),
         })
 
+    prog = {"t": 0.0, "pct": -100.0}
+
+    def _progreso_global(st: dict, final: bool = False) -> None:
+        """Una línea INFO de progreso GLOBAL, throttled (nunca una por fichero)."""
+        ahora = time.monotonic()
+        hechos = resumen.urgentes.hechos + (resumen.resto.hechos if modo == MODO_NORMAL else 0)
+        total = resumen.urgentes.total + (resumen.resto.total if modo == MODO_NORMAL else 0)
+        # Global: ya presentes + subidos en grupos terminados + grupo en curso.
+        b_hechos = bytes_ya[0] + env_prev[0] + int(st.get("bytes_done", 0))
+        pct = 100.0 * b_hechos / bytes_total if bytes_total else 100.0
+        if not final and ahora - prog["t"] < 5.0 and pct - prog["pct"] < 5.0:
+            return
+        prog["t"], prog["pct"] = ahora, pct
+        enviados = env_prev[0] + int(st.get("bytes_done", 0))
+        el = max(ahora - t0, 1e-6)
+        bps = enviados / el
+        resto_b = max(bytes_total - b_hechos, 0)
+        eta = f"{int(resto_b / bps // 60)}m{int(resto_b / bps % 60):02d}s" if bps > 0 and el > 3 else "?"
+        linea = (f"subida resultado: {hechos}/{total} ficheros · "
+                 f"{b_hechos / 1024 ** 2:.0f}/{bytes_total / 1024 ** 2:.0f} MB ({pct:.0f} %) · "
+                 f"{bps / 1024 ** 2:.1f} MB/s · ETA {eta}")
+        logger.info(linea)
+        if on_progress is not None:
+            try:
+                on_progress(linea)
+            except Exception:  # noqa: BLE001 - el progreso nunca rompe la subida
+                logger.debug("on_progress falló", exc_info=True)
+
     def _pagina(objetos: int, paginas: int) -> None:
         listado["listados"], listado["paginas"] = objetos, paginas
         emitir("listando")
 
     emitir("listando")
     try:
-        if on_estado is not None and getattr(proveedor, "soporta_progreso_listado", False):
+        if remotos is not None:
+            pass  # inventario ya consultado en esta ejecución: no se re-escanea
+        elif on_estado is not None and getattr(proveedor, "soporta_progreso_listado", False):
             remotos = proveedor.listar_remotos(prefijo, on_pagina=_pagina)
         else:
             remotos = proveedor.listar_remotos(prefijo)
@@ -767,6 +813,7 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
             def _stats(s: dict, cont=cont, base=base, nombre=nombre) -> None:
                 cont.hechos = base + int(s.get("files_done", 0))
                 emitir(nombre, s)
+                _progreso_global(s, final=bool(s.get("final")))
 
             # `remotos={}`: la partición ya cruzó local y bucket. Con {} `reconciliar` deja los
             # items tal cual (conserva `sobrescribir`) y no vuelve a listar.
@@ -810,6 +857,10 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
     # Verificación FRESCA contra el bucket: un `res.ok` solo dice que no hubo
     # excepciones. Se cruzan todos los items de los grupos de este modo (menos los
     # conflictos, que ya hacen la subida no-ok y a propósito no se suben).
+    # ÚNICO re-listado tras subir: el inicial es previo a la subida y no puede decir si lo
+    # subido llegó, así que esta verificación de integridad no se sustituye por la caché.
+    # Su resultado queda en `remotos_finales` para que la pasada siguiente de la cadena
+    # lo use como inventario inicial sin re-escanear.
     if not simular and not resumen.cancelado:
         emitir("verificando")
         conflictivos = {c[0] for c in resumen.conflictos}
@@ -826,6 +877,7 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
             resumen.verificado = False
         else:
             resumen.faltantes = cu.faltantes_en_remoto(todos, frescos)
+            resumen.remotos_finales = frescos
     return resumen
 
 
@@ -920,7 +972,7 @@ def inspeccionar_destino(destino, inspeccion_id: int, auth, *, proveedor=None) -
         sobre: list[str] = []
         destino = Path(destino)
         if destino.is_dir():
-            sel = seleccionar(destino, prefijo)
+            sel = seleccionar(destino, prefijo, avisar=False)  # el aviso sale al subir
             base["desglose"] = {"urgentes": _desglose_barato(sel.urgentes, remotos),
                                 "resto": _desglose_barato(sel.resto, remotos)}
             base["por_pb"] = _desglose_por_pb([*sel.urgentes, *sel.resto], remotos, pref)
