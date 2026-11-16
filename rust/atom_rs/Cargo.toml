@@ -19,6 +19,14 @@ rayon = "1.10"
 turbojpeg = { version = "=1.5.1", default-features = false, features = ["cmake"] }
 # Fija la libjpeg-turbo vendorizada (3.1.0): `termica::LIBJPEG_TURBO_VERSION` la declara.
 turbojpeg-sys = { version = "=1.2.0", default-features = false }
+# Subida GCS (Task 6): crates aprobados por Rodrigo 2026-11-16 (+ bytes). Ninguno más.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2", "stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "fs", "time", "sync"] }
+md-5 = "0.10"
+crc32c = "0.6"
+base64 = "0.22"
+# Cuerpo de los PUT como `Bytes` (clon por refcount al reintentar). Aprobado por Rodrigo 2026-11-16.
+bytes = "1"
 
 [features]
 # maturin activa extension-module al construir la wheel; `cargo test` va sin él
@@ -27,5 +35,6 @@ extension-module = ["pyo3/extension-module"]
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
 codegen-units = 1
+panic = "unwind"

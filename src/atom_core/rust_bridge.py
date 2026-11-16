@@ -16,12 +16,13 @@ import sys
 import types
 from typing import Optional
 
-FASES: tuple[str, ...] = ("termica", "indice", "rgb")
+FASES: tuple[str, ...] = ("termica", "indice", "rgb", "subida")
 
 # Debe coincidir con ``ABI`` en rust/atom_rs/src/lib.rs.
 # 2 = fase ``termica`` (T1): una wheel ABI 1 no trae ``termica_procesar``.
 # 3 = sonda libjpeg-turbo (P).
-ABI_ESPERADA: int = 3
+# 4 = fase ``subida`` (T6): una wheel ABI 3 no trae ``subir_lote``.
+ABI_ESPERADA: int = 4
 
 # Símbolos que ``atom_rs`` debe exponer para cada fase activa. Se validan en
 # ``modulo()`` (arranque de ``organize.run_task`` y cada ``exigir``), así una
@@ -30,6 +31,7 @@ SIMBOLOS_POR_FASE: dict[str, tuple[str, ...]] = {
     "termica": ("termica_procesar",),
     "indice": (),
     "rgb": (),
+    "subida": ("subir_lote",),
 }
 
 _VERDADEROS = {"1", "true", "yes", "on", "si", "sí"}
