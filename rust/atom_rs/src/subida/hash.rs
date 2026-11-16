@@ -172,7 +172,7 @@ mod tests {
         assert_eq!(coincide(&l, &HashesServidor::default()), Veredicto::SinHash);
         let mal_md5 = HashesServidor { md5: Some("AAAA".into()), crc32c: ok.crc32c.clone() };
         assert_eq!(coincide(&l, &mal_md5), Veredicto::Mismatch { campo: "md5" });
-        let mal_crc = HashesServidor { md5: ok.md5.clone(), crc32c: Some("AAAAAA==".into()) };
+        let mal_crc = HashesServidor { md5: ok.md5.clone(), crc32c: Some("/////w==".into()) };
         assert_eq!(coincide(&l, &mal_crc), Veredicto::Mismatch { campo: "crc32c" });
     }
 }
