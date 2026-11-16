@@ -163,3 +163,16 @@ describe('PanelOrganizar', () => {
     expect(screen.getByRole('radio', { name: 'Wide (_W)' }).getAttribute('aria-checked')).toBe('true')
   })
 })
+
+describe('PanelOrganizar rgb_tokens', () => {
+  it('muestra los tokens RGB detectados cuando rgb va vacío', async () => {
+    render(<PanelOrganizar origen="/datos/vuelo" estadillos={[]} ready running={false} onRun={() => {}} />)
+    emitirAnalisis({ kind: 'done', scope: 'suffixes', data: { ok: true, thermal: '_T', rgb: '', rgb_tokens: [{ token: '_W', n: 312 }], total: 600 } })
+    await waitFor(() => expect(screen.getByTestId('rgb-detectado').textContent).toContain('_W ×312'))
+  })
+  it('avisa si no hay fotos RGB', async () => {
+    render(<PanelOrganizar origen="/datos/vuelo" estadillos={[]} ready running={false} onRun={() => {}} />)
+    emitirAnalisis({ kind: 'done', scope: 'suffixes', data: { ok: true, thermal: '_T', rgb: '', rgb_tokens: [], total: 10 } })
+    await waitFor(() => expect(screen.getByTestId('rgb-detectado').textContent).toContain('No se detectaron fotos RGB'))
+  })
+})

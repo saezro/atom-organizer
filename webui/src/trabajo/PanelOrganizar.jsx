@@ -198,6 +198,13 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
           </span>
         )}
         {avisoRgb && <span className="field-hint hint-warn">{avisoRgb}</span>}
+        {detected?.ok && detected.thermal && !detected.rgb && (
+          Array.isArray(detected.rgb_tokens) && detected.rgb_tokens.length > 0
+            ? <span className="field-hint hint-ok" data-testid="rgb-detectado">
+                Detectado: {detected.rgb_tokens.map((t) => `${t.token} ×${t.n}`).join(', ')} · todo lo que no acabe en {detected.thermal}
+              </span>
+            : <span className="field-hint hint-warn" data-testid="rgb-detectado">No se detectaron fotos RGB</span>
+        )}
         <span className="field-hint">
           Se rellena solo al elegir la carpeta origen. Las imágenes que acaben en el
           sufijo térmico van a TÉRMICA y el resto a RGB (o al revés con el sufijo RGB).
