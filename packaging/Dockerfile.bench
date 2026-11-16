@@ -17,6 +17,14 @@ COPY packaging/requirements/requirements-server.txt ./
 RUN pip install --no-cache-dir -r requirements-server.txt
 RUN pip install --no-cache-dir google-cloud-storage==3.13.1
 
+# Wheel atom_rs (Rust, linux x86_64 abi3-py311) compilada por Cloud Build
+# (packaging/cloudbuild-rust-wheel.yaml) y copiada a packaging/wheels/. Obligatoria.
+COPY packaging/wheels/ ./wheels/
+RUN ls wheels/atom_rs-*.whl >/dev/null 2>&1 \
+    || { echo "ERROR: falta packaging/wheels/atom_rs-*.whl" >&2; exit 1; } \
+    && pip install --no-cache-dir wheels/atom_rs-*.whl \
+    && rm -rf wheels
+
 COPY src/atom_core/ ./src/atom_core/
 COPY config/ ./config/
 COPY src/*.py ./src/

@@ -122,6 +122,21 @@ def metricas_etapas(etapas: "dict[str, float]", bytes_corpus: int,
     return salida
 
 
+def manifiesto_hashes(raiz: Path) -> "dict[str, dict]":
+    """{ruta_relativa: {sha256, bytes}} de TODOS los ficheros bajo `raiz`
+    (lectura local en secuencia; sirve para la paridad A/B entre variantes)."""
+    import hashlib  # noqa: PLC0415
+
+    salida = {}
+    for f in sorted(p for p in Path(raiz).rglob("*") if p.is_file()):
+        h = hashlib.sha256()
+        with open(f, "rb") as fh:
+            for bloque in iter(lambda: fh.read(1 << 20), b""):
+                h.update(bloque)
+        salida[f.relative_to(raiz).as_posix()] = {"sha256": h.hexdigest(), "bytes": f.stat().st_size}
+    return salida
+
+
 def ahora_madrid() -> str:
     return datetime.now(ZoneInfo("Europe/Madrid")).isoformat(timespec="seconds")
 
@@ -146,6 +161,14 @@ def memoria_bytes() -> "int | None":
 # --------------------------------------------------------------------------
 # GCS
 # --------------------------------------------------------------------------
+
+def _version_atom_rs() -> "str | None":
+    try:
+        import atom_rs  # noqa: PLC0415
+        return f"{atom_rs.version()} abi={atom_rs.version_abi()}"
+    except Exception:  # noqa: BLE001  (solo informativo: sin wheel = None, visible en meta)
+        return None
+
 
 def _cliente():
     from google.cloud import storage  # noqa: PLC0415
@@ -260,12 +283,22 @@ def main(argv=None) -> int:
                "--estadillo", str(estadillo), "--sin-rotacion",
                "--perfil-json", str(work / "perfil_termicas.json")])
 
+    # Paridad A/B: hash de cada fichero del árbol de salida de la última repetición
+    # (bench_rgb deja `destino_rgb` con el run final) y del run de perfilar_termicas.
+    (work / "manifiesto_rgb.json").write_text(
+        json.dumps(manifiesto_hashes(destino_rgb), indent=1, ensure_ascii=False))
+    (work / "manifiesto_termicas.json").write_text(
+        json.dumps(manifiesto_hashes(destino_t), indent=1, ensure_ascii=False))
+
     informe = json.loads((work / "baseline.json").read_text())
     etapas = informe.get("etapas_minimo", {})
     meta = {
         "inicio_madrid": inicio, "fin_madrid": ahora_madrid(),
         "vcpu": os.cpu_count(), "memoria_bytes": memoria_bytes(),
         "imagen": os.environ.get("BENCH_IMAGE"),
+        "atom_rust": os.environ.get("ATOM_RUST"),
+        "atom_rust_fases": os.environ.get("ATOM_RUST_FASES"),
+        "atom_rs_version": _version_atom_rs(),
         "corpus": a.corpus, "estadillo": a.estadillo,
         "n_pares": len(pares), "n_ficheros": len(nombres),
         "gb_corpus": bytes_corpus / 1e9,
@@ -279,7 +312,8 @@ def main(argv=None) -> int:
     # Solo se suben los resultados, no el corpus ni los destinos.
     res = work / "resultados"
     res.mkdir(exist_ok=True)
-    for nombre in ("baseline.json", "perfil_rgb.csv", "perfil_termicas.json", "meta.json"):
+    for nombre in ("baseline.json", "perfil_rgb.csv", "perfil_termicas.json", "meta.json",
+                   "manifiesto_rgb.json", "manifiesto_termicas.json"):
         f = work / nombre
         if not f.exists():
             raise BenchError(f"falta el resultado {nombre}")

@@ -73,3 +73,12 @@ def test_gcs_mock_listar_y_descargar(tmp_path):
     cli.bucket.return_value.blob.return_value.download_to_filename.side_effect = dl
     assert b.descargar(cli, "gs://bk/c", ["a.JPG", "b.JPG"], tmp_path, hilos=99) == 14
     cli.bucket.return_value.blob.assert_any_call("c/a.JPG")
+
+
+def test_manifiesto_hashes(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "x.bin").write_bytes(b"abc")
+    m = b.manifiesto_hashes(tmp_path)
+    assert list(m) == ["a/x.bin"]
+    assert m["a/x.bin"]["bytes"] == 3
+    assert m["a/x.bin"]["sha256"].startswith("ba7816bf")
