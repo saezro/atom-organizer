@@ -55,6 +55,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -66,7 +67,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
-from . import upload_log
+from . import rust_bridge, upload_log
 
 __all__ = [
     "UploadItem",
@@ -1318,14 +1319,127 @@ class UploadResult:
         return (self.bytes_sent * 8) / self.elapsed / 1_000_000
 
 
+def _texto_pb_listo(pb: str) -> str:
+    m = re.fullmatch(r"PB(\d+)", pb or "", re.IGNORECASE)
+    if m:
+        return f"PB {int(m.group(1))} listo para analizar"
+    return f"{pb or 'General'}: subida verificada"
+
+
+def _upload_plan_rust(rust, plan, provider, pending, result, manifest, bytes_pendientes,
+                      urgentes, on_progress, on_stats, should_stop, on_evento) -> UploadResult:
+    """Subida delegada en `atom_rs.subir_lote`. Solo recibe PENDIENTES; el manifiesto
+    se marca únicamente con el md5 que Rust verificó contra el servidor."""
+    oauth = isinstance(provider, GcsOAuthProvider)
+    items = [(str(i.local), i.remote, int(i.size), bool(i.sobrescribir), i.remote in urgentes)
+             for i in pending]
+    por_remote = {i.remote: i for i in pending}
+    t0 = time.monotonic()
+    ultimo = {"p": None}
+
+    def _foto(p: dict, final: bool = False) -> dict:
+        elapsed = max(time.monotonic() - t0, 1e-6)
+        done = int(p.get("files_done", 0))
+        medidas = p.get("medidas") or {}
+        return {
+            "files_done": done,
+            "files_total": int(p.get("files_total", len(pending))),
+            "bytes_done": int(p.get("bytes_done", 0)),
+            "bytes_total": int(p.get("bytes_total", bytes_pendientes)),
+            "elapsed": elapsed,
+            "eta": p.get("eta"),
+            "mbps": float(p.get("mbps") or 0.0),
+            "files_per_s": done / elapsed,
+            "retries": int(p.get("reintentos", 0)),
+            "hilos_activos": int(p.get("hilos_activos", 0)),
+            "fichero_actual": p.get("fichero_actual") or "",
+            "fallidas": int(p.get("fallidas", 0)),
+            "hilos_max": int(p.get("hilos_max", DEFAULT_CONCURRENCY)),
+            "medidas": {**{k: medidas.get(k, 0.0) for k in MEDIDAS_SEGUNDOS},
+                        "reintentos": dict(medidas.get("reintentos") or {})},
+            "final": final,
+        }
+
+    def _callback(ev: dict) -> None:
+        kind = ev.get("kind")
+        try:
+            if kind == "progreso":
+                ultimo["p"] = ev
+                if on_stats is not None:
+                    on_stats(_foto(ev))
+            elif kind == "pb_listo":
+                if on_progress is not None:
+                    on_progress(_texto_pb_listo(str(ev.get("pb", ""))))
+                if on_evento is not None:
+                    on_evento(ev)
+            elif kind == "error":
+                _log.error("FALLÓ %s (%s) → %s", ev.get("remote"), ev.get("tipo"), ev.get("motivo"))
+                if on_evento is not None:
+                    on_evento(ev)
+        except Exception:  # noqa: BLE001 - la UI nunca debe tumbar la subida
+            _log.exception("callback de eventos de subida falló")
+
+    token_fn = (lambda: provider.headers()["Authorization"]) if oauth else None
+    pref = plan.prefix if plan.prefix.endswith("/") else plan.prefix + "/"
+    hecho = rust.subir_lote(
+        items, pref, "oauth" if oauth else "firmada",
+        lambda remote, size, sobrescribir: provider.upload_url(
+            remote, size, sobrescribir=sobrescribir),
+        token_fn, provider.recover_auth, _callback,
+        lambda: bool(should_stop and should_stop()))
+
+    try:
+        for remote, md5 in (hecho.get("md5") or {}).items():
+            item = por_remote.get(remote)
+            if item is not None and md5:
+                manifest.mark(item, md5)
+    finally:
+        manifest.flush()
+    result.uploaded = int(hecho.get("subidos", 0))
+    n412 = int(hecho.get("saltados_412", 0))
+    result.skipped += n412
+    result.skipped_precondicion += n412
+    result.bytes_sent = int(hecho.get("bytes_enviados", 0))
+    result.elapsed = float(hecho.get("elapsed") or (time.monotonic() - t0))
+    result.retries = int(hecho.get("reintentos", 0))
+    result.failed = [(str(r), str(m)) for r, m in (hecho.get("fallidos") or [])]
+    if hecho.get("abortado"):
+        result.abortado = f"{hecho['abortado']} · subida abortada"
+        _log.error("ABORTO: %s", result.abortado)
+        if on_progress is not None:
+            on_progress(f"ERROR: {result.abortado}")
+    p = ultimo["p"] or {}
+    medidas = p.get("medidas") or {}
+    result.medidas = {**{k: medidas.get(k, 0.0) for k in MEDIDAS_SEGUNDOS},
+                      "reintentos": dict(medidas.get("reintentos") or {})}
+    if on_stats is not None:
+        foto = _foto({**p, "files_done": result.uploaded + n412 + len(result.failed),
+                      "bytes_done": result.bytes_sent}, final=True)
+        try:
+            on_stats(foto)
+        except Exception:  # noqa: BLE001
+            _log.exception("on_stats final falló")
+    _log.info("FIN (Rust) · %d subidos · %d 412 · %.2f GB en %.0fs · %d reintentos · %d fallos",
+              result.uploaded, n412, result.bytes_sent / 1024 ** 3, result.elapsed,
+              result.retries, len(result.failed))
+    for objeto, motivo in result.failed:
+        _log.error("FALLÓ %s → %s", objeto, motivo)
+    return result
+
+
 def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
                 concurrency: int = DEFAULT_CONCURRENCY,
                 manifest: Manifest | None = None,
                 on_progress: Callable[[str], None] | None = None,
                 on_stats: Callable[[dict], None] | None = None,
                 should_stop: Callable[[], bool] | None = None,
-                remotos: dict[str, RemoteObject] | None = None) -> UploadResult:
+                remotos: dict[str, RemoteObject] | None = None,
+                urgentes: set[str] | None = None,
+                on_evento: Callable[[dict], None] | None = None) -> UploadResult:
     """Sube todos los ficheros del plan, en paralelo, reanudando y sin repetir.
+
+    `urgentes` (remotos urgentes) y `on_evento` (`pb_listo`/`error`) solo los usa la
+    subida en Rust (fase `subida`); con el flag OFF se ignoran.
 
     Antes de mover un byte se pregunta al bucket qué hay ya en el destino y se
     descarta de la lista (ver `reconciliar`). Eso es lo que hace que volver a
@@ -1347,6 +1461,9 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
     """
     upload_log.get_logger()  # asegura que hay fichero donde escribir
     result = UploadResult()
+    # Flag ON: módulo/símbolo/ABI se validan AQUÍ, antes de listar o subir nada.
+    # Sin try/except: el error es visible, jamás se cae a Python en silencio.
+    rust = rust_bridge.exigir("subida")
     if manifest is None:
         manifest = Manifest(plan.root / Manifest.FILENAME)
 
@@ -1397,6 +1514,11 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
     if not pending:
         _log.info("no hay nada que subir: el destino ya está completo")
         return result
+
+    if rust is not None:
+        return _upload_plan_rust(rust, plan, provider, pending, result, manifest,
+                                 bytes_pendientes, urgentes or set(), on_progress,
+                                 on_stats, should_stop, on_evento)
 
     sent_lock = threading.Lock()
     counter = {"bytes": 0, "files": 0, "retries": 0, "ultimo_aviso": 0.0, "activos": 0,

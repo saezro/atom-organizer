@@ -56,9 +56,50 @@ def test_abi_distinta_lanza(monkeypatch):
         rust_bridge.exigir("indice")
 
 
-def test_abi_esperada_es_tres():
-    # Debe coincidir con `ABI` de rust/atom_rs/src/lib.rs (3 = sonda libjpeg, P).
-    assert rust_bridge.ABI_ESPERADA == 3
+def test_abi_esperada_es_cuatro():
+    # Debe coincidir con `ABI` de rust/atom_rs/src/lib.rs (4 = fase subida, T6).
+    assert rust_bridge.ABI_ESPERADA == 4
+
+
+def test_fase_subida_registrada():
+    assert "subida" in rust_bridge.FASES
+    assert rust_bridge.SIMBOLOS_POR_FASE["subida"] == ("subir_lote",)
+
+
+def test_flag_fases_subida_activa_solo_subida(monkeypatch):
+    monkeypatch.setenv("ATOM_RUST_FASES", "subida")
+    assert rust_bridge.fases_activas() == ("subida",)
+    assert rust_bridge.fase_activa("subida")
+    for otra in ("termica", "indice", "rgb"):
+        assert not rust_bridge.fase_activa(otra)
+
+
+def test_atom_rust_activa_subida(monkeypatch):
+    monkeypatch.setenv("ATOM_RUST", "1")
+    assert rust_bridge.fase_activa("subida")
+
+
+def test_subida_sin_simbolo_lanza_con_nombre(monkeypatch):
+    monkeypatch.setenv("ATOM_RUST_FASES", "subida")
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso(simbolos=False))
+    with pytest.raises(RustNoDisponible, match="subir_lote"):
+        rust_bridge.exigir("subida")
+    with pytest.raises(RustNoDisponible, match="subir_lote"):
+        rust_bridge.modulo()
+
+
+def test_subida_con_simbolo_ok(monkeypatch):
+    monkeypatch.setenv("ATOM_RUST_FASES", "subida")
+    falso = _falso()
+    monkeypatch.setitem(sys.modules, "atom_rs", falso)
+    assert rust_bridge.exigir("subida") is falso
+
+
+def test_subida_abi_vieja_lanza(monkeypatch):
+    monkeypatch.setenv("ATOM_RUST_FASES", "subida")
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso(abi=rust_bridge.ABI_ESPERADA - 1))
+    with pytest.raises(RustNoDisponible, match="ABI"):
+        rust_bridge.exigir("subida")
 
 
 def test_modulo_sin_simbolo_de_fase_activa_lanza(monkeypatch):

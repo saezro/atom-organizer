@@ -2542,6 +2542,7 @@ class Api:
                         plan, provider,
                         on_progress=lambda t: self._push_cloud({"kind": "log", "text": t}),
                         on_stats=lambda s: self._on_stats_subida(reporter, s),
+                        on_evento=self._on_evento_subida_lote,
                         should_stop=lambda: self._cancel_upload,
                         remotos=(self._inventario_cacheado(prefix_lote)
                                  if ronda == 1 else None),
@@ -3514,6 +3515,36 @@ class Api:
         if reporter is not None:
             reporter.progreso(s)
 
+    @staticmethod
+    def _texto_pb_listo(pb: str) -> str:
+        """«PB3» -> «PB 3 listo para analizar»; «General» -> «Ficheros generales subidos»."""
+        import re as _re
+
+        m = _re.fullmatch(r"PB(\d+)", str(pb or ""), _re.IGNORECASE)
+        if m:
+            return f"PB {int(m.group(1))} listo para analizar"
+        return "Ficheros generales subidos y verificados"
+
+    def _on_evento_subida_lote(self, ev: dict) -> None:
+        """`on_evento` de la subida de lote (solo Rust): `pb_listo` al log y a la UI.
+        El texto ya llega a la UI como línea de `on_progress`; aquí se añade el evento
+        estructurado y el log de subida."""
+        if ev.get("kind") != "pb_listo":
+            return
+        self._log_subida("%s", self._texto_pb_listo(ev.get("pb")))
+        self._push_cloud({"kind": "pb_listo", "pb": ev.get("pb"),
+                          "ficheros": ev.get("ficheros"), "bytes": ev.get("bytes")})
+
+    def _on_evento_subida_resultado(self, ev: dict) -> None:
+        """`on_evento` de la subida del resultado (solo Rust): aviso «PB 3 listo para analizar»."""
+        if ev.get("kind") != "pb_listo":
+            return
+        texto = self._texto_pb_listo(ev.get("pb"))
+        self._log_subida("%s", texto)
+        self._push_resultado({"kind": "aviso", "text": texto})
+        self._push_resultado({"kind": "pb_listo", "pb": ev.get("pb"),
+                              "ficheros": ev.get("ficheros"), "bytes": ev.get("bytes")})
+
     def _on_estado_resultado(self, reporter, e: dict) -> None:
         """`on_estado` de la subida del resultado: repinta el panel y late hacia la Suite.
 
@@ -3814,6 +3845,7 @@ class Api:
                 for i, m in enumerate(modos):
                     resumen = sr.subir_resultado(
                         folder, int(inspeccion_id), m, auth, on_estado=lambda e: self._on_estado_resultado(reporter, e),
+                        on_evento=self._on_evento_subida_resultado,
                         should_stop=lambda: self._cancel_resultado, forzar=bool(forzar))
                     sigue, motivo_resto = False, ""
                     if i < len(modos) - 1:

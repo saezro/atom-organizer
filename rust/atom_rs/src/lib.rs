@@ -8,13 +8,14 @@ use pyo3::prelude::*;
 
 pub mod error;
 pub mod jpeg_sonda;
+pub mod subida;
 pub mod termica;
 pub mod tiff_f32;
 
 /// Versión del contrato Python<->Rust. Subir al romper firmas o al añadir una
 /// fase. 2 = fase `termica` (T1). 3 = sonda
-/// libjpeg-turbo (P).
-pub const ABI: u32 = 3;
+/// libjpeg-turbo (P). 4 = fase `subida` (T6, `subir_lote`).
+pub const ABI: u32 = 4;
 
 /// Versión del crate (Cargo.toml).
 #[pyfunction]
@@ -41,6 +42,8 @@ fn atom_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(jpeg_sonda::jpeg_sonda_codificar, m)?)?;
     m.add_function(wrap_pyfunction!(jpeg_sonda::jpeg_sonda_decodificar, m)?)?;
     m.add_function(wrap_pyfunction!(jpeg_sonda::jpeg_sonda_rotar, m)?)?;
+    // Fase `subida` (T6, ABI 4).
+    m.add_function(wrap_pyfunction!(subida::subir_lote, m)?)?;
     Ok(())
 }
 
@@ -49,8 +52,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn abi_es_tres() {
-        assert_eq!(version_abi(), 3);
+    fn abi_es_cuatro() {
+        assert_eq!(version_abi(), 4);
     }
 
     #[test]

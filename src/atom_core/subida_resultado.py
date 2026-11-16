@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import cloud_upload as cu
+from . import rust_bridge
 from .manifiesto import NOMBRE_CARPETA_MANIFIESTO, NOMBRE_FICHERO_MANIFIESTO
 
 logger = logging.getLogger(__name__)
@@ -559,16 +560,42 @@ class ResumenResultado:
         }
 
 
+_RE_PB = re.compile(r"^PB(\d+)", re.IGNORECASE)
+
+
+def _pbs_de(items, prefijo: str) -> list[tuple[str, list[str]]]:
+    """Agrupa los remotos por PB (`General` primero, luego PB numérico ascendente).
+    Mismo criterio que Rust: primer componente de ruta (sin prefijo) que empiece por PB y un número."""
+    pref = prefijo if prefijo.endswith("/") else prefijo + "/"
+    grupos: dict[int | None, list[str]] = {}
+    for it in items:
+        rel = it.remote[len(pref):] if it.remote.startswith(pref) else it.remote
+        n = None
+        for comp in rel.split("/")[:-1]:
+            m = _RE_PB.match(comp)
+            if m:
+                n = int(m.group(1))
+                break
+        grupos.setdefault(n, []).append(it.remote)
+    orden = sorted(grupos, key=lambda k: (k is not None, k or 0))
+    return [("General" if k is None else f"PB{k}", grupos[k]) for k in orden]
+
+
 def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=None,
                     on_estado: Callable[[dict], None] | None = None,
                     should_stop: Callable[[], bool] | None = None,
                     concurrency: int = cu.DEFAULT_CONCURRENCY, simular: bool = False,
-                    subir=cu.upload_plan, forzar: bool = False) -> ResumenResultado:
+                    subir=cu.upload_plan, forzar: bool = False,
+                    on_evento: Callable[[dict], None] | None = None) -> ResumenResultado:
     """Sube la salida organizada. Urgencia = solo urgentes; normal = urgentes y luego resto.
 
     Una sola cola: urgentes primero. Lo que el bucket ya tiene (mismo contenido) se
     salta, así que «normal» tras «urgencia» no resube nada. Si los urgentes tienen
     fallidas el resto NO se intenta (mejor un fallo claro que horas de reintentos).
+
+    Con la fase Rust `subida` activa urgentes+resto van en UNA sola cola (`urgentes` marca
+    cuáles lo son) y `on_evento` recibe `pb_listo`/`error`; los PB sin nada pendiente se
+    anuncian desde aquí. Un urgente fallido solo frena su PB (lo decide Rust).
 
     `forzar=True` = «Sobrescribir todo (forzar resubida)»: no se salta nada ni se marcan
     conflictos; se pisan en el bucket los objetos existentes (ver `particionar`).
@@ -657,8 +684,95 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
     grupos = [("urgentes", sel.urgentes)]
     if modo == MODO_NORMAL:
         grupos.append(("resto", sel.resto))
-    try:
+    rust_on = rust_bridge.fase_activa("subida")
+
+    def _evento(ev: dict) -> None:
+        if on_evento is not None:
+            on_evento(ev)
+
+    def rust_pasada() -> None:
+        """Una sola cola Rust: particiona cada grupo (métricas por grupo) y sube todo junto."""
+        nonlocal med_prev
+        if should_stop is not None and should_stop():
+            resumen.cancelado = True
+            return
+        pend_por_grupo: dict[str, list] = {}
         for nombre, items in grupos:
+            cont = getattr(resumen, nombre)
+            part = particionar(
+                items, remotos, manifest, prefijo, concurrency=concurrency,
+                on_progreso=lambda h, t, nombre=nombre: emitir(nombre, None, (h, t)),
+                forzar=forzar)
+            cont.hechos = len(part.hechos)
+            cont.pendientes = len(part.pendientes)
+            resumen.conflictos += part.conflictos
+            bytes_ya[0] += sum(it.size for it in part.hechos)
+            resumen.metricas[nombre] = {
+                "omitidos": len(part.hechos), "pendientes": len(part.pendientes),
+                "bytes_omitidos": sum(it.size for it in part.hechos),
+                "bytes_pendientes": sum(it.size for it in part.pendientes),
+                "subidos": 0, "bytes_subidos": 0,
+                **_metricas_grupo(items, prefijo),
+            }
+            emitir(nombre)
+            pend_por_grupo[nombre] = part.pendientes
+        if simular:
+            return
+        # PB (o General) cuyo contenido ya está entero en el bucket: lo anuncia Python.
+        pend_remotos = {it.remote for lst in pend_por_grupo.values() for it in lst}
+        todos_items = [it for _n, items in grupos for it in items]
+        for etiqueta, remotes in _pbs_de(todos_items, prefijo):
+            if not (set(remotes) & pend_remotos):
+                conj = set(remotes)
+                _evento({"kind": "pb_listo", "pb": etiqueta, "ficheros": len(conj),
+                         "bytes": sum(it.size for it in todos_items if it.remote in conj)})
+        pendientes = [it for lst in pend_por_grupo.values() for it in lst]
+        if not pendientes:
+            return
+        urg_remotes = {it.remote for it in pend_por_grupo.get("urgentes", [])}
+        n_urg = len(urg_remotes)
+        base = {n: getattr(resumen, n).hechos for n in pend_por_grupo}
+        plan = cu.UploadPlan(root=destino, items=pendientes, prefix=prefijo.strip("/"))
+
+        def _stats(s: dict) -> None:
+            hechos = int(s.get("files_done", 0))
+            for n in pend_por_grupo:
+                getattr(resumen, n).hechos = base[n]
+            if "resto" in pend_por_grupo:
+                resumen.urgentes.hechos = base["urgentes"] + min(hechos, n_urg)
+                resumen.resto.hechos = base["resto"] + max(hechos - n_urg, 0)
+                emitir("urgentes" if hechos < n_urg else "resto", s)
+            else:
+                resumen.urgentes.hechos = base["urgentes"] + hechos
+                emitir("urgentes", s)
+
+        res = subir(plan, proveedor, concurrency=concurrency, manifest=manifest,
+                    on_stats=_stats, should_stop=should_stop, remotos={},
+                    urgentes=urg_remotes, on_evento=_evento)
+        fall = {f[0] for f in res.failed}
+        env_prev[0] += int(getattr(res, "bytes_sent", 0) or 0)
+        sub_prev[0] += int(res.uploaded)
+        med_prev = cu.sumar_medidas(med_prev, getattr(res, "medidas", None))
+        for nombre, lst in pend_por_grupo.items():
+            cont = getattr(resumen, nombre)
+            ok_items = [it for it in lst if it.remote not in fall]
+            cont.hechos = base[nombre] + len(ok_items)
+            resumen.metricas[nombre]["subidos"] = len(ok_items)
+            resumen.metricas[nombre]["bytes_subidos"] = sum(it.size for it in ok_items)
+            tipos, vuelos = _desglose(ok_items, prefijo)
+            resumen.metricas[nombre]["subidos_por_tipo"] = tipos
+            resumen.metricas[nombre]["subidos_por_vuelo"] = vuelos
+        resumen.fallidas += [f for f in res.failed if f[1] != "cancelado"]
+        if should_stop is not None and should_stop():
+            resumen.cancelado = True
+        else:
+            resumen.cancelados += [f[0] for f in res.failed if f[1] == "cancelado"]
+        emitir("resto" if "resto" in pend_por_grupo else "urgentes")
+
+    try:
+        if rust_on:
+            rust_pasada()
+        for nombre, items in ([] if rust_on else grupos):
             if should_stop is not None and should_stop():
                 resumen.cancelado = True
                 break
