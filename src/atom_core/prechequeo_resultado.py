@@ -14,6 +14,7 @@ import csv
 import datetime
 import logging
 import re
+import time
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -430,17 +431,58 @@ def _ejecutar(id_: str, fn, ctx) -> dict:
     return {"id": id_, "titulo": _TITULOS[id_], "estado": estado, "detalle": detalle}
 
 
-def prechequear(destino: str) -> dict:
-    """Prechequeo de solo lectura de `destino` (carpeta organizada) antes de subirla."""
+ETIQUETAS_PROGRESO = {
+    "manifiesto": "Leyendo el registro del organizado",
+    "cierre": "Comprobando que las imágenes están procesadas y en disco",
+    "estadillo": "Leyendo el estadillo",
+    "vuelos_exif": "Cruzando los vuelos del estadillo con las horas de las fotos",
+    "giro": "Comprobando el giro de las imágenes por vuelo",
+    "colisiones": "Buscando imágenes que se pisan por nombre",
+    "sin_clasificar": "Buscando ficheros sin clasificar",
+    "csv_recuentos": "Contrastando las filas de los CSV con las imágenes",
+    "imagenes_en_ventana": "Comprobando el horario de cada imagen",
+    "tiff_crop": "Comprobando TIFF y recortes",
+    "horas_csv": "Comprobando las horas de los CSV",
+}
+
+
+def prechequear(destino: str, on_progreso=None) -> dict:
+    """Prechequeo de solo lectura de `destino` (carpeta organizada) antes de subirla.
+
+    `on_progreso(evento)` (opcional) se llama antes (`estado='en_curso'`) y después
+    (`ok|aviso|error|no_comprobable`) de cada comprobación con `{check_id, etiqueta, i, n, estado,
+    t_s}`. Un fallo del callback se registra y no aborta el prechequeo."""
     ctx: dict = {"destino": Path(str(destino))}
-    checks = [_ejecutar("manifiesto", _chk_manifiesto, ctx)]
+    n = 1 + len(_ORDEN)
+    ids = ["manifiesto"] + [i for i, _f in _ORDEN]
+
+    def _emitir(i: int, estado: str, t0: float) -> None:
+        if on_progreso is None:
+            return
+        try:
+            on_progreso({"check_id": ids[i - 1], "etiqueta": ETIQUETAS_PROGRESO[ids[i - 1]],
+                         "i": i, "n": n, "estado": estado, "t_s": round(time.monotonic() - t0, 2)})
+        except Exception:  # noqa: BLE001 - el progreso nunca rompe el prechequeo
+            logger.warning("prechequeo: on_progreso falló", exc_info=True)
+
+    def _paso(i: int, id_: str, fn) -> dict:
+        t0 = time.monotonic()
+        _emitir(i, "en_curso", t0)
+        r = _ejecutar(id_, fn, ctx)
+        _emitir(i, r["estado"], t0)
+        return r
+
+    checks = [_paso(1, "manifiesto", _chk_manifiesto)]
     try:
         if checks[0]["estado"] != OK:
-            for id_, _fn in _ORDEN:
+            for i, (id_, _fn) in enumerate(_ORDEN, start=2):
+                t0 = time.monotonic()
+                _emitir(i, "en_curso", t0)
                 checks.append({"id": id_, "titulo": _TITULOS[id_], "estado": NO_COMPROBABLE,
                                "detalle": "No se puede comprobar sin el registro del organizado."})
+                _emitir(i, NO_COMPROBABLE, t0)
         else:
-            checks += [_ejecutar(id_, fn, ctx) for id_, fn in _ORDEN]
+            checks += [_paso(i, id_, fn) for i, (id_, fn) in enumerate(_ORDEN, start=2)]
     finally:
         man = ctx.get("manifiesto")
         if man is not None:
