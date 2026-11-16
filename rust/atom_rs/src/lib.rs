@@ -8,8 +8,11 @@ use pyo3::prelude::*;
 
 pub mod error;
 pub mod exif_meta;
+#[cfg(feature = "inyeccion-fallos")]
+pub mod fallos;
 pub mod jpeg;
 pub mod jpeg_sonda;
+pub mod lectura;
 pub mod rgb;
 pub mod subida;
 pub mod termica;
@@ -19,8 +22,9 @@ pub mod xmp;
 /// Versión del contrato Python<->Rust. Subir al romper firmas o al añadir una
 /// fase. 2 = fase `termica` (T1). 3 = sonda
 /// libjpeg-turbo (P). 4 = fase `subida` (T6, `subir_lote`). 5 = fase `indice`
-/// (T2, `parsear_cabecera`). 6 = fase `rgb` (T3, `rgb_procesar`).
-pub const ABI: u32 = 6;
+/// (T2, `parsear_cabecera`). 6 = fase `rgb` (T3, `rgb_procesar`). 7 = fase `io` (4a, `leer_completo`,
+/// `jpeg_integro_por_cola`, excepción `ErrorFila`).
+pub const ABI: u32 = 7;
 
 /// Versión del crate (Cargo.toml).
 #[pyfunction]
@@ -55,6 +59,13 @@ fn atom_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Fase `rgb` (T3, ABI 6).
     m.add_class::<rgb::RgbStats>()?;
     m.add_function(wrap_pyfunction!(rgb::rgb_procesar, m)?)?;
+    // Fase `io` (4a, ABI 7).
+    m.add("ErrorFila", m.py().get_type::<error::ErrorFila>())?;
+    m.add_function(wrap_pyfunction!(lectura::leer_completo, m)?)?;
+    m.add_function(wrap_pyfunction!(lectura::jpeg_integro_por_cola, m)?)?;
+    m.add_function(wrap_pyfunction!(lectura::tiene_inyeccion, m)?)?;
+    #[cfg(feature = "inyeccion-fallos")]
+    fallos::registrar(m)?;
     Ok(())
 }
 
@@ -63,8 +74,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn abi_es_seis() {
-        assert_eq!(version_abi(), 6);
+    fn abi_es_siete() {
+        assert_eq!(version_abi(), 7);
     }
 
     #[test]

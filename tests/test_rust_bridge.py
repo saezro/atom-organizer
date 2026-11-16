@@ -56,14 +56,35 @@ def test_abi_distinta_lanza(monkeypatch):
         rust_bridge.exigir("indice")
 
 
-def test_abi_esperada_es_seis():
-    # Debe coincidir con `ABI` de rust/atom_rs/src/lib.rs (6 = fase rgb, T3).
-    assert rust_bridge.ABI_ESPERADA == 6
+def test_abi_esperada_es_siete():
+    # Debe coincidir con `ABI` de rust/atom_rs/src/lib.rs (7 = fase io, 4a).
+    assert rust_bridge.ABI_ESPERADA == 7
 
 
 def test_fase_subida_registrada():
     assert "subida" in rust_bridge.FASES
     assert rust_bridge.SIMBOLOS_POR_FASE["subida"] == ("subir_lote",)
+
+
+def test_fase_io_registrada():
+    assert "io" in rust_bridge.FASES
+    assert rust_bridge.SIMBOLOS_POR_FASE["io"] == ("leer_completo", "jpeg_integro_por_cola")
+
+
+def test_fase_io_wheel_sin_simbolos_lanza(monkeypatch):
+    monkeypatch.setenv("ATOM_RUST_FASES", "io")
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso(simbolos=False))
+    with pytest.raises(RustNoDisponible, match="leer_completo"):
+        rust_bridge.exigir("io")
+    with pytest.raises(RustNoDisponible, match="jpeg_integro_por_cola"):
+        rust_bridge.modulo()
+
+
+def test_fase_io_con_simbolos_ok(monkeypatch):
+    monkeypatch.setenv("ATOM_RUST_FASES", "io")
+    falso = _falso()
+    monkeypatch.setitem(sys.modules, "atom_rs", falso)
+    assert rust_bridge.exigir("io") is falso
 
 
 def test_flag_fases_subida_activa_solo_subida(monkeypatch):

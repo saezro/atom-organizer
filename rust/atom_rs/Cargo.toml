@@ -32,6 +32,8 @@ bytes = "1"
 # maturin activa extension-module al construir la wheel; `cargo test` va sin él
 # para poder enlazar contra libpython.
 extension-module = ["pyo3/extension-module"]
+# Puntos de inyección de fallos de `fallos.rs` (solo wheel de TEST; nunca release).
+inyeccion-fallos = []
 
 [profile.release]
 opt-level = 3
