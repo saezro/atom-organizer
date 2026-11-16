@@ -56,9 +56,9 @@ def test_abi_distinta_lanza(monkeypatch):
         rust_bridge.exigir("indice")
 
 
-def test_abi_esperada_es_dos():
-    # Debe coincidir con `ABI` de rust/atom_rs/src/lib.rs (2 = fase termica).
-    assert rust_bridge.ABI_ESPERADA == 2
+def test_abi_esperada_es_tres():
+    # Debe coincidir con `ABI` de rust/atom_rs/src/lib.rs (3 = sonda libjpeg, P).
+    assert rust_bridge.ABI_ESPERADA == 3
 
 
 def test_modulo_sin_simbolo_de_fase_activa_lanza(monkeypatch):

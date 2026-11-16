@@ -38,10 +38,10 @@ steps:
         echo "=== RUST TESTS (ATOM_RUST=1, ATOM_RUST_AB_ESTRICTO=1) ==="
         # pandas ANTES del conftest: el stub de winreg rompe dateutil si pandas se importa despues.
         # tests/test_rust_termica_ab.py no lee ATOM_RUST_AB_ESTRICTO (inocuo); el modo estricto
-        # se aplica aqui: cualquier SKIPPED en estos dos ficheros hace fallar el build.
+        # se aplica aqui: cualquier SKIPPED en estos tres ficheros hace fallar el build.
         export ATOM_RUST_AB_ESTRICTO=1
         set +e
-        ATOM_RUST=1 python -c "import pandas, sys, pytest; sys.exit(pytest.main(['tests/test_rust_termica_ab.py','tests/test_rust_bridge.py','-v','-rs']))" 2>&1 | tee /tmp/rust_tests.log
+        ATOM_RUST=1 python -c "import pandas, sys, pytest; sys.exit(pytest.main(['tests/test_rust_termica_ab.py','tests/test_rust_bridge.py','tests/test_rust_jpeg_plataforma.py','-v','-rs']))" 2>&1 | tee /tmp/rust_tests.log
         RC=$${PIPESTATUS[0]}
         echo "RESULT_RUST_TESTS_EXIT=$$RC"
         [ "$$RC" -eq 0 ] || FAIL=1
