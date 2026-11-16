@@ -76,9 +76,12 @@ def test_gcs_mock_listar_y_descargar(tmp_path):
 
 
 def test_manifiesto_hashes(tmp_path):
-    (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "x.bin").write_bytes(b"abc")
-    m = b.manifiesto_hashes(tmp_path)
+    # Subcarpeta propia: el fixture autouse `_subidas_log_aislado` de conftest.py
+    # ya crea "Logs-subidas/subidas.log" directamente en tmp_path.
+    raiz = tmp_path / "datos"
+    (raiz / "a").mkdir(parents=True)
+    (raiz / "a" / "x.bin").write_bytes(b"abc")
+    m = b.manifiesto_hashes(raiz)
     assert list(m) == ["a/x.bin"]
     assert m["a/x.bin"]["bytes"] == 3
     assert m["a/x.bin"]["sha256"].startswith("ba7816bf")
