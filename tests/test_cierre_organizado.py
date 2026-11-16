@@ -295,3 +295,63 @@ def test_las_filas_fallidas_se_reportan(tmp_path):
     assert filas[1]["ruta_origen"] in problemas[0]
     assert "error al girar la imagen" in problemas[0]
     manifiesto.cerrar()
+
+
+def _manifiesto_h30t(tmp_path, destino, n, n_crop):
+    """N pares `_W`+`_Z` en un vuelo; `n_crop` de las `_Z` con `_CROP` hermano."""
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    filas = []
+    for i in range(n):
+        for sufijo in ("W", "Z"):
+            nombre = f"DJI_2026_{i:04d}_{sufijo}.JPG"
+            crop = None
+            if sufijo == "Z" and i < n_crop:
+                crop = str(destino / "PB1_V01" / "RGB" / f"DJI_2026_{i:04d}_Z_CROP.JPG")
+            filas.append(_fila_rgb(destino, f"/origen/{nombre}", "PB1", "V01",
+                                   ruta_salida_crop=crop))
+    manifiesto.insertar_muchas(filas)
+    for fila in manifiesto.todas():
+        _crear_fichero(fila["ruta_salida_original"])
+        if fila["ruta_salida_crop"]:
+            _crear_fichero(fila["ruta_salida_crop"])
+        manifiesto.marcar_hecha(fila["id"], verificacion="ok")
+    return manifiesto
+
+
+def test_crop_camara_z_no_cuenta_las_w_como_originales(tmp_path):
+    destino = tmp_path / "destino"
+    manifiesto = _manifiesto_h30t(tmp_path, destino, n=5, n_crop=5)
+    cfg = dataclasses.replace(_cfg(destino, cropping_rgb=True), camara_rgb="Z")
+    problemas = verificar(manifiesto, cfg)
+    assert not any("recortadas" in p for p in problemas), problemas
+    manifiesto.cerrar()
+
+
+def test_crop_camara_z_con_faltante_real_se_reporta(tmp_path):
+    destino = tmp_path / "destino"
+    manifiesto = _manifiesto_h30t(tmp_path, destino, n=5, n_crop=4)
+    cfg = dataclasses.replace(_cfg(destino, cropping_rgb=True), camara_rgb="Z")
+    problemas = verificar(manifiesto, cfg)
+    assert any("4 imágenes recortadas pero 5 originales" in p for p in problemas), problemas
+    manifiesto.cerrar()
+
+
+def test_crop_sin_zoom_en_la_tanda_cuenta_todas(tmp_path):
+    destino = tmp_path / "destino"
+    manifiesto = Manifiesto(tmp_path / "m.db")
+    manifiesto.crear_esquema()
+    manifiesto.insertar_muchas([
+        _fila_rgb(destino, "/origen/DJI_0001_W.JPG", "PB1", "V01",
+                  ruta_salida_crop=str(destino / "PB1_V01" / "RGB" / "DJI_0001_W_CROP.JPG")),
+        _fila_rgb(destino, "/origen/DJI_0002_W.JPG", "PB1", "V01", ruta_salida_crop=None),
+    ])
+    for fila in manifiesto.todas():
+        _crear_fichero(fila["ruta_salida_original"])
+        if fila["ruta_salida_crop"]:
+            _crear_fichero(fila["ruta_salida_crop"])
+        manifiesto.marcar_hecha(fila["id"], verificacion="ok")
+    cfg = dataclasses.replace(_cfg(destino, cropping_rgb=True), camara_rgb="Z")
+    problemas = verificar(manifiesto, cfg)
+    assert any("1 imágenes recortadas pero 2 originales" in p for p in problemas), problemas
+    manifiesto.cerrar()
