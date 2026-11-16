@@ -819,6 +819,14 @@ def verificar(manifiesto, cfg, recuentos_csv=None) -> list[str]:
         # real detrás de la verificación.
         if cfg.cropping_rgb:
             rgb = [fila for fila in filas_vuelo if fila["tipo"] in TIPOS_RGB]
+            # Solo se espera `_CROP` de la cámara elegida (H30T: `_W` se copia sin
+            # recortar con `--camara-rgb Z`); misma regla que pipeline.py:4494-4497.
+            # `hay_zoom` es el de la TANDA, como en `calcular_recuentos`.
+            camara = _camara_de_cfg(cfg)
+            hay_zoom = _hay_zoom_tanda(manifiesto, filas)
+            rgb = [fila for fila in rgb
+                   if camara_rgb_mod.se_recorta(
+                       os.path.basename(str(fila["ruta_origen"])), camara, hay_zoom)]
             if rgb:
                 non_crop_count = len(rgb)
                 crop_count = sum(1 for fila in rgb if fila["ruta_salida_crop"])
