@@ -16,7 +16,7 @@ for (const [escenario, texto] of escenarios) {
     await page.goto(`/e2e/harness/revision.html?escenario=${escenario}`)
     await expect(page.getByRole('dialog', { name: 'Revisión del índice' })).toBeVisible()
     await expect(page.getByRole('dialog')).toContainText(texto)
-    if (escenario !== 'sin_pendientes') await expect(page.getByTestId('ri-calendario')).toBeVisible()
+    await expect(page.getByTestId('ri-calendario')).toBeVisible()
     // El modal hace scroll propio: se agranda el viewport al alto del contenido para capturarlo entero.
     const alto = await page.evaluate(() => document.querySelector('.ri-card').scrollHeight)
     await page.setViewportSize({ width: 1280, height: Math.ceil(alto / 0.94) + 20 })

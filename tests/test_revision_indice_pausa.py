@@ -80,19 +80,28 @@ def test_no_armada_devuelve_none_y_no_toca_nada(tanda):
     assert eventos == []
 
 
-def test_sin_pendientes_no_pausa(tanda):
+def test_sin_pendientes_tambien_pausa_y_continua(tanda):
     _indexar(tanda, [("DJI_0001_D.JPG", _t(10, 5, 0))])    # dentro de ventana: nada pendiente
     man = tanda.manifiesto()
     eventos = []
-    ri.armar(espera_s=30)
+    ri.armar(espera_s=30, on_evento=eventos.append)
+
+    def _usuario():
+        _esperar_estado()
+        ri.enviar({"op": "continuar", "modo": "tal_cual"}).result(5)
+
+    hilo = _hilo(_usuario)
     try:
-        t0 = time.monotonic()
-        assert ri.pausar_si_armada(man, _cfg(tanda), 1, lambda _t: None, eventos.append) is None
-        assert time.monotonic() - t0 < 2
+        res = ri.pausar_si_armada(man, _cfg(tanda), 1, lambda _t: None)
+        hilo.join(5)
+        assert res == {"resultado": "respondida", "aplicadas": [], "sin_aplicar": []}
+        assert [e["estado"] for e in eventos] == ["esperando"]
+        assert eventos[0]["tipo"] == "revision" and eventos[0]["pendientes"] == 0
+        aud = ri.leer_auditoria(man, 1)
+        assert aud["resultado"] == "respondida" and aud["pendientes"] == 0
         assert ri.estado()["activa"] is False
     finally:
         man.cerrar()
-    assert eventos == []
 
 
 def test_espera_por_defecto_1800():
@@ -453,8 +462,8 @@ def test_no_armada_run_completo_igual_que_hoy(_inspeccion, logger, monkeypatch):
         con.close()
 
 
-def test_run_armado_sin_pendientes_emite_fase_y_no_pausa(tmp_path, make_dji_jpeg, logger,
-                                                         monkeypatch):
+def test_run_armado_sin_pendientes_emite_fase_y_pausa(tmp_path, make_dji_jpeg, logger,
+                                                      monkeypatch):
     origen = tmp_path / "origen"
     origen.mkdir()
     ts = dt.datetime(2026, 1, 15, 10, 0, 0)
@@ -462,11 +471,19 @@ def test_run_armado_sin_pendientes_emite_fase_y_no_pausa(tmp_path, make_dji_jpeg
     _escribir_estadillo(tmp_path / "estadillo.csv",
                         [("1", "1", "2026:01:15", "09:55:00", "10:05:00")])
     host = _HostDePrueba(logger)
-    eventos = []
+    eventos, respuestas = [], []
     ri.armar(espera_s=30, on_evento=eventos.append)
+
+    def _usuario():
+        _esperar_estado()
+        respuestas.append(ri.enviar({"op": "continuar", "modo": "tal_cual"}).result(20))
+
+    hilo = _hilo(_usuario)
     _pcb, _pbar, psum = _correr(host, _cfg_e2e(tmp_path), monkeypatch)
+    hilo.join(20)
     assert "---> SUBPROCESO: Revisión del índice" in psum.mensajes
-    assert eventos == []
+    assert len(respuestas) == 1
+    assert [e["estado"] for e in eventos] == ["esperando"] and eventos[0]["pendientes"] == 0
 
 
 def test_avisos_sin_ordenar_recalculados_tras_asignar(_inspeccion, logger, monkeypatch):  # noqa: F811
