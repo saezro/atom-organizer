@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 import time
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -407,14 +408,17 @@ class ProveedorResultado(cu.GcsOAuthProvider):
         super().__init__(BUCKET_RESULTADO, auth, inspeccion_id=int(inspeccion_id), ambito=AMBITO_RESULTADO,
                          forzar=bool(forzar))
 
-    def listar_remotos(self, prefix: str):
+    soporta_progreso_listado = True
+
+    def listar_remotos(self, prefix: str, on_pagina=None):
         """Inventario SIN el tope de 50.000 de los crudos: 2.000 páginas (2 M de
-        objetos). Si aun así se trunca lanza `ListadoTruncado` (no verificable)."""
+        objetos). Si aun así se trunca lanza `ListadoTruncado` (no verificable).
+        `on_pagina(objetos, paginas)` = progreso del listado."""
         return cu.listar_objetos_remotos(
             self.bucket, prefix, self.auth, base=self.base,
             token_prefix=self.prefix or prefix, inspeccion_id=self.inspeccion_id,
             planta_id=self.planta_id, ambito=self.ambito,
-            max_paginas=MAX_PAGINAS_RESULTADO, estricto=True)
+            max_paginas=MAX_PAGINAS_RESULTADO, estricto=True, on_pagina=on_pagina)
 
     def prefijo_destino(self) -> str:
         """Prefijo decidido por la Suite (pide el token si aún no lo hay)."""
@@ -450,6 +454,66 @@ def _vuelo_de(rel: str) -> str | None:
         if m:
             return m.group(0).upper()
     return None
+
+
+_RE_PB = re.compile(r"^PB(\d+)(?:_|$)", re.IGNORECASE)
+GRUPO_GENERAL = "General"
+
+
+def pb_de(rel: str) -> str:
+    """Grupo PB (`PB17`) de una ruta relativa (carpeta `PBn` o `PBn_Vm…`); sin PB → 'General'."""
+    for p in rel.split("/")[:-1]:
+        m = _RE_PB.match(p)
+        if m:
+            return f"PB{int(m.group(1))}"
+    return GRUPO_GENERAL
+
+
+class ProgresoPorPB:
+    """Desglose en vivo por PB: ficheros/bytes hechos frente a total y fallidas.
+
+    Hilo-seguro (`on_item` llega del hilo principal de `upload_plan`, `emitir` de cualquiera).
+    Un fichero cuenta una sola vez (hecho o fallido), aunque se notifique repetido.
+    """
+
+    def __init__(self, items, prefijo: str):
+        self._pref = prefijo.strip("/") + "/"
+        self._lock = threading.Lock()
+        self._g: dict = {}
+        self._visto: set = set()
+        for it in items:
+            g = self._grupo(it)
+            g["ficheros_total"] += 1
+            g["bytes_total"] += max(0, it.size)
+
+    def _grupo(self, it) -> dict:
+        r = it.remote[len(self._pref):] if it.remote.startswith(self._pref) else it.remote
+        pb = pb_de(r)
+        return self._g.setdefault(pb, {"pb": pb, "ficheros_hechos": 0, "ficheros_total": 0,
+                                       "bytes_done": 0, "bytes_total": 0, "fallidas": 0})
+
+    def marcar(self, it, ok: bool = True) -> None:
+        with self._lock:
+            if it.remote in self._visto:
+                return
+            self._visto.add(it.remote)
+            g = self._grupo(it)
+            if ok:
+                g["ficheros_hechos"] += 1
+                g["bytes_done"] += max(0, it.size)
+            else:
+                g["fallidas"] += 1
+
+    def lista(self) -> list[dict]:
+        def clave(g):
+            m = re.match(r"PB(\d+)$", g["pb"])
+            return (0, int(m.group(1))) if m else (1, 0)
+        with self._lock:
+            out = []
+            for g in sorted(self._g.values(), key=clave):
+                hechos = g["ficheros_hechos"] + g["fallidas"]
+                out.append({**g, "terminado": g["ficheros_total"] > 0 and hechos >= g["ficheros_total"]})
+            return out
 
 
 def _desglose(items, prefijo: str) -> tuple[dict, dict]:
@@ -629,6 +693,9 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
     sub_prev = [0]                       # ficheros realmente subidos en grupos terminados
     med_prev = cu.medidas_vacias()       # tiempos-hilo y reintentos de grupos terminados
     hilos_max = max(1, concurrency)
+    todos_modo = list(sel.urgentes) + (list(sel.resto) if modo == MODO_NORMAL else [])
+    por_pb = ProgresoPorPB(todos_modo, prefijo)
+    listado = {"listados": 0, "paginas": 0}
 
     def emitir(fase: str, s: dict | None = None, comprobando: tuple | None = None) -> None:
         if on_estado is None:
@@ -671,11 +738,22 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
             "medidas": cu.sumar_medidas(med_prev, (s or {}).get("medidas")),
             # Destino real (se conoce antes de listar): la UI lo enseña desde el principio.
             "prefix": prefijo,
+            # Listado del bucket en vivo (objetos acumulados y páginas leídas).
+            "listados": listado["listados"], "paginas": listado["paginas"],
+            # Desglose por PB (carpeta PBn; sin PB → General).
+            "por_pb": por_pb.lista(),
         })
+
+    def _pagina(objetos: int, paginas: int) -> None:
+        listado["listados"], listado["paginas"] = objetos, paginas
+        emitir("listando")
 
     emitir("listando")
     try:
-        remotos = proveedor.listar_remotos(prefijo)
+        if on_estado is not None and getattr(proveedor, "soporta_progreso_listado", False):
+            remotos = proveedor.listar_remotos(prefijo, on_pagina=_pagina)
+        else:
+            remotos = proveedor.listar_remotos(prefijo)
     except cu.ListadoTruncado as exc:
         raise SubidaResultadoError(f"{exc}: no se sube nada.") from exc
     if remotos is None:
@@ -785,6 +863,8 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
             cont.pendientes = len(part.pendientes)
             resumen.conflictos += part.conflictos
             bytes_ya[0] += sum(it.size for it in part.hechos)
+            for it in part.hechos:
+                por_pb.marcar(it, True)
             resumen.metricas[nombre] = {
                 "omitidos": len(part.hechos), "pendientes": len(part.pendientes),
                 "bytes_omitidos": sum(it.size for it in part.hechos),
@@ -805,10 +885,13 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
             # `remotos={}`: la partición ya cruzó local y bucket. Con {} `reconciliar` deja los
             # items tal cual (conserva `sobrescribir`) y no vuelve a listar.
             res = subir(plan, proveedor, concurrency=concurrency, manifest=manifest,
-                        on_stats=_stats, should_stop=should_stop, remotos={})
+                        on_stats=_stats, should_stop=should_stop, remotos={},
+                        on_item=por_pb.marcar)
             cont.hechos = base + res.uploaded + res.skipped
             fall = {f[0] for f in res.failed}
             ok_items = [it for it in part.pendientes if it.remote not in fall]
+            for it in ok_items:  # red de seguridad: ya notificados por `on_item` no se duplican
+                por_pb.marcar(it, True)
             env_prev[0] += int(getattr(res, "bytes_sent", 0) or 0)
             sub_prev[0] += int(res.uploaded)
             med_prev = cu.sumar_medidas(med_prev, getattr(res, "medidas", None))
@@ -881,6 +964,46 @@ def _desglose_barato(items, remotos: dict) -> dict:
     return d
 
 
+def _clave_pb(g: str):
+    m = _RE_PB.match(g)
+    return (0, int(m.group(1)), "") if m else (1, 0, g)
+
+
+def _desglose_por_pb(items, remotos: dict, pref: str) -> list[dict]:
+    """Por PB: locales / en_bucket / pendientes / distintos (clave exacta + tamaño) y lo que
+    solo existe en el bucket (claves remotas sin item local, p. ej. otras subidas)."""
+    def nuevo(pb):
+        return {"pb": pb, "locales": 0, "en_bucket": 0, "pendientes": 0, "distintos": 0,
+                "solo_bucket": 0, "bytes_local": 0, "bytes_pendientes": 0, "bytes_solo_bucket": 0}
+    grupos: dict[str, dict] = {}
+    locales = set()
+    for it in items:
+        rel = it.remote[len(pref):] if it.remote.startswith(pref) else it.remote
+        g = grupos.setdefault(pb_de(rel), nuevo(pb_de(rel)))
+        sz = max(0, it.size)
+        locales.add(it.remote)
+        g["locales"] += 1
+        g["bytes_local"] += sz
+        r = remotos.get(it.remote)
+        if r is None:
+            g["pendientes"] += 1
+            g["bytes_pendientes"] += sz
+        elif r.size == it.size:
+            g["en_bucket"] += 1
+        else:
+            g["distintos"] += 1
+            g["bytes_pendientes"] += sz
+    for clave, r in remotos.items():
+        if clave in locales:
+            continue
+        rel = clave[len(pref):] if clave.startswith(pref) else clave
+        pb = pb_de(rel)
+        g = grupos.setdefault(pb, nuevo(pb))
+        g["solo_bucket"] += 1
+        g["bytes_solo_bucket"] += max(0, r.size)
+    return sorted(grupos.values(), key=lambda g: _clave_pb(g["pb"]))
+
+
 def inspeccionar_destino(destino, inspeccion_id: int, auth, *, proveedor=None) -> dict:
     """Qué hay ya en el prefijo destino del bucket (solo LIST: sin MD5, sin escrituras).
 
@@ -914,6 +1037,7 @@ def inspeccionar_destino(destino, inspeccion_id: int, auth, *, proveedor=None) -
             sel = seleccionar(destino, prefijo)
             base["desglose"] = {"urgentes": _desglose_barato(sel.urgentes, remotos),
                                 "resto": _desglose_barato(sel.resto, remotos)}
+            base["por_pb"] = _desglose_por_pb([*sel.urgentes, *sel.resto], remotos, pref)
             base["sin_clasificar"] = sel.sin_clasificar
             base["sin_clasificar_lista"] = list(sel.sin_clasificar_lista)
             for it in ([*sel.urgentes, *sel.resto] if remotos else []):

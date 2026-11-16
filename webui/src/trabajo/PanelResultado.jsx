@@ -3,7 +3,9 @@ import { api, onResultado } from '../bridge'
 import GraficaSubida from './GraficaSubida'
 import ProgresoSubida from './ProgresoSubida'
 import useConfirmar from './useConfirmar'
-import { añadirMuestra, diagnosticarCuello, estadisticasSerie } from './subidaMedicion'
+import { añadirMuestra, diagnosticarCuello, estadisticasSerie, saludSubida } from './subidaMedicion'
+import { SemaforoSubida, TablaPorPB } from './SaludSubida'
+import DesgloseDestinoPB from './DesgloseDestinoPB'
 
 const nf = (n, d = 1) => Number(n).toLocaleString('es-ES', { minimumFractionDigits: d, maximumFractionDigits: d })
 const miles = (n) => Number(n || 0).toLocaleString('es-ES')
@@ -61,6 +63,23 @@ export function textoDuracion(seg) {
 }
 
 const ETIQ_TIPO = { tiff_termica: 'TIFF térmica', termica_jpg: 'Térmica JPG', rgb_crops: 'RGB crops', rgb: 'RGB', csv: 'CSV', estadillos: 'Estadillos', otros: 'Otros' }
+// Comprobaciones del prechequeo (mismo orden y ids que `prechequeo_resultado.py`); las etiquetas
+// que llegan en los eventos de progreso pisan estas.
+const PASOS_PRECHEQUEO = [
+  ['manifiesto', 'Leyendo el registro del organizado'],
+  ['cierre', 'Comprobando que las imágenes están procesadas y en disco'],
+  ['estadillo', 'Leyendo el estadillo'],
+  ['vuelos_exif', 'Cruzando los vuelos del estadillo con las horas de las fotos'],
+  ['giro', 'Comprobando el giro de las imágenes por vuelo'],
+  ['colisiones', 'Buscando imágenes que se pisan por nombre'],
+  ['sin_clasificar', 'Buscando ficheros sin clasificar'],
+  ['csv_recuentos', 'Contrastando las filas de los CSV con las imágenes'],
+  ['imagenes_en_ventana', 'Comprobando el horario de cada imagen'],
+  ['tiff_crop', 'Comprobando TIFF y recortes'],
+  ['horas_csv', 'Comprobando las horas de los CSV'],
+]
+const ETIQ_PASO = { en_curso: 'En curso', ok: 'OK', aviso: 'Aviso', error: 'Error', no_comprobable: 'No comprobable' }
+
 const ETIQ_ESTADO = { ok: 'OK', aviso: 'Aviso', error: 'Error', no_comprobable: 'No comprobable' }
 
 const sumaDesgloses = (grupos, clave) => {
@@ -150,6 +169,10 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
   const [cred, setCred] = useState(null)
   // Aviso pre-subida: null | {cargando} | {checks, destino, error?}
   const [previa, setPrevia] = useState(null)
+  // Progreso del prechequeo en curso: {n, pasos: {check_id: {etiqueta, i, estado, desde, t_s}}}
+  const [progPre, setProgPre] = useState(null)
+  const [ahoraPre, setAhoraPre] = useState(() => Date.now())
+  const revisionRef = useRef(0)
   const [igualmente, setIgualmente] = useState(false)
   // «Sobrescribir todo (forzar resubida)»: SIEMPRE desmarcada al abrir el aviso, nunca persistida.
   const [forzar, setForzar] = useState(false)
@@ -308,13 +331,29 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
     setError('')
     setIgualmente(false)
     setForzar(false)
+    const miRevision = ++revisionRef.current
     setPrevia({ cargando: true })
+    setProgPre(null)
     const c = await comprobarCred()
     setCred(c)
     if (!c.ok) { setPrevia(null); return }
+    // Eventos de una revisión anterior (token obsoleto) se descartan.
+    const alProgreso = (ev) => {
+      if (revisionRef.current !== miRevision || !ev?.check_id) return
+      setProgPre((p) => {
+        const pasos = { ...(p?.pasos || {}) }
+        const ant = pasos[ev.check_id]
+        pasos[ev.check_id] = {
+          etiqueta: ev.etiqueta, i: ev.i, estado: ev.estado,
+          desde: ev.estado === 'en_curso' ? Date.now() : (ant?.desde ?? Date.now()),
+          t_s: ev.estado === 'en_curso' ? null : ev.t_s,
+        }
+        return { n: ev.n, pasos }
+      })
+    }
     try {
       const [pre, destino] = await Promise.all([
-        api.resultadoPrechequeo(carpeta),
+        api.resultadoPrechequeo(carpeta, alProgreso),
         api.resultadoInspeccionarDestino(carpeta, inspeccionId),
       ])
       if (!pre || typeof pre !== 'object' || !Array.isArray(pre.checks)) {
@@ -323,12 +362,21 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
       if (!destino || typeof destino !== 'object') {
         throw new Error('Respuesta inesperada al inspeccionar el destino')
       }
+      if (revisionRef.current !== miRevision) return
       setPrevia({ checks: pre.checks, okPre: pre.ok !== false, destino })
     } catch (e) {
+      if (revisionRef.current !== miRevision) return
       setPrevia(null)
       setError(String(e?.message || e))
     }
   }
+
+  const prechequeando = Boolean(previa?.cargando)
+  useEffect(() => {
+    if (!prechequeando) return undefined
+    const t = setInterval(() => setAhoraPre(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [prechequeando])
 
   function cambiarEncadenar(v) {
     setEncadenar(v)
@@ -389,6 +437,9 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
   const restoEnCola = subiendo && hayResto && encadenar && modo === 'urgencia' && estado?.modo !== 'normal'
   const card = resumen ? resumenMetricas(resumen.metricas) : null
   const est = useMemo(() => estadisticasSerie(serie), [serie])
+  const salud = useMemo(
+    () => (subiendo || error ? saludSubida({ serie, ahora: ahora / 1000, error }) : null),
+    [serie, ahora, subiendo, error])
 
   // Progreso del modo en curso (urgencia = solo urgentes; normal = ambos).
   const enNormal = ultimo?.modo === 'normal'
@@ -508,7 +559,31 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
       </span>
 
       {cred && sinCred && <span className="field-hint hint-warn" role="alert">{cred.reason || 'No hay credencial para publicar.'}</span>}
-      {previa?.cargando && <span className="field-hint" aria-live="polite">Revisando antes de subir…</span>}
+      {previa?.cargando && (() => {
+        const pasos = progPre?.pasos || {}
+        const n = progPre?.n || PASOS_PRECHEQUEO.length
+        const actual = Object.values(pasos).find((x) => x.estado === 'en_curso')
+        const hechos = Object.values(pasos).filter((x) => x.estado !== 'en_curso').length
+        return (
+          <div className="sub-previa" role="group" aria-label="Revisando antes de subir" aria-live="polite">
+            <span className="field-label">
+              Revisando antes de subir · Comprobación {Math.min(actual?.i ?? hechos + 1, n)} de {n}
+            </span>
+            {PASOS_PRECHEQUEO.map(([id, etiq]) => {
+              const x = pasos[id]
+              const est = x?.estado || 'pendiente'
+              const seg = est === 'en_curso' ? Math.max(0, Math.floor((ahoraPre - x.desde) / 1000)) : x?.t_s != null ? Math.round(x.t_s) : null
+              const clase = est === 'ok' ? 'hint-ok' : est === 'aviso' || est === 'error' ? 'hint-warn' : ''
+              return (
+                <span key={id} className={`field-hint ${clase}`}>
+                  <strong>{est === 'pendiente' ? 'Pendiente' : ETIQ_PASO[est] || est}</strong> · {x?.etiqueta || etiq}
+                  {seg != null ? ` (${seg} s)` : ''}
+                </span>
+              )
+            })}
+          </div>
+        )
+      })()}
       {previa && !previa.cargando && (() => {
         const hayError = previa.checks.some((c) => c.estado === 'error') || !previa.okPre || previa.destino?.ok === false
         const d = previa.destino
@@ -526,8 +601,8 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
             {d?.desglose && <span className="field-hint">{textoDesglose(d.desglose)}</span>}
             {d?.existe && (
               <div className="field-hint hint-warn sub-destino-total">
-                <strong>Destino completo: {miles(d.n_objetos)} objetos / {textoBytes(d.bytes)}</strong>
-                {' '}(total de todo lo que hay en el bucket, no de esta subida)
+                <strong>Ya en el bucket (todo el destino, otras subidas incluidas): {miles(d.n_objetos)} objetos / {textoBytes(d.bytes)}</strong>
+                {d.por_pb?.length ? <DesgloseDestinoPB porPb={d.por_pb} /> : null}
                 {d.sobrescribe?.length ? (
                   <details>
                     <summary>{miles(d.sobrescribe.length)} ficheros pequeños (CSV, estadillos, índice) que se sobrescriben — ver lista</summary>
@@ -556,6 +631,7 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
       })()}
       {!(carpeta && inspeccionId) && <span className="field-hint">Elige la inspección y la carpeta de salida para poder publicar.</span>}
 
+      {salud && <SemaforoSubida salud={salud} />}
       {(subiendo || ultimo || resumen || (error && inicio)) && (
         <ProgresoSubida
           ultimo={ultimo} resumen={resumen} card={card} subiendo={subiendo} error={error}
@@ -565,6 +641,7 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
       {(subiendo || (estado && !resumen)) && (
         <section className="sub-progreso" aria-label="Subida en curso">
           <GraficaSubida serie={serie} />
+          <TablaPorPB porPb={ultimo?.por_pb} />
           {!ocultarCuello && <Cuello diag={diag} />}
         </section>
       )}
@@ -616,6 +693,7 @@ export default function PanelResultado({ carpeta, inspeccionId, ready, variante 
           {!card && !ocultarCuello && <Cuello diag={diag} />}
         </section>
       )}
+      {resumen && !subiendo && <TablaPorPB porPb={ultimo?.por_pb} />}
       {resumen && !subiendo && card && !ocultarCuello && <Cuello diag={diag} />}
       {resumen?.cancelled && <span className="field-hint hint-warn">Subida cancelada. Lo ya subido se conserva.</span>}
       {nConf > 0 && <span className="field-hint hint-warn">{nConf} en conflicto (existen con otro contenido y no se pisan)</span>}

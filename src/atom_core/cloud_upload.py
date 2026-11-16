@@ -412,7 +412,9 @@ def listar_objetos_remotos(bucket: str, prefix: str, auth, *,
                            inspeccion_id: int | None = None,
                            planta_id: int | None = None,
                            ambito: str | None = None,
-                           estricto: bool = False) -> dict[str, RemoteObject]:
+                           estricto: bool = False,
+                           on_pagina: Callable[[int, int], None] | None = None
+                           ) -> dict[str, RemoteObject]:
     """Inventario COMPLETO de lo que hay bajo `prefix`, indexado por nombre.
 
     Esta es la pieza que hace que reseleccionar la misma carpeta no vuelva a
@@ -433,6 +435,9 @@ def listar_objetos_remotos(bucket: str, prefix: str, auth, *,
     `estricto=True` (verificación del resultado): un inventario truncado NO es
     utilizable, porque daría falsos faltantes; en vez de avisar y seguir, lanza
     `ListadoTruncado`.
+
+    `on_pagina(objetos_acumulados, paginas)` se llama tras cada página leída
+    (progreso en vivo del listado; un fallo del callback no rompe el listado).
     """
     prefijo = prefix.strip("/")
     prefijo = prefijo + "/" if prefijo else ""
@@ -440,7 +445,7 @@ def listar_objetos_remotos(bucket: str, prefix: str, auth, *,
     token = ""
     bucket_q = urllib.parse.quote(bucket)
 
-    for _ in range(max_paginas):
+    for n_pagina in range(1, max_paginas + 1):
         params = {
             "prefix": prefijo,
             "maxResults": 1000,
@@ -465,6 +470,11 @@ def listar_objetos_remotos(bucket: str, prefix: str, auth, *,
                 tam = -1  # tamaño ilegible: nunca casará, se resube. Correcto.
             encontrados[nombre] = RemoteObject(nombre, tam, it.get("md5Hash") or "")
 
+        if on_pagina is not None:
+            try:
+                on_pagina(len(encontrados), n_pagina)
+            except Exception:  # noqa: BLE001 - el progreso nunca rompe el listado
+                _log.debug("on_pagina falló", exc_info=True)
         token = data.get("nextPageToken") or ""
         if not token:
             break
@@ -1435,7 +1445,8 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
                 should_stop: Callable[[], bool] | None = None,
                 remotos: dict[str, RemoteObject] | None = None,
                 urgentes: set[str] | None = None,
-                on_evento: Callable[[dict], None] | None = None) -> UploadResult:
+                on_evento: Callable[[dict], None] | None = None,
+                on_item: Callable[[UploadItem, bool], None] | None = None) -> UploadResult:
     """Sube todos los ficheros del plan, en paralelo, reanudando y sin repetir.
 
     `urgentes` (remotos urgentes) y `on_evento` (`pb_listo`/`error`) solo los usa la
@@ -1660,6 +1671,11 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
                         counter["fallidas"] += 1
 
                 counter["files"] += 1
+                if on_item is not None and err != "cancelado":
+                    try:
+                        on_item(item, err is None)
+                    except Exception:  # noqa: BLE001 - el desglose nunca rompe la subida
+                        _log.debug("on_item falló", exc_info=True)
                 _avisar()
                 if cb["motivo"] is not None and result.abortado is None:
                     result.abortado = (f"{cb['motivo']} · subida abortada tras "

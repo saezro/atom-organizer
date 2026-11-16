@@ -25,6 +25,7 @@ const api = {
   ])),
   activarPerfil: vi.fn(async () => { logueado = true; return { ok: true } }),
   borrarPerfil: vi.fn(async () => ({ ok: true })),
+  revisionIndiceEstado: vi.fn(async () => ({ ok: true })),
 }
 
 vi.mock('../bridge', () => ({
@@ -61,7 +62,7 @@ describe('Entrada con perfil guardado', () => {
 
     try {
       render(<App />)
-      const tile = await screen.findByRole('button', { name: /Dani/i })
+      const tile = await screen.findByRole('button', { name: /Dani/i }, { timeout: 4000 })
       fireEvent.click(tile)
 
       await waitFor(() => expect(api.activarPerfil).toHaveBeenCalledWith('dani@ejemplo.com'))

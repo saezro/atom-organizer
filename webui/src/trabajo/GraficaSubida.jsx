@@ -20,6 +20,15 @@ function techo(v) {
   const f = v / e
   return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * e
 }
+// ETA legible: «1 h 05 min», «4 min 12 s», «30 s»; sin dato → «—».
+export function textoEtaLegible(seg) {
+  if (seg == null || !Number.isFinite(seg) || seg < 0) return '—'
+  const t = Math.round(seg)
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60
+  if (h > 0) return `${h} h ${String(m).padStart(2, '0')} min`
+  if (m > 0) return `${m} min ${String(s).padStart(2, '0')} s`
+  return `${s} s`
+}
 function mmss(seg) {
   const t = Math.max(0, Math.round(seg))
   const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60
@@ -49,6 +58,7 @@ export default function GraficaSubida({ serie, compacta = false }) {
   if (actual.length) tramos.push(actual)
   const lineas = tramos.map((tr) => tr.map((s, i) => `${i ? 'L' : 'M'}${x(s.t).toFixed(1)},${yV(s.mbs).toFixed(1)}`).join(' '))
 
+  const ult = serie[serie.length - 1]
   const marcas = serie.flatMap((s) => s.marcas.map((m, i) => ({ ...m, t: s.t, k: `${s.t}-${m.tipo}-${i}` })))
   const ticksV = [0, vMax / 2, vMax]
   const ticksT = [0, 0.25, 0.5, 0.75, 1].map((f) => f * tMax)
@@ -91,6 +101,10 @@ export default function GraficaSubida({ serie, compacta = false }) {
         <span><i className="sub-leyenda-area" /> Datos enviados (GB)</span>
         {est.media != null && <span><i className="sub-leyenda-media" /> Media {esc(est.media)} MB/s</span>}
         <span>Pico {esc(est.pico)} MB/s</span>
+        <span data-testid="leyenda-hilos">Hilos {ult.hilos ?? '—'}/{ult.hilosMax ?? '—'}</span>
+        <span data-testid="leyenda-ficheros">Ficheros {ult.ficheros ? `${ult.ficheros.hechos.toLocaleString('es-ES')}/${ult.ficheros.total.toLocaleString('es-ES')}` : '—'}</span>
+        <span data-testid="leyenda-eta">ETA {textoEtaLegible(ult.eta)}</span>
+        <span data-testid="leyenda-fallidas" style={ult.fallidas > 0 ? { color: 'var(--rojo, #f87171)' } : undefined}>Fallidas {ult.fallidas || 0}</span>
         {marcas.length > 0 && <span><i className="sub-leyenda-marca" /> {marcas.length} incidencia{marcas.length === 1 ? '' : 's'} (reintentos y pausas)</span>}
       </figcaption>
     </figure>

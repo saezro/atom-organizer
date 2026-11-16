@@ -3740,6 +3740,38 @@ class Api:
             return {"ok": False, "checks": [{"id": "prechequeo", "titulo": "Prechequeo",
                                              "estado": "error", "detalle": str(exc)}]}
 
+    def resultado_prechequeo_start(self, destino: str, token: str) -> dict:
+        """Igual que `resultado_prechequeo` pero en un hilo y con progreso por comprobación.
+        Por `atom:resultado` llegan `{kind:'prechequeo_progreso', token, check_id, etiqueta, i, n,
+        estado, t_s}` en cada paso y al final `{kind:'prechequeo', token, resultado}` o
+        `{kind:'prechequeo', token, error}`. `token` lo pone la UI para descartar eventos de
+        prechequeos anteriores."""
+        if not token:
+            return {"started": False, "reason": "Falta el token del prechequeo."}
+
+        def empujar(detalle: dict) -> None:
+            try:
+                self._push_resultado({**detalle, "token": token})
+            except Exception:  # noqa: BLE001 - el hilo no debe morir en silencio
+                logger.exception("resultado_prechequeo_start: no se pudo empujar el evento (token=%s)", token)
+
+        def worker() -> None:
+            try:
+                from atom_core import prechequeo_resultado, subida_resultado as sr
+                destino_real = destino
+                try:
+                    destino_real = str(sr.resolver_raiz(destino)[0])
+                except sr.SubidaResultadoError:
+                    pass  # sin manifiesto: el check `manifiesto` lo reporta como error
+                res = prechequeo_resultado.prechequear(
+                    destino_real, on_progreso=lambda ev: empujar({"kind": "prechequeo_progreso", **ev}))
+                empujar({"kind": "prechequeo", "resultado": res})
+            except Exception as exc:  # noqa: BLE001 - llega a la UI como error visible
+                empujar({"kind": "prechequeo", "error": f"{type(exc).__name__}: {exc}"})
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"started": True}
+
     def resultado_inspeccionar_destino(self, destino: str, inspeccion_id: int | None) -> dict:
         """Qué hay ya en el destino del bucket (solo lista). Exige credencial válida."""
         from atom_core import subida_resultado as sr

@@ -76,7 +76,7 @@ export function calcularFases({ cur, vis, max, restoPrevisto, fin, ultimo, compr
       detalle = i === 2 ? 'Nada que comprobar' : (restoPrevisto ? 'No se sube el resto en esta pasada' : 'Sin resto en esta subida')
     } else if (estado === 'running') {
       if (i === 0) detalle = 'Preparando…'
-      else if (i === 1) detalle = 'Consultando objetos…'
+      else if (i === 1) detalle = textoListado(ultimo) || 'Consultando objetos…'
       else if (i === 5) detalle = 'Comprobando de nuevo el bucket…'
       else if (ultimo?.comprobando) detalle = `Comprobando ${miles(ultimo.comprobando.hechos)} / ${miles(ultimo.comprobando.total)}`
       else {
@@ -289,9 +289,15 @@ export default function ProgresoSubida({
   )
 }
 
+// «Listando bucket: N objetos (p páginas)»; '' si el backend aún no manda el progreso del listado.
+export function textoListado(e) {
+  if (!e || !(e.paginas > 0)) return ''
+  return `Listando bucket: ${miles(e.listados)} objetos (${miles(e.paginas)} página${e.paginas === 1 ? '' : 's'})`
+}
+
 function textoSub(e) {
   if (e.fase === 'verificando') return 'Verificando en el bucket…'
-  if (e.fase === 'listando') return 'Leyendo el bucket…'
+  if (e.fase === 'listando') return textoListado(e) || 'Leyendo el bucket…'
   if (e.comprobando) return `Comprobando ficheros ${e.comprobando.hechos}/${e.comprobando.total}…`
   if (!e.urgentes || !e.resto) return ''
   return `urgentes ${e.urgentes.hechos}/${e.urgentes.total} · resto ${e.resto.hechos}/${e.resto.total}`
