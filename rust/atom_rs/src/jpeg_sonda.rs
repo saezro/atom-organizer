@@ -2,33 +2,10 @@
 //! mismos flags que Pillow para comparar bytes por plataforma. No es una fase.
 
 use crate::error::AtomError;
+use crate::jpeg::insertar_app1;
 use crate::termica::{codificar_jpeg, rotar};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
-
-/// Inserta un APP1 (`exif` ya trae `Exif\0\0`, como lo pasa Pillow) justo tras
-/// el APP0/JFIF: Pillow lo escribe con `jpeg_write_marker` tras `start_compress`.
-fn insertar_app1(jpeg: &[u8], exif: &[u8]) -> Result<Vec<u8>, AtomError> {
-    if exif.len() > 65533 {
-        return Err(AtomError::Entrada(format!("exif de {} bytes no cabe en un APP1", exif.len())));
-    }
-    if jpeg.len() < 4 || jpeg[0] != 0xFF || jpeg[1] != 0xD8 {
-        return Err(AtomError::Entrada("salida sin SOI".into()));
-    }
-    // Tras SOI: APP0 (FF E0, len BE) si existe; el APP1 va a continuación.
-    let mut pos = 2;
-    if jpeg[2] == 0xFF && jpeg[3] == 0xE0 {
-        let l = u16::from_be_bytes([jpeg[4], jpeg[5]]) as usize;
-        pos = 4 + l;
-    }
-    let mut out = Vec::with_capacity(jpeg.len() + exif.len() + 4);
-    out.extend_from_slice(&jpeg[..pos]);
-    out.extend_from_slice(&[0xFF, 0xE1]);
-    out.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
-    out.extend_from_slice(exif);
-    out.extend_from_slice(&jpeg[pos..]);
-    Ok(out)
-}
 
 fn comprobar(rgb: &[u8], ancho: u32, alto: u32) -> Result<(), AtomError> {
     if ancho == 0 || alto == 0 || rgb.len() != ancho as usize * alto as usize * 3 {
@@ -89,16 +66,6 @@ pub fn jpeg_sonda_rotar(py: Python<'_>, rgb: &[u8], ancho: u32, alto: u32, grado
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn app1_va_tras_el_app0() {
-        let j = codificar_jpeg(&[10u8; 16 * 16 * 3], 16, 16, false, 75).unwrap();
-        let o = insertar_app1(&j, b"Exif\0\0xx").unwrap();
-        assert_eq!(&o[2..4], &[0xFF, 0xE0]);
-        let l0 = u16::from_be_bytes([o[4], o[5]]) as usize;
-        assert_eq!(&o[4 + l0..6 + l0], &[0xFF, 0xE1]);
-        assert_eq!(o.len(), j.len() + 4 + 8);
-    }
 
     #[test]
     fn tamano_incoherente_falla() {

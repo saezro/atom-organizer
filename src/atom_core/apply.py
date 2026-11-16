@@ -458,7 +458,190 @@ def _bloque_xmp_de_bytes(datos: bytes) -> bytes | None:
     return texto[inicio:fin + 12].encode("latin-1")
 
 
+def _leer_origen_verificado(fila: Mapping[str, Any], bytes_origen: int) -> bytes:
+    """Lectura verificada del origen RGB (DriveFS puede dar lecturas cortas sin
+    error del SO): PIL/Rust decodifican desde bytes completos, nunca desde el
+    fichero a medias. Un JPEG sin cola válida se rechaza con `OSError`."""
+    datos_origen = lectura_segura.leer_completo(
+        fila["ruta_origen"], bytes_origen=fila.get("bytes_origen") or bytes_origen)
+    if (os.path.splitext(fila["ruta_origen"])[1].lower() in (".jpg", ".jpeg")
+            and not lectura_segura.jpeg_cola_valida(
+                datos_origen[-lectura_segura.VENTANA_COLA_JPEG:])
+            and not lectura_segura.jpeg_eoi_en_cola_util(datos_origen)
+            and not lectura_segura.jpeg_eoi_por_segmentos(datos_origen)):
+        # Sin decode extra: si hay EOI en la cola útil, el `img.load()` de
+        # abajo (decode que ya se hace) detecta un truncado real.
+        raise OSError("JPEG truncado en origen (cola a ceros/sin EOI): "
+                      + fila["ruta_origen"])
+    return datos_origen
+
+
+def _escribir_salidas_de_fila_rust(rs, fila: Mapping[str, Any], cfg, pipeline_mod) -> str:
+    """Misma fila que `_escribir_salidas_de_fila` con la fase Rust `rgb`: Python
+    lee y valida (`lectura_segura`), calcula `exif_bytes` (cabecera, sin decode),
+    `bloque_xmp`, la caja y las rutas `.parcial`; `atom_rs.rgb_procesar` hace
+    decode + crop + giro + encode x2 (modo a, bytes de Pillow) sin GIL; luego
+    Python inserta el XMP, verifica y publica cada salida como siempre (`_CROP`
+    primero). Un error en cualquier punto no deja ningún `.parcial`."""
+    nombre = os.path.basename(fila["ruta_origen"])
+    try:
+        bytes_origen = int(fila.get("bytes_origen") or 0) or _tamano_ruta(fila["ruta_origen"])
+    except Exception:  # noqa: BLE001 — gs:// puede dar errores del SDK, no solo OSError
+        bytes_origen = 0
+    modo = rust_bridge.rgb_modo()
+
+    with perfil_rgb.medir_imagen(nombre, bytes_origen):
+        angulo = fila["angulo_giro"] or 0
+        calidad_original = pipeline_mod._ROTATION_JPEG_QUALITY if angulo else cfg.compress_level
+        calidad_crop = pipeline_mod._ROTATION_JPEG_QUALITY if angulo else _CROP_JPEG_QUALITY
+        ruta_crop = fila["ruta_salida_crop"]
+        ruta_original = fila["ruta_salida_original"]
+
+        with perfil_rgb.medir("lectura"):
+            datos_origen = _leer_origen_verificado(fila, bytes_origen)
+            # Solo la cabecera (sin decode): tamaño, modo y EXIF serializado como
+            # lo haría `img.save(exif=img.getexif())`.
+            img = pipeline_mod.Image.open(io.BytesIO(datos_origen))
+            try:
+                if img.mode != "RGB":
+                    return _FallbackRust(f"origen no RGB (modo {img.mode!r})")
+                ancho, alto = img.size
+                exif_bytes = img.getexif().tobytes()
+                # COM del origen: Pillow lo copia en crop/transpose y lo escribe en el save.
+                comentario = img.info.get("comment")
+                if isinstance(comentario, str):
+                    comentario = comentario.encode("utf-8")
+            finally:
+                img.close()
+            bloque_xmp = _bloque_xmp_de_bytes(datos_origen)
+        if bloque_xmp:
+            validar_bloque_xmp(bloque_xmp)  # antes de escribir nada, como `_guardar_atomico`
+        # `pct_recorte` None con `_CROP` = centinela «sin recorte»: copia íntegra.
+        caja = (None if not ruta_crop or fila["pct_recorte"] is None else
+                _caja_recorte_termico(ancho, alto, fila["pct_recorte"]))
+        if caja is not None and (caja[0] < 0 or caja[1] < 0 or caja[2] > ancho or caja[3] > alto):
+            # Pillow rellena en negro fuera de la imagen: no se replica, decide Pillow.
+            return _FallbackRust(f"caja de recorte {caja} fuera de la imagen {ancho}x{alto}")
+
+        for destino in (ruta_crop, ruta_original):
+            if destino and not _es_gcs(destino):
+                carpeta = os.path.dirname(destino)
+                if carpeta:
+                    os.makedirs(carpeta, exist_ok=True)
+        parcial_crop = _parcial_para(ruta_crop) if ruta_crop else None
+        parcial_original = _parcial_para(ruta_original)
+        # Temporales vivos: se borran todos si algo falla antes de publicarlos.
+        vivos = {p for p in (parcial_crop, parcial_original) if p}
+        try:
+            try:
+                stats = rs.rgb_procesar(
+                    datos_origen, exif_bytes, caja, angulo, calidad_original, calidad_crop,
+                    parcial_original, parcial_crop, modo, comentario)
+            except BaseException as exc:  # noqa: BLE001
+                # `pyo3_runtime.PanicException` hereda de BaseException: un panic de Rust
+                # es un fallo de ESTA fila (Pillow decide), nunca tumba el run.
+                if type(exc).__name__ != "PanicException":
+                    raise
+                return _FallbackRust(f"panic de Rust: {exc}")
+            if stats.motivo:
+                # libjpeg avisó/falló al decodificar: Rust no escribió nada ni da la imagen
+                # por buena (aceptar/rechazar lo decide Pillow, que ignora ciertos avisos).
+                return _FallbackRust(f"decode no limpio: {stats.motivo}")
+            perfil_rgb.sumar("decode", stats.ms_decode / 1000.0)
+            perfil_rgb.sumar("encode_original", stats.ms_encode_orig / 1000.0)
+            perfil_rgb.sumar("encode_crop", stats.ms_encode_crop / 1000.0)
+
+            escritas: list[str] = []
+            for parcial, destino in ((parcial_crop, ruta_crop),
+                                     (parcial_original, ruta_original)):
+                if not destino:
+                    continue
+                if bloque_xmp:
+                    parcial_xmp = _parcial_para(destino)
+                    vivos.add(parcial_xmp)
+                    insertar_xmp_app1(parcial, parcial_xmp, bloque_xmp)
+                    os.remove(parcial)
+                    vivos.discard(parcial)
+                    parcial = parcial_xmp
+                verificar_parcial(parcial)
+                with perfil_rgb.medir("escritura"):
+                    _publicar_parcial(parcial, destino)
+                vivos.discard(parcial)
+                escritas.append(destino)
+        finally:
+            for ruta in vivos:
+                if os.path.exists(ruta):
+                    os.remove(ruta)
+
+    return "; ".join(f"{ruta}:{_tamano_ruta(ruta)}" for ruta in escritas)
+
+
+class _FallbackRust:
+    """Señal interna: la fila NO se procesó con Rust (nada escrito) y debe ir por
+    Pillow. `motivo` alimenta el contador visible `rust_rgb_fallbacks`."""
+
+    def __init__(self, motivo: str) -> None:
+        self.motivo = motivo
+
+
+class _VerificacionConFallback(str):
+    """`verificacion` de una fila que fue por Pillow estando activa la fase Rust.
+    Es un `str` normal (picklable entre procesos) con el motivo del fallback."""
+
+    def __new__(cls, valor: str, motivo: "str | None" = None):
+        obj = super().__new__(cls, valor)
+        obj.motivo_fallback = motivo
+        return obj
+
+
 def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str:
+    """Punto de entrada de una fila RGB. Flag `rgb` off: camino Pillow de siempre.
+    Activo: Rust (`_escribir_salidas_de_fila_rust`); si Rust declara que no puede
+    dar la imagen por buena (origen no RGB, caja fuera de la imagen, decode no
+    limpio, panic) NO ha escrito nada y la fila va por Pillow, que decide, con el
+    motivo anotado (resultado o excepción) para el contador del log."""
+    rs = rust_bridge.exigir("rgb")
+    if rs is None:
+        return _escribir_salidas_de_fila_python(fila, cfg, pipeline_mod)
+    r = _escribir_salidas_de_fila_rust(rs, fila, cfg, pipeline_mod)
+    if not isinstance(r, _FallbackRust):
+        return r
+    try:
+        res = _escribir_salidas_de_fila_python(fila, cfg, pipeline_mod)
+    except Exception as exc:
+        exc.motivo_fallback = r.motivo
+        raise
+    return _VerificacionConFallback(res, r.motivo)
+
+
+class _ContadorRustRgb:
+    """Filas RGB que, con la fase Rust activa, fueron por Pillow (visible en el log,
+    como `rust_parse_fallbacks` del índice). Se llena en el proceso padre."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.total = 0
+        self.ejemplos: list[str] = []
+
+    def sumar(self, ruta: str, motivo: str) -> None:
+        with self._lock:
+            self.total += 1
+            if len(self.ejemplos) < 10:
+                self.ejemplos.append(f"{os.path.basename(ruta)}: {motivo}")
+
+
+def _emitir_resumen_rust_rgb(progress_callback, contador) -> None:
+    if contador is None:
+        return
+    progress_callback.emit(f"\nRGB · Rust: rust_rgb_fallbacks={contador.total}\n")
+    if contador.total:
+        progress_callback.emit(
+            "AVISO RGB · Rust: "
+            f"{contador.total} imagen(es) fueron por Pillow (decide PIL). Ejemplos: "
+            + " | ".join(contador.ejemplos) + "\n")
+
+
+def _escribir_salidas_de_fila_python(fila: Mapping[str, Any], cfg, pipeline_mod) -> str:
     """Escribe el original y su `_CROP` (si la fila lleva) desde UN solo
     decode. Devuelve la cadena de verificación (ruta:tamaño de cada fichero
     escrito), que el manifiesto guarda en `verificacion` al marcar la fila
@@ -510,19 +693,7 @@ def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str
         calidad_crop = pipeline_mod._ROTATION_JPEG_QUALITY if angulo else _CROP_JPEG_QUALITY
 
         with perfil_rgb.medir("lectura"):
-            # Lectura verificada (DriveFS puede dar lecturas cortas sin error del SO):
-            # PIL decodifica desde bytes completos, nunca desde el fichero a medias.
-            datos_origen = lectura_segura.leer_completo(
-                fila["ruta_origen"], bytes_origen=fila.get("bytes_origen") or bytes_origen)
-            if (os.path.splitext(fila["ruta_origen"])[1].lower() in (".jpg", ".jpeg")
-                    and not lectura_segura.jpeg_cola_valida(
-                        datos_origen[-lectura_segura.VENTANA_COLA_JPEG:])
-                    and not lectura_segura.jpeg_eoi_en_cola_util(datos_origen)
-                    and not lectura_segura.jpeg_eoi_por_segmentos(datos_origen)):
-                # Sin decode extra: si hay EOI en la cola útil, el `img.load()` de
-                # abajo (decode que ya se hace) detecta un truncado real.
-                raise OSError("JPEG truncado en origen (cola a ceros/sin EOI): "
-                              + fila["ruta_origen"])
+            datos_origen = _leer_origen_verificado(fila, bytes_origen)
             img = pipeline_mod.Image.open(io.BytesIO(datos_origen))
             bloque_xmp = _bloque_xmp_de_bytes(datos_origen)
         with perfil_rgb.medir("decode"):
@@ -823,9 +994,15 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
     # `add_done_callback`). Un lock los deja a salvo de cualquier cambio
     # futuro en quién llama, y su coste es nulo frente al de la imagen.
     lock_resultado = threading.Lock()
+    contador_rust = _ContadorRustRgb() if rust_bridge.fase_activa("rgb") else None
 
     def _cerrar_fila(fila: dict, verificacion=None, error: Exception = None) -> None:
         contador_rotacion.registrar(fila["angulo_giro"] or 0)
+        if contador_rust is not None:
+            motivo = getattr(error if error is not None else verificacion,
+                             "motivo_fallback", None)
+            if motivo:
+                contador_rust.sumar(fila["ruta_origen"], motivo)
         if error is not None:
             manifiesto.marcar_fallida(fila["id"], str(error))
             # Cada fallo RGB deja su línea en el log con el motivo real: antes
@@ -836,7 +1013,8 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
             with lock_resultado:
                 resultado["fallido"] += 1
         else:
-            manifiesto.marcar_hecha(fila["id"], verificacion)
+            manifiesto.marcar_hecha(
+                fila["id"], None if verificacion is None else str(verificacion))
             with lock_resultado:
                 resultado["hecho"] += 1
         medidor_velocidad.registrar()
@@ -854,6 +1032,7 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
         rgb_gpu.aplicar(filas, cfg, pipeline_mod, sys.modules[__name__], _cerrar_fila,
                         lambda fila: _escribir_salidas_de_fila(fila, cfg, pipeline_mod),
                         progress_bar, progress_callback)
+        _emitir_resumen_rust_rgb(progress_callback, contador_rust)
         _emitir_resumen_perfil_rgb(progress_callback)
         return resultado
     if (os.environ.get("ORGANIZER_RGB_GPU") == "1" and rgb_gpu._ESTADO.get("error")
@@ -875,6 +1054,7 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
             else:
                 _cerrar_fila(fila, verificacion=verificacion)
             progress_bar.emit(int(indice / total * 100))
+        _emitir_resumen_rust_rgb(progress_callback, contador_rust)
         _emitir_resumen_perfil_rgb(progress_callback)
         return resultado
 
@@ -1023,6 +1203,7 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
         raise cancelacion.RunCancelado()
     _emitir_resumen_fase(progress_callback, "Imágenes RGB", "proceso(s)", total,
                          aforo.resumen(controlador.maximo))
+    _emitir_resumen_rust_rgb(progress_callback, contador_rust)
     _emitir_resumen_perfil_rgb(progress_callback)
     return resultado
 

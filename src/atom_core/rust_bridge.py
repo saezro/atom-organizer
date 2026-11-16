@@ -23,7 +23,8 @@ FASES: tuple[str, ...] = ("termica", "indice", "rgb", "subida")
 # 3 = sonda libjpeg-turbo (P).
 # 4 = fase ``subida`` (T6): una wheel ABI 3 no trae ``subir_lote``.
 # 5 = fase ``indice`` (T2): una wheel ABI 4 no trae ``parsear_cabecera``.
-ABI_ESPERADA: int = 5
+# 6 = fase ``rgb`` (T3): una wheel ABI 5 no trae ``rgb_procesar``.
+ABI_ESPERADA: int = 6
 
 # Símbolos que ``atom_rs`` debe exponer para cada fase activa. Se validan en
 # ``modulo()`` (arranque de ``organize.run_task`` y cada ``exigir``), así una
@@ -31,7 +32,7 @@ ABI_ESPERADA: int = 5
 SIMBOLOS_POR_FASE: dict[str, tuple[str, ...]] = {
     "termica": ("termica_procesar",),
     "indice": ("parsear_cabecera",),
-    "rgb": (),
+    "rgb": ("rgb_procesar",),
     "subida": ("subir_lote",),
 }
 
@@ -68,6 +69,22 @@ def fase_activa(fase: str) -> bool:
     return fase in _fases_activas()
 
 
+def rgb_modo() -> str:
+    """Modo de la fase ``rgb`` (``ATOM_RUST_RGB_MODO``): ``a`` (defecto) = bytes
+    idénticos a Pillow. ``b`` (sin pérdida, cambia bytes y tamaños) exige
+    ``ATOM_RUST_RGB_B_APROBADO=1`` y además está aplazado (sin implementar)."""
+    modo = os.environ.get("ATOM_RUST_RGB_MODO", "").strip().lower() or "a"
+    if modo == "a":
+        return "a"
+    if modo != "b":
+        raise ValueError(f"ATOM_RUST_RGB_MODO: modo desconocido {modo!r}. Válidos: a, b.")
+    if os.environ.get("ATOM_RUST_RGB_B_APROBADO", "").strip().lower() not in _VERDADEROS:
+        raise RustNoDisponible(
+            "ATOM_RUST_RGB_MODO=b requiere OK de Rodrigo para entregas a cliente "
+            "(cambia bytes y tamaños de salida): defínelo con ATOM_RUST_RGB_B_APROBADO=1.")
+    raise RustNoDisponible("ATOM_RUST_RGB_MODO=b: modo b aplazado, aún no implementado en atom_rs.")
+
+
 def modulo(fases: Optional[tuple[str, ...]] = None) -> types.ModuleType:
     """Importa ``atom_rs`` y valida su ABI y los símbolos de ``fases`` (por
     defecto, las activas en el entorno). Falla siempre con ``RustNoDisponible``."""
@@ -92,6 +109,8 @@ def modulo(fases: Optional[tuple[str, ...]] = None) -> types.ModuleType:
         )
     if fases is None:
         fases = _fases_activas()
+    if "rgb" in fases:
+        rgb_modo()  # modo b sin aprobación / sin implementar: error al arrancar, no a mitad
     faltan = [f"{f}: {s}" for f in fases for s in SIMBOLOS_POR_FASE.get(f, ())
               if not hasattr(m, s)]
     if faltan:

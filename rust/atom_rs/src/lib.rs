@@ -8,7 +8,9 @@ use pyo3::prelude::*;
 
 pub mod error;
 pub mod exif_meta;
+pub mod jpeg;
 pub mod jpeg_sonda;
+pub mod rgb;
 pub mod subida;
 pub mod termica;
 pub mod tiff_f32;
@@ -17,8 +19,8 @@ pub mod xmp;
 /// Versión del contrato Python<->Rust. Subir al romper firmas o al añadir una
 /// fase. 2 = fase `termica` (T1). 3 = sonda
 /// libjpeg-turbo (P). 4 = fase `subida` (T6, `subir_lote`). 5 = fase `indice`
-/// (T2, `parsear_cabecera`).
-pub const ABI: u32 = 5;
+/// (T2, `parsear_cabecera`). 6 = fase `rgb` (T3, `rgb_procesar`).
+pub const ABI: u32 = 6;
 
 /// Versión del crate (Cargo.toml).
 #[pyfunction]
@@ -50,6 +52,9 @@ fn atom_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Fase `indice` (T2, ABI 5).
     m.add_class::<exif_meta::CabeceraParseada>()?;
     m.add_function(wrap_pyfunction!(exif_meta::parsear_cabecera, m)?)?;
+    // Fase `rgb` (T3, ABI 6).
+    m.add_class::<rgb::RgbStats>()?;
+    m.add_function(wrap_pyfunction!(rgb::rgb_procesar, m)?)?;
     Ok(())
 }
 
@@ -58,8 +63,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn abi_es_cinco() {
-        assert_eq!(version_abi(), 5);
+    fn abi_es_seis() {
+        assert_eq!(version_abi(), 6);
     }
 
     #[test]

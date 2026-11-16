@@ -208,8 +208,8 @@ def _falso(parsear=None, con_simbolo=True):
     return m
 
 
-def test_fase_indice_registrada_abi_cinco():
-    assert rust_bridge.ABI_ESPERADA == 5
+def test_fase_indice_registrada_con_abi_vigente():
+    assert rust_bridge.ABI_ESPERADA >= 5
     assert rust_bridge.SIMBOLOS_POR_FASE["indice"] == ("parsear_cabecera",)
 
 

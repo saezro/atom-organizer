@@ -56,9 +56,9 @@ def test_abi_distinta_lanza(monkeypatch):
         rust_bridge.exigir("indice")
 
 
-def test_abi_esperada_es_cinco():
-    # Debe coincidir con `ABI` de rust/atom_rs/src/lib.rs (5 = fase indice, T2).
-    assert rust_bridge.ABI_ESPERADA == 5
+def test_abi_esperada_es_seis():
+    # Debe coincidir con `ABI` de rust/atom_rs/src/lib.rs (6 = fase rgb, T3).
+    assert rust_bridge.ABI_ESPERADA == 6
 
 
 def test_fase_subida_registrada():
@@ -112,13 +112,55 @@ def test_modulo_sin_simbolo_de_fase_activa_lanza(monkeypatch):
 
 
 def test_modulo_no_exige_simbolos_de_fases_inactivas(monkeypatch):
-    # `rgb` aún no registra símbolos: con solo esa fase activa, una wheel sin los
-    # de las demás (termica/indice/subida) sigue valiendo.
+    # Con solo `rgb` activa, una wheel que solo trae `rgb_procesar` (sin los de
+    # termica/indice/subida) sigue valiendo.
     monkeypatch.setenv("ATOM_RUST_FASES", "rgb")
     falso = _falso(simbolos=False)
+    falso.rgb_procesar = lambda *a, **k: None
     monkeypatch.setitem(sys.modules, "atom_rs", falso)
     assert rust_bridge.modulo() is falso
     assert rust_bridge.exigir("rgb") is falso
+
+
+def test_rgb_registrada_con_simbolo():
+    assert rust_bridge.SIMBOLOS_POR_FASE["rgb"] == ("rgb_procesar",)
+
+
+def test_rgb_sin_simbolo_lanza_con_nombre(monkeypatch):
+    monkeypatch.setenv("ATOM_RUST_FASES", "rgb")
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso(simbolos=False))
+    with pytest.raises(RustNoDisponible, match="rgb_procesar"):
+        rust_bridge.exigir("rgb")
+
+
+def test_rgb_modo_por_defecto_es_a(monkeypatch):
+    monkeypatch.delenv("ATOM_RUST_RGB_MODO", raising=False)
+    assert rust_bridge.rgb_modo() == "a"
+
+
+def test_modo_b_bloqueado_sin_aprobacion(monkeypatch):
+    monkeypatch.setenv("ATOM_RUST_FASES", "rgb")
+    monkeypatch.setenv("ATOM_RUST_RGB_MODO", "b")
+    monkeypatch.delenv("ATOM_RUST_RGB_B_APROBADO", raising=False)
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso())
+    with pytest.raises(RustNoDisponible, match="requiere OK de Rodrigo para entregas a cliente"):
+        rust_bridge.rgb_modo()
+    # Y el arranque del run (`modulo()`) también aborta, no a mitad del lote.
+    with pytest.raises(RustNoDisponible, match="requiere OK de Rodrigo para entregas a cliente"):
+        rust_bridge.modulo()
+
+
+def test_modo_b_aprobado_sigue_sin_implementar(monkeypatch):
+    monkeypatch.setenv("ATOM_RUST_RGB_MODO", "b")
+    monkeypatch.setenv("ATOM_RUST_RGB_B_APROBADO", "1")
+    with pytest.raises(RustNoDisponible, match="aplazado"):
+        rust_bridge.rgb_modo()
+
+
+def test_modo_desconocido(monkeypatch):
+    monkeypatch.setenv("ATOM_RUST_RGB_MODO", "z")
+    with pytest.raises(ValueError):
+        rust_bridge.rgb_modo()
 
 
 def test_indice_sin_simbolo_lanza_con_nombre(monkeypatch):
