@@ -183,7 +183,7 @@ def test_bytes_origen_cero_no_comprueba(tmp_path, monkeypatch, rs):
 
 @pytest.mark.parametrize("guion,intentos,eventos", [
     ([500, -1], 5, ["leer", "hidratar", "leer"]),
-    ([10, 20, 30], 5, ["leer", "hidratar", "leer", "hidratar", "leer"]),
+    ([10, 20, 30, 40, 50], 5, ["leer", "hidratar", "leer", "hidratar", "leer", "hidratar", "leer", "hidratar", "leer"]),
 ])
 def test_hidrata_entre_intentos(tmp_path, monkeypatch, rs, guion, intentos, eventos):
     f = _fichero(tmp_path, 1000)
