@@ -174,6 +174,25 @@ describe('bridge en modo pywebview (Windows)', () => {
     }
   })
 
+  it('resultadoPrechequeo y resultadoSubir usan plazo largo (lotes grandes)', async () => {
+    window.pywebview = { api: { resultado_prechequeo: () => new Promise(() => {}), resultado_subir: () => new Promise(() => {}) } }
+    const { api } = await import('./bridge.js')
+    vi.useFakeTimers()
+    try {
+      const pre = api.resultadoPrechequeo('D:/x').then(() => 'ok', (e) => e.message)
+      const sub = api.resultadoSubir('D:/x', 1).then(() => 'ok', (e) => e.message)
+      await vi.advanceTimersByTimeAsync(119000)
+      let r = await Promise.race([pre, sub, Promise.resolve('pendiente')])
+      expect(r).toBe('pendiente')
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(await sub).toBe('El Organizer no responde.')
+      await vi.advanceTimersByTimeAsync(480000)
+      expect(await pre).toBe('El Organizer no responde.')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   // `pick_folder`/`pick_file` son diálogo NATIVO: el usuario puede tardar
   // minutos eligiendo carpeta, así que están excluidos del plazo por
   // defecto (ver `TIMEOUTS_METODO`, bridge.js).
