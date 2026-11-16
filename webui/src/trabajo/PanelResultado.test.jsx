@@ -168,7 +168,7 @@ describe('PanelResultado', () => {
   it('muestra errores y avisos tal cual', async () => {
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     emitir({ kind: 'error', text: 'La inspección no tiene planta o año asignados en ATOM Suite' })
-    expect(await screen.findByText(/no tiene planta o año/)).toBeInTheDocument()
+    expect((await screen.findAllByText(/no tiene planta o año/)).length).toBeGreaterThan(0)
     emitir({ kind: 'aviso', text: 'No se sube el resultado al bucket: no hay inspección elegida.' })
     expect(await screen.findByText(/no hay inspección elegida/)).toBeInTheDocument()
   })
@@ -183,7 +183,7 @@ describe('PanelResultado', () => {
     api.resultadoSubir.mockRejectedValueOnce(new Error('método no expuesto'))
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     await publicar()
-    expect(await screen.findByText(/método no expuesto/)).toBeInTheDocument()
+    expect((await screen.findAllByText(/método no expuesto/)).length).toBeGreaterThan(0)
   })
 
   it('sin credencial el botón queda deshabilitado y se ve el motivo', async () => {
@@ -202,7 +202,7 @@ describe('PanelResultado', () => {
     await pulsarPublicar()
     expect(await screen.findByText(/Carpeta con imágenes/)).toBeInTheDocument()
     expect(screen.getByText(/faltan 2/)).toBeInTheDocument()
-    expect(api.resultadoPrechequeo).toHaveBeenCalledWith('/salida')
+    expect(api.resultadoPrechequeo).toHaveBeenCalledWith('/salida', expect.any(Function))
     expect(api.resultadoInspeccionarDestino).toHaveBeenCalledWith('/salida', 7, expect.any(AbortSignal))
     expect(api.resultadoSubir).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Confirmar y subir' }))
@@ -226,9 +226,25 @@ describe('PanelResultado', () => {
       existe: true, n_objetos: 120, bytes: 2.5e9, sobrescribe: ['TERMICA', 'RGB'], detalle: '' })
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     await pulsarPublicar()
-    expect(await screen.findByText(/Destino completo: 120 objetos \/ 2,5 GB/)).toBeInTheDocument()
+    expect(await screen.findByText(/Ya en el bucket \(todo el destino, otras subidas incluidas\): 120 objetos \/ 2,5 GB/)).toBeInTheDocument()
     expect(screen.getByText(/2 ficheros pequeños \(CSV, estadillos, índice\) que se sobrescriben — ver lista/)).toBeInTheDocument()
     expect(screen.getByText('TERMICA, RGB')).toBeInTheDocument()
+  })
+
+  it('con por_pb en el destino monta el desglose por PB', async () => {
+    api.resultadoInspeccionarDestino.mockResolvedValue({ existe: true, n_objetos: 10, bytes: 1e9, sobrescribe: [], detalle: '',
+      por_pb: [{ pb: 'PB1', locales: 5, en_bucket: 5, pendientes: 0, distintos: 0, solo_bucket: 0, bytes_pendientes: 0 }] })
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    await pulsarPublicar()
+    expect(await screen.findByTestId('desglose-destino-pb')).toBeInTheDocument()
+  })
+
+  it('sin por_pb no hay desglose', async () => {
+    api.resultadoInspeccionarDestino.mockResolvedValue({ existe: true, n_objetos: 10, bytes: 1e9, sobrescribe: [], detalle: '' })
+    render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
+    await pulsarPublicar()
+    await screen.findByText(/Ya en el bucket \(todo el destino/)
+    expect(screen.queryByTestId('desglose-destino-pb')).toBeNull()
   })
 
   it('con 0 pendientes los botones quedan desactivados con «Todo subido»', async () => {
@@ -247,7 +263,7 @@ describe('PanelResultado', () => {
     api.resultadoSubir.mockResolvedValueOnce({ started: false, reason: 'Ya hay una subida en curso' })
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     await publicar()
-    expect(await screen.findByText('Ya hay una subida en curso')).toBeInTheDocument()
+    expect((await screen.findAllByText('Ya hay una subida en curso')).length).toBeGreaterThan(0)
   })
 
   it('variante ya-organizado se indica en el panel', () => {
@@ -266,7 +282,7 @@ describe('PanelResultado', () => {
     api.resultadoPrechequeo.mockResolvedValue([])
     render(<PanelResultado carpeta="/salida" inspeccionId={7} ready />)
     await pulsarPublicar()
-    expect(await screen.findByText(/Respuesta inesperada del prechequeo/)).toBeInTheDocument()
+    expect((await screen.findAllByText(/Respuesta inesperada del prechequeo/)).length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: 'Confirmar y subir' })).toBeNull()
   })
 
@@ -594,5 +610,16 @@ describe('PanelResultado: estado automático', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'No' }))
       expect(api.resultadoSubir).not.toHaveBeenCalled()
     })
+  })
+})
+
+describe('PanelResultado: tabla por PB en el resumen final', () => {
+  it('tras done muestra la tabla por PB del último estado', async () => {
+    render(<PanelResultado carpeta="/tmp/x" inspeccionId={1} />)
+    const pb = [{ pb: 'PB1', ficheros_hechos: 2, ficheros_total: 2, bytes_done: 10, bytes_total: 10, fallidas: 0, terminado: true }]
+    await emitir({ kind: 'start' })
+    await emitir({ kind: 'estado', etapa: 'urgentes', fase: 'urgentes', modo: 'urgentes', urgentes: { hechos: 2, total: 2 }, resto: { hechos: 0, total: 0 }, por_pb: pb, fallidas: 0 })
+    await emitir({ kind: 'done', cancelled: false, continua: false, fallidas: [] })
+    await waitFor(() => expect(screen.getByTestId('tabla-por-pb')).toBeTruthy())
   })
 })

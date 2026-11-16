@@ -212,18 +212,15 @@ const DEFAULT_TIMEOUT_MS = 20000
 //     bridge no debe disparar antes y tapar ese mensaje con uno genérico.
 //   - run_task: arranque del pipeline ya protegido en el call site
 //     (`App.jsx`, `conPlazo(..., ESPERA_ARRANQUE_MS)` = 25 s); mismo motivo.
-//   - resultado_prechequeo: recorre manifiesto + CSV del lote (decenas de miles
-//     de objetos) de forma síncrona; en lotes grandes pasa de 20 s de largo.
 //   - resultado_subir: trabajo síncrono previo a lanzar el hilo de subida.
 //   - resultado_credencial: consulta de credencial (red), margen holgado.
-//   (`resultado_inspeccionar_destino_start` es asíncrono con su propio plazo.)
+//   (`resultado_inspeccionar_destino_start` y `resultado_prechequeo_start` son asíncronos con su propio plazo.)
 const TIMEOUTS_METODO = {
   pick_folder: 0,
   pick_file: 0,
   red_conectar: 75000,
   read_estadillo_info: 65000,
   run_task: 30000,
-  resultado_prechequeo: 600000,
   resultado_subir: 120000,
   resultado_credencial: 60000,
 }
@@ -294,6 +291,8 @@ async function pick(mode, method, ...args) {
 
 let _tokenDestino = 0
 export const TIMEOUT_DESTINO_MS = 75000
+let _tokenPrechequeo = 0
+export const TIMEOUT_PRECHEQUEO_SIN_EVENTO_MS = 120000
 
 export const api = {
   ping: (who) => call('ping', who),
@@ -454,7 +453,52 @@ export const api = {
   // Credencial de subida: {ok, reason?}. Sin ok no se puede publicar (se muestra reason).
   resultadoCredencial: () => call('resultado_credencial'),
   // Checks previos a subir: [{id, titulo, estado:'ok'|'aviso'|'error'|'no_comprobable', detalle}].
-  resultadoPrechequeo: (destino) => call('resultado_prechequeo', destino),
+  // Corre en un hilo del backend (`resultado_prechequeo_start`): sin plazo total, solo se rechaza
+  // si no llega ningún evento en TIMEOUT_PRECHEQUEO_SIN_EVENTO_MS. `onProgreso` (opcional) recibe
+  // {check_id, etiqueta, i, n, estado:'en_curso'|'ok'|'aviso'|'error'|'no_comprobable', t_s} por paso.
+  resultadoPrechequeo: (destino, onProgreso) =>
+    new Promise((resolve, reject) => {
+      const token = `${Date.now()}-${++_tokenPrechequeo}`
+      let timer = null
+      let actual = 'inicio'
+      const quitar = () => {
+        window.removeEventListener('atom:resultado', escucha)
+        if (timer) clearTimeout(timer)
+      }
+      const armar = () => {
+        if (timer) clearTimeout(timer)
+        timer = setTimeout(() => {
+          quitar()
+          reject(new Error(`Prechequeo sin respuesta ${TIMEOUT_PRECHEQUEO_SIN_EVENTO_MS / 1000} s en ${actual}`))
+        }, TIMEOUT_PRECHEQUEO_SIN_EVENTO_MS)
+      }
+      function escucha(e) {
+        const d = e.detail
+        if (!d || d.token !== token) return
+        if (d.kind === 'prechequeo_progreso') {
+          actual = d.etiqueta || d.check_id || actual
+          armar()
+          if (typeof onProgreso === 'function') {
+            const { kind: _k, token: _t, ...resto } = d
+            try { onProgreso(resto) } catch { /* el progreso nunca rompe el prechequeo */ }
+          }
+        } else if (d.kind === 'prechequeo') {
+          quitar()
+          if (d.error) reject(new Error(d.error))
+          else resolve(d.resultado)
+        }
+      }
+      window.addEventListener('atom:resultado', escucha)
+      armar()
+      call('resultado_prechequeo_start', destino, token)
+        .then((r) => {
+          if (!r || r.started === false) {
+            quitar()
+            reject(new Error((r && r.reason) || 'No se pudo iniciar el prechequeo.'))
+          }
+        })
+        .catch((err) => { quitar(); reject(err) })
+    }),
   // Qué hay ya en el bucket para esa inspección: {existe, n_objetos, bytes, sobrescribe[], detalle}.
   // Corre en un hilo del backend (el listado del bucket puede tardar y bloqueaba la UI); el
   // resultado llega por `atom:resultado` {kind:'destino', token, ...} y aquí se resuelve la promesa.

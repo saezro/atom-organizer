@@ -11,6 +11,14 @@ const UMBRAL_MIN_BYTES = 50e6
 const CAUSAS = ['429', '5xx', 'auth', 'http', 'red']
 const sumaReintentos = (m) => CAUSAS.reduce((a, c) => a + Number(m?.reintentos?.[c] || 0), 0)
 
+// Ficheros hechos/total del modo en curso (urgentes, + resto en modo normal); null si no hay total.
+function ficherosDe(e) {
+  const normal = e.modo === 'normal'
+  const total = Number(e.urgentes?.total || 0) + (normal ? Number(e.resto?.total || 0) : 0)
+  if (!(total > 0)) return null
+  return { hechos: Number(e.urgentes?.hechos || 0) + (normal ? Number(e.resto?.hechos || 0) : 0), total }
+}
+
 // Añade una muestra de un evento `estado` a la serie. Devuelve la serie nueva
 // (no muta). Ignora eventos sin `t` (backend antiguo) o sin bytes enviados.
 // Muestra: {t, bytes, mbs|null, hilos, hilosMax, marcas:[{tipo, n}]}
@@ -53,8 +61,13 @@ export function añadirMuestra(serie, e) {
   }
   const nueva = {
     t, bytes, rawT: e.t, offT, offB, mbs,
+    // `rx` = hora local (s) de llegada: el semáforo mide «parado» con reloj propio, porque
+    // si la subida se cuelga dejan de llegar eventos y `t` (del backend) deja de avanzar.
+    rx: typeof e._rx === 'number' ? e._rx : Date.now() / 1000,
+    fallidas: Number(e.fallidas || 0), etapa: e.etapa || e.fase || null,
     hilos: e.hilos_activos ?? null, hilosMax: e.hilos_max ?? null,
     medidas: m || null, marcas,
+    ficheros: ficherosDe(e), eta: typeof e.eta === 'number' && Number.isFinite(e.eta) ? e.eta : null,
   }
   let out = [...serie, nueva]
   if (out.length > MAX_MUESTRAS) {
@@ -147,4 +160,68 @@ export function diagnosticarCuello({ medidas, bytes, mbpsMedio, ficheros, hilosM
   }
   return { clave: 'mixto', titulo: 'Sin un cuello claro',
     detalle: 'El tiempo se reparte entre varias causas; mira el desglose.', partes, advertencia }
+}
+
+// --- Semáforo de salud de la subida (función pura) ---
+export const SALUD = {
+  PARADO_S: 60,          // sin bytes nuevos durante tanto = Parado
+  LENTO_S: 30,           // velocidad baja sostenida durante tanto = Lento
+  BASE_S: 120,           // la velocidad «normal» es la media de los 2 min previos al tramo lento
+  LENTO_FRAC: 0.2,       // «lento» = menos del 20 % de esa media
+  FALLIDAS_S: 60,        // ventana para detectar fallidas que crecen
+}
+const ETAPAS_SIN_BYTES = new Set(['listando', 'comprobando', 'verificando'])
+const fmt = (n) => Number(n).toLocaleString('es-ES', { maximumFractionDigits: 1 })
+
+// `serie` = salida de añadirMuestra; `ahora` = segundos (misma escala que `rx`);
+// `error` = texto del error de la subida si lo hay. Devuelve null si no hay nada que opinar,
+// o {nivel: 'verde'|'ambar'|'rojo', titulo, motivo}.
+export function saludSubida({ serie, ahora, error }) {
+  if (error) return { nivel: 'rojo', titulo: 'Error', motivo: String(error) }
+  if (!serie || !serie.length) return null
+  const ult = serie[serie.length - 1]
+  if (ETAPAS_SIN_BYTES.has(ult.etapa)) {
+    const txt = ult.etapa === 'listando' ? 'Leyendo el bucket' : ult.etapa === 'verificando' ? 'Verificando en el bucket' : 'Comprobando ficheros'
+    return { nivel: 'verde', titulo: 'Subiendo bien', motivo: `${txt}: sin envío de datos en esta fase` }
+  }
+  // ROJO: 0 bytes nuevos en 60 s (la muestra más reciente con al menos 60 s de antigüedad).
+  let ref = null
+  for (let i = serie.length - 1; i >= 0; i--) {
+    if (ahora - serie[i].rx >= SALUD.PARADO_S) { ref = serie[i]; break }
+  }
+  if (ref && ult.bytes - ref.bytes <= 0) {
+    const seg = Math.round(ahora - ref.rx)
+    return { nivel: 'rojo', titulo: 'Parado', motivo: `0 bytes nuevos en ${seg} s` }
+  }
+  // ÁMBAR · reintentando: fallidas que crecen en el último minuto.
+  const enVentana = serie.filter((s) => ahora - s.rx <= SALUD.FALLIDAS_S)
+  const base = enVentana.length ? enVentana[0] : ult
+  const antes = serie.filter((s) => ahora - s.rx > SALUD.FALLIDAS_S)
+  // Referencia: primera muestra dentro de la ventana; si la última es la única, la previa a la ventana.
+  const f0 = (base === ult && antes.length) ? antes[antes.length - 1].fallidas : base.fallidas
+  if (ult.fallidas > f0) {
+    const n = ult.fallidas - f0
+    return { nivel: 'ambar', titulo: 'Reintentando', motivo: `${n} fallida${n === 1 ? '' : 's'} nueva${n === 1 ? '' : 's'} en el último minuto (${ult.fallidas} en total)` }
+  }
+  // ÁMBAR · lento: velocidad < 20 % de la media de los 2 min previos, sostenida > 30 s.
+  const ini = [...serie].reverse().find((s) => ahora - s.rx >= SALUD.LENTO_S)
+  if (ini) {
+    const recientes = serie.filter((s) => s.rx >= ini.rx && s.mbs != null)
+    const previas = serie.filter((s) => s.rx < ini.rx && ini.rx - s.rx <= SALUD.BASE_S && s.mbs != null)
+    if (recientes.length && previas.length) {
+      const media = previas.reduce((a, s) => a + s.mbs, 0) / previas.length
+      if (media > 0 && recientes.every((s) => s.mbs < SALUD.LENTO_FRAC * media)) {
+        const act = recientes[recientes.length - 1].mbs
+        return { nivel: 'ambar', titulo: 'Lento', motivo: `${fmt(act)} MB/s, menos del 20 % de la media de los 2 min previos (${fmt(media)} MB/s) desde hace ${Math.round(ahora - ini.rx)} s` }
+      }
+    }
+  }
+  const v = ult.mbs
+  return { nivel: 'verde', titulo: 'Subiendo bien', motivo: v != null ? `${fmt(v)} MB/s, sin fallos ni paradas` : 'Sin fallos ni paradas' }
+}
+
+// Orden de la tabla por PB: numérico; «General» (sin PB) al final.
+export function ordenarPB(lista) {
+  const n = (g) => { const m = /^PB(\d+)$/i.exec(g.pb || ''); return m ? Number(m[1]) : Infinity }
+  return [...(lista || [])].sort((a, b) => n(a) - n(b))
 }

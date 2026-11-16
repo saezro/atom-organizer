@@ -464,6 +464,27 @@ def test_inspeccionar_destino_lista_y_marca_sobrescribibles(tmp_path):
     assert r["sobrescribe"] == ["CSVs/a_meta.csv"]
 
 
+def test_inspeccionar_destino_por_pb(tmp_path):
+    _arbol(tmp_path, {"TERMICA/PB2/V1/a_T.tiff": b"aa", "TERMICA/PB10/V1/b_T.tiff": b"bbb",
+                      "TERMICA/PB10/V1/c_T.tiff": b"cc", "TERMICA/PB3/V1/d_T.tiff": b"dddd",
+                      "INDICE_1.xlsx": b"z"})
+    remotos = dict([_remoto("TERMICA/PB10/V1/b_T.tiff", b"bbb"),      # igual
+                    _remoto("TERMICA/PB10/V1/c_T.tiff", b"cccc"),     # size distinto
+                    _remoto("TERMICA/PB1/V1/old_T.tiff", b"12345"),   # PB solo remoto
+                    _remoto("TERMICA/PB1/V1/old2_T.tiff", b"1")])
+    r = sr.inspeccionar_destino(tmp_path, 7, None, proveedor=ProveedorFalso(remotos))
+    por = {g["pb"]: g for g in r["por_pb"]}
+    assert [g["pb"] for g in r["por_pb"]] == ["PB1", "PB2", "PB3", "PB10", "General"]
+    assert por["PB2"]["pendientes"] == 1 and por["PB2"]["en_bucket"] == 0 and por["PB2"]["bytes_pendientes"] == 2
+    p10 = por["PB10"]
+    assert (p10["locales"], p10["en_bucket"], p10["distintos"], p10["pendientes"]) == (2, 1, 1, 0)
+    assert p10["bytes_local"] == 5 and p10["bytes_pendientes"] == 2
+    p1 = por["PB1"]
+    assert (p1["locales"], p1["solo_bucket"], p1["bytes_solo_bucket"]) == (0, 2, 6)
+    assert por["General"]["pendientes"] == 1
+    assert r["n_objetos"] == 4  # resto del dict intacto
+
+
 def test_inspeccionar_destino_vacio_y_errores_visibles(tmp_path):
     _arbol(tmp_path, {"CSVs/a_meta.csv": b"x"})
     r = sr.inspeccionar_destino(tmp_path, 7, None, proveedor=ProveedorFalso({}))
