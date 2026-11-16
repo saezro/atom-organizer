@@ -110,6 +110,21 @@ jobs:
           python -m pip install Pillow==12.3.0 numpy==2.4.6 pytest
           python -m pip install --no-index --find-links wheel-dist atom_rs
           python -c "import atom_rs, PIL, PIL.features, platform; print(platform.machine(), PIL.__version__, PIL.features.version('libjpeg_turbo'), atom_rs.version_abi(), atom_rs.libjpeg_turbo_version())"
+      - name: Instalar dependencias de la equivalencia indice (pins del proyecto)
+        shell: bash
+        run: |
+          # Mismos pins que packaging/requirements/requirements-linux.txt (ExifRead, piexif y
+          # lo que importan src/exif.py, src/utils.py y tests/conftest.py).
+          grep -iE '^(ExifRead|piexif|natsort|pandas|numpy|psutil|pyexiv2|geopy|matplotlib|openpyxl|python-dateutil|Pillow)==' \
+            packaging/requirements/requirements-linux.txt > req-equiv.txt
+          cat req-equiv.txt
+          python -m pip install -r req-equiv.txt
+      - name: Equivalencia indice (atom_rs real, sin skips)
+        shell: bash
+        env:
+          # Con atom_rs sin parsear_cabecera / ABI distinta, _rs_real() FALLA (no salta).
+          ATOM_RS_REQUIRED: '1'
+        run: python -m pytest tests/test_rust_indice_equiv.py tests/test_rust_bridge.py -v -rfs -p no:cacheprovider
       - name: Sonda de paridad
         shell: bash
         env:

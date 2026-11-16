@@ -22,14 +22,15 @@ FASES: tuple[str, ...] = ("termica", "indice", "rgb", "subida")
 # 2 = fase ``termica`` (T1): una wheel ABI 1 no trae ``termica_procesar``.
 # 3 = sonda libjpeg-turbo (P).
 # 4 = fase ``subida`` (T6): una wheel ABI 3 no trae ``subir_lote``.
-ABI_ESPERADA: int = 4
+# 5 = fase ``indice`` (T2): una wheel ABI 4 no trae ``parsear_cabecera``.
+ABI_ESPERADA: int = 5
 
 # Símbolos que ``atom_rs`` debe exponer para cada fase activa. Se validan en
 # ``modulo()`` (arranque de ``organize.run_task`` y cada ``exigir``), así una
 # wheel sin la función de una fase activa aborta al arrancar, no a mitad.
 SIMBOLOS_POR_FASE: dict[str, tuple[str, ...]] = {
     "termica": ("termica_procesar",),
-    "indice": (),
+    "indice": ("parsear_cabecera",),
     "rgb": (),
     "subida": ("subir_lote",),
 }
