@@ -1,0 +1,31 @@
+# Compila SOLO la wheel atom_rs (linux x86_64, abi3-py311) en Cloud Build y la sube a GCS
+# (atom-dev-nl no tiene cargo). Se usa para la imagen de bench (Dockerfile.bench).
+#
+#   gcloud builds submit --config=packaging/cloudbuild-rust-wheel.yaml \
+#     --ignore-file=packaging/gcloudignore-rust-test \
+#     --project=aerotools-484814 \
+#     --gcs-source-staging-dir=gs://aerotools-organizer-ci-build/staging \
+#     --account=atom-compute-ops@aerotools-484814.iam.gserviceaccount.com --async .
+substitutions:
+  _SALIDA: gs://datos_para_organizar/_bench/rust/2026-11-16/wheels
+steps:
+  - name: 'python:3.11-bookworm'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -eo pipefail
+        apt-get update -qq && apt-get install -y -qq cmake nasm build-essential curl >/dev/null
+        curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+        . "$$HOME/.cargo/env"
+        python -m pip install -q "maturin>=1.7,<2"
+        maturin build --release --locked -m rust/atom_rs/Cargo.toml --out /workspace/wheels
+        ls -la /workspace/wheels
+artifacts:
+  objects:
+    location: '${_SALIDA}/'
+    paths: ['/workspace/wheels/atom_rs-*.whl']
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+timeout: '1800s'
