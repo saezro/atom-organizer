@@ -40,7 +40,7 @@ def detect_suffixes(origen: str, max_scan: int = 4000, *,
     sufijo de separación.
 
     Devuelve dict JSON-serializable:
-      {ok, thermal, rgb, tokens: {tok: n}, total, no_suffix, error?}
+      {ok, thermal, rgb, tokens: {tok: n}, rgb_tokens: [{token, n}], total, no_suffix, error?}
 
     Regla de recomendación:
       - Si hay archivos `_T`  -> thermal="_T", rgb="" (todo lo no-`_T` va a RGB;
@@ -96,11 +96,19 @@ def detect_suffixes(origen: str, max_scan: int = 4000, *,
         rgb_found = [t for t in _RGB_TOKENS if tokens.get(t)]
         rgb = ",".join(rgb_found)
 
+    # Solo informativo (la UI muestra qué se detectó como RGB aunque `rgb==""`).
+    if thermal:
+        rgb_tokens = [{"token": t, "n": n} for t, n in tokens.items() if t != _THERMAL]
+    else:
+        rgb_tokens = [{"token": t, "n": tokens[t]} for t in rgb_found]
+    rgb_tokens.sort(key=lambda x: (-x["n"], x["token"]))
+
     return {
         "ok": bool(thermal or rgb),
         "thermal": thermal,
         "rgb": rgb,
         "tokens": tokens,
+        "rgb_tokens": rgb_tokens,
         "total": total,
         "no_suffix": no_suffix,
     }

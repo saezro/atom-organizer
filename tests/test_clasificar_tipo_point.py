@@ -36,3 +36,16 @@ def test_stem_suffix_ignora_point():
     assert _stem_suffix("DJI_0001_T_point0") == "_T"
     assert _stem_suffix("DJI_0001_V_point7") == "_V"
     assert _stem_suffix("DJI_0001_T") == "_T"
+
+
+def test_detect_suffixes_rgb_tokens_informativo(tmp_path):
+    from atom_core.suffixes import detect_suffixes
+    for n in ("DJI_0001_T.JPG", "DJI_0002_T.JPG", "DJI_0001_W.JPG", "DJI_0002_W.JPG", "DJI_0003_W.JPG"):
+        (tmp_path / n).write_bytes(b"x")
+    r = detect_suffixes(str(tmp_path))
+    assert r["thermal"] == "_T" and r["rgb"] == ""
+    assert r["rgb_tokens"] == [{"token": "_W", "n": 3}]
+    solo_t = tmp_path / "solo_t"
+    solo_t.mkdir()
+    (solo_t / "DJI_0001_T.JPG").write_bytes(b"x")
+    assert detect_suffixes(str(solo_t))["rgb_tokens"] == []
