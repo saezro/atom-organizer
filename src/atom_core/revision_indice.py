@@ -14,9 +14,11 @@ import datetime
 import getpass
 import json
 import os
+import platform
 import queue
 import re
 import socket
+import sys
 import threading
 import time
 from concurrent.futures import Future
@@ -37,8 +39,11 @@ _ESPERA_S = 1800.0
 _ON_EVENTO: Callable | None = None
 
 
-def activa(env=os.environ, params: dict | None = None) -> bool:
-    """Flag de release. `params["revision_indice"]["activa"]`, si existe, manda sobre el entorno."""
+def activa(env=os.environ, params: dict | None = None, plataforma: str | None = None,
+           argv: list | None = None) -> bool:
+    """Flag de release. Precedencia: `params["revision_indice"]["activa"]` > env
+    `ATOM_REVISION_INDICE` explícito ("1" on, otro valor off) > defecto: ON solo en el escritorio
+    Windows (`platform.system()=="Windows"` y sin `--server`). `plataforma`/`argv` inyectables."""
     bloque = (params or {}).get("revision_indice")
     if isinstance(bloque, dict) and "activa" in bloque:
         valor = bloque["activa"]
@@ -54,7 +59,11 @@ def activa(env=os.environ, params: dict | None = None) -> bool:
             return valor
         raise ValueError(
             f"params.revision_indice.activa ilegible: {valor!r} (se esperaba true/false).")
-    return str(env.get(ENV_ACTIVA, "")).strip() == "1"
+    if ENV_ACTIVA in env:
+        return str(env[ENV_ACTIVA]).strip() == "1"
+    plataforma = platform.system() if plataforma is None else plataforma
+    argv = sys.argv if argv is None else argv
+    return plataforma == "Windows" and "--server" not in argv
 
 
 # --- Ajuste «esperar mi respuesta (min)» persistido en el backend ---------------------------
