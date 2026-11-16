@@ -174,20 +174,42 @@ describe('bridge en modo pywebview (Windows)', () => {
     }
   })
 
-  it('resultadoPrechequeo y resultadoSubir usan plazo largo (lotes grandes)', async () => {
-    window.pywebview = { api: { resultado_prechequeo: () => new Promise(() => {}), resultado_subir: () => new Promise(() => {}) } }
+  it('resultadoSubir mantiene plazo largo; resultadoPrechequeo es asíncrono con progreso y plazo sin eventos', async () => {
+    window.pywebview = { api: {
+      resultado_subir: () => new Promise(() => {}),
+      resultado_prechequeo_start: vi.fn(async () => ({ started: true })),
+    } }
+    const { api } = await import('./bridge.js')
+    vi.useFakeTimers()
+    try {
+      const sub = api.resultadoSubir('D:/x', 1).then(() => 'ok', (e) => e.message)
+      const progreso = []
+      const pre = api.resultadoPrechequeo('D:/x', (p) => progreso.push(p)).then((r) => r, (e) => e.message)
+      await vi.advanceTimersByTimeAsync(0)
+      const token = window.pywebview.api.resultado_prechequeo_start.mock.calls[0][1]
+      const emitir = (d) => window.dispatchEvent(new CustomEvent('atom:resultado', { detail: d }))
+      emitir({ kind: 'prechequeo_progreso', token: 'otro', check_id: 'x', i: 1, n: 11, estado: 'en_curso' })
+      emitir({ kind: 'prechequeo_progreso', token, check_id: 'cierre', etiqueta: 'Cierre', i: 2, n: 11, estado: 'en_curso' })
+      expect(progreso).toHaveLength(1)
+      expect(progreso[0].check_id).toBe('cierre')
+      await vi.advanceTimersByTimeAsync(119000)
+      emitir({ kind: 'prechequeo', token, resultado: { ok: true, checks: [] } })
+      expect(await pre).toEqual({ ok: true, checks: [] })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(await sub).toBe('El Organizer no responde.')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('resultadoPrechequeo rechaza si no llega ningún evento en 120 s', async () => {
+    window.pywebview = { api: { resultado_prechequeo_start: vi.fn(async () => ({ started: true })) } }
     const { api } = await import('./bridge.js')
     vi.useFakeTimers()
     try {
       const pre = api.resultadoPrechequeo('D:/x').then(() => 'ok', (e) => e.message)
-      const sub = api.resultadoSubir('D:/x', 1).then(() => 'ok', (e) => e.message)
-      await vi.advanceTimersByTimeAsync(119000)
-      let r = await Promise.race([pre, sub, Promise.resolve('pendiente')])
-      expect(r).toBe('pendiente')
-      await vi.advanceTimersByTimeAsync(1000)
-      expect(await sub).toBe('El Organizer no responde.')
-      await vi.advanceTimersByTimeAsync(480000)
-      expect(await pre).toBe('El Organizer no responde.')
+      await vi.advanceTimersByTimeAsync(120000)
+      expect(await pre).toBe('Prechequeo sin respuesta 120 s en inicio')
     } finally {
       vi.useRealTimers()
     }

@@ -185,3 +185,34 @@ def test_cierre_origen_no_accesible_y_error_real_emite_ambos(tmp_path):
     assert c["estado"] == "error"
     assert "no existe en disco" in c["detalle"]
     assert "Carpeta de origen no accesible (/origen)" in c["detalle"]
+
+
+def _verificar_progreso(evs, res):
+    assert len(evs) == 22  # 11 comprobaciones x (en_curso + final)
+    assert all(e["n"] == 11 for e in evs)
+    assert [e["i"] for e in evs] == [i for i in range(1, 12) for _ in (0, 1)]
+    assert [e["check_id"] for e in evs[::2]] == ["manifiesto"] + [i for i, _ in pre._ORDEN]
+    for k, c in enumerate(res["checks"]):
+        assert evs[2 * k]["estado"] == "en_curso"
+        assert evs[2 * k + 1]["estado"] == c["estado"]
+        assert evs[2 * k]["etiqueta"] and isinstance(evs[2 * k + 1]["t_s"], float)
+
+
+def test_on_progreso_orden_y_n(tmp_path):
+    destino = _destino(tmp_path)
+    evs = []
+    res = pre.prechequear(str(destino), on_progreso=evs.append)
+    _verificar_progreso(evs, res)
+    assert pre.prechequear(str(destino))["checks"] == res["checks"]  # sin callback, igual
+
+
+def test_on_progreso_sin_manifiesto_y_callback_roto(tmp_path):
+    vacio = tmp_path / "vacio"
+    vacio.mkdir()
+    evs = []
+    res = pre.prechequear(str(vacio), on_progreso=evs.append)
+    _verificar_progreso(evs, res)
+
+    def roto(_ev):
+        raise RuntimeError("boom")
+    assert pre.prechequear(str(vacio), on_progreso=roto)["ok"] is False
