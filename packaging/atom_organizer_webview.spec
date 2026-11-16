@@ -24,7 +24,9 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_dyn
 
 # atom_rs (wheel Rust, abi3): obligatoria. La instala el CI antes de PyInstaller;
 # en builds locales hay que instalarla antes. Sin ella, error explícito.
-_rs_binaries = collect_dynamic_libs('atom_rs')
+# La extensión PyO3 es `atom_rs.abi3.so` / `atom_rs.pyd`: los patrones por defecto
+# (*.dll, *.dylib, lib*.so) no la casan, de ahí el patrón explícito.
+_rs_binaries = collect_dynamic_libs('atom_rs', search_patterns=['*.so', '*.pyd', '*.dll', '*.dylib'])
 if not _rs_binaries:
     raise SystemExit("ERROR: atom_rs no instalada o sin libs dinámicas; instala la wheel antes de PyInstaller")
 

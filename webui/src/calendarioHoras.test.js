@@ -1,5 +1,6 @@
 import { test, expect, describe, it } from 'vitest';
 import { readFileSync } from 'node:fs';
+import process from 'node:process';
 const assert = { equal: (a, b) => expect(a).toBe(b), deepEqual: (a, b) => expect(a).toEqual(b), ok: (v, m) => expect(v, m).toBeTruthy(), throws: (f) => expect(f).toThrow() };
 import {
   parsearHoraCamara, lunesDe, diasDelRango, semanasDe, segmentosDeVuelo, layoutDia, rangoHoras,
