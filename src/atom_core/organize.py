@@ -1455,4 +1455,16 @@ def run_task(
 
 def run_organize(params: dict, emit: EmitFn, advanced: Optional[dict] = None) -> None:
     """Atajo de la pantalla principal: 'Organizar completo' (task split_images)."""
+    # Flag Rust (ATOM_RUST / ATOM_RUST_FASES): con flag off no se importa atom_rs.
+    # Activo y sin módulo válido = error visible y se aborta (sin retroceso a Python).
+    from atom_core import rust_bridge
+    try:
+        _fases_rust = rust_bridge.fases_activas()
+        if _fases_rust:
+            _rs = rust_bridge.modulo()
+            emit("log", f"[rust] atom_rs {_rs.version()} (abi {rust_bridge.ABI_ESPERADA}) "
+                        f"fases: {', '.join(_fases_rust)}")
+    except (rust_bridge.RustNoDisponible, ValueError) as e:
+        emit("error", f"[rust] {e}")
+        return
     run_task("split_images", params, emit, advanced)

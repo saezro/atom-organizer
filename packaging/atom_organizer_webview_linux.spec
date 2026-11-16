@@ -9,7 +9,13 @@
 # de montar luego un AppImage sobre dist/atom_organizer/.
 #
 # Tras el build: ejecutar `python packaging/inject_ipaddress.py` (ipaddress no entra en base_library.zip).
-from PyInstaller.utils.hooks import collect_all, collect_data_files
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_dynamic_libs
+
+# atom_rs (wheel Rust, abi3): obligatoria. La instala el CI antes de PyInstaller;
+# en builds locales hay que instalarla antes. Sin ella, error explícito.
+_rs_binaries = collect_dynamic_libs('atom_rs')
+if not _rs_binaries:
+    raise SystemExit("ERROR: atom_rs no instalada o sin libs dinámicas; instala la wheel antes de PyInstaller")
 
 import os as _spec_os
 # Este .spec vive en packaging/: SPECPATH = su carpeta. Las rutas se anclan a la
@@ -64,7 +70,7 @@ for _gpu_pkg in (
 a = Analysis(
     [_r('src', 'app_webview.py')],
     pathex=[_SRC],
-    binaries=pyexiv2_binaries + numpy_binaries + pandas_binaries + openpyxl_binaries + gpu_binaries,
+    binaries=pyexiv2_binaries + numpy_binaries + pandas_binaries + openpyxl_binaries + gpu_binaries + _rs_binaries,
     datas=[
         (_r('webui', 'dist'), 'webui/dist'),          # UI React buildeada (npm run build)
         (_r('config', 'Config.ini'), 'config'),
@@ -75,6 +81,7 @@ a = Analysis(
     ] + pyexiv2_datas + numpy_datas + pandas_datas + mpl_datas + openpyxl_datas + gpu_datas,
     hiddenimports=[
         'pyexiv2', 'ipaddress',
+        'atom_rs',                             # wheel Rust (puente atom_core.rust_bridge, import perezoso)
         'version', 'atom_core.updater',        # updater: import perezoso desde app_webview
         'gui', 'atom_core.organize',           # import perezoso en el worker → forzarlo
         'psutil',                              # utils.workers_para_lote: import perezoso; sin él

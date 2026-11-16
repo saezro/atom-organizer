@@ -42,6 +42,18 @@ Image.new("RGB", (64, 48), (120, 130, 140)).save(
 )
 PY
 chmod +x "$APP"
+# atom_rs (Rust) debe estar empaquetado y cargable con la ABI esperada. El AppImage
+# no expone un `python -c`; se comprueba el contenido extraído (abi3: atom_rs*.so).
+EXTRAIDO="$TMP/extraido"
+mkdir -p "$EXTRAIDO"
+if ! (cd "$EXTRAIDO" && APPIMAGE_EXTRACT_AND_RUN=1 "$APP" --appimage-extract >/dev/null 2>&1); then
+  echo "ERROR: falló --appimage-extract" >&2
+  exit 1
+fi
+if ! find "$EXTRAIDO" \( -name 'atom_rs*.so' -o -name 'atom_rs*.pyd' \) | grep -q .; then
+  echo "ERROR: atom_rs no está empaquetado en el AppImage" >&2
+  exit 1
+fi
 setsid env APPIMAGE_EXTRACT_AND_RUN=1 ATOM_LOG_LEVEL=INFO \
   "$APP" --server --host 127.0.0.1 --port "$PORT" >"$LOG" 2>&1 &
 PID=$!

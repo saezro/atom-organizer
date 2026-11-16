@@ -1,0 +1,24 @@
+[package]
+name = "atom_rs"
+version = "0.1.0"
+edition = "2021"
+description = "Aceleradores Rust de ATOM Organizer (puente pyo3, abi3-py311)"
+license = "UNLICENSED"
+publish = false
+
+[lib]
+name = "atom_rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["abi3-py311"] }
+
+[features]
+# maturin activa extension-module al construir la wheel; `cargo test` va sin él
+# para poder enlazar contra libpython.
+extension-module = ["pyo3/extension-module"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

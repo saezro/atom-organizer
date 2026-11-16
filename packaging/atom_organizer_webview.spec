@@ -20,7 +20,13 @@
 #  - La UI React va como data en 'webui/dist'; app_webview.py la resuelve vía _MEIPASS.
 #  - Recursos del pipeline (config, programas_externos, assets) los resuelve external_tools.app_base_dir.
 #  - programas_externos/{exiftool.exe, DJI/dji_irp.exe} son binarios Windows: imprescindibles.
-from PyInstaller.utils.hooks import collect_all, collect_data_files
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_dynamic_libs
+
+# atom_rs (wheel Rust, abi3): obligatoria. La instala el CI antes de PyInstaller;
+# en builds locales hay que instalarla antes. Sin ella, error explícito.
+_rs_binaries = collect_dynamic_libs('atom_rs')
+if not _rs_binaries:
+    raise SystemExit("ERROR: atom_rs no instalada o sin libs dinámicas; instala la wheel antes de PyInstaller")
 
 import os as _spec_os
 # Este .spec vive en packaging/: SPECPATH = su carpeta. Las rutas se anclan a la
@@ -158,7 +164,7 @@ for _d in _vc_dlls:
 a = Analysis(
     [_r('src', 'app_webview.py')],
     pathex=[_SRC],
-    binaries=pyexiv2_binaries + vcruntime_binaries + numpy_binaries + pandas_binaries + pytz_binaries + openpyxl_binaries + gpu_binaries,
+    binaries=pyexiv2_binaries + vcruntime_binaries + numpy_binaries + pandas_binaries + pytz_binaries + openpyxl_binaries + gpu_binaries + _rs_binaries,
     datas=[
         (_r('webui', 'dist'), 'webui/dist'),          # UI React buildeada (npm run build)
         (_r('config', 'Config.ini'), 'config'),
@@ -169,6 +175,7 @@ a = Analysis(
     ] + pyexiv2_datas + mpl_datas + webview_datas + pyexiv2_native + numpy_datas + pandas_datas + pytz_datas + openpyxl_datas + gpu_datas,
     hiddenimports=[
         'pyexiv2', 'ipaddress',
+        'atom_rs',                             # wheel Rust (puente atom_core.rust_bridge, import perezoso)
         'version', 'atom_core.updater',   # updater: import perezoso desde app_webview
         'gui', 'atom_core.organize',           # import perezoso en el worker → forzarlo explícito
         'psutil',                              # utils.workers_para_lote: import perezoso; sin él
