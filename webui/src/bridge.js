@@ -220,6 +220,8 @@ const TIMEOUTS_METODO = {
   pick_file: 0,
   red_conectar: 75000,
   read_estadillo_info: 65000,
+  // Lee EXIF de todas las fotos del origen: el plazo real lo pone el call site (App.jsx).
+  calendario_previo: 0,
   run_task: 30000,
   resultado_subir: 120000,
   resultado_credencial: 60000,
@@ -320,6 +322,10 @@ export const api = {
   // Lectura sincrónica del estadillo para el modal previo (pilotos, dron,
   // nº de vuelos, franjas horarias). Devuelve el dict de info o {error}.
   readEstadilloInfo: (path) => call('read_estadillo_info', path),
+  // Calendario del modal previo a Ejecutar: {ok, vuelos(dron, piloto), libres, ...} o {ok:false, error}.
+  // `advanced`: el mismo panel avanzado del run (sufijos T/RGB, desfase) para clasificar como el índice.
+  calendarioPrevio: (origen, estadillo, advanced) => call('calendario_previo', origen, estadillo, advanced ?? null),
+  calendarioPrevioCancelar: () => call('calendario_previo_cancelar'),
   // Autodetección del sufijo de separación desde los nombres de la carpeta
   // origen (DJI: térmicas `_T`). Devuelve {ok, thermal, rgb, tokens, total}.
   detectSuffixes: (origen) => call('detect_suffixes', origen),

@@ -55,20 +55,26 @@ function EventoVuelo({ seg, vuelo, desdeHora, altoHora, anchoCol, minDuracionMin
   const w = 100 / seg.nCols
   const fmt = formatoBloque(anchoBloquePx(anchoCol, seg.nCols), alto)
   const giro = infoGiro(vuelo.angulo)
-  const motivos = motivosAviso(vuelo)
+  // Calendario previo (antes de procesar): aún no hay giro ni paridad RGB/T que avisar.
+  const motivos = vuelo.previo ? [] : motivosAviso(vuelo)
   const textoMotivos = motivos.join(' · ')
   const color = motivos.length ? COLOR_AVISO : COLOR_VUELO
   const cubetas = cubetasPorHora(vuelo)
   return (
     <div className="ri-vuelo" data-testid="ri-vuelo"
-         title={`${etiquetaCompacta(vuelo)} · ${formatearHora(seg.iniMin)}-${formatearHora(seg.finMin)} · ${vuelo.n_rgb} RGB / ${vuelo.n_t} T${motivos.length ? ` · Aviso: ${textoMotivos}` : ''}`}
+         title={`${etiquetaCompacta(vuelo)}${vuelo.equipo ? ` · Dron: ${vuelo.equipo}` : ''}${vuelo.piloto ? ` · Piloto: ${vuelo.piloto}` : ''} · ${formatearHora(seg.iniMin)}-${formatearHora(seg.finMin)} · ${vuelo.n_rgb} RGB / ${vuelo.n_t} T${motivos.length ? ` · Aviso: ${textoMotivos}` : ''}`}
          style={{
            top, height: Math.max(alto - 1, 0), left: `calc(${seg.col * w}% + ${GAP_CARRIL_PX / 2}px)`,
            width: `max(${ANCHO_MIN_BLOQUE_PX}px, calc(${w}% - ${GAP_CARRIL_PX}px))`,
            borderColor: `${color}b3`, backgroundColor: `${color}2e`,
          }}>
       <div className="ri-vuelo-tit">{etiquetaCompacta(vuelo)}</div>
-      <IconoGiro giro={giro} pequeno={fmt.iconoPequeno} />
+      {vuelo.previo ? null : <IconoGiro giro={giro} pequeno={fmt.iconoPequeno} />}
+      {vuelo.equipo || vuelo.piloto ? (
+        <div className="ri-vuelo-equipo" data-testid="ri-vuelo-equipo">
+          {[vuelo.equipo, vuelo.piloto].filter(Boolean).join(' · ')}
+        </div>
+      ) : null}
       <div className="ri-vuelo-hora">
         {textoHorasBloque(fmt.linea2, seg.iniMin, seg.finMin)}
         {fmt.linea2 !== 'completa' && motivos.length ? <span className="ri-vuelo-aviso" title={`Aviso: ${textoMotivos}`}> ⚠</span> : null}
