@@ -38,6 +38,11 @@ permissions:
   contents: read
 
 jobs:
+  # Wheels de atom_rs (Windows x86_64, manylinux x86_64 y aarch64). Los jobs que
+  # empaquetan o testean instalan la suya antes de pytest/PyInstaller.
+  rust-wheels:
+    uses: ./.github/workflows/rust-wheels.yml
+
   meta:
     runs-on: ubuntu-latest
     outputs:
@@ -88,6 +93,7 @@ jobs:
   # `pickCarpeta` en runtime, y como aquí no corría ni lint ni tests, lo único
   # que lo habría cazado era abrir la ventana a mano y mirar la consola.
   checks:
+    needs: [rust-wheels]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -160,11 +166,17 @@ jobs:
       # test_dark_theme.py falla EN RECOLECCIÓN desde antes de este workflow;
       # se excluye para no bloquear la puerta con deuda preexistente, no porque
       # sea prescindible. Arreglarlo y quitar el --ignore es tarea aparte.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wheel-linux-x86_64
+          path: wheels
+      - name: Instalar wheel atom_rs
+        run: uv pip install --python .venv/bin/python --no-index --find-links wheels atom_rs
       - name: Tests
         run: python -m pytest tests/ -q --ignore=tests/test_dark_theme.py
 
   build-linux:
-    needs: [meta]
+    needs: [meta, rust-wheels]
     # Era ubuntu-22.04, por construir contra la glibc más vieja posible y que el
     # AppImage corriera en cualquier sitio. Esa imagen ya no se sirve: los dos
     # intentos de v3.4.22 murieron sin ejecutar un solo paso ("The job was not
@@ -224,6 +236,12 @@ jobs:
           ATOM_GOOGLE_CLIENT_ID: ${{ secrets.ATOM_GOOGLE_CLIENT_ID }}
           ATOM_GOOGLE_CLIENT_SECRET: ${{ secrets.ATOM_GOOGLE_CLIENT_SECRET }}
         run: python scripts/inject_oauth_client.py
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wheel-linux-x86_64
+          path: wheels
+      - name: Instalar wheel atom_rs (antes de PyInstaller)
+        run: uv pip install --python .venv/bin/python --no-index --find-links wheels atom_rs
       - name: PyInstaller (onedir Qt/QtWebEngine)
         run: pyinstaller --clean --noconfirm packaging/atom_organizer_webview_linux.spec
       - name: Inject ipaddress en base_library.zip
@@ -243,7 +261,7 @@ jobs:
           if-no-files-found: error
 
   build-windows:
-    needs: [meta]
+    needs: [meta, rust-wheels]
     runs-on: windows-latest
     steps:
       - name: Excluir el workspace de Defender
@@ -343,6 +361,13 @@ jobs:
           ATOM_GOOGLE_CLIENT_ID: ${{ secrets.ATOM_GOOGLE_CLIENT_ID }}
           ATOM_GOOGLE_CLIENT_SECRET: ${{ secrets.ATOM_GOOGLE_CLIENT_SECRET }}
         run: .venv\Scripts\python.exe scripts/inject_oauth_client.py
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wheel-windows-x86_64
+          path: wheels
+      - name: Instalar wheel atom_rs (antes de PyInstaller)
+        shell: pwsh
+        run: uv pip install --python .venv\Scripts\python.exe --no-index --find-links wheels atom_rs
       - name: PyInstaller (onedir Qt/QtWebEngine)
         # El .spec (atom_organizer_webview.spec) solo empaqueta cupy/nvidia si
         # ATOM_BUILD_GPU == '1' (mira os.environ, no si packaging/requirements/requirements-gpu.txt se
@@ -390,7 +415,7 @@ jobs:
   # el workflow queda en rojo pero la release de escritorio se publica igual.
   # Bloquear el .exe por un problema de GCP sería cambiar un fallo por otro.
   imagen-job:
-    needs: [meta]
+    needs: [meta, rust-wheels]
     # Build de validación (publicar=false): no tocar Artifact Registry.
     if: needs.meta.outputs.publicar == 'true'
     runs-on: ubuntu-24.04
@@ -425,6 +450,12 @@ jobs:
       # una variable del repo añade un paso de configuración manual que, si se
       # olvida, rompe la release con un error opaco. El resto del workflow ya
       # hardcodea proyecto, región e imagen.
+      # La wheel x86_64 entra en el contexto de build (packaging/wheels/) para que
+      # Dockerfile.job la instale.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wheel-linux-x86_64
+          path: packaging/wheels
       - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
         with:
           workload_identity_provider: projects/217557350193/locations/global/workloadIdentityPools/github/providers/atom-organizer

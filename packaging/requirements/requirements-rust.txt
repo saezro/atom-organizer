@@ -1,0 +1,4 @@
+# Solo para CONSTRUIR la wheel atom_rs (CI y banco). No es dependencia de runtime
+# ni va en los requirements de escritorio/servidor: la wheel ya compilada se instala aparte.
+maturin>=1.7,<2
+ziglang>=0.13  # cross-compile aarch64 (maturin --zig)

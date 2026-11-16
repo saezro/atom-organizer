@@ -47,6 +47,15 @@ RUN pip install --no-cache-dir -r requirements-server.txt
 # `abrir_almacen()` aborta con ImportError en la primera ruta gs://.
 RUN pip install --no-cache-dir google-cloud-storage==3.13.1
 
+# Wheel atom_rs (Rust) x86_64 manylinux, construida por rust-wheels.yml y colocada en
+# packaging/wheels/ por release.yml (job imagen-job). Es abi3-py311: vale para este Python 3.11.
+# Obligatoria: sin wheel el build falla (sin fallback silencioso).
+COPY packaging/wheels/ ./wheels/
+RUN ls wheels/atom_rs-*.whl >/dev/null 2>&1 \
+    || { echo "ERROR: falta packaging/wheels/atom_rs-*.whl (la descarga release.yml antes del build)" >&2; exit 1; } \
+    && pip install --no-cache-dir wheels/atom_rs-*.whl \
+    && rm -rf wheels
+
 COPY src/atom_core/ ./src/atom_core/
 COPY config/ ./config/
 # pipeline.py y exif.py son módulos sueltos en src/, no paquetes. gui.py y

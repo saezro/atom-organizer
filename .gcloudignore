@@ -22,6 +22,8 @@ docs/
 packaging/*
 !packaging/Dockerfile.job
 !packaging/cloudbuild-job.yaml
+!packaging/wheels/
+!packaging/wheels/**
 !packaging/requirements/
 packaging/requirements/*
 !packaging/requirements/requirements-server.txt
