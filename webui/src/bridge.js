@@ -204,12 +204,20 @@ const DEFAULT_TIMEOUT_MS = 20000
 //     bridge no debe disparar antes y tapar ese mensaje con uno genérico.
 //   - run_task: arranque del pipeline ya protegido en el call site
 //     (`App.jsx`, `conPlazo(..., ESPERA_ARRANQUE_MS)` = 25 s); mismo motivo.
+//   - resultado_prechequeo: recorre manifiesto + CSV del lote (decenas de miles
+//     de objetos) de forma síncrona; en lotes grandes pasa de 20 s de largo.
+//   - resultado_subir: trabajo síncrono previo a lanzar el hilo de subida.
+//   - resultado_credencial: consulta de credencial (red), margen holgado.
+//   (`resultado_inspeccionar_destino_start` es asíncrono con su propio plazo.)
 const TIMEOUTS_METODO = {
   pick_folder: 0,
   pick_file: 0,
   red_conectar: 75000,
   read_estadillo_info: 65000,
   run_task: 30000,
+  resultado_prechequeo: 600000,
+  resultado_subir: 120000,
+  resultado_credencial: 60000,
 }
 
 async function call(method, ...args) {
