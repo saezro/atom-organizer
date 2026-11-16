@@ -1,0 +1,69 @@
+# Compila rust/atom_rs (maturin, abi3-py311) y corre sus tests Python en Cloud Build,
+# porque atom-dev-nl no tiene cargo. Sube el ARBOL DE TRABAJO (incluye cambios sin commitear).
+#
+#   gcloud builds submit --config=packaging/cloudbuild-rust-test.yaml \
+#     --ignore-file=packaging/gcloudignore-rust-test \
+#     --project=aerotools-484814 \
+#     --gcs-source-staging-dir=gs://aerotools-organizer-ci-build/staging \
+#     --account=atom-compute-ops@aerotools-484814.iam.gserviceaccount.com .
+#
+# El exit code del build es REAL: falla si falla cualquier etapa (tests Rust, suite, cargo test, clippy)
+# o si hay tests SKIPPED en los tests Rust (modo estricto).
+steps:
+  - name: 'python:3.11-bookworm'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -eo pipefail
+        apt-get update -qq && apt-get install -y -qq cmake nasm build-essential curl libgl1 libglib2.0-0 libimage-exiftool-perl ffmpeg >/dev/null
+        exiftool -ver
+        curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable -c clippy
+        . "$$HOME/.cargo/env"
+        rustc --version; cargo --version
+        python -m pip install -q --upgrade pip
+        python -m pip install -q "maturin>=1.7,<2"
+        LOCKED=""
+        if [ -f rust/atom_rs/Cargo.lock ]; then LOCKED="--locked"; echo "Cargo.lock presente: usando --locked"; else echo "Cargo.lock AUSENTE: se genera en este build"; fi
+        echo "=== MATURIN BUILD ==="
+        maturin build --release $$LOCKED -m rust/atom_rs/Cargo.toml --out /tmp/wheels 2>&1 | tee /tmp/maturin.log
+        echo "=== WARNINGS: $$(grep -c '^warning' /tmp/maturin.log || true) ==="
+        echo "=== CARGO.LOCK BEGIN ==="
+        cat rust/atom_rs/Cargo.lock
+        echo "=== CARGO.LOCK END ==="
+        python -m pip install -q /tmp/wheels/atom_rs-*.whl
+        python -m pip install -q -r packaging/requirements/requirements-server.txt pytest
+        python -c "import atom_rs; print('atom_rs OK', atom_rs.__file__)"
+        FAIL=0
+        echo "=== RUST TESTS (ATOM_RUST=1, ATOM_RUST_AB_ESTRICTO=1) ==="
+        # pandas ANTES del conftest: el stub de winreg rompe dateutil si pandas se importa despues.
+        # tests/test_rust_termica_ab.py no lee ATOM_RUST_AB_ESTRICTO (inocuo); el modo estricto
+        # se aplica aqui: cualquier SKIPPED en estos dos ficheros hace fallar el build.
+        export ATOM_RUST_AB_ESTRICTO=1
+        set +e
+        ATOM_RUST=1 python -c "import pandas, sys, pytest; sys.exit(pytest.main(['tests/test_rust_termica_ab.py','tests/test_rust_bridge.py','-v','-rs']))" 2>&1 | tee /tmp/rust_tests.log
+        RC=$${PIPESTATUS[0]}
+        echo "RESULT_RUST_TESTS_EXIT=$$RC"
+        [ "$$RC" -eq 0 ] || FAIL=1
+        if grep -q '^SKIPPED' /tmp/rust_tests.log; then echo "ESTRICTO: hay tests SKIPPED en los tests Rust -> FALLA"; grep '^SKIPPED' /tmp/rust_tests.log; FAIL=1; fi
+        echo "=== FULL SUITE ==="
+        python -c "import pandas, sys, pytest; sys.exit(pytest.main(['-q','-p','no:cacheprovider','-rs']))" 2>&1 | tail -120
+        RC=$${PIPESTATUS[0]}
+        echo "RESULT_FULL_EXIT=$$RC"
+        [ "$$RC" -eq 0 ] || FAIL=1
+        echo "=== CARGO TEST ==="
+        (cd rust/atom_rs && cargo test $$LOCKED 2>&1 | tail -40; exit $${PIPESTATUS[0]})
+        RC=$$?
+        echo "RESULT_CARGO_TEST_EXIT=$$RC"
+        [ "$$RC" -eq 0 ] || FAIL=1
+        echo "=== CLIPPY ==="
+        (cd rust/atom_rs && cargo clippy $$LOCKED 2>&1 | tail -30; exit $${PIPESTATUS[0]})
+        RC=$$?
+        echo "RESULT_CLIPPY_EXIT=$$RC"
+        [ "$$RC" -eq 0 ] || FAIL=1
+        echo "RESULT_BUILD_FAIL=$$FAIL"
+        exit $$FAIL
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+timeout: '3600s'

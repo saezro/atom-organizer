@@ -622,6 +622,11 @@ def run_task(
 
     _lock_ruta = None  # LockDestino del run
     try:
+        # Flag Rust al ARRANCAR, para cualquier task y cualquier entrada (webview,
+        # CLI, run_organize): activo y sin módulo/ABI/símbolos válidos = error
+        # visible y se aborta antes de tocar nada (sin retroceso a Python).
+        if not _comprobar_rust(emit):
+            return
         if task not in _TASKS:
             emit("error", f"Task desconocido: {task}")
             return
@@ -1453,18 +1458,24 @@ def run_task(
                 pass
 
 
-def run_organize(params: dict, emit: EmitFn, advanced: Optional[dict] = None) -> None:
-    """Atajo de la pantalla principal: 'Organizar completo' (task split_images)."""
-    # Flag Rust (ATOM_RUST / ATOM_RUST_FASES): con flag off no se importa atom_rs.
-    # Activo y sin módulo válido = error visible y se aborta (sin retroceso a Python).
+def _comprobar_rust(emit: EmitFn) -> bool:
+    """Flag Rust (ATOM_RUST / ATOM_RUST_FASES): con flag off no se importa atom_rs.
+    Activo: valida módulo, ABI y símbolos de las fases activas y lo loguea.
+    Inválido -> `error` visible y False (el llamador aborta, sin retroceso a Python)."""
     from atom_core import rust_bridge
     try:
         _fases_rust = rust_bridge.fases_activas()
         if _fases_rust:
-            _rs = rust_bridge.modulo()
+            _rs = rust_bridge.modulo(_fases_rust)
             emit("log", f"[rust] atom_rs {_rs.version()} (abi {rust_bridge.ABI_ESPERADA}) "
                         f"fases: {', '.join(_fases_rust)}")
     except (rust_bridge.RustNoDisponible, ValueError) as e:
         emit("error", f"[rust] {e}")
-        return
+        return False
+    return True
+
+
+def run_organize(params: dict, emit: EmitFn, advanced: Optional[dict] = None) -> None:
+    """Atajo de la pantalla principal: 'Organizar completo' (task split_images).
+    La comprobación del flag Rust la hace `run_task` al arrancar."""
     run_task("split_images", params, emit, advanced)

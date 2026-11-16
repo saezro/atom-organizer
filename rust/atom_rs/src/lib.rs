@@ -7,9 +7,12 @@
 use pyo3::prelude::*;
 
 pub mod error;
+pub mod termica;
+pub mod tiff_f32;
 
-/// Versión del contrato Python<->Rust. Subir al romper firmas.
-pub const ABI: u32 = 1;
+/// Versión del contrato Python<->Rust. Subir al romper firmas o al añadir una
+/// fase. 2 = fase `termica` (T1).
+pub const ABI: u32 = 2;
 
 /// Versión del crate (Cargo.toml).
 #[pyfunction]
@@ -27,6 +30,11 @@ fn version_abi() -> u32 {
 fn atom_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(version_abi, m)?)?;
+    // Fase `termica` (T1, ABI 2). Además `rust_bridge.modulo()` valida al
+    // arrancar que existan los símbolos de cada fase activa (RustNoDisponible).
+    m.add_class::<termica::TermicaStats>()?;
+    m.add_function(wrap_pyfunction!(termica::termica_procesar, m)?)?;
+    m.add_function(wrap_pyfunction!(termica::libjpeg_turbo_version, m)?)?;
     Ok(())
 }
 
@@ -35,8 +43,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn abi_es_uno() {
-        assert_eq!(version_abi(), 1);
+    fn abi_es_dos() {
+        assert_eq!(version_abi(), 2);
     }
 
     #[test]

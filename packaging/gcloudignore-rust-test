@@ -1,0 +1,22 @@
+# Contexto reducido para packaging/cloudbuild-rust-test.yaml (SI incluye tests/ y rust/).
+.git/
+.gitignore
+.venv/
+venv/
+node_modules/
+webui/
+.superpowers/
+.pytest_cache/
+__pycache__/
+*.pyc
+target/
+rust/**/target/
+packaging/wheels/
+dist/
+tmpwork/
+docs/
+assets/
+programas_externos/*.exe
+programas_externos/DJI/*.exe
+programas_externos/DJI/*.dll
+programas_externos/DJI/*.lib
