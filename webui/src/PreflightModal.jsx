@@ -1,10 +1,24 @@
 // Modal PREVIO al procesado: muestra la info básica que se saca del estadillo
 // (piloto(s), dron(es), nº de vuelos y franjas horarias) para que el operador
-// confirme antes de arrancar. Datos de `api.readEstadilloInfo` (atom_core/estadillo).
+// confirme antes de arrancar. Datos de `api.readEstadilloInfo` (atom_core/estadillo) y, para el
+// calendario, de `api.calendarioPrevio` (vuelos con dron/piloto + fotos fuera de franja en gris).
+import { useMemo } from 'react'
+import CalendarioHoras from './CalendarioHoras.jsx'
+import { modeloDesdeCalendario, tramosLibres } from './calendarioHoras.js'
 
-export default function PreflightModal({ info, loading, onStart, onCancel }) {
+export default function PreflightModal({ info, calendario, calCargando = false, loading, onStart, onCancel }) {
   const err = info && info.error
   const vuelos = (info && info.vuelos) || []
+  // Calendario de vuelos (dron + piloto) y fotos fuera de toda franja (tramos grises).
+  const { modelo, error: errCal } = useMemo(() => {
+    if (!calendario) return { modelo: null, error: null }
+    try {
+      return { modelo: modeloDesdeCalendario(calendario), error: null }
+    } catch (e) {
+      return { modelo: null, error: e?.message ?? String(e) }
+    }
+  }, [calendario])
+  const tramos = useMemo(() => (modelo ? tramosLibres(modelo.libres) : []), [modelo])
   const titulo = (info && (info.trabajo || info.empresa)) || 'Estadillo'
   // Un estadillo puede cubrir varios días (campaña con vuelos repartidos). Con
   // más de una fecha, un rango horario suelto no dice de qué día es, así que se
@@ -12,16 +26,13 @@ export default function PreflightModal({ info, loading, onStart, onCancel }) {
   const fechas = (info && info.fechas) || (info && info.fecha ? [info.fecha] : [])
   const multiDia = fechas.length > 1
   const cruces = vuelos.filter((v) => v.cruza_medianoche)
-  // Con varios estadillos cada vuelo lleva su fichero de origen (`fuente`);
-  // con uno solo esta lista sale vacía y la tabla no cambia de aspecto.
-  const conFuentes = vuelos.some((v) => v.fuente)
   const errores = (info && info.errores) || []
 
   return (
     <div className="pm-overlay" role="dialog" aria-modal="true">
-      <div className="pm-card">
+      <div className="pm-card ri-card">
         <h2 className="pm-title">
-          Resumen del vuelo: <span className="pm-plant">{titulo}</span>
+          Calendario de vuelos: <span className="pm-plant">{titulo}</span>
         </h2>
 
         {loading && <p className="pf-loading">Leyendo estadillo…</p>}
@@ -58,36 +69,21 @@ export default function PreflightModal({ info, loading, onStart, onCancel }) {
               </p>
             )}
 
-            {vuelos.length > 0 && (
-              <div className="pf-flights">
-                <table className="pf-table">
-                  <thead>
-                    <tr>
-                      {conFuentes && <th>Estadillo</th>}
-                      <th>PB</th>
-                      <th>Vuelo</th>
-                      <th>Fecha</th>
-                      <th>Inicio</th>
-                      <th>Final</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {vuelos.map((v, i) => (
-                      <tr key={i} className={v.cruza_medianoche ? 'pf-row-warn' : undefined}>
-                        {conFuentes && <td className="pf-estad-source">{v.fuente || '—'}</td>}
-                        <td>{v.pb || '—'}</td>
-                        <td>{v.vuelo || '—'}</td>
-                        <td>{v.fecha || '—'}</td>
-                        <td>{v.inicio || '—'}</td>
-                        <td>
-                          {v.final || '—'}
-                          {v.cruza_medianoche && <span className="pf-warn" title="El final es anterior al inicio: el vuelo cruza medianoche"> ⚠</span>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+            {calCargando && (
+              <p className="pf-loading" role="status" data-testid="pf-cal-cargando">
+                <svg className="espera-spinner" viewBox="0 0 24 24" width="18" height="18" fill="none"
+                     stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+                  <path d="M12 3a9 9 0 1 1-9 9" />
+                </svg>
+                Leyendo las horas de las fotos del origen para pintar el calendario… Puedes comenzar sin esperar.
+              </p>
+            )}
+            {errCal && <p className="pm-status err">✗ No se pudo preparar el calendario: {errCal}</p>}
+            {(modelo?.avisos ?? []).map((a, i) => (
+              <p key={i} className="pm-status warn" role="alert" data-testid="pf-aviso-dato">AVISO: {a}</p>
+            ))}
+            {modelo && (
+              <CalendarioHoras vuelos={modelo.vuelos} tramos={tramos} seleccion={null} onSeleccion={() => {}} />
             )}
           </>
         )}

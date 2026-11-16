@@ -342,7 +342,7 @@ export function motivosAviso(v) {
 // Sin fallbacks: una respuesta sin `ok` o sin las listas esperadas lanza; lo que el calendario
 // no puede pintar (horas ambiguas, giro sin voto, filas sin hora) sale en `avisos`, nunca se calla.
 export function modeloDesdeCalendario(json, { esperaMin = null } = {}) {
-  if (!json || json.ok !== true) throw new Error(`calendario no disponible: ${json?.error ?? 'respuesta sin ok'}`);
+  if (!json || json.ok !== true) throw new Error(json?.error ? String(json.error) : 'calendario no disponible: respuesta sin ok');
   for (const k of ['vuelos', 'libres', 'recomendaciones']) {
     if (!Array.isArray(json[k])) throw new Error(`calendario inválido: falta la lista '${k}'`);
   }
@@ -362,8 +362,10 @@ export function modeloDesdeCalendario(json, { esperaMin = null } = {}) {
       pb: v.pb, vuelo: v.vuelo, sufijo: v.sufijo ?? '', inicio: v.inicio, fin: v.fin, angulo: v.angulo,
       n_rgb: suma(horas, 'n_rgb'), n_t: suma(horas, 'n_t'), horas, fila: v.fila,
       n_giro_desconocido: v.n_giro_desconocido ?? 0, generales: v.generales === true,
+      equipo: v.equipo ?? null, piloto: v.piloto ?? null, previo: v.previo === true,
     });
   }
+  for (const a of json.avisos ?? []) avisos.push(a);
   for (const a of json.horas_sin_fila ?? []) {
     avisos.push(`Fotos de PB${a.pb} · V${a.vuelo} cuya hora no decide la fila del estadillo: no se asignan a ninguna fila.`);
   }

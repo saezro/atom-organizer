@@ -497,6 +497,9 @@ class Api:
         self._window = None
         self._sink = None
         self._running = False
+        # Lectura del calendario previo en curso (una a la vez): ver `calendario_previo`.
+        self._calprev_lock = threading.Lock()
+        self._calprev_job: dict | None = None
         self._ultimo_destino = ""
         self._downloading = False
         # Código de salida del último PowerShell de diálogo: distingue "el usuario
@@ -1023,6 +1026,85 @@ class Api:
             return read_estadillo_info(path)
         except Exception as exc:  # noqa: BLE001 — se reenvía al front
             return {"error": f"{type(exc).__name__}: {exc}"}
+
+    def calendario_previo(self, origen: str, estadillo, advanced=None) -> dict:
+        """Calendario del modal previo a Ejecutar: vuelos del/los estadillo(s) (con dron y piloto)
+        y horas EXIF de las fotos del origen, en memoria y SIN manifiesto. Mismo JSON que
+        `revision_indice_calendario` (`calendario_revision.construir_previo`). Sufijos y desfase
+        salen de `advanced` (el mismo panel que el run); lectura y asignación son las del índice
+        (`indice.leer_timestamps` / `indice.ventanas_de_estadillos`). Una sola lectura a la vez:
+        la misma petición en curso se reutiliza; una distinta cancela la anterior (que devuelve
+        `{ok: False, cancelado: True}`). Fallo -> `{ok: False, error}` visible, nunca vacío."""
+        try:
+            from atom_core import estadillo as estadillo_mod
+            rutas = list(estadillo) if isinstance(estadillo, (list, tuple)) \
+                else estadillo_mod.desempaquetar_rutas(estadillo or "")
+            rutas = [r for r in rutas if r]
+            if not rutas:
+                return {"ok": False, "error": "No hay estadillo."}
+            if not origen:
+                return {"ok": False, "error": "No hay carpeta de origen."}
+            clave = (origen, tuple(rutas), json.dumps(advanced or {}, sort_keys=True, default=str))
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        previo = None
+        with self._calprev_lock:
+            job = self._calprev_job
+            if job is not None and job["clave"] == clave and not job["cancelar"].is_set():
+                reutilizar, job = job, None
+            else:
+                reutilizar, previo = None, job
+                if previo is not None:
+                    previo["cancelar"].set()
+                job = {"clave": clave, "cancelar": threading.Event(), "listo": threading.Event(),
+                       "resultado": None}
+                self._calprev_job = job
+        if reutilizar is not None:
+            reutilizar["listo"].wait()
+            return reutilizar["resultado"]
+        if previo is not None:
+            previo["listo"].wait(5.0)   # no dos lecturas en paralelo: la cancelada suelta enseguida
+        resultado = {"ok": False, "error": "Calendario no calculado."}
+        try:
+            resultado = self._calendario_previo_calcular(origen, rutas, advanced, job["cancelar"])
+        except cancelacion.RunCancelado:
+            resultado = {"ok": False, "cancelado": True, "error": "Lectura del calendario cancelada."}
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            from atom_core.calendario_revision import ErrorCalendarioPrevio
+            resultado = {"ok": False, "error": str(exc) if isinstance(exc, ErrorCalendarioPrevio)
+                         else f"{type(exc).__name__}: {exc}"}
+        finally:
+            job["resultado"] = resultado
+            job["listo"].set()
+            with self._calprev_lock:
+                if self._calprev_job is job:
+                    self._calprev_job = None
+        return resultado
+
+    def calendario_previo_cancelar(self) -> dict:
+        """Corta la lectura del calendario previo en curso (Cancelar/Comenzar del modal)."""
+        with self._calprev_lock:
+            if self._calprev_job is not None:
+                self._calprev_job["cancelar"].set()
+        return {"ok": True}
+
+    def _calendario_previo_calcular(self, origen: str, rutas: list, advanced, cancelar) -> dict:
+        precarga.precargar_pandas()
+        from atom_core import indice, organize
+        from atom_core.calendario_revision import construir_previo
+
+        cfg = organize.cfg_split_para_previo({"origen": origen}, advanced)
+        # El estadillo se valida ANTES de leer las fotos: un CSV roto no debe costar minutos de EXIF.
+        indice.ventanas_de_estadillos(rutas, cfg, [])
+        lectura = indice.leer_timestamps(origen, cfg, cancelar=cancelar)
+        ventanas = indice.ventanas_de_estadillos(rutas, cfg, [f.ruta for f in lectura.fotos])
+        resultado = construir_previo(ventanas, lectura.fotos)
+        if lectura.no_leidas:
+            resultado["avisos"].append(
+                f"{lectura.no_leidas} fotos no se han podido leer (no DJI, a medio copiar o sin respuesta): no se pintan.")
+        if not lectura.n_imagenes:
+            resultado["avisos"].append("La carpeta de origen no tiene imágenes.")
+        return resultado
 
     def estadillos_detectar(self, carpeta: str, incluir_recibidos: bool = False) -> dict:
         """Escanea `carpeta` buscando estadillos sin que el operario tenga que

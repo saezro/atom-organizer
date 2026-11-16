@@ -500,7 +500,8 @@ class _EmisorIndice:
 
 def _ejecutar_con_limite(items: list, funcion, hilos: int, timeout_s: float,
                          emisor: "_EmisorIndice | None", watchdog_s: float,
-                         total_global: int | None = None) -> list:
+                         total_global: int | None = None,
+                         cancelar: "threading.Event | None" = None) -> list:
     """Aplica `funcion` a cada item con `hilos` hilos DAEMON y devuelve una
     lista alineada con `items`. Un item cuya llamada pasa de `timeout_s`
     queda como `_VENCIDO` (el hilo bloqueado se abandona -un `open()` colgado
@@ -508,8 +509,16 @@ def _ejecutar_con_limite(items: list, funcion, hilos: int, timeout_s: float,
     se acepta mientras la pasada siga viva). Una excepción de `funcion` se
     relanza aquí, como haría `ejecutor.map`. Cada `watchdog_s` s que un hilo
     lleva en el mismo fichero se avisa al log: «esperando a <ruta> desde hace
-    N s»."""
+    N s».
+
+    `cancelar` (opcional): `Event` propio de quien llama, además de la cancelación global
+    del run (`cancelacion`); lo usa la lectura previa del calendario, que no es un run y no
+    puede tocar la bandera global."""
     n = len(items)
+
+    def _cancelado() -> bool:
+        return cancelacion.cancelado() or (cancelar is not None and cancelar.is_set())
+
     resultados: list = [_PENDIENTE] * n
     if not n:
         return resultados
@@ -526,7 +535,7 @@ def _ejecutar_con_limite(items: list, funcion, hilos: int, timeout_s: float,
             with cerrojo:
                 if wid in abandonados:
                     return
-            if cancelacion.cancelado():
+            if _cancelado():
                 return
             try:
                 i = cola.get_nowait()
@@ -555,7 +564,7 @@ def _ejecutar_con_limite(items: list, funcion, hilos: int, timeout_s: float,
     tope = total_global if total_global is not None else n
     while True:
         time.sleep(0.05)
-        if cancelacion.cancelado():
+        if _cancelado():
             # Cancelar: NO se espera a los hilos atascados (un `open()` colgado
             # no se puede interrumpir); se abandonan, son daemon y sus
             # resultados se ignoran. Los demás paran al terminar su fichero.
@@ -1348,6 +1357,7 @@ def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
     col_inicio = nombres_columnas["Hora_de_inicio"]
     col_final = nombres_columnas["Hora_final"]
     col_equipo = nombres_columnas.get("Equipo_de_vuelo")
+    col_piloto = nombres_columnas.get("Piloto")
     colisiones_pb_vuelo = colisiones_pb_vuelo or {}
 
     ventanas: list[dict] = []
@@ -1385,12 +1395,17 @@ def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
             texto = str(estadillo_df[col_equipo].iloc[indice]).strip()
             equipo = texto if texto and texto.lower() != "nan" else None
 
+        piloto = None
+        if col_piloto is not None and col_piloto in estadillo_df.columns:
+            texto = str(estadillo_df[col_piloto].iloc[indice]).strip()
+            piloto = texto if texto and texto.lower() != "nan" else None
+
         sufijo = (estadillo_mod.sufijo_fecha(fecha)
                   if (pb, vuelo) in colisiones_pb_vuelo else None)
 
         ventanas.append({"pb": pb, "vuelo": vuelo, "inicio": inicio, "fin": fin,
                          "inicio_exacto": inicio_exacto, "fin_exacto": fin_exacto,
-                         "equipo": equipo, "fecha": fecha, "sufijo": sufijo})
+                         "equipo": equipo, "fecha": fecha, "sufijo": sufijo, "piloto": piloto})
     return ventanas
 
 
@@ -2300,7 +2315,8 @@ class _LoteLeido:
 
 
 def _leer_lote(imagenes: list[str], exif, progress_callback, emisor, hilos: int,
-               timeout_s: float, timeout_reintento_s: float, watchdog_s: float) -> _LoteLeido:
+               timeout_s: float, timeout_reintento_s: float, watchdog_s: float,
+               cancelar: "threading.Event | None" = None) -> _LoteLeido:
     """Lee EXIF/XMP de `imagenes` (HILOS: trabajo I/O-bound, dimensionado por
     `max_io_workers`, hasta 32; no `workers_para_lote`, que calcula PROCESOS que
     decodifican imágenes enteras y topa por RAM). Cada lectura con tiempo máximo
@@ -2328,7 +2344,7 @@ def _leer_lote(imagenes: list[str], exif, progress_callback, emisor, hilos: int,
         emisor.iniciar("Leer EXIF/XMP", len(imagenes), barra=(5, 75))
         lecturas = _ejecutar_con_limite(
             imagenes, _leer_una,
-            hilos, timeout_s, emisor, watchdog_s)
+            hilos, timeout_s, emisor, watchdog_s, cancelar=cancelar)
         for ruta, lectura in zip(imagenes, lecturas):
             if lectura is _VENCIDO:
                 lentas.append(ruta)
@@ -2353,7 +2369,7 @@ def _leer_lote(imagenes: list[str], exif, progress_callback, emisor, hilos: int,
             f"reintento con {int(timeout_reintento_s)} s por fichero.\n")
         emisor.iniciar("Reintentar lentas", len(lentas))
         reintentos = _ejecutar_con_limite(lentas, _filtrar_y_leer, hilos,
-                                          timeout_reintento_s, emisor, watchdog_s)
+                                          timeout_reintento_s, emisor, watchdog_s, cancelar=cancelar)
         for ruta, lectura in zip(lentas, reintentos):
             if lectura is _VENCIDO:
                 no_disponibles.append(ruta)
@@ -2704,6 +2720,152 @@ def _registrar_sin_colocar(cfg, manifiesto, ejecucion_id, ventanas, ventanas_por
             f"\nERROR: no se pudieron calcular los grupos de fotos sin colocar: {error}\n")
 
 
+def _pool_sin_carpeta(grupos_pendientes, rutas_leidas: list[str], rutas_autodetectables: set,
+                      avisar) -> list[dict]:
+    """Pool de ventanas de los estadillos cuya carpeta no es ancestro de NINGUNA imagen leída
+    (ver `_ventanas_para_imagen`). Un estadillo AUTODETECTADO en el árbol del origen y sin fotos
+    debajo no entra (se avisa con `avisar`): es un despiste, no un estadillo elegido a mano."""
+    pool: list[dict] = []
+    for directorio, rutas_grupo, ventanas_grupo in grupos_pendientes:
+        if any(_bajo_carpeta(directorio, imagen) for imagen in rutas_leidas):
+            continue
+        es_autodetectado = all(
+            estadillo_mod.clave_ruta(r) in rutas_autodetectables for r in rutas_grupo)
+        if es_autodetectado:
+            avisar(
+                f"\nWARNING: El estadillo {', '.join(rutas_grupo)} no tiene "
+                "imágenes en su carpeta; no se ha usado.\n")
+            continue
+        pool.extend(ventanas_grupo)
+    return pool
+
+
+# ---- API pública para el calendario PREVIO (sin manifiesto, antes de arrancar) -----------------
+class ErrorOrigenInexistente(FileNotFoundError):
+    """La carpeta de origen no existe (distinto de «existe pero no tiene imágenes»)."""
+
+
+@dataclass
+class FotoLeida:
+    ruta: str
+    nombre: str
+    timestamp: object   # `datetime` EXIF sin zona, o None
+    tipo: str           # RGB / TERMICA / RGB_Extra (`_clasificar_tipo`)
+
+
+@dataclass
+class LecturaTimestamps:
+    fotos: list[FotoLeida]
+    n_imagenes: int     # imágenes listadas en el origen
+    no_leidas: int      # no DJI, a medio copiar o sin respuesta: no están en `fotos`
+
+
+class _Mudo:
+    def emit(self, *_a, **_k):
+        return None
+
+
+class _Recolector:
+    """`progress_callback` que guarda los avisos en vez de emitirlos."""
+
+    def __init__(self) -> None:
+        self.textos: list[str] = []
+
+    def emit(self, texto="", *_a, **_k):
+        texto = str(texto).strip()
+        if texto:
+            self.textos.append(texto)
+
+
+def leer_timestamps(origen: str, cfg, *, cancelar: "threading.Event | None" = None,
+                    exif=None, max_hilos: int | None = None) -> LecturaTimestamps:
+    """Hora EXIF y tipo de cada imagen de `origen`, con la MISMA lectura que el índice
+    (`_listar_imagenes` + `_leer_lote`), sin manifiesto ni escritura. `cfg` pone los sufijos
+    (`_clasificar_tipo`). `cancelar` (Event) corta la lectura: lanza `RunCancelado`.
+    Origen local inexistente: `ErrorOrigenInexistente` (no un listado vacío)."""
+    if not origen:
+        raise ErrorOrigenInexistente("No hay carpeta de origen.")
+    if not almacen.es_uri_gcs(origen) and not os.path.isdir(origen):
+        raise ErrorOrigenInexistente(f"La carpeta de origen no existe: {origen}")
+    imagenes = _listar_imagenes(origen)
+    if exif is None:
+        exif = exif_mod.GeneralInformationFromImage(
+            utils.OrganizerLogger("calendario_previo", create_file_handler=False))
+    mudo = _Mudo()
+    lote = _leer_lote(
+        imagenes, exif, mudo, _EmisorIndice(mudo, mudo, None, 3600.0),
+        max_hilos or utils.max_io_workers(),
+        _env_float("ATOM_INDICE_TIMEOUT_S", TIMEOUT_FICHERO_S),
+        _env_float("ATOM_INDICE_TIMEOUT_REINTENTO_S", TIMEOUT_REINTENTO_S),
+        _env_float("ATOM_INDICE_WATCHDOG_S", WATCHDOG_S), cancelar=cancelar)
+    fotos = [FotoLeida(d.ruta, d.nombre, d.timestamp, _clasificar_tipo(d.nombre, cfg))
+             for d in lote.metadatos]
+    return LecturaTimestamps(
+        fotos, len(imagenes), len(lote.no_dji) + len(lote.omitidas) + len(lote.no_disponibles))
+
+
+@dataclass
+class VentanasEstadillos:
+    por_carpeta: dict[str, list[dict]]
+    sin_carpeta: list[dict]
+    avisos: list[str]
+
+    @property
+    def todas(self) -> list[dict]:
+        """Todas las ventanas, en el orden de carpeta y de estadillo."""
+        return [v for lista in self.por_carpeta.values() for v in lista]
+
+
+def ventanas_de_estadillos(rutas_estadillo: list[str], cfg, rutas_imagenes: list[str],
+                           pipeline=None) -> VentanasEstadillos:
+    """Las ventanas que usaría `construir_indice` para `rutas_estadillo`: escopadas por carpeta,
+    con sufijo de fecha en las colisiones y el pool `sin_carpeta`. Mismos errores que el índice
+    (`ErrorColisionEstadillo`, `ErrorEstadillosMismaCarpeta`, `ErrorEstadillo`). `rutas_imagenes`
+    = las leídas del origen (deciden qué estadillos caen en el pool sin carpeta)."""
+    if pipeline is None:
+        import types  # noqa: PLC0415
+        from pipeline import GenStructFolder  # noqa: PLC0415 - pesado, solo bajo demanda
+        pipeline = types.SimpleNamespace(
+            ventana_horaria_vuelo=lambda *a, **k: GenStructFolder.ventana_horaria_vuelo(None, *a, **k))
+    rec = _Recolector()
+    estadillo_df = estadillo_mod.combinar_estadillos(rutas_estadillo)
+    helper = _sin_utils_helper()
+    nombres = helper.get_nombres_columnas(list(estadillo_df.columns.values))
+    colisiones = estadillo_mod.detectar_colisiones_pb_vuelo(estadillo_df, nombres)
+    mismo_dia = estadillo_mod.detectar_colisiones_mismo_dia(estadillo_df, nombres)
+    if mismo_dia:
+        detalle = "; ".join(f"PB{pb} vuelo {vuelo} el {fecha}: {', '.join(origenes)}"
+                            for (pb, vuelo, fecha), origenes in mismo_dia.items())
+        raise ErrorColisionEstadillo(
+            "El mismo (PB, Vuelo) aparece el MISMO día en estadillos de origen "
+            f"distinto, y eso no se puede desambiguar con un sufijo de fecha: {detalle}. "
+            "Revisa los estadillos de origen antes de reintentar.")
+    autodetectables = set(
+        estadillo_mod.clave_ruta(r) for r in estadillo_mod.detectar_estadillos(cfg.input_folder)["rutas"])
+    aviso = estadillo_mod.aviso_estadillos_misma_carpeta(
+        [r for r in rutas_estadillo if estadillo_mod.clave_ruta(r) in autodetectables])
+    if aviso:
+        raise ErrorEstadillosMismaCarpeta(aviso)
+    por_carpeta: dict[str, list[dict]] = {}
+    pendientes: list[tuple[str, list[str], list[dict]]] = []
+    for directorio, rutas_grupo in estadillo_mod.agrupar_rutas_por_carpeta(rutas_estadillo).items():
+        sub_df = estadillo_mod.combinar_estadillos(rutas_grupo)
+        nombres_grupo = helper.get_nombres_columnas(list(sub_df.columns.values))
+        ventanas = _ventanas_por_vuelo(sub_df, nombres_grupo, pipeline, cfg, rec, colisiones)
+        por_carpeta[directorio] = ventanas
+        pendientes.append((directorio, rutas_grupo, ventanas))
+    sin_carpeta = _pool_sin_carpeta(pendientes, list(rutas_imagenes), autodetectables, rec.emit)
+    return VentanasEstadillos(por_carpeta, sin_carpeta, rec.textos)
+
+
+def ventana_de_imagen(ruta: str, timestamp, ventanas: VentanasEstadillos) -> dict | None:
+    """Ventana que reclama la imagen `ruta` con hora `timestamp`: la misma decisión del índice
+    (`_ventanas_para_imagen` + `elegir_ventana`, prioridad GENERALES). `None` = sin colocar."""
+    if timestamp is None:
+        return None
+    return elegir_ventana(timestamp, _ventanas_para_imagen(ruta, ventanas.por_carpeta, ventanas.sin_carpeta))
+
+
 def construir_indice(
     cfg,
     pipeline,
@@ -2848,7 +3010,6 @@ def construir_indice(
         raise ErrorEstadillosMismaCarpeta(aviso_misma_carpeta)
 
     ventanas_por_carpeta: dict[str, list[dict]] = {}
-    ventanas_sin_carpeta: list[dict] = []
     # El chequeo "¿tiene imágenes en su carpeta?" se hace tras leer los
     # metadatos, sobre las imágenes realmente leídas (sin las omitidas por
     # estar a medio copiar).
@@ -2873,17 +3034,8 @@ def construir_indice(
     omitidas_copiandose.extend(lote.omitidas)
     no_disponibles = lote.no_disponibles
     rutas_leidas = [dato.ruta for dato in metadatos]
-    for directorio, rutas_grupo, ventanas_grupo in grupos_pendientes:
-        if any(_bajo_carpeta(directorio, imagen) for imagen in rutas_leidas):
-            continue
-        es_autodetectado = all(
-            estadillo_mod.clave_ruta(r) in rutas_autodetectables for r in rutas_grupo)
-        if es_autodetectado:
-            progress_callback.emit(
-                f"\nWARNING: El estadillo {', '.join(rutas_grupo)} no tiene "
-                "imágenes en su carpeta; no se ha usado.\n")
-            continue
-        ventanas_sin_carpeta.extend(ventanas_grupo)
+    ventanas_sin_carpeta = _pool_sin_carpeta(grupos_pendientes, rutas_leidas, rutas_autodetectables,
+                                             progress_callback.emit)
 
     if omitidas_copiandose:
         ejemplos = ", ".join(os.path.basename(r) for r in omitidas_copiandose[:_MAX_EJEMPLOS_OMITIDAS])

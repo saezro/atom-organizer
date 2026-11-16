@@ -238,6 +238,17 @@ def _build_generic(config_cls, params: dict):
     return config_cls(**kwargs)
 
 
+def cfg_split_para_previo(params: dict, advanced: dict | None = None) -> SplitImagesConfig:
+    """La `SplitImagesConfig` que tendría el run con `params` + panel avanzado `advanced`
+    (mismos defaults y misma coerción por tipo que `run_task`), para lo que debe decidir igual
+    que el índice antes de arrancar: sufijos T/RGB/RGB_Extra, desfase horario. No valida más."""
+    cfg = _default_split_config(params)
+    if advanced:
+        hints = typing.get_type_hints(type(cfg))
+        cfg = replace(cfg, **{k: _coerce(v, hints.get(k, str)) for k, v in advanced.items() if k in hints})
+    return cfg
+
+
 def _default_split_config(params: dict) -> SplitImagesConfig:
     """SplitImagesConfig con los defaults del .ui (Organizar completo recién
     abierto) + override de los 4 controles de la pantalla principal.

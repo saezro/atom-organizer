@@ -41,6 +41,8 @@ const KIOSK_ADV_FIELDS = SPLIT_ADVANCED.flatMap((s) => s.fields)
 // vale decirlo que dejar al operador mirando un modal mudo.
 const ESPERA_ARRANQUE_MS = 25000
 const ESPERA_ESTADILLO_MS = 60000
+// Leer la hora EXIF de miles de fotos del origen (disco lento / red) puede tardar minutos.
+const ESPERA_CALENDARIO_MS = 600000
 
 // De cinco pestañas a tres: «Organizar»/«SUBIR AL BUCKET» se funden en
 // «Trabajo» (TrabajoScreen elige el destino) y «AEROTOOLS»/«OTROS EQUIPOS» en
@@ -261,6 +263,8 @@ function AppInterna() {
 
   // Modal PREVIO (info del estadillo). null | {loading, info, task, params, advanced}
   const [preflight, setPreflight] = useState(null)
+  // Id de la petición del modal previo: un resultado con id viejo (cancelado/reabierto) se descarta.
+  const preflightIdRef = useRef(0)
 
   // Versión REAL, la que dice version.py (vía updater.current_version()). Antes era
   // un literal en el header y quedó congelado en "v3.9" tras el reseteo de versionado.
@@ -685,7 +689,9 @@ function AppInterna() {
     if (sesionRemota?.activa) return
     const estadillos = Array.isArray(params.estadillo) ? params.estadillo.filter(Boolean) : []
     if (task === 'split_images' && estadillos.length) {
-      setPreflight({ loading: true, info: null, task, params, advanced })
+      cerrarPreflight()   // descarta y cancela un calendario previo anterior aún en curso
+      const id = preflightIdRef.current
+      setPreflight({ loading: true, info: null, calendario: null, calCargando: false, task, params, advanced })
       try {
         // `read_estadillo_info` lee el CSV en el hilo del bridge: si el fichero
         // está bloqueado (abierto en Excel) o es enorme, no vuelve y el modal se
@@ -696,8 +702,24 @@ function AppInterna() {
           'No se pudo leer el estadillo (¿lo tienes abierto en Excel?). Ciérralo y vuelve a intentarlo.'
         )
         const info = mergeEstadilloInfos(estadillos, infos)
-        setPreflight((p) => (p ? { ...p, loading: false, info } : p))
+        if (id !== preflightIdRef.current) return
+        // El modal se abre ya con la info del estadillo; el calendario (hora EXIF de las fotos del
+        // origen, puede tardar minutos) carga aparte y no bloquea Comenzar/Cancelar. Un fallo es
+        // visible en el modal, nunca un calendario vacío.
+        setPreflight((p) => (p ? { ...p, loading: false, info, calCargando: true } : p))
+        conPlazo(
+          api.calendarioPrevio(params.origen, estadillos, advanced),
+          ESPERA_CALENDARIO_MS,
+          'El calendario previo tardó demasiado leyendo las fotos del origen.'
+        )
+          .catch((e) => ({ ok: false, error: e?.message ? e.message : String(e) }))
+          .then((calendario) => {
+            // Resultado obsoleto (modal cancelado, empezado o reabierto): se descarta.
+            if (id !== preflightIdRef.current) return
+            setPreflight((p) => (p ? { ...p, calCargando: false, calendario } : p))
+          })
       } catch (e) {
+        if (id !== preflightIdRef.current) return
         setPreflight((p) => (p ? { ...p, loading: false, info: { error: String(e) } } : p))
       }
       return
@@ -751,10 +773,18 @@ function AppInterna() {
     })()
   }
 
+  // Cierra el modal previo: invalida la petición en curso (su resultado se descarta) y le
+  // pide al backend que corte la lectura de fotos.
+  function cerrarPreflight() {
+    preflightIdRef.current += 1
+    api.calendarioPrevioCancelar().catch(() => {})
+    setPreflight(null)
+  }
+
   function confirmPreflight() {
     if (!preflight) return
     const { task, params, advanced } = preflight
-    setPreflight(null)
+    cerrarPreflight()
     startRun(task, params, advanced)
   }
 
@@ -1223,9 +1253,11 @@ function AppInterna() {
       {preflight && (
         <PreflightModal
           info={preflight.info}
+          calendario={preflight.calendario}
+          calCargando={preflight.calCargando}
           loading={preflight.loading}
           onStart={confirmPreflight}
-          onCancel={() => setPreflight(null)}
+          onCancel={cerrarPreflight}
         />
       )}
 

@@ -57,6 +57,7 @@ def _vuelos_con_horas(man: Manifiesto, fichas: list[dict], ejecucion_id: int) ->
         "fila": f["fila"], "pb": f["pb"], "vuelo": f["vuelo"], "sufijo": f.get("sufijo"),
         "fecha": f.get("fecha"), "inicio": f.get("inicio"), "fin": f.get("fin"),
         "generales": bool(f.get("generales")),
+        "equipo": f.get("equipo"), "piloto": f.get("piloto"),
         "angulo": (angulos.get((f["pb"], f["vuelo"], f.get("sufijo") or None)) or {}).get("angulo"),
         "horas": {}, "n_total": 0, "n_giro_desconocido": 0} for f in fichas}
     sin_fila: dict[tuple, dict] = {}
@@ -154,3 +155,68 @@ def calendario(ruta_salida: str, ejecucion_id: int | None = None) -> dict:
         resultado = construir(man, ruta_salida, int(ejecucion))
     resultado["destino"] = ruta_salida
     return resultado
+
+
+# ---- Calendario PREVIO (antes de arrancar): sin manifiesto, en memoria ------------------------
+class ErrorCalendarioPrevio(Exception):
+    """Estadillo sin vuelos válidos o lectura imposible: el front lo muestra, nunca un vacío."""
+
+
+def _ts_de(valor) -> datetime.datetime | None:
+    if isinstance(valor, datetime.datetime):
+        return valor
+    return _hora_de(valor) if isinstance(valor, str) else None
+
+
+def construir_previo(ventanas, fotos: list) -> dict:
+    """Mismo JSON que `construir`, pero sin manifiesto, para el modal previo a Ejecutar.
+
+    `ventanas`: `indice.VentanasEstadillos` (las del índice real: escopadas por carpeta, con
+    sufijo de fecha en colisiones). `fotos`: `indice.FotoLeida` (`ruta`, `nombre`, `timestamp`
+    EXIF sin zona o `None`, `tipo` de `indice._clasificar_tipo`). La asignación foto->vuelo es la
+    del índice (`indice.ventana_de_imagen`: franja exacta con bordes inclusivos, prioridad
+    GENERALES, ventanas de la carpeta del estadillo). RGB_Extra cuenta como RGB, igual que
+    `construir`. Lo que ninguna ventana reclama va a `libres`. Sin ninguna ventana: error."""
+    from atom_core import indice  # noqa: PLC0415 - evita ciclo y carga pesada al importar
+    todas = ventanas.todas
+    avisos: list[str] = list(ventanas.avisos)
+    if not todas:
+        raise ErrorCalendarioPrevio(
+            "; ".join(avisos) or "el estadillo no tiene ningún vuelo con fecha y hora de inicio y fin válidas.")
+    vuelos: list[dict] = []
+    por_ventana: dict[int, dict] = {}
+    for i, w in enumerate(todas, start=1):
+        v = {"fila": i, "pb": w["pb"], "vuelo": w["vuelo"], "sufijo": w.get("sufijo"),
+             "fecha": w["inicio"].date().isoformat(), "inicio": w["inicio"].isoformat(),
+             "fin": w["fin"].isoformat(),
+             "generales": indice._es_ventana_generales(w),
+             "equipo": w.get("equipo"), "piloto": w.get("piloto"),
+             "angulo": None, "horas": {}, "n_total": 0, "n_giro_desconocido": 0, "previo": True}
+        vuelos.append(v)
+        por_ventana[id(w)] = v
+    libres, sin_hora = [], 0
+    for foto in fotos:
+        ts = _ts_de(foto.timestamp)
+        if ts is None:
+            sin_hora += 1
+            continue
+        w = indice.ventana_de_imagen(foto.ruta, ts, ventanas)
+        if w is None:
+            libres.append({"clave": foto.ruta, "nombre": foto.nombre, "tipo": foto.tipo,
+                           "ts": ts.isoformat(), "grupo_id": "previo", "motivo": "fuera de toda franja",
+                           "recomendacion": None, "decision": None})
+            continue
+        destino = por_ventana[id(w)]
+        hora = ts.isoformat()[:13]
+        cub = destino["horas"].setdefault(hora, {
+            "hora": hora, "n_rgb": 0, "n_t": 0, "n_otro": 0, "n_90": 0, "n_270": 0, "n_0": 0,
+            "n_giro_desconocido": 0})
+        cub["n_rgb" if foto.tipo in _TIPOS_RGB else "n_t" if foto.tipo == _TIPO_T else "n_otro"] += 1
+        destino["n_total"] += 1
+    if sin_hora:
+        avisos.append(f"{sin_hora} fotos sin hora EXIF legible: no se pintan.")
+    for v in vuelos:
+        v["horas"] = [v["horas"][h] for h in sorted(v["horas"])]
+    return {"ok": True, "previo": True, "zona_horaria": ZONA_HORARIA, "vuelos": vuelos,
+            "horas_sin_fila": [], "libres": libres, "grupos": [], "recomendaciones": [],
+            "espera": None, "avisos": avisos, "n_fotos": len(fotos)}

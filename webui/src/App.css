@@ -1394,16 +1394,15 @@ html.kiosk-modo .espera-modal-cabecera .espera-semaforo {
 }
 .estad-nav-btn:disabled { opacity: 0.3; }
 .estad-pagina { font-size: 0.8rem; color: var(--muted); }
-.pf-estad-source {
-  color: var(--muted);
-  font-size: 0.8rem;
-}
 
 /* --- Modal previo (info del estadillo) ------------------------------------ */
 .pf-loading {
   margin: 0;
   color: #cbd5e1;
   font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 .pf-facts {
   margin: 0;
@@ -1427,51 +1426,6 @@ html.kiosk-modo .espera-modal-cabecera .espera-semaforo {
   font-size: 0.92rem;
   color: var(--text);
   font-weight: 600;
-}
-.pf-flights {
-  max-height: 34vh;
-  overflow-y: auto;
-  /* contain: paint aisla la capa: sin GPU, cada scroll repintaba el layout entero */
-  contain: paint;
-  will-change: transform;
-  border: 0.0625rem solid rgba(255, 255, 255, 0.1);
-  border-radius: 0.625rem;
-}
-.pf-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.82rem;
-}
-.pf-table th,
-.pf-table td {
-  padding: 0.4rem 0.7rem;
-  text-align: left;
-}
-.pf-table thead th {
-  position: sticky;
-  top: 0;
-  background: rgba(30, 30, 33, 0.98);
-  color: var(--muted, #8b93a1);
-  font-weight: 600;
-  text-transform: uppercase;
-  font-size: 0.68rem;
-  letter-spacing: 0.04em;
-}
-.pf-table tbody tr:nth-child(even) {
-  background: rgba(255, 255, 255, 0.03);
-}
-.pf-table td {
-  color: var(--text);
-}
-/* Vuelo cuyo final es anterior al inicio (cruza medianoche): el pipeline
-   construye la ventana con la misma fecha y no le entra ninguna imagen.
-   Selector con `tbody tr` para ganar al rayado de :nth-child(even). */
-.pf-table tbody tr.pf-row-warn {
-  background: rgba(240, 173, 78, 0.14);
-}
-.pf-warn {
-  color: #f0ad4e;
-  cursor: help;
 }
 .pf-actions {
   justify-content: space-between;
@@ -1993,7 +1947,6 @@ html.kiosk-modo .espera-modal-cabecera .espera-semaforo {
   .picker-lista { flex: 1; max-height: none; }
   .picker-paginado { max-height: none; }
   .pm-log { max-height: 30vh; }
-  .pf-flights { max-height: 40vh; }
   .up-notes { max-height: 20vh; }
   .pm-close { min-width: 0; }
 }
@@ -4861,6 +4814,7 @@ html.kiosk-modo body * {
 .ri-vuelo-hora { font-size: 0.625rem; color: #cbd5e1; white-space: nowrap; overflow: hidden; }
 .ri-vuelo-aviso { color: #fcd34d; font-weight: 600; }
 .ri-vuelo-motivo { font-size: 0.625rem; color: #fcd34d; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ri-vuelo-equipo { font-size: 0.625rem; color: #e2e8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ri-cubetas { display: flex; flex-wrap: wrap; gap: 0.2rem; margin-top: 0.15rem; }
 .ri-cubeta { padding: 0 0.3rem; border-radius: 0.3rem; background: rgba(255, 255, 255, 0.1); color: var(--text); font-size: 0.62rem; }
 .ri-tramo {
