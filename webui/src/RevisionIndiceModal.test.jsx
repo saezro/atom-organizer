@@ -103,6 +103,8 @@ describe('RevisionIndiceModal', () => {
   it('sin pendientes', () => {
     render(<RevisionIndiceModal modelo={modeloBase({ libres: [], recomendaciones: [], espera: null })} api={apiFalsa()} />)
     expect(screen.getByText(/No quedan fotos sin colocar ni recomendaciones/)).toBeTruthy()
+    expect(screen.getByTestId('ri-calendario')).toBeTruthy()
+    expect(screen.getByLabelText('Vuelo destino')).toBeTruthy()
   })
 
   it('«Dejar en SIN_ORDENAR» manda fila null; no hay opción engañosa de «Fotos generales»', async () => {

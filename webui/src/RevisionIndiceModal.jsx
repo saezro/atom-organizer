@@ -88,8 +88,9 @@ export default function RevisionIndiceModal({ modelo, api, ahora = () => Date.no
         {error ? <p className="pm-status err" role="alert">✗ {error}</p> : null}
 
         {sinPendientes ? (
-          <p className="ri-vacio">No quedan fotos sin colocar ni recomendaciones.</p>
-        ) : (
+          <p className="pm-status warn ri-vacio" role="status" data-testid="ri-vacio">No quedan fotos sin colocar ni recomendaciones.</p>
+        ) : null}
+        {(
           <>
             {recomendaciones.length ? <ul className="ri-recs">{recomendaciones.map((r) => <ChipRecomendacion key={r.id} r={r} />)}</ul> : null}
             <CalendarioHoras vuelos={vuelos} tramos={tramos} seleccion={seleccion} onSeleccion={alSeleccionar} />

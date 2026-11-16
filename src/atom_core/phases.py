@@ -1654,8 +1654,8 @@ class PipelinePhasesMixin:
     def _fase_revision(self, manifiesto, cfg, ejecucion_id, progress_callback,
                        progress_summarize) -> dict | None:
         """Fase `revision` (solo `completo` con la pausa armada): espera la respuesta sobre las
-        fotos sin colocar y aplica lo decidido. Devuelve el resumen de la pausa o `None` (sin
-        pendientes). Cancelar (`RunCancelado`) sale del run sin cierre."""
+        fotos sin colocar y aplica lo decidido. Devuelve el resumen de la pausa o `None` (no armada;
+        con 0 pendientes también pausa). Cancelar (`RunCancelado`) sale del run sin cierre."""
         progress_summarize.emit("---> SUBPROCESO: Revisión del índice")
         cancelacion.comprobar()
 

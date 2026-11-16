@@ -505,9 +505,9 @@ def _aceptar(man: Manifiesto, ruta_salida: str, ejecucion_id: int, peticion: dic
 
 
 def pausar_si_armada(man: Manifiesto, cfg, ejecucion_id: int, emit, on_evento=None) -> dict | None:
-    """Pausa del run tras el índice si hay fotos sin colocar y la revisión está armada.
+    """Pausa del run tras el índice si la revisión está armada (también con 0 fotos sin colocar).
 
-    `None` si no está armada o no hay pendientes (sin evento). Si no, el HILO DEL RUN espera
+    `None` si no está armada (sin evento). Si no, el HILO DEL RUN espera
     (`Event.wait` en pasos de 0,5 s con `cancelacion.comprobar()`), procesa aquí las peticiones
     de `enviar` (único escritor, con `man`) y termina con `continuar`, con la cancelación
     (`RunCancelado`, auditoría `cancelada`) o al vencer la inactividad: entonces aplica solo
@@ -518,11 +518,7 @@ def pausar_si_armada(man: Manifiesto, cfg, ejecucion_id: int, emit, on_evento=No
         espera_s, evento = _ESPERA_S, on_evento or _ON_EVENTO
     ruta = cfg.output_folder
     inicio = _hora()
-    if _pendientes(man, ejecucion_id) == 0:
-        guardar_auditoria(man, ejecucion_id, {
-            "inicio": inicio, "fin": _hora(), "resultado": "sin_pendientes", "modo": "pausa",
-            "espera_s": espera_s, "aplicadas": [], "dudosas": []})
-        return None
+    pendientes = _pendientes(man, ejecucion_id)     # 0 también pausa: el calendario siempre sale
 
     aplicadas: list[dict] = []
     errores: list[str] = []     # peticiones `continuar` fallidas (pueden dejar asignaciones a medias)
@@ -531,12 +527,13 @@ def pausar_si_armada(man: Manifiesto, cfg, ejecucion_id: int, emit, on_evento=No
         _ESPERANDO.update(estado="esperando", ultima=time.monotonic(), espera_s=espera_s)
     _DESPIERTA.clear()
     try:
-        emit(f"Revisión del índice · hay fotos sin colocar: se espera tu respuesta hasta "
+        emit(f"Revisión del índice · {pendientes} fotos sin colocar: se espera tu respuesta hasta "
              f"{round(espera_s / 60)} min sin actividad; si no, se aplican solo las de alta "
              "confianza y el resto queda en SIN_ORDENAR.")
         if evento is not None:
             try:
                 evento({"tipo": "revision", "estado": "esperando", "espera_s": espera_s,
+                        "pendientes": pendientes,
                         "deadline_epoch": estado()["deadline_epoch"]})
             except Exception as error:  # noqa: BLE001 - el aviso a la UI no tumba el run
                 emit(f"ERROR: no se pudo avisar a la interfaz de la revisión del índice: {error}")
@@ -573,25 +570,28 @@ def pausar_si_armada(man: Manifiesto, cfg, ejecucion_id: int, emit, on_evento=No
         # Un fallo real NO es una cancelación: auditoría `error` con el motivo, y se propaga.
         _cerrar_pausa(man, ejecucion_id, inicio, "error", espera_s, aplicadas, [], emit,
                       motivo="la revisión terminó con un error", errores=errores,
-                      error=f"{type(error).__name__}: {error}")
+                      error=f"{type(error).__name__}: {error}", pendientes=pendientes)
         raise
     except BaseException:       # RunCancelado, KeyboardInterrupt, SystemExit: salida pedida
         _cerrar_pausa(man, ejecucion_id, inicio, "cancelada", espera_s, aplicadas, [], emit,
-                      errores=errores)
+                      errores=errores, pendientes=pendientes)
         raise
     _cerrar_pausa(man, ejecucion_id, inicio, resultado, espera_s, aplicadas, sin_aplicar, emit,
-                  errores=errores)
+                  errores=errores, pendientes=pendientes)
     return {"resultado": resultado, "aplicadas": aplicadas, "sin_aplicar": sin_aplicar}
 
 
 def _cerrar_pausa(man, ejecucion_id, inicio, resultado, espera_s, aplicadas, dudosas, emit,
-                  motivo="la revisión del índice ya terminó", errores=None, error=None) -> None:
+                  motivo="la revisión del índice ya terminó", errores=None, error=None,
+                  pendientes=None) -> None:
     """Sale de la pausa: deja de aceptar peticiones, falla las que quedaban y audita."""
     with _LOCK:
         _ESPERANDO["estado"] = None
         _fallar_pendientes(f"{motivo}: la petición no se aplicó.")
     datos = {"inicio": inicio, "fin": _hora(), "resultado": resultado, "modo": "pausa",
              "espera_s": espera_s, "aplicadas": aplicadas, "dudosas": dudosas}
+    if pendientes is not None:
+        datos["pendientes"] = pendientes
     if error is not None:
         datos["error"] = error
     if errores:
