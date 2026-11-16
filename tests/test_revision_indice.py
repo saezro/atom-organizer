@@ -27,7 +27,8 @@ def _ejecucion(man):
     return man.grupos_sin_colocar_raw()[0]["ejecucion"]
 
 
-def test_flag_apagado_por_defecto():
+def test_flag_apagado_por_defecto(monkeypatch):
+    monkeypatch.setattr(ri.platform, "system", lambda: "Linux")
     assert ri.activa({}) is False
     assert ri.activa({"ATOM_REVISION_INDICE": "1"}) is True
     assert ri.activa({"ATOM_REVISION_INDICE": "0"}) is False
@@ -35,6 +36,23 @@ def test_flag_apagado_por_defecto():
     assert ri.activa({"ATOM_REVISION_INDICE": "1"}, {"revision_indice": {"activa": False}}) is False
     assert ri.modo({}) == "apagado"
     assert ri.modo({"ATOM_REVISION_INDICE": "1"}) == "inmediato"
+
+
+def test_flag_defecto_por_plataforma_y_precedencia():
+    win, lin = "Windows", "Linux"
+    assert ri.activa({}, plataforma=win, argv=["app.py"]) is True
+    assert ri.activa({}, plataforma=win, argv=["app.py", "--server"]) is False
+    assert ri.activa({}, plataforma=lin, argv=["app.py"]) is False
+    assert ri.activa({"ATOM_REVISION_INDICE": "0"}, plataforma=win, argv=["app.py"]) is False
+    assert ri.activa({"ATOM_REVISION_INDICE": "1"}, plataforma=lin, argv=["app.py"]) is True
+    assert ri.activa({"ATOM_REVISION_INDICE": "1"}, plataforma=win, argv=["--server"]) is True
+    # params manda sobre todo
+    off = {"revision_indice": {"activa": False}}
+    on = {"revision_indice": {"activa": True}}
+    assert ri.activa({}, off, plataforma=win, argv=["app.py"]) is False
+    assert ri.activa({"ATOM_REVISION_INDICE": "1"}, off, plataforma=win, argv=[]) is False
+    assert ri.activa({}, on, plataforma=lin, argv=[]) is True
+    assert ri.activa({"ATOM_REVISION_INDICE": "0"}, on, plataforma=win, argv=["--server"]) is True
 
 
 def test_modo_pausa_si_armada():

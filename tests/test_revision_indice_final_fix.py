@@ -21,6 +21,7 @@ FOTOS = [("DJI_0001_D.JPG", _t(10, 10, 45)), ("DJI_0002_D.JPG", _t(10, 40, 0))]
 @pytest.fixture(autouse=True)
 def _limpio(monkeypatch):
     monkeypatch.delenv("ATOM_REVISION_INDICE", raising=False)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
     monkeypatch.delenv("ATOM_REVISION_ESPERA_MIN", raising=False)
     cancelacion.limpiar()
     ri.desarmar()
