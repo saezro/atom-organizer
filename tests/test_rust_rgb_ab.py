@@ -204,7 +204,10 @@ def test_integracion_igual_a_python(tmp_path, monkeypatch, angulo, con_crop):
     assert llamadas[0]["q_crop"] == (40 if angulo else 75)
     assert _ficheros(tmp_path / "rs") == _ficheros(tmp_path / "py")
     assert all(not apply.es_nombre_parcial(n) for n in _ficheros(tmp_path / "rs"))
-    assert cadena.count(":") == (2 if con_crop else 1)
+    # formato "ruta:bytes; ruta:bytes": las rutas (p. ej. `C:\\` en Windows) pueden llevar ":".
+    partes = cadena.split("; ")
+    assert len(partes) == (2 if con_crop else 1)
+    assert all(p.rsplit(":", 1)[1].isdigit() for p in partes)
     for p in (tmp_path / "rs").iterdir():  # XMP presente en la salida
         assert apply._bloque_xmp_de_bytes(p.read_bytes()) == _XMP
 
@@ -565,12 +568,9 @@ def test_pool_roto_con_rust(tmp_path, monkeypatch, make_dji_jpeg, workers):
     monkeypatch.setenv("ATOM_MP_START", "fork")
     monkeypatch.setenv("ATOM_RUST_FASES", "rgb")
 
-    def _trabajo(fila, cfg):
-        if VENENO in fila["ruta_origen"]:
-            os._exit(1)
-        return apply._escribir_salidas_de_fila(fila, cfg, pipeline)
+    from tests._trabajo_veneno import trabajo  # top-level: picklable por referencia
 
-    monkeypatch.setattr(apply, "_trabajo_fila", _trabajo)
+    monkeypatch.setattr(apply, "_trabajo_fila", trabajo)
     nombres = [f"DJI_{i:04d}.JPG" for i in range(8)] + [f"DJI_{VENENO}.JPG"]
     manifiesto = _montar(tmp_path, nombres, make_dji_jpeg)
     rondas = []
@@ -599,6 +599,7 @@ def test_pool_roto_con_rust(tmp_path, monkeypatch, make_dji_jpeg, workers):
         assert rondas[0] == workers and rondas[-1] == 1
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.fork no existe en Windows")
 def test_fork_tras_usar_rust_no_cuelga(tmp_path):
     """C1: tras usar `rgb_procesar` en el padre, un hijo `fork` también debe poder
     llamarlo (sin pool global de rayon heredado vacío). Con timeout: falla, no cuelga."""
