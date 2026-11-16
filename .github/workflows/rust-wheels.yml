@@ -119,12 +119,12 @@ jobs:
             packaging/requirements/requirements-linux.txt > req-equiv.txt
           cat req-equiv.txt
           python -m pip install -r req-equiv.txt
-      - name: Equivalencia indice (atom_rs real, sin skips)
+      - name: Equivalencia indice y rgb (atom_rs real, sin skips)
         shell: bash
         env:
           # Con atom_rs sin parsear_cabecera / ABI distinta, _rs_real() FALLA (no salta).
           ATOM_RS_REQUIRED: '1'
-        run: python -m pytest tests/test_rust_indice_equiv.py tests/test_rust_bridge.py -v -rfs -p no:cacheprovider
+        run: python -m pytest tests/test_rust_indice_equiv.py tests/test_rust_rgb_ab.py tests/test_rust_bridge.py tests/test_apply_rgb.py tests/test_apply_rgb_pool_roto.py -v -rfs -p no:cacheprovider
       - name: Sonda de paridad
         shell: bash
         env:

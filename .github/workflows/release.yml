@@ -170,8 +170,16 @@ jobs:
         with:
           name: wheel-linux-x86_64
           path: wheels
+      # --reinstall-package: el venv viene de caché y puede traer atom_rs 0.1.0 de otro
+      # commit; sin él uv da "Checked 1 package" (misma versión) y no cambia la wheel.
       - name: Instalar wheel atom_rs
-        run: uv pip install --python .venv/bin/python --no-index --find-links wheels atom_rs
+        run: uv pip install --python .venv/bin/python --no-index --reinstall-package atom_rs --find-links wheels atom_rs
+      - name: Verificar ABI de atom_rs == ABI de lib.rs
+        run: |
+          esperada=$(grep -oP 'pub const ABI: u32 = \K[0-9]+' rust/atom_rs/src/lib.rs)
+          real=$(.venv/bin/python -c "import atom_rs; print(atom_rs.version_abi())")
+          echo "lib.rs ABI=$esperada, wheel instalada ABI=$real"
+          test "$esperada" = "$real"
       - name: Tests
         run: python -m pytest tests/ -q --ignore=tests/test_dark_theme.py
 
@@ -241,7 +249,7 @@ jobs:
           name: wheel-linux-x86_64
           path: wheels
       - name: Instalar wheel atom_rs (antes de PyInstaller)
-        run: uv pip install --python .venv/bin/python --no-index --find-links wheels atom_rs
+        run: uv pip install --python .venv/bin/python --no-index --reinstall-package atom_rs --find-links wheels atom_rs
       - name: PyInstaller (onedir Qt/QtWebEngine)
         run: pyinstaller --clean --noconfirm packaging/atom_organizer_webview_linux.spec
       - name: Inject ipaddress en base_library.zip
@@ -367,7 +375,7 @@ jobs:
           path: wheels
       - name: Instalar wheel atom_rs (antes de PyInstaller)
         shell: pwsh
-        run: uv pip install --python .venv\Scripts\python.exe --no-index --find-links wheels atom_rs
+        run: uv pip install --python .venv\Scripts\python.exe --no-index --reinstall-package atom_rs --find-links wheels atom_rs
       - name: PyInstaller (onedir Qt/QtWebEngine)
         # El .spec (atom_organizer_webview.spec) solo empaqueta cupy/nvidia si
         # ATOM_BUILD_GPU == '1' (mira os.environ, no si packaging/requirements/requirements-gpu.txt se

@@ -83,6 +83,13 @@ def medir(etapa: str) -> Iterator[None]:
         _acumulado[etapa] = _acumulado.get(etapa, 0.0) + (time.perf_counter() - inicio)
 
 
+def sumar(etapa: str, segundos: float) -> None:
+    """Acumula en `etapa` un tiempo medido fuera de Python (los `ms_*` de
+    `atom_rs.RgbStats`). No-op si la instrumentación está apagada."""
+    if ACTIVO:
+        _acumulado[etapa] = _acumulado.get(etapa, 0.0) + segundos
+
+
 @contextlib.contextmanager
 def medir_imagen(nombre: str, bytes_origen: int) -> Iterator[None]:
     """Mide el ciclo completo de UNA imagen y, al salir del `with`, emite su
