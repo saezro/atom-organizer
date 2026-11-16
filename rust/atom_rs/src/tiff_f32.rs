@@ -200,9 +200,13 @@ mod tests {
     #[test]
     fn ruta_parcial_formato_de_apply() {
         let r = ruta_parcial("/a/b/DJI_0001_T.tiff");
-        assert!(r.starts_with("/a/b/DJI_0001_T.parcial."));
+        let prefijo = Path::new("/a/b")
+            .join("DJI_0001_T.parcial.")
+            .to_string_lossy()
+            .into_owned();
+        assert!(r.starts_with(&prefijo));
         assert!(r.ends_with(".tiff"));
-        let medio = &r["/a/b/DJI_0001_T.parcial.".len()..r.len() - ".tiff".len()];
+        let medio = &r[prefijo.len()..r.len() - ".tiff".len()];
         let (pid, hex) = medio.split_once('-').unwrap();
         assert!(pid.chars().all(|c| c.is_ascii_digit()));
         assert_eq!(hex.len(), 8);
