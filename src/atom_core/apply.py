@@ -48,6 +48,7 @@ from atom_core import indice as indice_mod
 from atom_core import lectura_segura
 from atom_core import perfil_rgb
 from atom_core import rgb_gpu
+from atom_core import rust_bridge
 
 #: MB que se le presupone a un item de RGB para el reporte al controlador
 #: adaptativo. Si no se puede leer el tamaño real del origen (p. ej. se
@@ -1078,7 +1079,8 @@ def _copiar_jpg_termico(ruta_origen: str, rjpeg_local: str, destino: str) -> str
     return "copiado"
 
 
-def _publicar_tiff_girado(ruta_staging: str, destino: str, angulo: int) -> None:
+def _publicar_tiff_girado(ruta_staging: str, destino: str, angulo: int,
+                          ya_girado: bool = False) -> None:
     """Mueve el TIFF recién convertido (`ruta_staging`, sin girar: ver
     `_convertir_una_termica`) a su ruta final, girándolo si el ángulo del
     manifiesto lo pide. El giro usa el MISMO mapeo de `_transpose_para_angulo`
@@ -1088,13 +1090,18 @@ def _publicar_tiff_girado(ruta_staging: str, destino: str, angulo: int) -> None:
     sorpresa. Sin giro, el TIFF se mueve tal cual, byte a byte, como
     `convert_dji_image_to_tif` lo dejó (nunca se reabre sin necesidad).
 
+    `ya_girado=True` (fase Rust `termica`): el conversor ya entregó el TIFF
+    girado con `angulo` (ver `_convertir_una_termica`), así que se mueve tal
+    cual, sin reabrirlo con PIL. Los bytes son los mismos que daría el giro PIL
+    (tests/test_rust_termica_ab.py).
+
     Escritura atómica: `<raíz>.parcial<ext>` + `os.replace`, igual que el
     resto de salidas de este módulo."""
     carpeta = os.path.dirname(destino)
     if carpeta:
         os.makedirs(carpeta, exist_ok=True)
     parcial = ruta_parcial(destino)
-    transpose = _transpose_para_angulo(angulo, pipeline)
+    transpose = None if ya_girado else _transpose_para_angulo(angulo, pipeline)
     try:
         if transpose is None:
             shutil.copy2(ruta_staging, parcial)
@@ -1367,7 +1374,10 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
     el cierre, Tarea 6, DESPUÉS del apply). El ángulo sale de
     `fila["angulo_giro"]` y se aplica después, al publicar: al TIFF en
     `_publicar_tiff_girado` y al `*_T.JPG` en `_copiar_jpg_destino`. Los dos
-    salen con la MISMA orientación, como en el motor viejo.
+    salen con la MISMA orientación, como en el motor viejo. Excepción: con la
+    fase Rust `termica` activa el ángulo de la fila SÍ va al conversor (como
+    `rotate_90`/`rotate_minus_90`) y el TIFF ya sale girado; el criterio
+    automático sigue sin usarse.
 
     No toca el manifiesto: solo escribe en disco o lanza si algo falla, para
     que la llamadora decida cómo marcar la fila.
@@ -1394,6 +1404,12 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
                 fila["ruta_origen"], rjpeg_local, bytes_origen=fila.get("bytes_origen"))
         elif not os.path.isfile(rjpeg_local):
             raise FileNotFoundError(f"falta el R-JPEG descargado: {rjpeg_local}")
+        # Fase Rust `termica`: el TIFF sale YA girado del conversor (Rust gira en el
+        # mismo paso en que escribe), y `_publicar_tiff_girado` solo lo mueve. Se
+        # decide UNA vez aquí para que conversor y publicación no discrepen. Sin la
+        # fase, los flags de giro siguen a False y gira la publicación, como siempre.
+        rust_termica = rust_bridge.fase_activa("termica")
+        angulo_giro = fila["angulo_giro"] or 0
         resultado = pipeline_obj.convert_dji_image_to_tif(
             carpeta_in, carpeta_out, nombre_imagen, exiftool_exe, dji_utility,
             progress_callback, progress_bar,
@@ -1402,7 +1418,9 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
             auto_temp=bool(cfg.convert_to_tif_temp_auto),
             up_threshold_temperature=cfg.convert_to_tif_up_temperature,
             low_threshold_temperature=cfg.convert_to_tif_low_temperature,
-            rotate_90=False, rotate_minus_90=False, auto_rotate=False,
+            rotate_90=rust_termica and angulo_giro == 90,
+            rotate_minus_90=rust_termica and angulo_giro == 270,
+            auto_rotate=False,
             just_atom_selection=bool(cfg.convert_to_tif_solo_seleccion_atom),
             generate_gray_scale_images=bool(cfg.convert_to_tif_create_gray_scale_images),
             generate_colormap_images=False,
@@ -1421,7 +1439,7 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
             # desde el R-JPEG local -> publicación atómica. Mismo resultado que
             # antes (EXIF sobre el TIFF ya girado), sin reescribir el destino.
             tiff_listo = os.path.join(staging_salida, "listo_" + os.path.basename(ruta_tiff_destino))
-            _publicar_tiff_girado(tiff_staging, tiff_listo, fila["angulo_giro"] or 0)
+            _publicar_tiff_girado(tiff_staging, tiff_listo, angulo_giro, ya_girado=rust_termica)
             if copiar_exif is not None:
                 copiar_exif(rjpeg_local, tiff_listo)
             if diferido is None:
@@ -1670,8 +1688,13 @@ def _aplicar_termicas_impl(manifiesto, cfg, pipeline, progress_callback, progres
         # manifiesto (y `cierre.verificar` reporta un desajuste inexistente).
         lock_contadores = threading.Lock()
 
+        # Flag Rust activo sin módulo válido: aborta la fase entera (no es fallo
+        # de una fila). En el camino paralelo `wait` no relanza, así que se guarda
+        # aquí y se relanza tras esperar los futuros.
+        rust_fatal: list = []
+
         def _procesar_una(fila: dict) -> None:
-            if pool_exif.fatal:
+            if pool_exif.fatal or rust_fatal:
                 return  # fase abortada: la fila queda sin tocar (se reintenta en otro run)
             if cancelacion.cancelado():
                 return  # cancelada antes de empezar: queda 'pendiente'
@@ -1690,6 +1713,9 @@ def _aplicar_termicas_impl(manifiesto, cfg, pipeline, progress_callback, progres
                 manifiesto.marcar_hecha(fila["id"], "; ".join(piezas))
             except ExiftoolNoDisponible:
                 return  # fallo masivo: no marcar fallida cada fila; se aborta al final
+            except rust_bridge.RustNoDisponible as exc:
+                rust_fatal.append(exc)
+                raise  # instalación, no fila: sin marcar fallida ni retroceso a Python
             except Exception as exc:
                 manifiesto.marcar_fallida(fila["id"], str(exc))
                 with lock_contadores:
@@ -1759,6 +1785,8 @@ def _aplicar_termicas_impl(manifiesto, cfg, pipeline, progress_callback, progres
                         aforo.liberar()
                         continue
                 _esperar_futuros(futuros)
+            if rust_fatal:
+                raise rust_fatal[0]
 
             # La conversión es el grueso de la fase; el EXIF (pool exiftool) no
             # pasa por el aforo, así que este resumen mide la parte paralelizada.

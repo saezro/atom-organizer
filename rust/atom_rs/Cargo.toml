@@ -12,6 +12,13 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 pyo3 = { version = "0.23", features = ["abi3-py311"] }
+rayon = "1.10"
+# JPEG de gris/colormap con libjpeg-turbo (la misma familia que trae Pillow).
+# Sin `require-simd`/`pkg-config`: se compila la libjpeg-turbo vendorizada con
+# cmake; con nasm disponible lleva SIMD, sin él cae a C (mismos bytes, más lento).
+turbojpeg = { version = "=1.5.1", default-features = false, features = ["cmake"] }
+# Fija la libjpeg-turbo vendorizada (3.1.0): `termica::LIBJPEG_TURBO_VERSION` la declara.
+turbojpeg-sys = { version = "=1.2.0", default-features = false }
 
 [features]
 # maturin activa extension-module al construir la wheel; `cargo test` va sin él

@@ -13,10 +13,14 @@ def _entorno_limpio(monkeypatch):
     monkeypatch.delenv("ATOM_RUST_FASES", raising=False)
 
 
-def _falso(abi=None):
+def _falso(abi=None, simbolos=True):
     m = types.ModuleType("atom_rs")
     m.version_abi = lambda: rust_bridge.ABI_ESPERADA if abi is None else abi
     m.version = lambda: "9.9.9"
+    if simbolos:
+        for nombres in rust_bridge.SIMBOLOS_POR_FASE.values():
+            for n in nombres:
+                setattr(m, n, lambda *a, **k: None)
     return m
 
 
@@ -52,30 +56,76 @@ def test_abi_distinta_lanza(monkeypatch):
         rust_bridge.exigir("indice")
 
 
-def test_run_organize_loguea_rust(monkeypatch):
+def test_abi_esperada_es_dos():
+    # Debe coincidir con `ABI` de rust/atom_rs/src/lib.rs (2 = fase termica).
+    assert rust_bridge.ABI_ESPERADA == 2
+
+
+def test_modulo_sin_simbolo_de_fase_activa_lanza(monkeypatch):
+    monkeypatch.setenv("ATOM_RUST_FASES", "termica")
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso(simbolos=False))
+    with pytest.raises(RustNoDisponible, match="termica_procesar"):
+        rust_bridge.modulo()
+    with pytest.raises(RustNoDisponible, match="termica_procesar"):
+        rust_bridge.exigir("termica")
+
+
+def test_modulo_no_exige_simbolos_de_fases_inactivas(monkeypatch):
+    monkeypatch.setenv("ATOM_RUST_FASES", "indice")
+    falso = _falso(simbolos=False)
+    monkeypatch.setitem(sys.modules, "atom_rs", falso)
+    assert rust_bridge.modulo() is falso
+    assert rust_bridge.exigir("indice") is falso
+
+
+def _correr_task(organize, task="task_que_no_existe"):
+    eventos = []
+    organize.run_task(task, {}, lambda kind, msg=None: eventos.append((kind, msg)))
+    return eventos
+
+
+def test_run_task_loguea_rust_al_arrancar(monkeypatch):
     from atom_core import organize
 
     monkeypatch.setenv("ATOM_RUST", "1")
     monkeypatch.setitem(sys.modules, "atom_rs", _falso())
-    llamadas = []
-    monkeypatch.setattr(organize, "run_task", lambda *a, **k: llamadas.append(a))
-    eventos = []
-    organize.run_organize({}, lambda kind, msg: eventos.append((kind, msg)))
+    eventos = _correr_task(organize)
     lineas = [m for _, m in eventos if isinstance(m, str) and m.startswith("[rust] atom_rs ")]
     assert len(lineas) == 1
     for f in rust_bridge.FASES:
         assert f in lineas[0]
-    assert len(llamadas) == 1
+    # Tras la comprobación sigue el run normal (aquí: task desconocido).
+    assert ("error", "Task desconocido: task_que_no_existe") in eventos
 
 
-def test_run_organize_aborta_si_rust_no_disponible(monkeypatch):
+def test_run_task_aborta_al_arrancar_si_rust_no_disponible(monkeypatch):
     from atom_core import organize
 
     monkeypatch.setenv("ATOM_RUST", "1")
     monkeypatch.setitem(sys.modules, "atom_rs", None)
+    eventos = _correr_task(organize)
+    errores = [m for k, m in eventos if k == "error"]
+    assert len(errores) == 1 and errores[0].startswith("[rust] ")
+    assert not any("Task desconocido" in str(m) for _, m in eventos)
+
+
+def test_run_task_aborta_al_arrancar_si_wheel_sin_termica_procesar(monkeypatch):
+    """Flag termica + wheel vieja (ABI correcta pero sin `termica_procesar`): error
+    visible al ARRANCAR, no a mitad del vuelo ni retroceso a Python."""
+    from atom_core import organize
+
+    monkeypatch.setenv("ATOM_RUST_FASES", "termica")
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso(simbolos=False))
+    eventos = _correr_task(organize, "split_images")
+    errores = [m for k, m in eventos if k == "error"]
+    assert len(errores) == 1
+    assert errores[0].startswith("[rust] ") and "termica_procesar" in errores[0]
+
+
+def test_run_organize_delega_en_run_task(monkeypatch):
+    from atom_core import organize
+
     llamadas = []
     monkeypatch.setattr(organize, "run_task", lambda *a, **k: llamadas.append(a))
-    eventos = []
-    organize.run_organize({}, lambda kind, msg: eventos.append((kind, msg)))
-    assert eventos and eventos[0][0] == "error"
-    assert llamadas == []
+    organize.run_organize({"x": 1}, lambda *a: None)
+    assert len(llamadas) == 1 and llamadas[0][0] == "split_images"

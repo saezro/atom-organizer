@@ -4,9 +4,9 @@ Flags (se leen del entorno en CADA llamada, sin cachear estado):
   - ``ATOM_RUST=1``            activa todas las fases de ``FASES``.
   - ``ATOM_RUST_FASES=a,b``    activa solo esas fases (lista separada por comas).
 Sin ninguno de los dos, el módulo NO se importa jamás: el comportamiento es el
-de Python puro. Con un flag activo, que falte ``atom_rs`` o que su ABI no
-coincida es un error (``RustNoDisponible``), nunca un retroceso silencioso a
-Python.
+de Python puro. Con un flag activo, que falte ``atom_rs``, que su ABI no
+coincida o que no exponga los símbolos de una fase activa (wheel vieja) es un
+error (``RustNoDisponible``), nunca un retroceso silencioso a Python.
 """
 from __future__ import annotations
 
@@ -19,7 +19,17 @@ from typing import Optional
 FASES: tuple[str, ...] = ("termica", "indice", "rgb")
 
 # Debe coincidir con ``ABI`` en rust/atom_rs/src/lib.rs.
-ABI_ESPERADA: int = 1
+# 2 = fase ``termica`` (T1): una wheel ABI 1 no trae ``termica_procesar``.
+ABI_ESPERADA: int = 2
+
+# Símbolos que ``atom_rs`` debe exponer para cada fase activa. Se validan en
+# ``modulo()`` (arranque de ``organize.run_task`` y cada ``exigir``), así una
+# wheel sin la función de una fase activa aborta al arrancar, no a mitad.
+SIMBOLOS_POR_FASE: dict[str, tuple[str, ...]] = {
+    "termica": ("termica_procesar",),
+    "indice": (),
+    "rgb": (),
+}
 
 _VERDADEROS = {"1", "true", "yes", "on", "si", "sí"}
 
@@ -54,8 +64,9 @@ def fase_activa(fase: str) -> bool:
     return fase in _fases_activas()
 
 
-def modulo() -> types.ModuleType:
-    """Importa ``atom_rs`` y valida su ABI. Falla siempre con ``RustNoDisponible``."""
+def modulo(fases: Optional[tuple[str, ...]] = None) -> types.ModuleType:
+    """Importa ``atom_rs`` y valida su ABI y los símbolos de ``fases`` (por
+    defecto, las activas en el entorno). Falla siempre con ``RustNoDisponible``."""
     try:
         m = importlib.import_module("atom_rs")
     except Exception as e:  # ImportError, módulo None en sys.modules, DLL rota...
@@ -75,6 +86,16 @@ def modulo() -> types.ModuleType:
             f"ABI de atom_rs incompatible: módulo={abi}, esperada={ABI_ESPERADA}. "
             f"Reinstala la wheel de esta versión. Intérprete: {sys.executable}."
         )
+    if fases is None:
+        fases = _fases_activas()
+    faltan = [f"{f}: {s}" for f in fases for s in SIMBOLOS_POR_FASE.get(f, ())
+              if not hasattr(m, s)]
+    if faltan:
+        raise RustNoDisponible(
+            f"atom_rs no expone los símbolos de las fases activas ({', '.join(faltan)}). "
+            f"Wheel anterior a esas fases: reinstálala o quítalas de ATOM_RUST_FASES. "
+            f"Intérprete: {sys.executable}."
+        )
     return m
 
 
@@ -82,4 +103,4 @@ def exigir(fase: str) -> Optional[types.ModuleType]:
     """None solo si la fase NO está activa; activa y sin módulo válido -> raise."""
     if not fase_activa(fase):
         return None
-    return modulo()
+    return modulo((fase,))

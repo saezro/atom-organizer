@@ -527,3 +527,53 @@ def test_el_origen_nunca_se_modifica(tmp_path):
         assert resultado == {"hecho": 1, "fallido": 0}
         assert origen.read_bytes() == contenido_original
         manifiesto.cerrar()
+
+
+class _PipelineSinRust(_PipelineDePrueba):
+    """Conversor que falla como lo haría la rama Rust con el flag activo y sin
+    `atom_rs` válido (`RustNoDisponible`)."""
+
+    def convert_dji_image_to_tif(self, input_folder, output_folder, image_name, *a, **k):
+        from atom_core.rust_bridge import RustNoDisponible
+        self.llamadas_convert.append({"ruta_origen": os.path.join(input_folder, image_name)})
+        raise RustNoDisponible("atom_rs no expone termica_procesar (simulado)")
+
+
+class _ControladorFijo:
+    def __init__(self, trabajadores):
+        self.trabajadores = trabajadores
+        self.maximo = trabajadores
+
+    def registrar(self, mb):
+        pass
+
+    def revisar(self):
+        pass
+
+
+@pytest.mark.parametrize("controlador", [None, 2], ids=["secuencial", "paralelo"])
+def test_rust_no_disponible_aborta_la_fase_sin_marcar_fallidas(tmp_path, make_dji_jpeg,
+                                                               controlador):
+    """`RustNoDisponible` en `_procesar_una` es de la instalación: se relanza (también
+    en el camino paralelo, donde `wait` no relanza) y ninguna fila queda `fallido`."""
+    from atom_core.rust_bridge import RustNoDisponible
+
+    filas = []
+    for i in range(3):
+        origen = tmp_path / "origen" / f"DJI_000{i}_T.JPG"
+        origen.parent.mkdir(parents=True, exist_ok=True)
+        make_dji_jpeg(str(origen))
+        filas.append(_fila_termica(origen, tmp_path / "salida" / origen.name,
+                                   tmp_path / "salida" / f"DJI_000{i}_T.tiff"))
+    manifiesto = _manifiesto_con(tmp_path, filas)
+    doble = _PipelineSinRust()
+    with pytest.raises(RustNoDisponible):
+        apply.aplicar_termicas(
+            manifiesto, _cfg(), doble, _SignalFalsa(), _SignalFalsa(), _SignalFalsa(),
+            controlador=None if controlador is None else _ControladorFijo(controlador),
+        )
+    estados = [f["estado"] for f in manifiesto.todas()]
+    assert "fallido" not in estados and "hecho" not in estados
+    if controlador is None:
+        assert len(doble.llamadas_convert) == 1  # se corta en la primera fila
+    manifiesto.cerrar()
