@@ -56,9 +56,9 @@ def test_abi_distinta_lanza(monkeypatch):
         rust_bridge.exigir("indice")
 
 
-def test_abi_esperada_es_cuatro():
-    # Debe coincidir con `ABI` de rust/atom_rs/src/lib.rs (4 = fase subida, T6).
-    assert rust_bridge.ABI_ESPERADA == 4
+def test_abi_esperada_es_cinco():
+    # Debe coincidir con `ABI` de rust/atom_rs/src/lib.rs (5 = fase indice, T2).
+    assert rust_bridge.ABI_ESPERADA == 5
 
 
 def test_fase_subida_registrada():
@@ -112,11 +112,20 @@ def test_modulo_sin_simbolo_de_fase_activa_lanza(monkeypatch):
 
 
 def test_modulo_no_exige_simbolos_de_fases_inactivas(monkeypatch):
-    monkeypatch.setenv("ATOM_RUST_FASES", "indice")
+    # `rgb` aún no registra símbolos: con solo esa fase activa, una wheel sin los
+    # de las demás (termica/indice/subida) sigue valiendo.
+    monkeypatch.setenv("ATOM_RUST_FASES", "rgb")
     falso = _falso(simbolos=False)
     monkeypatch.setitem(sys.modules, "atom_rs", falso)
     assert rust_bridge.modulo() is falso
-    assert rust_bridge.exigir("indice") is falso
+    assert rust_bridge.exigir("rgb") is falso
+
+
+def test_indice_sin_simbolo_lanza_con_nombre(monkeypatch):
+    monkeypatch.setenv("ATOM_RUST_FASES", "indice")
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso(simbolos=False))
+    with pytest.raises(RustNoDisponible, match="parsear_cabecera"):
+        rust_bridge.exigir("indice")
 
 
 def _correr_task(organize, task="task_que_no_existe"):
