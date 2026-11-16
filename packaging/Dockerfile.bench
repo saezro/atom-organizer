@@ -1,0 +1,40 @@
+# Banco baseline del Organizer en Cloud Run Job (sin Rust). Mismo base, deps y SDK
+# DJI que Dockerfile.job; añade scripts/ y bench/ y cambia el ENTRYPOINT.
+# Contexto de build = raíz del repo: `-f packaging/Dockerfile.bench .`
+FROM python:3.11-slim-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libimage-exiftool-perl \
+        ffmpeg \
+        libexpat1 \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY packaging/requirements/requirements-server.txt ./
+RUN pip install --no-cache-dir -r requirements-server.txt
+RUN pip install --no-cache-dir google-cloud-storage==3.13.1
+
+COPY src/atom_core/ ./src/atom_core/
+COPY config/ ./config/
+COPY src/*.py ./src/
+COPY programas_externos/DJI/*.so* programas_externos/DJI/libv_list.ini \
+     ./programas_externos/DJI/
+
+# Banco: scripts/bench_rgb.py, scripts/bench_nube.py y bench/perfilar_termicas.py.
+COPY scripts/ ./scripts/
+COPY bench/ ./bench/
+
+# perfilar_termicas.py busca organize_cli.py junto a bench/ o en la raíz (/app) y
+# hace sys.path.insert(raíz); en la imagen vive en /app/src. Se copia a /app y
+# PYTHONPATH apunta a src/ para que `atom_core` se resuelva.
+RUN cp src/organize_cli.py ./organize_cli.py
+ENV PYTHONPATH=/app/src
+
+ENV LD_LIBRARY_PATH=/app/programas_externos/DJI
+ENV MPLBACKEND=Agg
+ENV PYTHONUNBUFFERED=1
+
+ENTRYPOINT ["python", "scripts/bench_nube.py"]

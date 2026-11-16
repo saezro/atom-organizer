@@ -1,0 +1,28 @@
+# Build de la imagen del banco baseline (Python, sin wheel Rust) en Cloud Run Job
+# (packaging/Dockerfile.bench). Análogo a cloudbuild-job.yaml; ver ahí el porqué de la
+# SA atom-compute-ops, del --gcs-source-staging-dir obligatorio, machineType y logging.
+#
+# Uso, desde la RAÍZ del repo:
+#   gcloud builds submit --config=packaging/cloudbuild-bench.yaml \
+#     --project=aerotools-484814 \
+#     --gcs-source-staging-dir=gs://aerotools-organizer-ci-build/staging \
+#     --account=atom-compute-ops@aerotools-484814.iam.gserviceaccount.com .
+substitutions:
+  _IMAGEN: europe-west4-docker.pkg.dev/aerotools-484814/atom-organizer/pipeline:bench
+
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'packaging/Dockerfile.bench', '-t', '${_IMAGEN}', '.']
+
+  # Smoke: el entrypoint (scripts/bench_nube.py) arranca y sus imports resuelven.
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['run', '--rm', '${_IMAGEN}', '--help']
+
+images:
+  - '${_IMAGEN}'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: LEGACY
+
+timeout: '3600s'

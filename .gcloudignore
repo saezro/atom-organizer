@@ -22,6 +22,8 @@ docs/
 packaging/*
 !packaging/Dockerfile.job
 !packaging/cloudbuild-job.yaml
+!packaging/Dockerfile.bench
+!packaging/cloudbuild-bench.yaml
 !packaging/wheels/
 !packaging/wheels/**
 !packaging/requirements/
@@ -32,7 +34,7 @@ programas_externos/DJI/*.exe
 programas_externos/DJI/*.dll
 programas_externos/DJI/*.lib
 
-bench/
+# bench/ SI entra al contexto: lo copia packaging/Dockerfile.bench (banco en Cloud Run Job).
 tmpwork/
 .dfout.txt
 webui/test-results/
