@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ANCHO_MIN_DIA_PX, MIN_DURACION_MIN, ALTO_MIN_BLOQUE_PX, ANCHO_MIN_BLOQUE_PX, GAP_CARRIL_PX,
   altoHoraPx, altoHoraAjustado, marcasEje, anchosColumnas, anchoBloquePx, contarVuelosDia, diasDelRango, layoutDia, minDuracionParaAlto,
   rangoHoras, segmentosDeVuelo, ALTO_COMPACTO_PX, PAD_ABAJO_DIA_PX, etiquetaCompacta, formatoBloque, textoHorasBloque, modoContenido, textoRangoHora, rangoZoomHora, horaZoomVecina, PASOS_EJE_ZOOM, textoFotos,
-  cubetasPorHora, formatearHora, vueloQueContiene, motivosAviso,
+  cubetasPorHora, formatearHora, contenedoresDeTramos, motivosAviso,
 } from './calendarioHoras.js'
 
 // Réplica del calendario de la Suite (CalendarioSemana + EventoVuelo): rejilla semanal, columna de horas
@@ -54,7 +54,7 @@ const aVueloExif = (v) => ({ pb: v.pb, vuelo: v.vuelo, sufijo: v.sufijo, inicio_
 
 const altoReal = (seg, altoHora) => Math.max(((seg.finMin - seg.iniMin) / 60) * altoHora, ALTO_MIN_BLOQUE_PX)
 
-function EventoVuelo({ seg, vuelo, desdeMin, altoHora, anchoCol, conSegundos }) {
+const EventoVuelo = memo(function EventoVuelo({ seg, vuelo, desdeMin, altoHora, anchoCol, conSegundos }) {
   const top = ((seg.iniMin - desdeMin) / 60) * altoHora
   const alto = altoReal(seg, altoHora)
   const w = 100 / seg.nCols
@@ -99,16 +99,15 @@ function EventoVuelo({ seg, vuelo, desdeMin, altoHora, anchoCol, conSegundos }) 
       )}
     </div>
   )
-}
+})
 
-function BloqueTramo({ seg, vuelos, seleccion, onSeleccion, desdeMin, altoHora, conSegundos }) {
+const BloqueTramo = memo(function BloqueTramo({ seg, dentro, seleccion, onSeleccion, desdeMin, altoHora, conSegundos }) {
   const t = seg.tramo
   const top = ((seg.iniMin - desdeMin) / 60) * altoHora
   // Los tramos grises nunca bajan de modo «compacto»: siempre llevan texto (qué son y cuántas fotos).
   const alto = Math.max(altoReal(seg, altoHora), ALTO_COMPACTO_PX)
   const modo = modoContenido(alto)
   const w = 100 / seg.nCols
-  const dentro = vueloQueContiene(t, vuelos)
   const cls = ['ri-tramo', `ri-${modo}`, t.id === seleccion ? 'act' : '', dentro ? 'aviso' : ''].filter(Boolean).join(' ')
   const txt = textoRangoHora(t.ini, t.fin, t.iniMin, t.finMin, conSegundos)
   const info = `Tramo sin colocar ${txt} · ${t.n} fotos`
@@ -131,13 +130,14 @@ function BloqueTramo({ seg, vuelos, seleccion, onSeleccion, desdeMin, altoHora, 
       )}
     </button>
   )
-}
+})
 
-export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion }) {
+export default memo(function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion }) {
   const scrollRef = useRef(null)
   const [ancho, setAncho] = useState(0)
   const [altoDisp, setAltoDisp] = useState(0)
-  const [scrollX, setScrollX] = useState(0)
+  const [scrollX, setScrollX] = useState(0) // afecta al render (disabled de ‹ ›): throttle por rAF
+  const rafScroll = useRef(0)
   const [zoom, setZoom] = useState(null) // hora entera ampliada, o null = rango completo
   useEffect(() => {
     if (zoom === null) return undefined
@@ -155,6 +155,13 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
+
+  useEffect(() => () => cancelAnimationFrame(rafScroll.current), [])
+  const alScroll = (e) => {
+    const x = e.currentTarget.scrollLeft
+    if (rafScroll.current) cancelAnimationFrame(rafScroll.current)
+    rafScroll.current = requestAnimationFrame(() => { rafScroll.current = 0; setScrollX(x) })
+  }
 
   const calc = useMemo(() => {
     const conTramo = tramos.filter((t) => t.fecha)
@@ -177,35 +184,38 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
       porDia.get(t.fecha).push({ clave: `tramo|${t.id}`, tramo: t, fecha: t.fecha, iniMin: t.iniMin, finMin: t.finMin, parte: 'unico' })
       todos.push({ iniMin: t.iniMin, finMin })
     }
-    return { dias, porDia, porClave, hayDatos: todos.length > 0 }
+    return { dias, porDia, porClave, dentroDe: contenedoresDeTramos(conTramo, vuelos), hayDatos: todos.length > 0 }
   }, [vuelos, tramos])
 
-  const { dias, porDia, porClave } = calc
-  if (!calc.hayDatos) return <p className="ri-vacio">Sin vuelos con hora de cámara.</p>
-
+  const { dias, porDia, porClave, dentroDe } = calc
   const anchoDias = Math.max(ancho, 0)
   const dispBody = altoDisp - ALTO_CABECERA_PX - MARGEN_ALTO_PX - PAD_ABAJO_DIA_PX
-  // Eje POR DÍA: de la primera a la última foto/vuelo de ese día (rangoHoras: margen pequeño / horas enteras),
-  // salvo en zoom (misma hora para todos). Cada día se estira para llenar el alto disponible del modal.
-  const vistas = dias.map((d) => {
-    const segs = porDia.get(d)
-    if (!segs.length) return null
-    const rango = zoom !== null ? rangoZoomHora(zoom)
-      : rangoHoras(segs.map((x) => ({ iniMin: x.iniMin, finMin: Math.min(1440, Math.max(x.finMin, x.iniMin + MIN_DURACION_MIN)) })))
-    const spanMin = rango.hastaMin - rango.desdeMin
-    const altoHora = altoHoraAjustado(altoHoraPx([segs.filter((x) => !x.tramo)]), dispBody, spanMin)
-    return { rango, altoHora, alto: (spanMin / 60) * altoHora }
-  })
-  const altoVacio = Math.max(0, ...vistas.filter(Boolean).map((v) => v.alto))
-  const layouts = dias.map((d, i) => (vistas[i]
-    ? layoutDia(porDia.get(d), { minDuracionMin: Math.ceil((ALTO_COMPACTO_PX / vistas[i].altoHora) * 60) }) : []))
-  const nTramosDia = layouts.map((l) => l.filter((x) => x.tramo).length)
-  const anchos = anchosColumnas(
-    layouts.map((l, i) => Math.max(contarVuelosDia(l), nTramosDia[i] ? 1 : 0)),
-    anchoDias > 0 ? anchoDias : ANCHO_MIN_DIA_PX * 7, { anchoMinPx: ANCHO_MIN_DIA_PX },
-  )
-  const inicios = anchos.map((_, i) => anchos.slice(0, i).reduce((a, b) => a + b, 0))
-  const maxScroll = anchos.reduce((a, b) => a + b, 0) - anchoDias
+  const { vistas, altoVacio, layouts, nTramosDia, anchos, inicios, maxScroll } = useMemo(() => {
+    // Eje POR DÍA: de la primera a la última foto/vuelo de ese día (rangoHoras: margen pequeño / horas enteras),
+    // salvo en zoom (misma hora para todos). Cada día se estira para llenar el alto disponible del modal.
+    const vistas = dias.map((d) => {
+      const segs = porDia.get(d)
+      if (!segs.length) return null
+      const rango = zoom !== null ? rangoZoomHora(zoom)
+        : rangoHoras(segs.map((x) => ({ iniMin: x.iniMin, finMin: Math.min(1440, Math.max(x.finMin, x.iniMin + MIN_DURACION_MIN)) })))
+      const spanMin = rango.hastaMin - rango.desdeMin
+      const altoHora = altoHoraAjustado(altoHoraPx([segs.filter((x) => !x.tramo)]), dispBody, spanMin)
+      return { rango, altoHora, alto: (spanMin / 60) * altoHora }
+    })
+    const altoVacio = Math.max(0, ...vistas.filter(Boolean).map((v) => v.alto))
+    const layouts = dias.map((d, i) => (vistas[i]
+      ? layoutDia(porDia.get(d), { minDuracionMin: Math.ceil((ALTO_COMPACTO_PX / vistas[i].altoHora) * 60) }) : []))
+    const nTramosDia = layouts.map((l) => l.filter((x) => x.tramo).length)
+    const anchos = anchosColumnas(
+      layouts.map((l, i) => Math.max(contarVuelosDia(l), nTramosDia[i] ? 1 : 0)),
+      anchoDias > 0 ? anchoDias : ANCHO_MIN_DIA_PX * 7, { anchoMinPx: ANCHO_MIN_DIA_PX },
+    )
+    const inicios = anchos.map((_, i) => anchos.slice(0, i).reduce((a, b) => a + b, 0))
+    const maxScroll = anchos.reduce((a, b) => a + b, 0) - anchoDias
+    return { vistas, altoVacio, layouts, nTramosDia, anchos, inicios, maxScroll }
+  }, [dias, porDia, zoom, dispBody, anchoDias])
+  if (!calc.hayDatos) return <p className="ri-vacio">Sin vuelos con hora de cámara.</p>
+
   const mover = (dir) => {
     const semanas = inicios.filter((_, i) => i % 7 === 0)
     const destino = dir > 0 ? semanas.find((x) => x > scrollX + 1) : [...semanas].reverse().find((x) => x < scrollX - 1)
@@ -246,7 +256,7 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
           <li><i className="ri-ley baja" /> baja</li>
         </ul>
       </div>
-      <div ref={scrollRef} className="ri-cal-scroll" onScroll={(e) => setScrollX(e.currentTarget.scrollLeft)}>
+      <div ref={scrollRef} className="ri-cal-scroll" onScroll={alScroll}>
         <div className="ri-cal-fila">
           {dias.map((fecha, i) => {
             const segs = layouts[i]
@@ -273,7 +283,7 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
                           data-testid="ri-hora" {...(zoom === null ? { role: 'button', tabIndex: 0, title: `Ampliar ${String(Math.floor(m / 60) % 24).padStart(2, '0')}h`, onClick: () => setZoom(Math.min(23, Math.floor(m / 60))), onKeyDown: (e) => { if (e.key === 'Enter') setZoom(Math.min(23, Math.floor(m / 60))) } } : {})}>{formatearHora(m)}</span>)}
                     <div className="ri-vuelos" style={{ left: ANCHO_HORAS_PX, bottom: PAD_ABAJO_DIA_PX }}>
                       {segs.map((s) => (s.tramo ? (
-                        <BloqueTramo key={s.clave} seg={s} vuelos={vuelos} seleccion={seleccion} onSeleccion={onSeleccion}
+                        <BloqueTramo key={s.clave} seg={s} dentro={dentroDe.get(s.tramo.id) ?? null} seleccion={seleccion} onSeleccion={onSeleccion}
                                      desdeMin={rango.desdeMin} altoHora={altoHora} conSegundos={zoom !== null} />
                       ) : (
                         <EventoVuelo key={`${s.clave}|${s.fecha}`} seg={s} vuelo={porClave.get(s.clave)} desdeMin={rango.desdeMin}
@@ -289,4 +299,4 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
       </div>
     </div>
   )
-}
+})

@@ -133,8 +133,12 @@ export const MARGEN_RANGO_MIN = 5;
 export const RANGO_AJUSTADO_MAX_MIN = 180;
 export function rangoHoras(segmentos) {
   if (!segmentos.length) throw new Error('rangoHoras: sin segmentos');
-  const min = Math.min(...segmentos.map((s) => s.iniMin));
-  const max = Math.max(...segmentos.map((s) => s.finMin));
+  let min = Infinity;
+  let max = -Infinity;
+  for (const s of segmentos) {
+    if (s.iniMin < min) min = s.iniMin;
+    if (s.finMin > max) max = s.finMin;
+  }
   let desdeMin;
   let hastaMin;
   if (max - min > RANGO_AJUSTADO_MAX_MIN) {
@@ -368,7 +372,9 @@ const segundosDeDia = (ts) => {
 // Las fotos sin hora forman un tramo por grupo (fecha null). Un tramo es la unidad de selección y asignación.
 export function tramosLibres(libres, hueco = HUECO_CORTE_TRAMO_S) {
   const conHora = libres.filter((f) => f.ts != null).map((f) => ({ f, h: parsearHoraCamara(f.ts), s: segundosDeDia(f.ts) }));
-  conHora.sort((a, b) => a.f.grupo_id.localeCompare(b.f.grupo_id) || a.f.ts.localeCompare(b.f.ts));
+  // ts ISO y ids ASCII: comparación directa (localeCompare es mucho más lenta).
+  const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  conHora.sort((a, b) => cmp(a.f.grupo_id, b.f.grupo_id) || cmp(a.f.ts, b.f.ts));
   const tramos = [];
   let cur = null;
   for (const x of conHora) {
@@ -384,7 +390,7 @@ export function tramosLibres(libres, hueco = HUECO_CORTE_TRAMO_S) {
     ini: t.fotos[0].ts, fin: t.fotos[t.fotos.length - 1].ts, claves: t.fotos.map((f) => f.clave), n: t.fotos.length,
     motivo: t.fotos[0].motivo,
   }));
-  out.sort((a, b) => a.fecha.localeCompare(b.fecha) || a.iniMin - b.iniMin);
+  out.sort((a, b) => cmp(a.fecha, b.fecha) || a.iniMin - b.iniMin);
   out.forEach((t, i) => { t.id = `t${i}`; });
   const sinHora = new Map();
   for (const f of libres) if (f.ts == null) {
@@ -399,14 +405,35 @@ export function tramosLibres(libres, hueco = HUECO_CORTE_TRAMO_S) {
 
 // Vuelo del estadillo en cuyo rango real cae el tramo, o null. Una foto libre no debería caer dentro
 // de un vuelo: si pasa con datos reales se avisa de forma visible, no se pinta como tramo normal.
+// Segmentos por vuelo cacheados por identidad del objeto vuelo (los modelos son inmutables entre renders).
+const cacheSegmentos = new WeakMap();
+export function segmentosCacheados(v) {
+  let segs = cacheSegmentos.get(v);
+  if (!segs) {
+    segs = segmentosDeVuelo({ pb: v.pb, vuelo: v.vuelo, sufijo: v.sufijo, inicio_exif: v.inicio, fin_exif: v.fin });
+    cacheSegmentos.set(v, segs);
+  }
+  return segs;
+}
+
 export function vueloQueContiene(tramo, vuelos) {
   if (!tramo.fecha) return null;
   for (const v of vuelos) {
-    for (const s of segmentosDeVuelo({ pb: v.pb, vuelo: v.vuelo, sufijo: v.sufijo, inicio_exif: v.inicio, fin_exif: v.fin })) {
+    for (const s of segmentosCacheados(v)) {
       if (s.fecha === tramo.fecha && tramo.iniMin < s.finMin && tramo.finMin >= s.iniMin) return v;
     }
   }
   return null;
+}
+
+// Map id de tramo -> vuelo contenedor (solo los que caen dentro). Una pasada por render, no por bloque.
+export function contenedoresDeTramos(tramos, vuelos) {
+  const m = new Map();
+  for (const t of tramos) {
+    const v = vueloQueContiene(t, vuelos);
+    if (v) m.set(t.id, v);
+  }
+  return m;
 }
 
 // Motivos por los que un vuelo se pinta en ámbar (mismo criterio que el color: paridad RGB/T y giro sin dato).
