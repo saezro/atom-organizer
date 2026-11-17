@@ -4757,7 +4757,18 @@ html.kiosk-modo body * {
 /* --- Revisión del índice: calendario por horas (prefijo ri-) ---------------- */
 /* Usa casi toda la pantalla: el calendario es lo que importa y se estira hasta los botones. */
 .pm-overlay:has(> .ri-card) { padding: 2.5vh 2.5vw; }
-.ri-card { width: 95vw; max-width: none; height: 92vh; max-height: 92vh; overflow-y: auto; box-sizing: border-box; }
+.pm-overlay:has(> .ri-card) { background: #0a0a0a; }
+.ri-card { width: 95vw; max-width: none; height: 92vh; max-height: 92vh; overflow-y: auto; box-sizing: border-box; background: #141416; gap: 0.5rem; padding: 0.75rem 1.1rem; }
+.ri-card .pm-title { font-size: 0.95rem; }
+.ri-card .pm-status { margin: 0; padding-top: 0.25rem; padding-bottom: 0.25rem; font-size: 0.75rem; }
+/* Cabecera del previo compacta: título + resumen en 1-2 líneas densas; avisos plegados */
+.ri-card .pf-facts { display: flex; flex-wrap: wrap; gap: 0.1rem 1rem; }
+.ri-card .pf-item { flex-direction: row; align-items: baseline; gap: 0.3rem; }
+.ri-card .pf-item dt { font-size: 0.65rem; }
+.ri-card .pf-item dt::after { content: ':'; }
+.ri-card .pf-item dd { font-size: 0.78rem; }
+.pf-avisos summary { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pf-avisos ul { margin: 0.25rem 0 0; padding-left: 1.1rem; }
 .ri-card > * { flex: none; }
 .ri-card > .ri-cal { flex: 1 1 auto; min-height: 18rem; }
 @media (max-width: 34rem), (max-height: 26rem) {
@@ -4781,8 +4792,8 @@ html.kiosk-modo body * {
 
 .ri-cal { display: flex; flex-direction: column; min-height: 0; }
 .ri-cal-barra, .ri-leyenda { flex: none; }
-.ri-cal-barra { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
-.ri-nav { padding: 0.2rem 0.7rem; font-size: 1.1rem; }
+.ri-cal-barra { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.6rem; margin-bottom: 0.25rem; }
+.ri-nav { padding: 0.05rem 0.55rem; font-size: 0.95rem; }
 .ri-cal-eje { font-size: 0.75rem; color: #94a3b8; }
 .ri-cal-scroll { flex: 1; min-height: 0; overflow: auto; padding-bottom: 0.75rem; scroll-snap-type: x mandatory; }
 .ri-cal-fila { display: flex; width: max-content; }
@@ -4812,7 +4823,7 @@ html.kiosk-modo body * {
 .ri-giro { position: absolute; top: 0.25rem; right: 0.25rem; color: var(--gc, #fdba74); }
 .ri-giro.falta { top: 0.1rem; font-size: 1.1rem; font-weight: 800; line-height: 1; }
 .ri-vuelo-tit { padding-right: 1.5rem; }
-.ri-leyenda { list-style: none; margin: 0 0 0.5rem; padding: 0; display: flex; flex-wrap: wrap; gap: 0.25rem 0.9rem; font-size: 0.6875rem; color: #cbd5e1; }
+.ri-leyenda { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.25rem 0.9rem; font-size: 0.6875rem; color: #cbd5e1; }
 .ri-leyenda li { display: inline-flex; align-items: center; gap: 0.3rem; }
 .ri-ley { display: inline-block; width: 0.8rem; height: 0.55rem; border-radius: 0.2rem; border: 0.0625rem solid; }
 .ri-ley.g-cero { border-color: #38bdf8b3; background: #38bdf82e; }
