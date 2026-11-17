@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ANCHO_MIN_DIA_PX, MIN_DURACION_MIN, ALTO_MIN_BLOQUE_PX, ANCHO_MIN_BLOQUE_PX, GAP_CARRIL_PX,
   altoHoraPx, altoHoraAjustado, marcasEje, anchosColumnas, anchoBloquePx, contarVuelosDia, diasDelRango, layoutDia, minDuracionParaAlto,
-  rangoHoras, segmentosDeVuelo, etiquetaCompacta, formatoBloque, textoHorasBloque, modoContenido, textoRangoHora, rangoZoomHora, horaZoomVecina, PASOS_EJE_ZOOM, textoFotos,
+  rangoHoras, segmentosDeVuelo, ALTO_COMPACTO_PX, etiquetaCompacta, formatoBloque, textoHorasBloque, modoContenido, textoRangoHora, rangoZoomHora, horaZoomVecina, PASOS_EJE_ZOOM, textoFotos,
   cubetasPorHora, formatearHora, vueloQueContiene, motivosAviso,
 } from './calendarioHoras.js'
 
@@ -11,15 +11,15 @@ import {
 // día entero visible (el alto lo da el rango de horas; el scroll vertical es el del modal).
 // Añadido propio: TRAMOS grises de fotos libres a todo el ancho del día, en su hora real (nunca estimada).
 const DIAS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
-const ANCHO_HORAS_PX = 56
+const ANCHO_HORAS_PX = 30 // gutter de etiquetas de hora DENTRO de cada día (el eje es por día)
 const ALTO_CABECERA_PX = 58
 const MARGEN_ALTO_PX = 14 // padding inferior del scroll + holgura
 
 // Color: un único color base para todos los vuelos (los colores por PB de la Suite no significaban nada
 // más que «PB distinto»). Los estados se distinguen por color: aviso (ámbar), tramo sin colocar (gris),
 // seleccionado (naranja), tramo dentro de un vuelo (rojo discontinuo).
-const COLOR_VUELO = '#38bdf8'
-const COLOR_AVISO = '#fbbf24'
+// Desde el giro: cada ángulo tiene su color (clase `ri-g-<tipo>` en App.css, variables --gc*): 0º azul,
+// 90º verde, 270º violeta, sin dato ámbar, GENERALES gris. El aviso (ámbar) pisa al color de giro.
 
 // Giro: flechita SVG en la esquina superior derecha del bloque, como EventoVuelo.jsx de la Suite
 // (FiRotateCw para 90, FiRotateCcw para 270, mismos paths de Feather; 14 px allí, aquí 18 px).
@@ -64,7 +64,7 @@ function EventoVuelo({ seg, vuelo, desdeMin, altoHora, anchoCol, conSegundos }) 
   // Calendario previo (antes de procesar): aún no hay paridad RGB/T que avisar; el giro se pinta siempre ('?' si no hay dato).
   const motivos = vuelo.previo ? [] : motivosAviso(vuelo)
   const textoMotivos = motivos.join(' · ')
-  const color = motivos.length ? COLOR_AVISO : COLOR_VUELO
+  const claseColor = motivos.length ? 'ri-g-aviso' : `ri-g-${giro.tipo}`
   const cubetas = cubetasPorHora(vuelo)
   const parcial = seg.parte !== 'unico'
   const hora = parcial ? textoHorasBloque('rango', seg.iniMin, seg.finMin) : textoRangoHora(vuelo.inicio, vuelo.fin, seg.iniMin, seg.finMin, conSegundos)
@@ -75,11 +75,10 @@ function EventoVuelo({ seg, vuelo, desdeMin, altoHora, anchoCol, conSegundos }) 
     hora, fotos, giro.etiqueta, motivos.length ? `Aviso: ${textoMotivos}` : null,
   ].filter(Boolean).join(' · ')
   return (
-    <div className={`ri-vuelo ri-${modo}`} data-testid="ri-vuelo" aria-label={tit} title={tit}
+    <div className={`ri-vuelo ri-${modo} ${claseColor}`} data-testid="ri-vuelo" aria-label={tit} title={tit}
          style={{
            top, height: Math.max(alto - 1, 0), left: `calc(${seg.col * w}% + ${GAP_CARRIL_PX / 2}px)`,
            width: `max(${ANCHO_MIN_BLOQUE_PX}px, calc(${w}% - ${GAP_CARRIL_PX}px))`,
-           borderColor: `${color}b3`, backgroundColor: `${color}2e`,
          }}>
       <IconoGiro giro={giro} pequeno={fmt.iconoPequeno || modo !== 'completo'} />
       {modo === 'minimo' ? null : modo === 'compacto' ? (
@@ -105,7 +104,8 @@ function EventoVuelo({ seg, vuelo, desdeMin, altoHora, anchoCol, conSegundos }) 
 function BloqueTramo({ seg, vuelos, seleccion, onSeleccion, desdeMin, altoHora, conSegundos }) {
   const t = seg.tramo
   const top = ((seg.iniMin - desdeMin) / 60) * altoHora
-  const alto = altoReal(seg, altoHora)
+  // Los tramos grises nunca bajan de modo «compacto»: siempre llevan texto (qué son y cuántas fotos).
+  const alto = Math.max(altoReal(seg, altoHora), ALTO_COMPACTO_PX)
   const modo = modoContenido(alto)
   const w = 100 / seg.nCols
   const dentro = vueloQueContiene(t, vuelos)
@@ -121,8 +121,8 @@ function BloqueTramo({ seg, vuelos, seleccion, onSeleccion, desdeMin, altoHora, 
             title={dentro ? `AVISO: cae dentro de PB${dentro.pb}/V${dentro.vuelo} · ${info}` : info}
             aria-label={info}
             onClick={() => onSeleccion?.(t.id === seleccion ? null : t.id)}>
-      {modo === 'minimo' ? null : modo === 'compacto' ? (
-        <span className="ri-tramo-tit ri-una-linea">{dentro ? '⚠ ' : ''}Sin colocar · {txt}</span>
+      {modo === 'compacto' ? (
+        <span className="ri-tramo-tit ri-una-linea">{dentro ? '⚠ ' : ''}Sin colocar · {txt} · {t.n} fotos</span>
       ) : (
         <>
           <span className="ri-tramo-tit">{dentro ? '⚠ ' : ''}Sin colocar</span>
@@ -177,41 +177,44 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
       porDia.get(t.fecha).push({ clave: `tramo|${t.id}`, tramo: t, fecha: t.fecha, iniMin: t.iniMin, finMin: t.finMin, parte: 'unico' })
       todos.push({ iniMin: t.iniMin, finMin })
     }
-    return { dias, porDia, porClave, rango: todos.length ? rangoHoras(todos) : null }
+    return { dias, porDia, porClave, hayDatos: todos.length > 0 }
   }, [vuelos, tramos])
 
   const { dias, porDia, porClave } = calc
-  const rango = calc.rango && zoom !== null ? rangoZoomHora(zoom) : calc.rango
-  if (!rango) return <p className="ri-vacio">Sin vuelos con hora de cámara.</p>
+  if (!calc.hayDatos) return <p className="ri-vacio">Sin vuelos con hora de cámara.</p>
 
-  const anchoDias = Math.max(ancho - ANCHO_HORAS_PX, 0)
-  const spanMin = rango.hastaMin - rango.desdeMin
-  // La densidad (altoHoraPx) mira solo vuelos; luego se estira para llenar el alto disponible.
-  const altoBase = altoHoraPx(dias.map((d) => porDia.get(d).filter((s) => !s.tramo)))
-  const altoHora = altoHoraAjustado(altoBase, altoDisp - ALTO_CABECERA_PX - MARGEN_ALTO_PX, spanMin)
-  const minDur = minDuracionParaAlto(altoHora)
-  const layouts = dias.map((d) => layoutDia(porDia.get(d), { minDuracionMin: minDur }))
-  const nTramosDia = dias.map((d) => layouts[dias.indexOf(d)].filter((s) => s.tramo).length)
+  const anchoDias = Math.max(ancho, 0)
+  const dispBody = altoDisp - ALTO_CABECERA_PX - MARGEN_ALTO_PX
+  // Eje POR DÍA: de la primera a la última foto/vuelo de ese día (rangoHoras: margen pequeño / horas enteras),
+  // salvo en zoom (misma hora para todos). Cada día se estira para llenar el alto disponible del modal.
+  const vistas = dias.map((d) => {
+    const segs = porDia.get(d)
+    if (!segs.length) return null
+    const rango = zoom !== null ? rangoZoomHora(zoom)
+      : rangoHoras(segs.map((x) => ({ iniMin: x.iniMin, finMin: Math.min(1440, Math.max(x.finMin, x.iniMin + MIN_DURACION_MIN)) })))
+    const spanMin = rango.hastaMin - rango.desdeMin
+    const altoHora = altoHoraAjustado(altoHoraPx([segs.filter((x) => !x.tramo)]), dispBody, spanMin)
+    return { rango, altoHora, alto: (spanMin / 60) * altoHora }
+  })
+  const altoVacio = Math.max(0, ...vistas.filter(Boolean).map((v) => v.alto))
+  const layouts = dias.map((d, i) => (vistas[i]
+    ? layoutDia(porDia.get(d), { minDuracionMin: Math.ceil((ALTO_COMPACTO_PX / vistas[i].altoHora) * 60) }) : []))
+  const nTramosDia = layouts.map((l) => l.filter((x) => x.tramo).length)
   const anchos = anchosColumnas(
     layouts.map((l, i) => Math.max(contarVuelosDia(l), nTramosDia[i] ? 1 : 0)),
     anchoDias > 0 ? anchoDias : ANCHO_MIN_DIA_PX * 7, { anchoMinPx: ANCHO_MIN_DIA_PX },
   )
   const inicios = anchos.map((_, i) => anchos.slice(0, i).reduce((a, b) => a + b, 0))
-  const alto = (spanMin / 60) * altoHora
-  const { paso, marcas } = marcasEje(rango.desdeMin, rango.hastaMin, altoHora, zoom !== null ? PASOS_EJE_ZOOM : undefined)
-  // Rayas al paso de las etiquetas, ancladas a la primera marca.
-  const pasoPx = (paso / 60) * altoHora
-  const primeraPx = (((Math.ceil(rango.desdeMin / paso) * paso) - rango.desdeMin) / 60) * altoHora
   const maxScroll = anchos.reduce((a, b) => a + b, 0) - anchoDias
   const mover = (dir) => {
     const semanas = inicios.filter((_, i) => i % 7 === 0)
     const destino = dir > 0 ? semanas.find((x) => x > scrollX + 1) : [...semanas].reverse().find((x) => x < scrollX - 1)
     scrollRef.current?.scrollTo?.({ left: destino ?? (dir > 0 ? maxScroll : 0), behavior: 'smooth' })
   }
-  const clickCuerpo = (e) => {
+  const clickCuerpo = (e, v) => {
     if (zoom !== null || !(e.target === e.currentTarget || e.target.classList?.contains('ri-vuelos'))) return
     const y = e.clientY - e.currentTarget.getBoundingClientRect().top
-    setZoom(Math.min(23, Math.max(0, Math.floor((rango.desdeMin + (y / altoHora) * 60) / 60))))
+    setZoom(Math.min(23, Math.max(0, Math.floor((v.rango.desdeMin + (y / v.altoHora) * 60) / 60))))
   }
 
   return (
@@ -230,7 +233,11 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
         <span className="ri-cal-eje">Eje: hora cámara (EXIF, sin zona)</span>
       </div>
       <ul className="ri-leyenda" data-testid="ri-leyenda" aria-label="Leyenda">
-        <li><i className="ri-ley vuelo" /> Vuelo del estadillo</li>
+        <li><i className="ri-ley g-cero" /> Giro 0º (sin giro)</li>
+        <li><i className="ri-ley g-cw" /> Giro 90º</li>
+        <li><i className="ri-ley g-ccw" /> Giro 270º</li>
+        <li><i className="ri-ley g-falta" /> Giro desconocido (?)</li>
+        <li><i className="ri-ley g-generales" /> GENERALES (no gira)</li>
         <li><i className="ri-ley aviso" /> Vuelo con aviso: «RGB ≠ T» (distinto nº de fotos RGB y T) o «sin giro» (giro ?)</li>
         <li><i className="ri-ley tramo" /> Fotos sin colocar (tramo)</li>
         <li><i className="ri-ley sel" /> Tramo seleccionado</li>
@@ -238,21 +245,20 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
         <li><i className="ri-ley alta" /> Confianza alta</li>
         <li><i className="ri-ley media" /> media</li>
         <li><i className="ri-ley baja" /> baja</li>
-        <li className="ri-ley-giro">Giro: icono arriba a la derecha (flecha = sin giro, ↻ 90º, ↺ 270º, ? = sin dato)</li>
+        <li className="ri-ley-giro">Giro: color del bloque + icono arriba a la derecha (flecha = sin giro, ↻ 90º, ↺ 270º, ? = sin dato)</li>
       </ul>
-      <div ref={scrollRef} className="ri-cal-scroll" onScroll={(e) => setScrollX(e.currentTarget.scrollLeft)} style={{ scrollPaddingLeft: ANCHO_HORAS_PX }}>
+      <div ref={scrollRef} className="ri-cal-scroll" onScroll={(e) => setScrollX(e.currentTarget.scrollLeft)}>
         <div className="ri-cal-fila">
-          <div className="ri-cal-horas" style={{ width: ANCHO_HORAS_PX }}>
-            <div className="ri-cal-horas-cab" style={{ height: ALTO_CABECERA_PX }}>hora cámara</div>
-            <div className="ri-escala-cuerpo" style={{ height: alto }}>
-              {marcas.map((m) => <span key={m} className={zoom === null ? 'ri-hora clic' : 'ri-hora'} style={{ top: ((m - rango.desdeMin) / 60) * altoHora }}
-                    data-testid="ri-hora" {...(zoom === null ? { role: 'button', tabIndex: 0, title: `Ampliar ${String(Math.floor(m / 60) % 24).padStart(2, '0')}h`, onClick: () => setZoom(Math.min(23, Math.floor(m / 60))), onKeyDown: (e) => { if (e.key === 'Enter') setZoom(Math.min(23, Math.floor(m / 60))) } } : {})}>{formatearHora(m)}</span>)}
-            </div>
-          </div>
           {dias.map((fecha, i) => {
             const segs = layouts[i]
             const nVuelos = contarVuelosDia(segs)
             const vacio = !nVuelos && !nTramosDia[i]
+            const vista = vistas[i]
+            const { rango, altoHora, alto } = vista ?? {}
+            const eje = vista ? marcasEje(rango.desdeMin, rango.hastaMin, altoHora, zoom !== null ? PASOS_EJE_ZOOM : undefined) : null
+            // Rayas al paso de las etiquetas, ancladas a la primera marca.
+            const pasoPx = vista ? (eje.paso / 60) * altoHora : 0
+            const primeraPx = vista ? (((Math.ceil(rango.desdeMin / eje.paso) * eje.paso) - rango.desdeMin) / 60) * altoHora : 0
             return (
               <div key={fecha} className={vacio ? 'ri-dia vacio' : 'ri-dia'} style={{ width: anchos[i] }} data-testid={`ri-dia-${fecha}`}>
                 <div className="ri-dia-cab" style={{ height: ALTO_CABECERA_PX }}>
@@ -261,16 +267,18 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
                   <em>{nVuelos ? `${nVuelos} ${nVuelos === 1 ? 'vuelo' : 'vuelos'}` : 'sin vuelos'}</em>
                 </div>
                 {vacio ? (
-                  <div className="ri-dia-vacio" style={{ height: alto }}><span>sin vuelos</span></div>
+                  <div className="ri-dia-vacio" style={{ height: altoVacio }}><span>sin vuelos</span></div>
                 ) : (
-                  <div className={zoom === null ? 'ri-dia-cuerpo clic' : 'ri-dia-cuerpo'} onClick={clickCuerpo} style={{ height: alto, backgroundSize: `100% ${pasoPx}px`, backgroundPosition: `0 ${primeraPx}px` }}>
-                    <div className="ri-vuelos">
+                  <div className={zoom === null ? 'ri-dia-cuerpo clic' : 'ri-dia-cuerpo'} onClick={(e) => clickCuerpo(e, vista)} style={{ height: alto, backgroundSize: `100% ${pasoPx}px`, backgroundPosition: `0 ${primeraPx}px` }}>
+                    {eje.marcas.map((m) => <span key={m} className={zoom === null ? 'ri-hora clic' : 'ri-hora'} style={{ top: ((m - rango.desdeMin) / 60) * altoHora }}
+                          data-testid="ri-hora" {...(zoom === null ? { role: 'button', tabIndex: 0, title: `Ampliar ${String(Math.floor(m / 60) % 24).padStart(2, '0')}h`, onClick: () => setZoom(Math.min(23, Math.floor(m / 60))), onKeyDown: (e) => { if (e.key === 'Enter') setZoom(Math.min(23, Math.floor(m / 60))) } } : {})}>{formatearHora(m)}</span>)}
+                    <div className="ri-vuelos" style={{ left: ANCHO_HORAS_PX }}>
                       {segs.map((s) => (s.tramo ? (
                         <BloqueTramo key={s.clave} seg={s} vuelos={vuelos} seleccion={seleccion} onSeleccion={onSeleccion}
-                                     desdeMin={rango.desdeMin}altoHora={altoHora} conSegundos={zoom !== null} />
+                                     desdeMin={rango.desdeMin} altoHora={altoHora} conSegundos={zoom !== null} />
                       ) : (
                         <EventoVuelo key={`${s.clave}|${s.fecha}`} seg={s} vuelo={porClave.get(s.clave)} desdeMin={rango.desdeMin}
-                                     altoHora={altoHora} anchoCol={anchos[i]} conSegundos={zoom !== null} />
+                                     altoHora={altoHora} anchoCol={anchos[i] - ANCHO_HORAS_PX} conSegundos={zoom !== null} />
                       )))}
                     </div>
                   </div>

@@ -99,6 +99,8 @@ describe('RevisionIndiceModal', () => {
     expect(screen.getAllByTestId('ri-giro').map((e) => e.getAttribute('aria-label'))).toEqual(['Sin giro (0º)', 'Gira 90º horario', 'Gira 270º antihorario', 'Giro desconocido'])
     expect(screen.getByText('?')).toBeTruthy()
     expect(screen.getByTestId('ri-leyenda')).toBeTruthy()
+    expect(screen.getAllByTestId('ri-vuelo').map((e) => [...e.classList].find((c) => c.startsWith('ri-g-')))).toEqual(['ri-g-cero', 'ri-g-cw', 'ri-g-ccw', 'ri-g-aviso'])
+    for (const c of ['g-cero', 'g-cw', 'g-ccw', 'g-falta', 'g-generales']) expect(screen.getByTestId('ri-leyenda').querySelector(`.ri-ley.${c}`)).toBeTruthy()
   })
   it('sin pendientes', () => {
     render(<RevisionIndiceModal modelo={modeloBase({ libres: [], recomendaciones: [], espera: null })} api={apiFalsa()} />)

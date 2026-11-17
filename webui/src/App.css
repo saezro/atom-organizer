@@ -4786,10 +4786,7 @@ html.kiosk-modo body * {
 .ri-cal-eje { font-size: 0.75rem; color: #94a3b8; }
 .ri-cal-scroll { flex: 1; min-height: 0; overflow: auto; padding-bottom: 0.75rem; scroll-snap-type: x mandatory; }
 .ri-cal-fila { display: flex; width: max-content; }
-.ri-cal-horas { position: sticky; left: 0; z-index: 10; flex: none; background: #0a0a0a; border-right: 0.0625rem solid rgba(255, 255, 255, 0.1); }
-.ri-cal-horas-cab { display: flex; align-items: flex-end; justify-content: flex-end; padding: 0 0.375rem 0.375rem 0; box-sizing: border-box; font-size: 0.625rem; color: #64748b; }
-.ri-escala-cuerpo { position: relative; }
-.ri-hora { position: absolute; right: 0.375rem; font-size: 0.625rem; font-variant-numeric: tabular-nums; color: #64748b; transform: translateY(-0.375rem); }
+.ri-hora { position: absolute; left: 0.125rem; z-index: 2; font-size: 0.625rem; font-variant-numeric: tabular-nums; color: #94a3b8; transform: translateY(-0.375rem); }
 .ri-dia { flex: none; box-sizing: border-box; border-left: 0.0625rem solid rgba(255, 255, 255, 0.1); scroll-snap-align: start; }
 .ri-dia.vacio { opacity: 0.6; }
 .ri-dia-cab { box-sizing: border-box; padding-top: 0.375rem; text-align: center; font-size: 0.75rem; color: #64748b; border-bottom: 0.0625rem solid rgba(255, 255, 255, 0.1); }
@@ -4805,14 +4802,24 @@ html.kiosk-modo body * {
   border: 0.0625rem solid; border-radius: 0.5rem; font-size: 0.6875rem; line-height: 1.25; text-align: left;
 }
 .ri-vuelo-tit { font-weight: 600; white-space: nowrap; overflow: hidden; color: #f1f5f9; padding-right: 0.25rem; }
-.ri-giro { position: absolute; top: 0.25rem; right: 0.25rem; color: #fdba74; }
-.ri-giro.cero { color: #94a3b8; }
-.ri-giro.falta { top: 0.1rem; font-size: 1.1rem; font-weight: 800; line-height: 1; color: #fcd34d; }
+/* Color por ángulo de giro: --gc (icono/borde) y --gc-fondo/--gc-borde (alfa .18/.70 sobre #0a0a0a). */
+.ri-g-cero { --gc: #38bdf8; --gc-borde: #38bdf8b3; --gc-fondo: #38bdf82e; }
+.ri-g-cw { --gc: var(--verde); --gc-borde: #34d399b3; --gc-fondo: #34d3992e; }
+.ri-g-ccw { --gc: #a78bfa; --gc-borde: #a78bfab3; --gc-fondo: #a78bfa2e; }
+.ri-g-falta, .ri-g-aviso { --gc: #fbbf24; --gc-borde: #fbbf24b3; --gc-fondo: #fbbf242e; }
+.ri-g-generales { --gc: #94a3b8; --gc-borde: #94a3b8b3; --gc-fondo: #94a3b82e; }
+.ri-vuelo { border-color: var(--gc-borde); background-color: var(--gc-fondo); }
+.ri-giro { position: absolute; top: 0.25rem; right: 0.25rem; color: var(--gc, #fdba74); }
+.ri-giro.falta { top: 0.1rem; font-size: 1.1rem; font-weight: 800; line-height: 1; }
 .ri-vuelo-tit { padding-right: 1.5rem; }
 .ri-leyenda { list-style: none; margin: 0 0 0.5rem; padding: 0; display: flex; flex-wrap: wrap; gap: 0.25rem 0.9rem; font-size: 0.6875rem; color: #cbd5e1; }
 .ri-leyenda li { display: inline-flex; align-items: center; gap: 0.3rem; }
 .ri-ley { display: inline-block; width: 0.8rem; height: 0.55rem; border-radius: 0.2rem; border: 0.0625rem solid; }
-.ri-ley.vuelo { border-color: #38bdf8b3; background: #38bdf82e; }
+.ri-ley.g-cero { border-color: #38bdf8b3; background: #38bdf82e; }
+.ri-ley.g-cw { border-color: #34d399b3; background: #34d3992e; }
+.ri-ley.g-ccw { border-color: #a78bfab3; background: #a78bfa2e; }
+.ri-ley.g-falta { border-color: #fbbf24b3; background: #fbbf242e; }
+.ri-ley.g-generales { border-color: #94a3b8b3; background: #94a3b82e; }
 .ri-ley.aviso { border-color: #fbbf24b3; background: #fbbf242e; }
 .ri-ley.tramo { border-color: rgba(203, 213, 225, 0.55); background: rgba(148, 163, 184, 0.32); }
 .ri-ley.sel { border-color: var(--orange); background: rgba(238, 117, 58, 0.45); }
