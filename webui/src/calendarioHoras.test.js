@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import process from 'node:process';
 const assert = { equal: (a, b) => expect(a).toBe(b), deepEqual: (a, b) => expect(a).toEqual(b), ok: (v, m) => expect(v, m).toBeTruthy(), throws: (f) => expect(f).toThrow() };
 import {
-  parsearHoraCamara, lunesDe, diasDelRango, semanasDe, segmentosDeVuelo, layoutDia, rangoHoras, altoHoraAjustado, marcasEje,
+  parsearHoraCamara, lunesDe, diasDelRango, semanasDe, segmentosDeVuelo, layoutDia, rangoHoras, altoHoraAjustado,
   diasVisibles, iconoGiro, textoParidad, formatearGb, formatearHora, etiquetaVuelo, colorDePb,
   tooltipVotos, contarVuelosDia, altoHoraPx, minDuracionParaAlto, rangoZoomHora, horaZoomVecina, marcasEje, PASOS_EJE_ZOOM, modoContenido, textoRangoHora, textoFotos, anchosColumnas, etiquetaCompacta, formatoBloque,
   modeloDesdeCalendario, textoHorasBloque, motivosAviso, tooltipVuelo, anchoBloquePx, ANCHO_MIN_BLOQUE_PX, PALETA_PB, ANCHO_MIN_DIA_PX, ALTO_HORA_PX, MIN_DURACION_MIN,
