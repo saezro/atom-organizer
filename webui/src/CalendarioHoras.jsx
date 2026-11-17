@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ANCHO_MIN_DIA_PX, MIN_DURACION_MIN, ALTO_MIN_BLOQUE_PX, ANCHO_MIN_BLOQUE_PX, GAP_CARRIL_PX,
   altoHoraPx, altoHoraAjustado, marcasEje, anchosColumnas, anchoBloquePx, contarVuelosDia, diasDelRango, layoutDia, minDuracionParaAlto,
-  rangoHoras, segmentosDeVuelo, ALTO_COMPACTO_PX, etiquetaCompacta, formatoBloque, textoHorasBloque, modoContenido, textoRangoHora, rangoZoomHora, horaZoomVecina, PASOS_EJE_ZOOM, textoFotos,
+  rangoHoras, segmentosDeVuelo, ALTO_COMPACTO_PX, PAD_ABAJO_DIA_PX, etiquetaCompacta, formatoBloque, textoHorasBloque, modoContenido, textoRangoHora, rangoZoomHora, horaZoomVecina, PASOS_EJE_ZOOM, textoFotos,
   cubetasPorHora, formatearHora, vueloQueContiene, motivosAviso,
 } from './calendarioHoras.js'
 
@@ -13,7 +13,7 @@ import {
 const DIAS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
 const ANCHO_HORAS_PX = 30 // gutter de etiquetas de hora DENTRO de cada día (el eje es por día)
 const ALTO_CABECERA_PX = 58
-const MARGEN_ALTO_PX = 30 // padding inferior del scroll + aire para la última etiqueta de hora
+const MARGEN_ALTO_PX = 14 // padding inferior del scroll + holgura
 
 // Color: un único color base para todos los vuelos (los colores por PB de la Suite no significaban nada
 // más que «PB distinto»). Los estados se distinguen por color: aviso (ámbar), tramo sin colocar (gris),
@@ -184,7 +184,7 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
   if (!calc.hayDatos) return <p className="ri-vacio">Sin vuelos con hora de cámara.</p>
 
   const anchoDias = Math.max(ancho, 0)
-  const dispBody = altoDisp - ALTO_CABECERA_PX - MARGEN_ALTO_PX
+  const dispBody = altoDisp - ALTO_CABECERA_PX - MARGEN_ALTO_PX - PAD_ABAJO_DIA_PX
   // Eje POR DÍA: de la primera a la última foto/vuelo de ese día (rangoHoras: margen pequeño / horas enteras),
   // salvo en zoom (misma hora para todos). Cada día se estira para llenar el alto disponible del modal.
   const vistas = dias.map((d) => {
@@ -266,12 +266,12 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
                   <em>{nVuelos ? `${nVuelos} ${nVuelos === 1 ? 'vuelo' : 'vuelos'}` : 'sin vuelos'}</em>
                 </div>
                 {vacio ? (
-                  <div className="ri-dia-vacio" style={{ height: altoVacio }}><span>sin vuelos</span></div>
+                  <div className="ri-dia-vacio" style={{ height: altoVacio + PAD_ABAJO_DIA_PX }}><span>sin vuelos</span></div>
                 ) : (
-                  <div className={zoom === null ? 'ri-dia-cuerpo clic' : 'ri-dia-cuerpo'} onClick={(e) => clickCuerpo(e, vista)} style={{ height: alto, backgroundSize: `100% ${pasoPx}px`, backgroundPosition: `0 ${primeraPx}px` }}>
+                  <div className={zoom === null ? 'ri-dia-cuerpo clic' : 'ri-dia-cuerpo'} onClick={(e) => clickCuerpo(e, vista)} style={{ height: alto + PAD_ABAJO_DIA_PX, backgroundSize: `100% ${pasoPx}px`, backgroundPosition: `0 ${primeraPx}px` }}>
                     {eje.marcas.map((m) => <span key={m} className={zoom === null ? 'ri-hora clic' : 'ri-hora'} style={{ top: ((m - rango.desdeMin) / 60) * altoHora }}
                           data-testid="ri-hora" {...(zoom === null ? { role: 'button', tabIndex: 0, title: `Ampliar ${String(Math.floor(m / 60) % 24).padStart(2, '0')}h`, onClick: () => setZoom(Math.min(23, Math.floor(m / 60))), onKeyDown: (e) => { if (e.key === 'Enter') setZoom(Math.min(23, Math.floor(m / 60))) } } : {})}>{formatearHora(m)}</span>)}
-                    <div className="ri-vuelos" style={{ left: ANCHO_HORAS_PX }}>
+                    <div className="ri-vuelos" style={{ left: ANCHO_HORAS_PX, bottom: PAD_ABAJO_DIA_PX }}>
                       {segs.map((s) => (s.tramo ? (
                         <BloqueTramo key={s.clave} seg={s} vuelos={vuelos} seleccion={seleccion} onSeleccion={onSeleccion}
                                      desdeMin={rango.desdeMin} altoHora={altoHora} conSegundos={zoom !== null} />
