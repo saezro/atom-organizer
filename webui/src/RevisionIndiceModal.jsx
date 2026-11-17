@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import CalendarioHoras from './CalendarioHoras.jsx'
 import FotosLibres from './FotosLibres.jsx'
 import { textoConfianza, etiquetaVuelo, tramosLibres, vueloQueContiene } from './calendarioHoras.js'
@@ -21,20 +21,27 @@ function ChipRecomendacion({ r }) {
   )
 }
 
-export default function RevisionIndiceModal({ modelo, api, ahora = () => Date.now() }) {
-  const [seleccion, setSeleccion] = useState(null)
-  const [fila, setFila] = useState('')
-  const [error, setError] = useState(null)
-  const [ocupado, setOcupado] = useState(false)
+// Cuenta atrás aislada: solo este componente se re-renderiza cada segundo, no el modal.
+const ahoraReal = () => Date.now()
+
+function CuentaAtras({ deadlineEpoch, ahora }) {
   const [t, setT] = useState(() => ahora())
   useEffect(() => {
     const id = setInterval(() => setT(ahora()), 1000)
     return () => clearInterval(id)
   }, [ahora])
+  return mmss(Math.max(0, Math.round((deadlineEpoch - t) / 1000)))
+}
+
+export default function RevisionIndiceModal({ modelo, api, ahora = ahoraReal }) {
+  const [seleccion, setSeleccion] = useState(null)
+  const [fila, setFila] = useState('')
+  const [error, setError] = useState(null)
+  const [ocupado, setOcupado] = useState(false)
 
   const { vuelos, libres, recomendaciones, espera } = modelo
   const tramos = useMemo(() => tramosLibres(libres), [libres])
-  const enVuelo = tramos.filter((t) => vueloQueContiene(t, vuelos))
+  const enVuelo = useMemo(() => tramos.filter((t) => vueloQueContiene(t, vuelos)), [tramos, vuelos])
   const tramo = tramos.find((t) => t.id === seleccion) ?? null
   const recTramo = tramo ? pendientes0(recomendaciones).find((r) => r.grupo_id === tramo.grupo_id) : null
   const pendientes = recomendaciones.filter((r) => !r.aplicada)
@@ -54,22 +61,24 @@ export default function RevisionIndiceModal({ modelo, api, ahora = () => Date.no
       setOcupado(false)
     }
   }
-  const alSeleccionar = (id) => { api.latido(); setSeleccion(id) }
+  // `api` llega nueva en cada render del padre: se lee por ref para que alSeleccionar sea estable (memo del calendario).
+  const apiRef = useRef(api)
+  useEffect(() => { apiRef.current = api })
+  const alSeleccionar = useCallback((id) => { apiRef.current.latido(); setSeleccion(id) }, [])
 
   const esperando = espera?.estado === 'esperando' && espera.deadline_epoch != null
-  const restante = esperando ? Math.max(0, Math.round((espera.deadline_epoch - t) / 1000)) : null
   const desatendida = espera?.estado === 'desatendida'
   // Sin dato de la espera no se inventa un número (antes: 30 por defecto).
   const minutos = espera?.espera_min ?? null
   const sinPendientes = !libres.length && !recomendaciones.length
 
   return (
-    <div className="pm-overlay ri-overlay" role="dialog" aria-modal="true" aria-label="Revisión del índice">
+    <div className="pm-overlay ri-overlay ri-overlay-full" role="dialog" aria-modal="true" aria-label="Revisión del índice">
       <div className="pm-card ri-card">
         <h2 className="pm-title">Revisión del índice: fotos sin colocar</h2>
         {esperando ? (
           <p className="pm-status warn ri-espera" role="status" data-testid="ri-cuenta-atras">
-            Se continuará solo en {mmss(restante)} si no tocas nada.
+            Se continuará solo en <CuentaAtras deadlineEpoch={espera.deadline_epoch} ahora={ahora} /> si no tocas nada.
           </p>
         ) : null}
         {desatendida ? (

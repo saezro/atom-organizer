@@ -176,24 +176,6 @@ function AppInterna() {
   // la llamada falla se trata como "no activa" (fail-open, sin spamear la
   // consola) para no dejar al operador bloqueado por un bridge caído.
   const [sesionRemota, setSesionRemota] = useState(null)
-  useEffect(() => {
-    let cancelado = false
-    async function consultar() {
-      let res
-      try {
-        res = await api.sesionRemota()
-      } catch {
-        res = { activa: false, motivo: null, desde: null }
-      }
-      if (!cancelado) setSesionRemota(res)
-    }
-    consultar()
-    const id = setInterval(consultar, 5000)
-    return () => {
-      cancelado = true
-      clearInterval(id)
-    }
-  }, [])
 
   // Sesión (cuenta Google o invitado): gatea toda la UI de escritorio, salvo
   // el kiosco de la Pi (ver comprobación `!kiosco` más abajo, ese modo no
@@ -263,6 +245,31 @@ function AppInterna() {
 
   // Modal PREVIO (info del estadillo). null | {loading, info, task, params, advanced}
   const [preflight, setPreflight] = useState(null)
+  // Se pausa mientras haya un modal a pantalla completa (previo o revisión del índice): el polling
+  // no aporta nada y cada setState re-renderiza App. Y solo se hace setState si el dato cambia.
+  const pausaSesionRemota = Boolean(preflight) || Boolean(revisionModelo)
+  useEffect(() => {
+    if (pausaSesionRemota) return undefined
+    let cancelado = false
+    async function consultar() {
+      let res
+      try {
+        res = await api.sesionRemota()
+      } catch {
+        res = { activa: false, motivo: null, desde: null }
+      }
+      if (cancelado) return
+      setSesionRemota((prev) => (
+        prev && res && prev.activa === res.activa && prev.motivo === res.motivo && prev.desde === res.desde ? prev : res
+      ))
+    }
+    consultar()
+    const id = setInterval(consultar, 5000)
+    return () => {
+      cancelado = true
+      clearInterval(id)
+    }
+  }, [pausaSesionRemota])
   // Id de la petición del modal previo: un resultado con id viejo (cancelado/reabierto) se descarta.
   const preflightIdRef = useRef(0)
 
@@ -775,18 +782,18 @@ function AppInterna() {
 
   // Cierra el modal previo: invalida la petición en curso (su resultado se descarta) y le
   // pide al backend que corte la lectura de fotos.
-  function cerrarPreflight() {
+  const cerrarPreflight = useCallback(() => {
     preflightIdRef.current += 1
     api.calendarioPrevioCancelar().catch(() => {})
     setPreflight(null)
-  }
+  }, [])
 
-  function confirmPreflight() {
+  const confirmPreflight = useCallback(() => {
     if (!preflight) return
     const { task, params, advanced } = preflight
     cerrarPreflight()
     startRun(task, params, advanced)
-  }
+  }, [preflight, cerrarPreflight])
 
   // Replica `OrganizarScreen.handleRun`: mismo `task`/params que «Organizar
   // completo» (`rename` por defecto, sin panel avanzado → `advanced: null`),

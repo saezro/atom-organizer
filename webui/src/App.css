@@ -4756,8 +4756,7 @@ html.kiosk-modo body * {
 
 /* --- Revisión del índice: calendario por horas (prefijo ri-) ---------------- */
 /* Usa casi toda la pantalla: el calendario es lo que importa y se estira hasta los botones. */
-.pm-overlay:has(> .ri-card) { padding: 2.5vh 2.5vw; }
-.pm-overlay:has(> .ri-card) { background: #0a0a0a; }
+.pm-overlay.ri-overlay-full { padding: 2.5vh 2.5vw; background: #0a0a0a; }
 .ri-card { width: 95vw; max-width: none; height: 92vh; max-height: 92vh; overflow-y: auto; box-sizing: border-box; background: #141416; gap: 0.5rem; padding: 0.75rem 1.1rem; }
 .ri-card .pm-title { font-size: 0.95rem; }
 .ri-card .pm-status { margin: 0; padding-top: 0.25rem; padding-bottom: 0.25rem; font-size: 0.75rem; }
@@ -4772,7 +4771,7 @@ html.kiosk-modo body * {
 .ri-card > * { flex: none; }
 .ri-card > .ri-cal { flex: 1 1 auto; min-height: 18rem; }
 @media (max-width: 34rem), (max-height: 26rem) {
-  .pm-overlay:has(> .ri-card) { padding: 0; }
+  .pm-overlay.ri-overlay-full { padding: 0; }
   .ri-card { width: 100%; height: 100%; max-height: none; }
 }
 .ri-espera, .ri-aviso { margin: 0; }

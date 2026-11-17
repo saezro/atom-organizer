@@ -2,11 +2,13 @@
 // (piloto(s), dron(es), nº de vuelos y franjas horarias) para que el operador
 // confirme antes de arrancar. Datos de `api.readEstadilloInfo` (atom_core/estadillo) y, para el
 // calendario, de `api.calendarioPrevio` (vuelos con dron/piloto + fotos fuera de franja en gris).
-import { useMemo } from 'react'
+import { memo, useMemo } from 'react'
 import CalendarioHoras from './CalendarioHoras.jsx'
 import { modeloDesdeCalendario, tramosLibres } from './calendarioHoras.js'
 
-export default function PreflightModal({ info, calendario, calCargando = false, loading, onStart, onCancel }) {
+const NOOP = () => {}
+
+function PreflightModal({ info, calendario, calCargando = false, loading, onStart, onCancel }) {
   const err = info && info.error
   const vuelos = (info && info.vuelos) || []
   // Calendario de vuelos (dron + piloto) y fotos fuera de toda franja (tramos grises).
@@ -29,7 +31,7 @@ export default function PreflightModal({ info, calendario, calCargando = false, 
   const errores = (info && info.errores) || []
 
   return (
-    <div className="pm-overlay" role="dialog" aria-modal="true">
+    <div className="pm-overlay ri-overlay-full" role="dialog" aria-modal="true">
       <div className="pm-card ri-card">
         <h2 className="pm-title">
           Calendario de vuelos: <span className="pm-plant">{titulo}</span>
@@ -81,7 +83,7 @@ export default function PreflightModal({ info, calendario, calCargando = false, 
             {errCal && <p className="pm-status err">✗ No se pudo preparar el calendario: {errCal}</p>}
             <AvisosDato avisos={modelo?.avisos ?? []} />
             {modelo && (
-              <CalendarioHoras vuelos={modelo.vuelos} tramos={tramos} seleccion={null} onSeleccion={() => {}} />
+              <CalendarioHoras vuelos={modelo.vuelos} tramos={tramos} seleccion={null} onSeleccion={NOOP} />
             )}
           </>
         )}
@@ -134,3 +136,5 @@ function AvisosDato({ avisos }) {
     </details>
   )
 }
+
+export default memo(PreflightModal)
