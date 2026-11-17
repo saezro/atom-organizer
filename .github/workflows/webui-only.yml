@@ -1,0 +1,40 @@
+name: webui-only
+
+# Itera la UI React SIN reconstruir el exe: construye solo webui/dist y lo sube como
+# artefacto pequeño `webui-dist` (contenido de dist/: index.html + assets/).
+#
+# Donde copiarlo: el exe carga la UI DESDE DISCO por file:// (src/app_webview.py:
+# DIST_INDEX = <_MEIPASS>/webui/dist/index.html; no va embebida en el binario).
+#   Windows (onedir/instalado): <carpeta de instalación>\_internal\webui\dist\
+#   (PyInstaller 6, contents_directory por defecto `_internal`; spec: (webui/dist -> webui/dist))
+# Pasos: cerrar la app, borrar el contenido de ...\_internal\webui\dist\ y copiar ahí
+# el contenido del artefacto (index.html y assets/). Misma versión de backend/exe
+# que la UI: si la UI usa APIs Python nuevas hay que reconstruir el exe.
+# No publica nada ni toca release.yml.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  webui:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - name: Build React UI (Vite)
+        working-directory: webui
+        run: |
+          npm ci
+          npm run build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: webui-dist
+          path: webui/dist
+          if-no-files-found: error
+          retention-days: 7
