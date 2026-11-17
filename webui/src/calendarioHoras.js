@@ -92,8 +92,8 @@ export function segmentosDeVuelo(v) {
   return out;
 }
 
-// Vuelos distintos presentes en un día (cualquier parte: unico/inicio/medio/fin).
-export const contarVuelosDia = (segmentos) => new Set(segmentos.map((s) => s.clave)).size;
+// Vuelos distintos presentes en un día (cualquier parte: unico/inicio/medio/fin). Los tramos (`tramo`) no cuentan.
+export const contarVuelosDia = (segmentos) => new Set(segmentos.filter((s) => !s.tramo).map((s) => s.clave)).size;
 
 export function layoutDia(segmentos, { minDuracionMin = MIN_DURACION_MIN } = {}) {
   const orden = [...segmentos].sort((a, b) => a.iniMin - b.iniMin || a.finMin - b.finMin);
@@ -119,11 +119,46 @@ export function layoutDia(segmentos, { minDuracionMin = MIN_DURACION_MIN } = {})
   return salida;
 }
 
+// Rango visible. Si el conjunto cabe en <= RANGO_AJUSTADO_MAX_MIN (3 h) se ajusta con ~5 min de margen
+// a cada lado (múltiplos de 5), para que un rato corto llene la pantalla; si es más largo, horas enteras
+// (las rayas coinciden con las etiquetas y el margen relativo ya es pequeño).
+// `desde`/`hasta` (horas enteras que contienen el rango) se mantienen por compatibilidad.
+export const MARGEN_RANGO_MIN = 5;
+export const RANGO_AJUSTADO_MAX_MIN = 180;
 export function rangoHoras(segmentos) {
   if (!segmentos.length) throw new Error('rangoHoras: sin segmentos');
   const min = Math.min(...segmentos.map((s) => s.iniMin));
   const max = Math.max(...segmentos.map((s) => s.finMin));
-  return { desde: Math.floor(min / 60), hasta: Math.ceil(max / 60) };
+  let desdeMin;
+  let hastaMin;
+  if (max - min > RANGO_AJUSTADO_MAX_MIN) {
+    desdeMin = Math.floor(min / 60) * 60;
+    hastaMin = Math.ceil(max / 60) * 60;
+  } else {
+    desdeMin = Math.max(0, Math.floor((min - MARGEN_RANGO_MIN) / 5) * 5);
+    hastaMin = Math.min(1440, Math.ceil((max + MARGEN_RANGO_MIN) / 5) * 5);
+  }
+  return { desde: Math.floor(desdeMin / 60), hasta: Math.ceil(hastaMin / 60), desdeMin, hastaMin };
+}
+
+// px/hora para que el rango llene el alto disponible (sin tope ALTO_HORA_MAX_PX en este caso).
+// altoDispPx = alto útil del cuerpo (sin cabecera); 0/desconocido -> se queda la base.
+export function altoHoraAjustado(altoBase, altoDispPx, spanMin) {
+  if (!(altoDispPx > 0) || !(spanMin > 0)) return altoBase;
+  return Math.max(altoBase, altoDispPx / (spanMin / 60));
+}
+
+// Marcas del eje (minutos del día): cada hora; si el rango es corto (< 2 h), el paso más fino
+// (5/10/15/30/60 min) con al menos ALTO_MIN_ETIQUETA_PX px entre etiquetas.
+export const ALTO_MIN_ETIQUETA_PX = 28;
+export function marcasEje(desdeMin, hastaMin, altoHora) {
+  let paso = 60;
+  if (hastaMin - desdeMin < 120) {
+    paso = [5, 10, 15, 30, 60].find((p) => (p / 60) * altoHora >= ALTO_MIN_ETIQUETA_PX) ?? 60;
+  }
+  const out = [];
+  for (let m = Math.ceil(desdeMin / paso) * paso; m <= hastaMin; m += paso) out.push(m);
+  return { paso, marcas: out };
 }
 
 export const diasVisibles = (anchoPx, anchoMinPx) => Math.max(1, Math.floor(anchoPx / anchoMinPx));
