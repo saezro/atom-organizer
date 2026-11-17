@@ -154,6 +154,13 @@ export function altoHoraAjustado(altoBase, altoDispPx, spanMin) {
   return Math.max(altoBase, altoDispPx / (spanMin / 60));
 }
 
+// La etiqueta de hora va centrada sobre su raya (mitad por encima, mitad por debajo). La última cae justo en el
+// borde inferior del rango, así que el cuerpo del día lleva debajo de la escala un relleno que la deja
+// entera y con AIRE_ETIQUETA_PX de aire (independiente del alto del modal: el estirado solo escala la escala).
+export const ALTO_ETIQUETA_HORA_PX = 12;
+export const AIRE_ETIQUETA_PX = 8;
+export const PAD_ABAJO_DIA_PX = ALTO_ETIQUETA_HORA_PX / 2 + AIRE_ETIQUETA_PX;
+
 // Marcas del eje (minutos del día): cada hora; si el rango es corto (< 2 h), el paso más fino
 // (5/10/15/30/60 min) con al menos ALTO_MIN_ETIQUETA_PX px entre etiquetas.
 export const ALTO_MIN_ETIQUETA_PX = 28;

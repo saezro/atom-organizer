@@ -4797,7 +4797,7 @@ html.kiosk-modo body * {
 .ri-cal-eje { font-size: 0.75rem; color: #94a3b8; }
 .ri-cal-scroll { flex: 1; min-height: 0; overflow: auto; padding-bottom: 0.75rem; scroll-snap-type: x mandatory; }
 .ri-cal-fila { display: flex; width: max-content; }
-.ri-hora { position: absolute; left: 0.125rem; z-index: 2; font-size: 0.625rem; font-variant-numeric: tabular-nums; color: #94a3b8; transform: translateY(-0.375rem); }
+.ri-hora { position: absolute; left: 0.125rem; z-index: 2; font-size: 0.625rem; font-variant-numeric: tabular-nums; color: #94a3b8; height: 12px; line-height: 12px; transform: translateY(-6px); }
 .ri-dia { flex: none; box-sizing: border-box; border-left: 0.0625rem solid rgba(255, 255, 255, 0.1); scroll-snap-align: start; }
 .ri-dia.vacio { opacity: 0.6; }
 .ri-dia-cab { box-sizing: border-box; padding-top: 0.375rem; text-align: center; font-size: 0.75rem; color: #64748b; border-bottom: 0.0625rem solid rgba(255, 255, 255, 0.1); }
