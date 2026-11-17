@@ -168,7 +168,7 @@ def _ts_de(valor) -> datetime.datetime | None:
     return _hora_de(valor) if isinstance(valor, str) else None
 
 
-def construir_previo(ventanas, fotos: list) -> dict:
+def construir_previo(ventanas, fotos: list, cfg) -> dict:
     """Mismo JSON que `construir`, pero sin manifiesto, para el modal previo a Ejecutar.
 
     `ventanas`: `indice.VentanasEstadillos` (las del índice real: escopadas por carpeta, con
@@ -176,7 +176,13 @@ def construir_previo(ventanas, fotos: list) -> dict:
     EXIF sin zona o `None`, `tipo` de `indice._clasificar_tipo`). La asignación foto->vuelo es la
     del índice (`indice.ventana_de_imagen`: franja exacta con bordes inclusivos, prioridad
     GENERALES, ventanas de la carpeta del estadillo). RGB_Extra cuenta como RGB, igual que
-    `construir`. Lo que ninguna ventana reclama va a `libres`. Sin ninguna ventana: error."""
+    `construir`. Lo que ninguna ventana reclama va a `libres`. Sin ninguna ventana: error.
+
+    Giro: cada foto vota (`indice._voto_giro`, mismas bandas y regla que el consenso real) y el
+    vuelo toma el sentido con >= `UMBRAL_SENTIDO_GIRO_VUELO` (`indice._sentido_por_consenso`).
+    Fotos sin yaw: `n_giro_desconocido`. Sin consenso o sin yaw: `angulo=None` + aviso, nunca
+    un ángulo adivinado. Modo manual (`not cfg.choose_mode_auto`): ángulo fijo de `cfg`, sin
+    votos. GENERALES no giran: `angulo=None`, sin aviso."""
     from atom_core import indice  # noqa: PLC0415 - evita ciclo y carga pesada al importar
     todas = ventanas.todas
     avisos: list[str] = list(ventanas.avisos)
@@ -185,13 +191,16 @@ def construir_previo(ventanas, fotos: list) -> dict:
             "; ".join(avisos) or "el estadillo no tiene ningún vuelo con fecha y hora de inicio y fin válidas.")
     vuelos: list[dict] = []
     por_ventana: dict[int, dict] = {}
+    manual = not cfg.choose_mode_auto
+    limites = None if manual else indice._limites_giro(cfg)
     for i, w in enumerate(todas, start=1):
         v = {"fila": i, "pb": w["pb"], "vuelo": w["vuelo"], "sufijo": w.get("sufijo"),
              "fecha": w["inicio"].date().isoformat(), "inicio": w["inicio"].isoformat(),
              "fin": w["fin"].isoformat(),
              "generales": indice._es_ventana_generales(w),
              "equipo": w.get("equipo"), "piloto": w.get("piloto"),
-             "angulo": None, "horas": {}, "n_total": 0, "n_giro_desconocido": 0, "previo": True}
+             "angulo": None, "horas": {}, "n_total": 0, "n_giro_desconocido": 0, "previo": True,
+             "_votos": {90: 0, 270: 0, 0: 0}}
         vuelos.append(v)
         por_ventana[id(w)] = v
     libres, sin_hora = [], 0
@@ -207,16 +216,52 @@ def construir_previo(ventanas, fotos: list) -> dict:
                            "recomendacion": None, "decision": None})
             continue
         destino = por_ventana[id(w)]
+        voto = None
+        if not manual and not destino["generales"]:
+            if foto.yaw is None:
+                voto = "desconocido"
+            else:
+                voto = indice._voto_giro(
+                    indice._yaw_de_voto(foto.yaw, foto.pitch, foto.flight_yaw), limites)
         hora = ts.isoformat()[:13]
         cub = destino["horas"].setdefault(hora, {
             "hora": hora, "n_rgb": 0, "n_t": 0, "n_otro": 0, "n_90": 0, "n_270": 0, "n_0": 0,
             "n_giro_desconocido": 0})
+        if voto == "desconocido":
+            cub["n_giro_desconocido"] += 1
+            destino["n_giro_desconocido"] += 1
+        elif voto is not None:
+            cub[f"n_{voto}"] += 1
+            destino["_votos"][voto] += 1
         cub["n_rgb" if foto.tipo in _TIPOS_RGB else "n_t" if foto.tipo == _TIPO_T else "n_otro"] += 1
         destino["n_total"] += 1
     if sin_hora:
         avisos.append(f"{sin_hora} fotos sin hora EXIF legible: no se pintan.")
     for v in vuelos:
         v["horas"] = [v["horas"][h] for h in sorted(v["horas"])]
+        votos = v.pop("_votos")
+        if v["generales"]:
+            continue
+        if manual:
+            v["angulo"] = 90 if cfg.gen_thumbnails_rotate_90 else 0
+            continue
+        n = sum(votos.values())
+        nombre = f"PB{v['pb']} vuelo {v['vuelo']}"
+        if not n:
+            if v["n_giro_desconocido"]:
+                avisos.append(f"{nombre}: giro desconocido, ninguna foto trae yaw legible.")
+            continue
+        sentido = indice._sentido_por_consenso(votos[90], votos[270], votos[0])
+        if sentido is None:
+            p = {k: round(100.0 * votos[k] / n, 1) for k in (90, 270, 0)}
+            avisos.append(
+                f"{nombre}: giro sin consenso (ningún sentido llega al "
+                f"{int(indice.UMBRAL_SENTIDO_GIRO_VUELO * 100)}%): 90º={p[90]}%, "
+                f"270º={p[270]}%, sin girar={p[0]}% de {n} fotos con yaw.")
+            continue
+        v["angulo"] = sentido
+        if v["n_giro_desconocido"]:
+            avisos.append(f"{nombre}: {v['n_giro_desconocido']} fotos sin yaw no votan en el giro.")
     return {"ok": True, "previo": True, "zona_horaria": ZONA_HORARIA, "vuelos": vuelos,
             "horas_sin_fila": [], "libres": libres, "grupos": [], "recomendaciones": [],
             "espera": None, "avisos": avisos, "n_fotos": len(fotos)}

@@ -24,6 +24,13 @@ describe('PreflightModal', () => {
     expect(onStart).toHaveBeenCalled()
   })
 
+  it('un vuelo GENERALES no pinta icono de giro ni «?»', () => {
+    const cal = { ...calendario, vuelos: [{ ...calendario.vuelos[0], pb: 'GENERALES', generales: true, angulo: null }] }
+    render(<PreflightModal info={{ vuelos: [], num_vuelos: 1 }} calendario={cal} loading={false} onStart={() => {}} onCancel={() => {}} />)
+    expect(screen.queryByTestId('ri-giro')).toBeNull()
+    expect(screen.getByTestId('ri-vuelo').getAttribute('aria-label')).toMatch(/Generales, no gira/)
+  })
+
   it('con el calendario cargando muestra spinner propio y Comenzar/Cancelar siguen activos', () => {
     const onStart = vi.fn()
     const onCancel = vi.fn()

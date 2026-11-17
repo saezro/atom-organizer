@@ -24,7 +24,9 @@ const COLOR_AVISO = '#fbbf24'
 // Giro: flechita SVG en la esquina superior derecha del bloque, como EventoVuelo.jsx de la Suite
 // (FiRotateCw para 90, FiRotateCcw para 270, mismos paths de Feather; 14 px allí, aquí 18 px).
 // Sin giro (0): flecha arriba atenuada, para que todo vuelo muestre algo. Sin dato: «?» ámbar.
-export function infoGiro(angulo) {
+// Vuelo GENERALES (flag `generales` del backend): no gira, sin icono (un «?» parecería un fallo).
+export function infoGiro(angulo, generales = false) {
+  if (generales === true) return { tipo: 'generales', etiqueta: 'Generales, no gira' }
   if (angulo === 0) return { tipo: 'cero', etiqueta: 'Sin giro (0º)' }
   if (angulo === 90) return { tipo: 'cw', etiqueta: 'Gira 90º horario' }
   if (angulo === 270) return { tipo: 'ccw', etiqueta: 'Gira 270º antihorario' }
@@ -32,6 +34,7 @@ export function infoGiro(angulo) {
 }
 
 function IconoGiro({ giro, pequeno }) {
+  if (giro.tipo === 'generales') return null
   const px = pequeno ? 14 : 18
   if (giro.tipo === 'falta') {
     return <span className="ri-giro falta" data-testid="ri-giro" aria-label={giro.etiqueta} title={giro.etiqueta}>?</span>
@@ -57,7 +60,7 @@ function EventoVuelo({ seg, vuelo, desdeMin, altoHora, anchoCol, conSegundos }) 
   const w = 100 / seg.nCols
   const modo = modoContenido(alto)
   const fmt = formatoBloque(anchoBloquePx(anchoCol, seg.nCols), alto)
-  const giro = infoGiro(vuelo.angulo)
+  const giro = infoGiro(vuelo.angulo, vuelo.generales)
   // Calendario previo (antes de procesar): aún no hay paridad RGB/T que avisar; el giro se pinta siempre ('?' si no hay dato).
   const motivos = vuelo.previo ? [] : motivosAviso(vuelo)
   const textoMotivos = motivos.join(' · ')

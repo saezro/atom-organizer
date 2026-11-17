@@ -1647,6 +1647,40 @@ _UMBRAL_CONFIANZA_GIRO = 80.0
 UMBRAL_SENTIDO_GIRO_VUELO = 0.80
 
 
+def _limites_giro(cfg) -> tuple[float, float, float, float]:
+    """Bandas de giro `(lim_min_90, lim_max_90, lim_min_270, lim_max_270)` desde los
+    umbrales de `cfg` (`utils.sane_rotation_criteria`). Única fuente de las bandas."""
+    add_to_angle, subs_to_angle, _max_error = utils.sane_rotation_criteria(
+        cfg.gen_thumbnails_add_to_angle, cfg.gen_thumbnails_subs_to_angle,
+        cfg.gen_thumbnails_max_error)
+    return (90 - subs_to_angle, add_to_angle + 90,
+            (-90) - subs_to_angle, add_to_angle - 90)
+
+
+def _yaw_de_voto(yaw: float, pitch: float | None, flight_yaw: float | None) -> float:
+    """Yaw que vota por una foto: `flight_yaw` si existe, si no el yaw normalizado."""
+    return flight_yaw if flight_yaw is not None else _yaw_normalizado(yaw, pitch)
+
+
+def _voto_giro(yaw_voto: float, limites: tuple[float, float, float, float]) -> int:
+    """Voto de UNA foto (90 / 270 / 0) para un yaw ya normalizado (`_yaw_de_voto`)."""
+    lim_min_90, lim_max_90, lim_min_270, lim_max_270 = limites
+    return (90 if lim_min_90 < yaw_voto < lim_max_90
+            else 270 if lim_min_270 < yaw_voto < lim_max_270 else 0)
+
+
+def _sentido_por_consenso(n_90: int, n_270: int, n_0: int) -> int | None:
+    """Sentido del vuelo si alguno llega a `UMBRAL_SENTIDO_GIRO_VUELO` (orden 270, 90, 0);
+    `None` si ninguno (sin consenso) o sin votos."""
+    total = n_90 + n_270 + n_0
+    if not total:
+        return None
+    for angulo, n in ((270, n_270), (90, n_90), (0, n_0)):
+        if n / total >= UMBRAL_SENTIDO_GIRO_VUELO:
+            return angulo
+    return None
+
+
 def _registrar_vuelo_sin_consenso_giro(pipeline, carpeta_vuelo, nombre_carpeta,
                                       n_90, n_270, n_0, total, progress_callback):
     """Vuelo sin sentido de giro con >= UMBRAL_SENTIDO_GIRO_VUELO: error visible
@@ -1703,10 +1737,9 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
         if ventana is None or dato.yaw is None or _es_pb_generales(ventana["pb"]):
             continue
         clave = (ventana["pb"], ventana["vuelo"], ventana.get("sufijo"))
-        flight_yaw = getattr(dato, "flight_yaw", None)
         yaws_por_vuelo.setdefault(clave, []).append(
-            flight_yaw if flight_yaw is not None
-            else _yaw_normalizado(dato.yaw, getattr(dato, "pitch", None)))
+            _yaw_de_voto(dato.yaw, getattr(dato, "pitch", None),
+                         getattr(dato, "flight_yaw", None)))
         datos_por_vuelo.setdefault(clave, []).append(dato)
 
     angulos: dict[tuple[str, str, str | None], int] = {}
@@ -1719,13 +1752,7 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
             angulos[clave] = angulo_manual
         return angulos
 
-    add_to_angle, subs_to_angle, max_error = utils.sane_rotation_criteria(
-        cfg.gen_thumbnails_add_to_angle, cfg.gen_thumbnails_subs_to_angle,
-        cfg.gen_thumbnails_max_error)
-    lim_max_90 = add_to_angle + 90
-    lim_min_90 = 90 - subs_to_angle
-    lim_max_270 = add_to_angle - 90
-    lim_min_270 = (-90) - subs_to_angle
+    limites = _limites_giro(cfg)
 
     for (pb, vuelo, sufijo), yaws in yaws_por_vuelo.items():
         nombre_carpeta = _nombre_carpeta_vuelo(pb, vuelo, cfg.include_v, sufijo)
@@ -1734,8 +1761,7 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
         # Votos individuales (siempre, aunque el ángulo se reutilice).
         if votos_out is not None:
             for dato, yaw in zip(datos_por_vuelo[clave], yaws):
-                votos_out[id(dato)] = (90 if lim_min_90 < yaw < lim_max_90
-                                       else 270 if lim_min_270 < yaw < lim_max_270 else 0)
+                votos_out[id(dato)] = _voto_giro(yaw, limites)
         previo = (vuelos_previos or {}).get(clave)
         if previo is not None and previo.get("version_algoritmo") == VERSION_ALGORITMO_GIRO:
             angulos[clave] = previo["angulo"]
@@ -1747,24 +1773,18 @@ def _consenso_de_angulo_por_vuelo(asignaciones: list[tuple[_MetadatosImagen, dic
                     progress_callback)
             continue
 
-        rotate_90 = sum(1 for yaw in yaws if lim_min_90 < yaw < lim_max_90)
-        rotate_270 = sum(1 for yaw in yaws if lim_min_270 < yaw < lim_max_270)
+        votos = [_voto_giro(yaw, limites) for yaw in yaws]
+        rotate_90 = votos.count(90)
+        rotate_270 = votos.count(270)
         total = len(yaws)
         n_0_votos = max(total - rotate_90 - rotate_270, 0)
-        sin_consenso = False
-        if total and rotate_270 / total >= UMBRAL_SENTIDO_GIRO_VUELO:
-            angulos[clave] = 270
-        elif total and rotate_90 / total >= UMBRAL_SENTIDO_GIRO_VUELO:
-            angulos[clave] = 90
-        elif total and n_0_votos / total >= UMBRAL_SENTIDO_GIRO_VUELO:
-            angulos[clave] = 0
-        else:
-            angulos[clave] = 0
-            sin_consenso = bool(total)
-            if sin_consenso:
-                _registrar_vuelo_sin_consenso_giro(
-                    pipeline, carpeta_vuelo, nombre_carpeta, rotate_90,
-                    rotate_270, n_0_votos, total, progress_callback)
+        sentido = _sentido_por_consenso(rotate_90, rotate_270, n_0_votos)
+        angulos[clave] = 0 if sentido is None else sentido
+        sin_consenso = sentido is None and bool(total)
+        if sin_consenso:
+            _registrar_vuelo_sin_consenso_giro(
+                pipeline, carpeta_vuelo, nombre_carpeta, rotate_90,
+                rotate_270, n_0_votos, total, progress_callback)
 
         # Confianza: % de imágenes en la banda elegida (0 = fuera de ambas).
         n_0 = max(total - rotate_90 - rotate_270, 0)
@@ -1812,13 +1832,7 @@ def _validar_giro_contra_flight_yaw(asignaciones, angulos: dict, cfg) -> None:
     bloquea."""
     if not cfg.choose_mode_auto:
         return
-    add_to_angle, subs_to_angle, _max_error = utils.sane_rotation_criteria(
-        cfg.gen_thumbnails_add_to_angle, cfg.gen_thumbnails_subs_to_angle,
-        cfg.gen_thumbnails_max_error)
-    lim_max_90 = add_to_angle + 90
-    lim_min_90 = 90 - subs_to_angle
-    lim_max_270 = add_to_angle - 90
-    lim_min_270 = (-90) - subs_to_angle
+    limites = _limites_giro(cfg)
     fy_por_vuelo: dict[tuple[str, str, str | None], list[float]] = {}
     for dato, ventana in asignaciones:
         fy = getattr(dato, "flight_yaw", None)
@@ -1831,17 +1845,13 @@ def _validar_giro_contra_flight_yaw(asignaciones, angulos: dict, cfg) -> None:
         if clave not in angulos:
             continue
         total = len(fys)
-        n_90 = sum(1 for y in fys if lim_min_90 < y < lim_max_90)
-        n_270 = sum(1 for y in fys if lim_min_270 < y < lim_max_270)
-        n_0 = max(total - n_90 - n_270, 0)
-        if n_270 / total >= UMBRAL_SENTIDO_GIRO_VUELO:
-            segun_fy, n_banda = 270, n_270
-        elif n_90 / total >= UMBRAL_SENTIDO_GIRO_VUELO:
-            segun_fy, n_banda = 90, n_90
-        elif n_0 / total >= UMBRAL_SENTIDO_GIRO_VUELO:
-            segun_fy, n_banda = 0, n_0
-        else:
+        votos = [_voto_giro(y, limites) for y in fys]
+        n_90, n_270 = votos.count(90), votos.count(270)
+        n_0 = total - n_90 - n_270
+        segun_fy = _sentido_por_consenso(n_90, n_270, n_0)
+        if segun_fy is None:
             continue
+        n_banda = {90: n_90, 270: n_270, 0: n_0}[segun_fy]
         if segun_fy != angulos[clave]:
             pb, vuelo, sufijo = clave
             contradictorios.append(
@@ -2751,6 +2761,9 @@ class FotoLeida:
     nombre: str
     timestamp: object   # `datetime` EXIF sin zona, o None
     tipo: str           # RGB / TERMICA / RGB_Extra (`_clasificar_tipo`)
+    yaw: float | None = None         # GimbalYaw; None si no se pudo leer
+    pitch: float | None = None       # GimbalPitch
+    flight_yaw: float | None = None  # FlightYaw (rumbo del dron)
 
 
 @dataclass
@@ -2798,7 +2811,8 @@ def leer_timestamps(origen: str, cfg, *, cancelar: "threading.Event | None" = No
         _env_float("ATOM_INDICE_TIMEOUT_S", TIMEOUT_FICHERO_S),
         _env_float("ATOM_INDICE_TIMEOUT_REINTENTO_S", TIMEOUT_REINTENTO_S),
         _env_float("ATOM_INDICE_WATCHDOG_S", WATCHDOG_S), cancelar=cancelar)
-    fotos = [FotoLeida(d.ruta, d.nombre, d.timestamp, _clasificar_tipo(d.nombre, cfg))
+    fotos = [FotoLeida(d.ruta, d.nombre, d.timestamp, _clasificar_tipo(d.nombre, cfg),
+                       d.yaw, d.pitch, d.flight_yaw)
              for d in lote.metadatos]
     return LecturaTimestamps(
         fotos, len(imagenes), len(lote.no_dji) + len(lote.omitidas) + len(lote.no_disponibles))

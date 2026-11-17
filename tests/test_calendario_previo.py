@@ -30,7 +30,7 @@ def _calendario(cfg, origen, rutas, horas, cancelar=None):
     """`horas`: {ruta_imagen: datetime}. Misma ruta que el Api: leer -> ventanas -> construir."""
     lectura = indice.leer_timestamps(str(origen), cfg, exif=_ExifDePrueba(timestamps=horas), cancelar=cancelar)
     ventanas = indice.ventanas_de_estadillos(rutas, cfg, [f.ruta for f in lectura.fotos])
-    return cr.construir_previo(ventanas, lectura.fotos), lectura
+    return cr.construir_previo(ventanas, lectura.fotos, cfg), lectura
 
 
 def _un_estadillo(tmp_path, filas, **cfg_extra):
@@ -130,7 +130,7 @@ def test_colision_pb_vuelo_con_fecha_distinta_lleva_sufijo_como_el_indice(tmp_pa
     ventanas = indice.ventanas_de_estadillos([est_a, est_b], cfg, [])
     sufijos = [w["sufijo"] for w in ventanas.todas]
     assert all(sufijos) and sufijos[0] != sufijos[1]
-    j = cr.construir_previo(ventanas, [])
+    j = cr.construir_previo(ventanas, [], cfg)
     assert [v["sufijo"] for v in j["vuelos"]] == sufijos
 
 
@@ -163,12 +163,79 @@ def test_estadillo_sin_ventanas_validas_es_error(tmp_path):
     origen, est, cfg = _un_estadillo(tmp_path, [("1", "1", "08:00:00", "", "Ana", "M3T")])
     ventanas = indice.ventanas_de_estadillos([est], cfg, [])
     with pytest.raises(cr.ErrorCalendarioPrevio):
-        cr.construir_previo(ventanas, [])
+        cr.construir_previo(ventanas, [], cfg)
     assert any("hora final" in a for a in ventanas.avisos)
 
 
 def test_fila_sin_fin_se_avisa_pero_las_demas_se_pintan(tmp_path):
     origen, est, cfg = _un_estadillo(tmp_path, [("1", "1", "08:00:00", "", "Ana", "M3T"), FILAS[1]])
-    j = cr.construir_previo(indice.ventanas_de_estadillos([est], cfg, []), [])
+    j = cr.construir_previo(indice.ventanas_de_estadillos([est], cfg, []), [], cfg)
     assert len(j["vuelos"]) == 1 and j["vuelos"][0]["pb"] == "2"
     assert any("PB 1" in a for a in j["avisos"])
+
+
+# ---- Giro del calendario previo ----------------------------------------------------------------
+def _giro(tmp_path, yaws, flight_yaws=None, **cfg_extra):
+    """Un vuelo 1/1 (08:00-08:30) con una foto por yaw; devuelve (vuelo, JSON)."""
+    origen, est, cfg = _un_estadillo(tmp_path, FILAS[:1], **cfg_extra)
+    ventanas = indice.ventanas_de_estadillos([est], cfg, [])
+    flight_yaws = flight_yaws or [None] * len(yaws)
+    fotos = [indice.FotoLeida(str(origen / "A" / f"DJI_{i:04d}_D.JPG"), f"DJI_{i:04d}_D.JPG",
+                              _t(8, 10, i % 60), "RGB", y, 0.0, fy)
+             for i, (y, fy) in enumerate(zip(yaws, flight_yaws))]
+    j = cr.construir_previo(ventanas, fotos, cfg)
+    return j["vuelos"][0], j
+
+
+def test_giro_90_por_consenso(tmp_path):
+    v, j = _giro(tmp_path, [90.0] * 9 + [0.0])
+    assert v["angulo"] == 90
+    assert (v["horas"][0]["n_90"], v["horas"][0]["n_270"], v["horas"][0]["n_0"]) == (9, 0, 1)
+    assert v["n_giro_desconocido"] == 0 and "_votos" not in v
+
+
+def test_giro_270_por_consenso(tmp_path):
+    v, _ = _giro(tmp_path, [-90.0] * 10)
+    assert v["angulo"] == 270 and v["horas"][0]["n_270"] == 10
+
+
+def test_giro_0_por_consenso_y_flight_yaw_manda(tmp_path):
+    v, _ = _giro(tmp_path, [90.0] * 5, flight_yaws=[0.5] * 5)
+    assert v["angulo"] == 0 and v["horas"][0]["n_0"] == 5
+
+
+def test_fotos_sin_yaw_son_desconocidas_y_se_avisan(tmp_path):
+    v, j = _giro(tmp_path, [None, None, 90.0, 90.0, 90.0, 90.0])
+    assert v["angulo"] == 90 and v["n_giro_desconocido"] == 2
+    assert v["horas"][0]["n_giro_desconocido"] == 2
+    assert any("sin yaw" in a for a in j["avisos"])
+
+
+def test_todas_sin_yaw_angulo_none_con_aviso(tmp_path):
+    v, j = _giro(tmp_path, [None, None])
+    assert v["angulo"] is None and v["n_giro_desconocido"] == 2
+    assert any("ninguna foto trae yaw" in a for a in j["avisos"])
+
+
+def test_sin_consenso_angulo_none_con_porcentajes(tmp_path):
+    v, j = _giro(tmp_path, [90.0] * 5 + [0.0] * 5)
+    assert v["angulo"] is None
+    assert any("sin consenso" in a and "90º=50.0%" in a for a in j["avisos"])
+
+
+def test_modo_manual_angulo_fijo_sin_votar(tmp_path):
+    v, j = _giro(tmp_path, [0.0, None, 90.0], choose_mode_auto=False, gen_thumbnails_rotate_90=True)
+    assert v["angulo"] == 90 and v["n_giro_desconocido"] == 0
+    assert (v["horas"][0]["n_90"], v["horas"][0]["n_0"]) == (0, 0)
+    v, _ = _giro(tmp_path / "b", [90.0], choose_mode_auto=False, gen_thumbnails_rotate_90=False)
+    assert v["angulo"] == 0
+
+
+def test_generales_expone_flag_y_no_gira(tmp_path):
+    origen, est, cfg = _un_estadillo(tmp_path, [("GENERALES", "1", "08:00:00", "08:30:00", "Ana", "M3T")])
+    ventanas = indice.ventanas_de_estadillos([est], cfg, [])
+    foto = indice.FotoLeida(str(origen / "A" / "DJI_0001_D.JPG"), "DJI_0001_D.JPG", _t(8, 10), "RGB", 90.0, 0.0, None)
+    j = cr.construir_previo(ventanas, [foto], cfg)
+    v = j["vuelos"][0]
+    assert v["generales"] is True and v["angulo"] is None and v["n_giro_desconocido"] == 0
+    assert not any("giro" in a for a in j["avisos"])
