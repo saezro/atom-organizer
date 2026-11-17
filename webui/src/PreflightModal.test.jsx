@@ -29,6 +29,7 @@ describe('PreflightModal', () => {
     render(<PreflightModal info={{ vuelos: [], num_vuelos: 1 }} calendario={cal} loading={false} onStart={() => {}} onCancel={() => {}} />)
     expect(screen.queryByTestId('ri-giro')).toBeNull()
     expect(screen.getByTestId('ri-vuelo').getAttribute('aria-label')).toMatch(/Generales, no gira/)
+    expect(screen.getByTestId('ri-vuelo').classList.contains('ri-g-generales')).toBe(true)
   })
 
   it('con el calendario cargando muestra spinner propio y Comenzar/Cancelar siguen activos', () => {
