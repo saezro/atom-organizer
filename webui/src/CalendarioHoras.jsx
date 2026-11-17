@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ANCHO_MIN_DIA_PX, MIN_DURACION_MIN, ALTO_MIN_BLOQUE_PX, ANCHO_MIN_BLOQUE_PX, GAP_CARRIL_PX,
-  altoHoraPx, anchosColumnas, anchoBloquePx, contarVuelosDia, diasDelRango, layoutDia, minDuracionParaAlto,
+  altoHoraPx, altoHoraAjustado, marcasEje, anchosColumnas, anchoBloquePx, contarVuelosDia, diasDelRango, layoutDia, minDuracionParaAlto,
   rangoHoras, segmentosDeVuelo, etiquetaCompacta, formatoBloque, textoHorasBloque,
   cubetasPorHora, formatearHora, vueloQueContiene, motivosAviso,
 } from './calendarioHoras.js'
@@ -13,7 +13,7 @@ import {
 const DIAS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
 const ANCHO_HORAS_PX = 56
 const ALTO_CABECERA_PX = 58
-const ALTO_MIN_TRAMO_PX = 36
+const MARGEN_ALTO_PX = 14 // padding inferior del scroll + holgura
 
 // Color: un único color base para todos los vuelos (los colores por PB de la Suite no significaban nada
 // más que «PB distinto»). Los estados se distinguen por color: aviso (ámbar), tramo sin colocar (gris),
@@ -49,8 +49,8 @@ function IconoGiro({ giro, pequeno }) {
 
 const aVueloExif = (v) => ({ pb: v.pb, vuelo: v.vuelo, sufijo: v.sufijo, inicio_exif: v.inicio, fin_exif: v.fin })
 
-function EventoVuelo({ seg, vuelo, desdeHora, altoHora, anchoCol, minDuracionMin }) {
-  const top = ((seg.iniMin - desdeHora * 60) / 60) * altoHora
+function EventoVuelo({ seg, vuelo, desdeMin, altoHora, anchoCol, minDuracionMin }) {
+  const top = ((seg.iniMin - desdeMin) / 60) * altoHora
   const alto = Math.max((Math.max(seg.finMin - seg.iniMin, minDuracionMin) / 60) * altoHora, ALTO_MIN_BLOQUE_PX)
   const w = 100 / seg.nCols
   const fmt = formatoBloque(anchoBloquePx(anchoCol, seg.nCols), alto)
@@ -91,14 +91,38 @@ function EventoVuelo({ seg, vuelo, desdeHora, altoHora, anchoCol, minDuracionMin
   )
 }
 
+function BloqueTramo({ seg, vuelos, seleccion, onSeleccion, desdeMin, altoHora, minDuracionMin }) {
+  const t = seg.tramo
+  const top = ((seg.iniMin - desdeMin) / 60) * altoHora
+  const alto = Math.max((Math.max(seg.finMin - seg.iniMin, minDuracionMin) / 60) * altoHora, ALTO_MIN_BLOQUE_PX)
+  const w = 100 / seg.nCols
+  const dentro = vueloQueContiene(t, vuelos)
+  const cls = ['ri-tramo', t.id === seleccion ? 'act' : '', dentro ? 'aviso' : ''].filter(Boolean).join(' ')
+  const txt = `${formatearHora(t.iniMin)}-${formatearHora(t.finMin)}`
+  return (
+    <button type="button" data-testid="ri-tramo-bloque" className={cls}
+            style={{
+              top, height: Math.max(alto - 1, 0), left: `calc(${seg.col * w}% + ${GAP_CARRIL_PX / 2}px)`,
+              width: `max(${ANCHO_MIN_BLOQUE_PX}px, calc(${w}% - ${GAP_CARRIL_PX}px))`,
+            }}
+            title={dentro ? `AVISO: cae dentro de PB${dentro.pb}/V${dentro.vuelo}` : `Tramo ${txt} · ${t.n} fotos`}
+            aria-label={`Tramo ${txt}, ${t.n} fotos`}
+            onClick={() => onSeleccion?.(t.id === seleccion ? null : t.id)}>
+      <span className="ri-tramo-tit">{dentro ? '⚠ ' : ''}Sin colocar</span>
+      <span className="ri-tramo-hora">{txt} · {t.n} fotos</span>
+    </button>
+  )
+}
+
 export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion }) {
   const scrollRef = useRef(null)
   const [ancho, setAncho] = useState(0)
+  const [altoDisp, setAltoDisp] = useState(0)
   const [scrollX, setScrollX] = useState(0)
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return undefined
-    const medir = () => setAncho(el.clientWidth)
+    const medir = () => { setAncho(el.clientWidth); setAltoDisp(el.clientHeight) }
     medir()
     if (typeof ResizeObserver === 'undefined') return undefined
     const ro = new ResizeObserver(medir)
@@ -122,7 +146,11 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
         todos.push({ ...s, finMin: Math.min(1440, Math.max(s.finMin, s.iniMin + MIN_DURACION_MIN)) })
       }
     }
-    for (const t of conTramo) todos.push({ iniMin: t.iniMin, finMin: Math.min(1440, Math.max(t.finMin, t.iniMin + MIN_DURACION_MIN)) })
+    for (const t of conTramo) {
+      const finMin = Math.min(1440, Math.max(t.finMin, t.iniMin + MIN_DURACION_MIN))
+      porDia.get(t.fecha).push({ clave: `tramo|${t.id}`, tramo: t, fecha: t.fecha, iniMin: t.iniMin, finMin: t.finMin, parte: 'unico' })
+      todos.push({ iniMin: t.iniMin, finMin })
+    }
     return { dias, porDia, porClave, rango: todos.length ? rangoHoras(todos) : null }
   }, [vuelos, tramos])
 
@@ -130,25 +158,30 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
   if (!rango) return <p className="ri-vacio">Sin vuelos con hora de cámara.</p>
 
   const anchoDias = Math.max(ancho - ANCHO_HORAS_PX, 0)
-  const altoHora = altoHoraPx(dias.map((d) => porDia.get(d)))
+  const spanMin = rango.hastaMin - rango.desdeMin
+  // La densidad (altoHoraPx) mira solo vuelos; luego se estira para llenar el alto disponible.
+  const altoBase = altoHoraPx(dias.map((d) => porDia.get(d).filter((s) => !s.tramo)))
+  const altoHora = altoHoraAjustado(altoBase, altoDisp - ALTO_CABECERA_PX - MARGEN_ALTO_PX, spanMin)
   const minDur = minDuracionParaAlto(altoHora)
   const layouts = dias.map((d) => layoutDia(porDia.get(d), { minDuracionMin: minDur }))
-  const nTramosDia = dias.map((d) => tramos.filter((t) => t.fecha === d).length)
+  const nTramosDia = dias.map((d) => layouts[dias.indexOf(d)].filter((s) => s.tramo).length)
   const anchos = anchosColumnas(
     layouts.map((l, i) => Math.max(contarVuelosDia(l), nTramosDia[i] ? 1 : 0)),
     anchoDias > 0 ? anchoDias : ANCHO_MIN_DIA_PX * 7, { anchoMinPx: ANCHO_MIN_DIA_PX },
   )
   const inicios = anchos.map((_, i) => anchos.slice(0, i).reduce((a, b) => a + b, 0))
-  const alto = (rango.hasta - rango.desde) * altoHora
-  const horas = Array.from({ length: rango.hasta - rango.desde + 1 }, (_, i) => rango.desde + i)
+  const alto = (spanMin / 60) * altoHora
+  const { paso, marcas } = marcasEje(rango.desdeMin, rango.hastaMin, altoHora)
+  // Rayas al paso de las etiquetas, ancladas a la primera marca.
+  const pasoPx = (paso / 60) * altoHora
+  const primeraPx = (((Math.ceil(rango.desdeMin / paso) * paso) - rango.desdeMin) / 60) * altoHora
   const maxScroll = anchos.reduce((a, b) => a + b, 0) - anchoDias
   const mover = (dir) => {
     const semanas = inicios.filter((_, i) => i % 7 === 0)
     const destino = dir > 0 ? semanas.find((x) => x > scrollX + 1) : [...semanas].reverse().find((x) => x < scrollX - 1)
     scrollRef.current?.scrollTo?.({ left: destino ?? (dir > 0 ? maxScroll : 0), behavior: 'smooth' })
   }
-  const pxMin = (min) => ((min - rango.desde * 60) / 60) * altoHora
-
+  
   return (
     <div className="ri-cal" data-testid="ri-calendario">
       <div className="ri-cal-barra">
@@ -172,14 +205,13 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
           <div className="ri-cal-horas" style={{ width: ANCHO_HORAS_PX }}>
             <div className="ri-cal-horas-cab" style={{ height: ALTO_CABECERA_PX }}>hora cámara</div>
             <div className="ri-escala-cuerpo" style={{ height: alto }}>
-              {horas.map((h, i) => <span key={h} className="ri-hora" style={{ top: i * altoHora }}>{String(h % 24).padStart(2, '0')}:00</span>)}
+              {marcas.map((m) => <span key={m} className="ri-hora" style={{ top: ((m - rango.desdeMin) / 60) * altoHora }}>{formatearHora(m)}</span>)}
             </div>
           </div>
           {dias.map((fecha, i) => {
             const segs = layouts[i]
             const nVuelos = contarVuelosDia(segs)
-            const delTramos = tramos.filter((t) => t.fecha === fecha)
-            const vacio = !nVuelos && !delTramos.length
+            const vacio = !nVuelos && !nTramosDia[i]
             return (
               <div key={fecha} className={vacio ? 'ri-dia vacio' : 'ri-dia'} style={{ width: anchos[i] }} data-testid={`ri-dia-${fecha}`}>
                 <div className="ri-dia-cab" style={{ height: ALTO_CABECERA_PX }}>
@@ -190,28 +222,16 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
                 {vacio ? (
                   <div className="ri-dia-vacio" style={{ height: alto }}><span>sin vuelos</span></div>
                 ) : (
-                  <div className="ri-dia-cuerpo" style={{ height: alto, backgroundSize: `100% ${altoHora}px` }}>
+                  <div className="ri-dia-cuerpo" style={{ height: alto, backgroundSize: `100% ${pasoPx}px`, backgroundPosition: `0 ${primeraPx}px` }}>
                     <div className="ri-vuelos">
-                      {segs.map((s) => (
-                        <EventoVuelo key={`${s.clave}|${s.fecha}`} seg={s} vuelo={porClave.get(s.clave)} desdeHora={rango.desde}
+                      {segs.map((s) => (s.tramo ? (
+                        <BloqueTramo key={s.clave} seg={s} vuelos={vuelos} seleccion={seleccion} onSeleccion={onSeleccion}
+                                     desdeMin={rango.desdeMin} altoHora={altoHora} minDuracionMin={minDur} />
+                      ) : (
+                        <EventoVuelo key={`${s.clave}|${s.fecha}`} seg={s} vuelo={porClave.get(s.clave)} desdeMin={rango.desdeMin}
                                      altoHora={altoHora} anchoCol={anchos[i]} minDuracionMin={minDur} />
-                      ))}
+                      )))}
                     </div>
-                    {delTramos.map((t) => {
-                      const dentro = vueloQueContiene(t, vuelos)
-                      const cls = ['ri-tramo', t.id === seleccion ? 'act' : '', dentro ? 'aviso' : ''].filter(Boolean).join(' ')
-                      const txt = `${formatearHora(t.iniMin)}-${formatearHora(t.finMin)}`
-                      return (
-                        <button key={t.id} type="button" data-testid="ri-tramo-bloque" className={cls}
-                                style={{ top: pxMin(t.iniMin), height: Math.max(pxMin(t.finMin) - pxMin(t.iniMin), ALTO_MIN_TRAMO_PX) }}
-                                title={dentro ? `AVISO: cae dentro de PB${dentro.pb}/V${dentro.vuelo}` : `Tramo ${txt} · ${t.n} fotos`}
-                                aria-label={`Tramo ${txt}, ${t.n} fotos`}
-                                onClick={() => onSeleccion?.(t.id === seleccion ? null : t.id)}>
-                          <span className="ri-tramo-tit">{dentro ? '⚠ ' : ''}Sin colocar</span>
-                          <span className="ri-tramo-hora">{txt} · {t.n} fotos</span>
-                        </button>
-                      )
-                    })}
                   </div>
                 )}
               </div>

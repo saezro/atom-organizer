@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import process from 'node:process';
 const assert = { equal: (a, b) => expect(a).toBe(b), deepEqual: (a, b) => expect(a).toEqual(b), ok: (v, m) => expect(v, m).toBeTruthy(), throws: (f) => expect(f).toThrow() };
 import {
-  parsearHoraCamara, lunesDe, diasDelRango, semanasDe, segmentosDeVuelo, layoutDia, rangoHoras,
+  parsearHoraCamara, lunesDe, diasDelRango, semanasDe, segmentosDeVuelo, layoutDia, rangoHoras, altoHoraAjustado, marcasEje,
   diasVisibles, iconoGiro, textoParidad, formatearGb, formatearHora, etiquetaVuelo, colorDePb,
   tooltipVotos, contarVuelosDia, altoHoraPx, minDuracionParaAlto, anchosColumnas, etiquetaCompacta, formatoBloque,
   modeloDesdeCalendario, textoHorasBloque, motivosAviso, tooltipVuelo, anchoBloquePx, ANCHO_MIN_BLOQUE_PX, PALETA_PB, ANCHO_MIN_DIA_PX, ALTO_HORA_PX, MIN_DURACION_MIN,
@@ -50,7 +50,26 @@ test('layoutDia', () => {
   assert.deepEqual(lejos.map((s) => s.nCols), [1, 1]);
 });
 test('rangoHoras', () => {
-  assert.deepEqual(rangoHoras([{ iniMin: 648, finMin: 671 }, { iniMin: 700, finMin: 1000 }]), { desde: 10, hasta: 17 });
+  // > 3 h: horas enteras
+  assert.deepEqual(rangoHoras([{ iniMin: 648, finMin: 671 }, { iniMin: 700, finMin: 1000 }]), { desde: 10, hasta: 17, desdeMin: 600, hastaMin: 1020 });
+  // <= 3 h: margen 5 min a cada lado (múltiplos de 5)
+  assert.deepEqual(rangoHoras([{ iniMin: 648, finMin: 671 }]), { desde: 10, hasta: 12, desdeMin: 640, hastaMin: 680 });
+  // límites del día
+  const r = rangoHoras([{ iniMin: 2, finMin: 1438 }]);
+  assert.equal(r.desdeMin, 0); assert.equal(r.hastaMin, 1440);
+  assert.equal(rangoHoras([{ iniMin: 1430, finMin: 1439 }]).hastaMin, 1440);
+});
+test('altoHoraAjustado: llena el alto disponible sin tope y nunca baja de la base', () => {
+  assert.equal(altoHoraAjustado(128, 0, 60), 128);
+  assert.equal(altoHoraAjustado(128, 600, 60), 600);
+  assert.equal(altoHoraAjustado(128, 600, 30), 1200);
+  assert.equal(altoHoraAjustado(128, 300, 600), 128);
+});
+test('marcasEje: por hora y más fino en rangos cortos', () => {
+  assert.deepEqual(marcasEje(600, 1020, 128), { paso: 60, marcas: [600, 660, 720, 780, 840, 900, 960, 1020] });
+  const c = marcasEje(640, 680, 900); // 40 min a 900 px/h: 5 min = 75 px
+  assert.equal(c.paso, 5); assert.deepEqual(c.marcas.slice(0, 3), [640, 645, 650]);
+  assert.equal(marcasEje(640, 680, 100).paso, 30); // 15 min = 25 px < 28 px
 });
 test('diasVisibles y constantes', () => {
   assert.equal(diasVisibles(100, 168), 1);
@@ -101,6 +120,15 @@ test('altoHoraPx sube con densidad y respeta tope', () => {
   assert.equal(altoHoraPx([mk(4)]), Math.round(128 * 4 / 3));
   assert.equal(minDuracionParaAlto(128), 19);
   assert.equal(minDuracionParaAlto(224), 11);
+});
+test('layoutDia: un tramo comparte carril con un vuelo solapado', () => {
+  const vuelo = { clave: 'v', fecha: 'x', iniMin: 976, finMin: 989, parte: 'unico' };
+  const tramo = { clave: 'tramo|1', tramo: { id: 1 }, fecha: 'x', iniMin: 976, finMin: 976, parte: 'unico' };
+  const r = layoutDia([vuelo, tramo], { minDuracionMin: 19 });
+  assert.deepEqual(r.map((s) => s.nCols), [2, 2]);
+  assert.ok(r[0].col !== r[1].col);
+  assert.equal(contarVuelosDia([vuelo, tramo]), 1);
+  assert.equal(contarVuelosDia([tramo]), 0);
 });
 test('layoutDia: clúster independiente y carriles sobre extensión visual', () => {
   const seg = (i, f) => ({ clave: `${i}`, fecha: 'x', iniMin: i, finMin: f, parte: 'unico' });
