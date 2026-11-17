@@ -19,7 +19,7 @@ describe('PreflightModal', () => {
     expect(screen.getByTestId('ri-calendario')).toBeTruthy()
     expect(screen.getByTestId('ri-vuelo-equipo').textContent).toBe('M3T · Ana')
     expect(screen.getByTestId('pf-aviso-dato').textContent).toMatch(/sin hora EXIF/)
-    expect(screen.queryByTestId('ri-giro')).toBeNull()
+    expect(screen.getByTestId('ri-giro').textContent).toBe('?') // el giro se pinta siempre, '?' si no hay dato
     fireEvent.click(screen.getByText('Comenzar'))
     expect(onStart).toHaveBeenCalled()
   })

@@ -7,8 +7,13 @@
 export const ANCHO_MIN_DIA_PX = 168;
 export const ALTO_HORA_PX = 128; // base; altoHoraPx() lo sube si el día más denso lo necesita
 export const ALTO_HORA_MAX_PX = 224;
-export const ALTO_MIN_BLOQUE_PX = 40; // 2 líneas legibles
-export const MIN_DURACION_MIN = Math.ceil((ALTO_MIN_BLOQUE_PX / ALTO_HORA_PX) * 60); // 19 min con la base
+// Alto mínimo SOLO para que un bloque corto sea visible/clicable; el alto real es la duración real.
+export const ALTO_MIN_BLOQUE_PX = 7;
+export const MIN_DURACION_MIN = Math.ceil((ALTO_MIN_BLOQUE_PX / ALTO_HORA_PX) * 60); // 4 min con la base
+// Umbrales de contenido según el alto real del bloque (px).
+export const ALTO_COMPLETO_PX = 44;
+export const ALTO_COMPACTO_PX = 22;
+export const modoContenido = (altoPx) => (altoPx >= ALTO_COMPLETO_PX ? 'completo' : altoPx >= ALTO_COMPACTO_PX ? 'compacto' : 'minimo');
 export const ANCHO_DIA_VACIO_PX = 56;
 export const GAP_CARRIL_PX = 3;
 export const ANCHO_MIN_BLOQUE_PX = 6;
@@ -95,7 +100,8 @@ export function segmentosDeVuelo(v) {
 // Vuelos distintos presentes en un día (cualquier parte: unico/inicio/medio/fin). Los tramos (`tramo`) no cuentan.
 export const contarVuelosDia = (segmentos) => new Set(segmentos.filter((s) => !s.tramo).map((s) => s.clave)).size;
 
-export function layoutDia(segmentos, { minDuracionMin = MIN_DURACION_MIN } = {}) {
+// El carril se calcula sobre el rango REAL (minDuracionMin = mínimo ínfimo de visibilidad, en minutos).
+export function layoutDia(segmentos, { minDuracionMin = 0 } = {}) {
   const orden = [...segmentos].sort((a, b) => a.iniMin - b.iniMin || a.finMin - b.finMin);
   const salida = [];
   let grupo = [];
@@ -151,15 +157,27 @@ export function altoHoraAjustado(altoBase, altoDispPx, spanMin) {
 // Marcas del eje (minutos del día): cada hora; si el rango es corto (< 2 h), el paso más fino
 // (5/10/15/30/60 min) con al menos ALTO_MIN_ETIQUETA_PX px entre etiquetas.
 export const ALTO_MIN_ETIQUETA_PX = 28;
-export function marcasEje(desdeMin, hastaMin, altoHora) {
+export const PASOS_EJE = [5, 10, 15, 30, 60];
+export const PASOS_EJE_ZOOM = [1, 2, 5, 10, 15, 30, 60];
+export function marcasEje(desdeMin, hastaMin, altoHora, pasos = PASOS_EJE) {
   let paso = 60;
   if (hastaMin - desdeMin < 120) {
-    paso = [5, 10, 15, 30, 60].find((p) => (p / 60) * altoHora >= ALTO_MIN_ETIQUETA_PX) ?? 60;
+    paso = pasos.find((p) => (p / 60) * altoHora >= ALTO_MIN_ETIQUETA_PX) ?? 60;
   }
   const out = [];
   for (let m = Math.ceil(desdeMin / paso) * paso; m <= hastaMin; m += paso) out.push(m);
   return { paso, marcas: out };
 }
+
+// Zoom por hora: rango HH:00-HH+1:00 con ±MARGEN_RANGO_MIN min de margen (acotado al día).
+export function rangoZoomHora(hora) {
+  if (!Number.isInteger(hora) || hora < 0 || hora > 23) throw new Error(`rangoZoomHora: hora inválida ${JSON.stringify(hora)}`);
+  const desdeMin = Math.max(0, hora * 60 - MARGEN_RANGO_MIN);
+  const hastaMin = Math.min(1440, (hora + 1) * 60 + MARGEN_RANGO_MIN);
+  return { desde: Math.floor(desdeMin / 60), hasta: Math.ceil(hastaMin / 60), desdeMin, hastaMin };
+}
+// Hora anterior/siguiente acotada a 0..23.
+export const horaZoomVecina = (hora, dir) => Math.min(23, Math.max(0, hora + dir));
 
 export const diasVisibles = (anchoPx, anchoMinPx) => Math.max(1, Math.floor(anchoPx / anchoMinPx));
 
@@ -186,6 +204,27 @@ export function formatearGb(bytes) {
   if (bytes === null) return '—';
   if (typeof bytes !== 'number' || !Number.isFinite(bytes)) throw new Error(`formatearGb: valor no numérico (${bytes})`);
   return `${(bytes / 1e9).toFixed(2).replace('.', ',')} GB`;
+}
+
+// Hora de un bloque. Si dura < 1 min (y hay horas completas del mismo día) se muestran segundos.
+export function textoRangoHora(iniStr, finStr, iniMin, finMin, conSegundos = false) {
+  const m = (x) => (typeof x === 'string' ? RE_HORA.exec(x) : null);
+  const a = m(iniStr);
+  const b = m(finStr);
+  if (a && b && a[1] + a[2] + a[3] === b[1] + b[2] + b[3]) {
+    const sa = Number(a[4]) * 3600 + Number(a[5]) * 60 + Number(a[6]);
+    const sb = Number(b[4]) * 3600 + Number(b[5]) * 60 + Number(b[6]);
+    if (conSegundos || sb - sa < 60) return `${a[4]}:${a[5]}:${a[6]}-${b[4]}:${b[5]}:${b[6]}`;
+  }
+  return `${formatearHora(iniMin)}-${formatearHora(finMin)}`;
+}
+
+// Línea de fotos de un vuelo: «N fotos» si RGB y T coinciden, si no «N RGB / N T».
+export function textoFotos(v) {
+  const rgb = v.n_rgb;
+  const t = v.n_t;
+  if (!Number.isInteger(rgb) || !Number.isInteger(t)) return null;
+  return rgb === t ? `${rgb} fotos` : `${rgb} RGB / ${t} T`;
 }
 
 export function formatearHora(min) {

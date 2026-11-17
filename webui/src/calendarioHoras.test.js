@@ -5,7 +5,7 @@ const assert = { equal: (a, b) => expect(a).toBe(b), deepEqual: (a, b) => expect
 import {
   parsearHoraCamara, lunesDe, diasDelRango, semanasDe, segmentosDeVuelo, layoutDia, rangoHoras, altoHoraAjustado, marcasEje,
   diasVisibles, iconoGiro, textoParidad, formatearGb, formatearHora, etiquetaVuelo, colorDePb,
-  tooltipVotos, contarVuelosDia, altoHoraPx, minDuracionParaAlto, anchosColumnas, etiquetaCompacta, formatoBloque,
+  tooltipVotos, contarVuelosDia, altoHoraPx, minDuracionParaAlto, rangoZoomHora, horaZoomVecina, marcasEje, PASOS_EJE_ZOOM, modoContenido, textoRangoHora, textoFotos, anchosColumnas, etiquetaCompacta, formatoBloque,
   modeloDesdeCalendario, textoHorasBloque, motivosAviso, tooltipVuelo, anchoBloquePx, ANCHO_MIN_BLOQUE_PX, PALETA_PB, ANCHO_MIN_DIA_PX, ALTO_HORA_PX, MIN_DURACION_MIN,
 } from './calendarioHoras.js';
 
@@ -44,8 +44,12 @@ test('layoutDia', () => {
   assert.deepEqual(sol.map((s) => [s.col, s.nCols]), [[0, 2], [1, 2]]);
   const solo = layoutDia([seg(600, 660)], { minDuracionMin: 23 });
   assert.equal(solo[0].nCols, 1);
-  const cortos = layoutDia([seg(600, 605), seg(615, 620)], { minDuracionMin: 23 });
-  assert.deepEqual(cortos.map((s) => s.nCols), [2, 2]);
+  const cortos = layoutDia([seg(600, 605), seg(615, 620)], { minDuracionMin: 4 });
+  assert.deepEqual(cortos.map((s) => s.nCols), [1, 1]);
+  const consecutivos = layoutDia([seg(560, 567), seg(570, 600)], { minDuracionMin: 4 });
+  assert.deepEqual(consecutivos.map((s) => [s.col, s.nCols]), [[0, 1], [0, 1]]);
+  const solapados = layoutDia([seg(560, 575), seg(570, 600)], { minDuracionMin: 4 });
+  assert.deepEqual(solapados.map((s) => s.nCols), [2, 2]);
   const lejos = layoutDia([seg(600, 605), seg(700, 705)], { minDuracionMin: 23 });
   assert.deepEqual(lejos.map((s) => s.nCols), [1, 1]);
 });
@@ -74,7 +78,7 @@ test('marcasEje: por hora y más fino en rangos cortos', () => {
 test('diasVisibles y constantes', () => {
   assert.equal(diasVisibles(100, 168), 1);
   assert.equal(diasVisibles(1200, 168), 7);
-  assert.equal(ANCHO_MIN_DIA_PX, 168); assert.equal(ALTO_HORA_PX, 128); assert.equal(MIN_DURACION_MIN, 19);
+  assert.equal(ANCHO_MIN_DIA_PX, 168); assert.equal(ALTO_HORA_PX, 128); assert.equal(MIN_DURACION_MIN, 4);
 });
 test('iconoGiro', () => {
   assert.equal(iconoGiro(90), 'cw'); assert.equal(iconoGiro(270), 'ccw'); assert.equal(iconoGiro(0), null);
@@ -118,23 +122,41 @@ test('altoHoraPx sube con densidad y respeta tope', () => {
   assert.equal(altoHoraPx([mk(2)]), 128);
   assert.equal(altoHoraPx([mk(6)]), 256 > 224 ? 224 : 256);
   assert.equal(altoHoraPx([mk(4)]), Math.round(128 * 4 / 3));
-  assert.equal(minDuracionParaAlto(128), 19);
-  assert.equal(minDuracionParaAlto(224), 11);
+  assert.equal(minDuracionParaAlto(128), 4);
+  assert.equal(minDuracionParaAlto(224), 2);
 });
 test('layoutDia: un tramo comparte carril con un vuelo solapado', () => {
   const vuelo = { clave: 'v', fecha: 'x', iniMin: 976, finMin: 989, parte: 'unico' };
   const tramo = { clave: 'tramo|1', tramo: { id: 1 }, fecha: 'x', iniMin: 976, finMin: 976, parte: 'unico' };
-  const r = layoutDia([vuelo, tramo], { minDuracionMin: 19 });
+  const r = layoutDia([vuelo, tramo], { minDuracionMin: 4 });
   assert.deepEqual(r.map((s) => s.nCols), [2, 2]);
   assert.ok(r[0].col !== r[1].col);
   assert.equal(contarVuelosDia([vuelo, tramo]), 1);
   assert.equal(contarVuelosDia([tramo]), 0);
 });
-test('layoutDia: clúster independiente y carriles sobre extensión visual', () => {
+test('layoutDia: clúster independiente y carriles sobre extensión real', () => {
   const seg = (i, f) => ({ clave: `${i}`, fecha: 'x', iniMin: i, finMin: f, parte: 'unico' });
-  // A(600-602) y B(610-612) solapan visualmente con min 19; C(700) queda solo a ancho completo.
-  const r = layoutDia([seg(600, 602), seg(610, 612), seg(700, 702)], { minDuracionMin: 19 });
+  // A(600-602) y B(601-612) solapan (mín 4 min); C(700) queda solo a ancho completo.
+  const r = layoutDia([seg(600, 602), seg(601, 612), seg(700, 702)], { minDuracionMin: 4 });
   assert.deepEqual(r.map((s) => s.nCols), [2, 2, 1]);
+});
+test('modoContenido, textoRangoHora, textoFotos', () => {
+  assert.deepEqual([60, 44, 43, 22, 21, 7].map(modoContenido), ['completo', 'completo', 'compacto', 'compacto', 'minimo', 'minimo']);
+  assert.equal(textoRangoHora('2026-08-20T09:20:10', '2026-08-20T09:20:40', 560, 561), '09:20:10-09:20:40');
+  assert.equal(textoRangoHora('2026-08-20T09:20:10', '2026-08-20T09:27:00', 560, 567), '09:20-09:27');
+  assert.equal(textoFotos({ n_rgb: 8, n_t: 8 }), '8 fotos');
+  assert.equal(textoFotos({ n_rgb: 8, n_t: 6 }), '8 RGB / 6 T');
+  assert.equal(textoFotos({}), null);
+});
+test('zoom por hora: rango, vecinas y marcas finas', () => {
+  const r = rangoZoomHora(9);
+  assert.deepEqual([r.desdeMin, r.hastaMin, r.desde, r.hasta], [535, 605, 8, 11]);
+  assert.equal(rangoZoomHora(0).desdeMin, 0);
+  assert.equal(rangoZoomHora(23).hastaMin, 1440);
+  assert.throws(() => rangoZoomHora(24));
+  assert.equal(horaZoomVecina(0, -1), 0); assert.equal(horaZoomVecina(23, 1), 23); assert.equal(horaZoomVecina(9, 1), 10);
+  assert.equal(marcasEje(535, 605, 600, PASOS_EJE_ZOOM).paso, 5);
+  assert.equal(marcasEje(535, 605, 142, PASOS_EJE_ZOOM).paso, 15);
 });
 test('anchosColumnas: vacíos estrechos, llenos reparten', () => {
   const a = anchosColumnas([0, 3, 0, 2, 0, 0, 1], 1000, { anchoVacioPx: 56, anchoMinPx: 168 });
