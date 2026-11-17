@@ -13,7 +13,7 @@ import {
 const DIAS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
 const ANCHO_HORAS_PX = 30 // gutter de etiquetas de hora DENTRO de cada día (el eje es por día)
 const ALTO_CABECERA_PX = 58
-const MARGEN_ALTO_PX = 14 // padding inferior del scroll + holgura
+const MARGEN_ALTO_PX = 30 // padding inferior del scroll + aire para la última etiqueta de hora
 
 // Color: un único color base para todos los vuelos (los colores por PB de la Suite no significaban nada
 // más que «PB distinto»). Los estados se distinguen por color: aviso (ámbar), tramo sin colocar (gris),
@@ -229,24 +229,23 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
             <button type="button" className="btn-ghost ri-nav" data-testid="ri-ver-todo" onClick={() => setZoom(null)}>Ver todo</button>
             <span className="ri-cal-eje">Zoom {String(zoom).padStart(2, '0')}:00-{String(zoom + 1).padStart(2, '0')}:00 (Esc: ver todo)</span>
           </>
-        ) : <span className="ri-cal-eje ri-cal-ayuda">Pulsa una hora para ampliarla</span>}
-        <span className="ri-cal-eje">Eje: hora cámara (EXIF, sin zona)</span>
+        ) : <span className="ri-cal-eje ri-cal-ayuda" title="Eje: hora de cámara (EXIF, sin zona). Pulsa una hora para ampliarla">Hora cámara · pulsa una hora para ampliar</span>}
+        <ul className="ri-leyenda" data-testid="ri-leyenda" aria-label="Leyenda"
+            title="Color = giro (icono arriba a la derecha: flecha = sin giro, ↻ 90º, ↺ 270º, ? = sin dato). Aviso: «RGB ≠ T» (distinto nº de fotos RGB y T) o «sin giro»">
+          <li><i className="ri-ley g-cero" /> 0º</li>
+          <li><i className="ri-ley g-cw" /> 90º</li>
+          <li><i className="ri-ley g-ccw" /> 270º</li>
+          <li><i className="ri-ley g-falta" /> ? sin consenso</li>
+          <li><i className="ri-ley g-generales" /> GENERALES</li>
+          <li><i className="ri-ley aviso" /> Aviso (RGB ≠ T / sin giro)</li>
+          <li><i className="ri-ley tramo" /> Sin colocar</li>
+          <li><i className="ri-ley sel" /> Seleccionado</li>
+          <li><i className="ri-ley dentro" /> Tramo dentro de vuelo</li>
+          <li><i className="ri-ley alta" /> Conf. alta</li>
+          <li><i className="ri-ley media" /> media</li>
+          <li><i className="ri-ley baja" /> baja</li>
+        </ul>
       </div>
-      <ul className="ri-leyenda" data-testid="ri-leyenda" aria-label="Leyenda">
-        <li><i className="ri-ley g-cero" /> Giro 0º (sin giro)</li>
-        <li><i className="ri-ley g-cw" /> Giro 90º</li>
-        <li><i className="ri-ley g-ccw" /> Giro 270º</li>
-        <li><i className="ri-ley g-falta" /> Giro desconocido (?)</li>
-        <li><i className="ri-ley g-generales" /> GENERALES (no gira)</li>
-        <li><i className="ri-ley aviso" /> Vuelo con aviso: «RGB ≠ T» (distinto nº de fotos RGB y T) o «sin giro» (giro ?)</li>
-        <li><i className="ri-ley tramo" /> Fotos sin colocar (tramo)</li>
-        <li><i className="ri-ley sel" /> Tramo seleccionado</li>
-        <li><i className="ri-ley dentro" /> Tramo dentro de un vuelo (aviso)</li>
-        <li><i className="ri-ley alta" /> Confianza alta</li>
-        <li><i className="ri-ley media" /> media</li>
-        <li><i className="ri-ley baja" /> baja</li>
-        <li className="ri-ley-giro">Giro: color del bloque + icono arriba a la derecha (flecha = sin giro, ↻ 90º, ↺ 270º, ? = sin dato)</li>
-      </ul>
       <div ref={scrollRef} className="ri-cal-scroll" onScroll={(e) => setScrollX(e.currentTarget.scrollLeft)}>
         <div className="ri-cal-fila">
           {dias.map((fecha, i) => {

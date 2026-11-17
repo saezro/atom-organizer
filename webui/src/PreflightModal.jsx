@@ -44,7 +44,7 @@ export default function PreflightModal({ info, calendario, calCargando = false, 
         {!loading && !err && info && (
           <>
             <dl className="pf-facts">
-              <PFItem label="Empresa" value={info.empresa} />
+              <PFItem label="Empresa" value={info.empresa !== titulo ? info.empresa : null} />
               <PFItem label={multiDia ? 'Fechas' : 'Fecha'} value={fechas.join(', ')} />
               <PFItem label="Piloto(s)" value={(info.pilotos || []).join(', ')} />
               <PFItem label="Dron(es)" value={(info.drones || []).join(', ')} />
@@ -79,9 +79,7 @@ export default function PreflightModal({ info, calendario, calCargando = false, 
               </p>
             )}
             {errCal && <p className="pm-status err">✗ No se pudo preparar el calendario: {errCal}</p>}
-            {(modelo?.avisos ?? []).map((a, i) => (
-              <p key={i} className="pm-status warn" role="alert" data-testid="pf-aviso-dato">AVISO: {a}</p>
-            ))}
+            <AvisosDato avisos={modelo?.avisos ?? []} />
             {modelo && (
               <CalendarioHoras vuelos={modelo.vuelos} tramos={tramos} seleccion={null} onSeleccion={() => {}} />
             )}
@@ -120,5 +118,19 @@ function PFItem({ label, value }) {
       <dt>{label}</dt>
       <dd>{value}</dd>
     </div>
+  )
+}
+
+// Avisos del calendario en UNA línea: uno solo se muestra tal cual; varios, plegados con contador.
+function AvisosDato({ avisos }) {
+  if (!avisos.length) return null
+  if (avisos.length === 1) {
+    return <p className="pm-status warn pf-aviso" role="alert" data-testid="pf-aviso-dato">AVISO: {avisos[0]}</p>
+  }
+  return (
+    <details className="pm-status warn pf-aviso pf-avisos" role="alert">
+      <summary>⚠ {avisos.length} avisos · {avisos[0]}</summary>
+      <ul>{avisos.map((a, i) => <li key={i} data-testid="pf-aviso-dato">{a}</li>)}</ul>
+    </details>
   )
 }
