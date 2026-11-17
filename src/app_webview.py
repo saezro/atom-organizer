@@ -1098,7 +1098,7 @@ class Api:
         indice.ventanas_de_estadillos(rutas, cfg, [])
         lectura = indice.leer_timestamps(origen, cfg, cancelar=cancelar)
         ventanas = indice.ventanas_de_estadillos(rutas, cfg, [f.ruta for f in lectura.fotos])
-        resultado = construir_previo(ventanas, lectura.fotos)
+        resultado = construir_previo(ventanas, lectura.fotos, cfg)
         if lectura.no_leidas:
             resultado["avisos"].append(
                 f"{lectura.no_leidas} fotos no se han podido leer (no DJI, a medio copiar o sin respuesta): no se pintan.")
