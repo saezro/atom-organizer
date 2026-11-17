@@ -4876,3 +4876,19 @@ html.kiosk-modo body * {
 .sub-pb-barra { display: block; min-width: 6rem; height: 0.4rem; border-radius: 999rem; background: rgba(255, 255, 255, 0.06); overflow: hidden; }
 .sub-pb-barra i { display: block; height: 100%; background: rgba(238, 117, 58, 0.7); }
 .sub-pb-ok { color: #34d399; }
+
+/* Calendario: contenido adaptativo según alto real del bloque (completo >= 44 px, compacto >= 22, mínimo < 22). */
+.ri-vuelo-tit, .ri-vuelo-hora { text-overflow: ellipsis; }
+.ri-una-linea { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ri-vuelo-fotos { font-size: 0.625rem; color: #e2e8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ri-vuelo.ri-compacto, .ri-tramo.ri-compacto { padding-top: 0.0625rem; padding-bottom: 0; line-height: 1.2; }
+.ri-vuelo.ri-minimo, .ri-tramo.ri-minimo { padding: 0; border-radius: 0.25rem; }
+.ri-vuelo.ri-compacto .ri-giro { top: 0.125rem; right: 0.2rem; }
+.ri-vuelo.ri-minimo .ri-giro { top: 0; right: 0.1rem; }
+.ri-vuelo.ri-compacto .ri-giro.falta, .ri-vuelo.ri-minimo .ri-giro.falta { top: 0; font-size: 0.8rem; }
+.ri-vuelos { overflow: hidden; }
+.ri-hora.clic { cursor: pointer; padding: 0 0.25rem; border-radius: 0.25rem; }
+.ri-hora.clic:hover, .ri-hora.clic:focus-visible { color: var(--orange); background: rgba(238, 117, 58, 0.15); outline: none; }
+.ri-dia-cuerpo.clic { cursor: zoom-in; }
+.ri-vuelo, .ri-tramo { cursor: default; }
+.ri-tramo { cursor: pointer; }

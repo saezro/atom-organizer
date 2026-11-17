@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ANCHO_MIN_DIA_PX, MIN_DURACION_MIN, ALTO_MIN_BLOQUE_PX, ANCHO_MIN_BLOQUE_PX, GAP_CARRIL_PX,
   altoHoraPx, altoHoraAjustado, marcasEje, anchosColumnas, anchoBloquePx, contarVuelosDia, diasDelRango, layoutDia, minDuracionParaAlto,
-  rangoHoras, segmentosDeVuelo, etiquetaCompacta, formatoBloque, textoHorasBloque,
+  rangoHoras, segmentosDeVuelo, etiquetaCompacta, formatoBloque, textoHorasBloque, modoContenido, textoRangoHora, rangoZoomHora, horaZoomVecina, PASOS_EJE_ZOOM, textoFotos,
   cubetasPorHora, formatearHora, vueloQueContiene, motivosAviso,
 } from './calendarioHoras.js'
 
@@ -49,67 +49,83 @@ function IconoGiro({ giro, pequeno }) {
 
 const aVueloExif = (v) => ({ pb: v.pb, vuelo: v.vuelo, sufijo: v.sufijo, inicio_exif: v.inicio, fin_exif: v.fin })
 
-function EventoVuelo({ seg, vuelo, desdeMin, altoHora, anchoCol, minDuracionMin }) {
+const altoReal = (seg, altoHora) => Math.max(((seg.finMin - seg.iniMin) / 60) * altoHora, ALTO_MIN_BLOQUE_PX)
+
+function EventoVuelo({ seg, vuelo, desdeMin, altoHora, anchoCol, conSegundos }) {
   const top = ((seg.iniMin - desdeMin) / 60) * altoHora
-  const alto = Math.max((Math.max(seg.finMin - seg.iniMin, minDuracionMin) / 60) * altoHora, ALTO_MIN_BLOQUE_PX)
+  const alto = altoReal(seg, altoHora)
   const w = 100 / seg.nCols
+  const modo = modoContenido(alto)
   const fmt = formatoBloque(anchoBloquePx(anchoCol, seg.nCols), alto)
   const giro = infoGiro(vuelo.angulo)
-  // Calendario previo (antes de procesar): aún no hay giro ni paridad RGB/T que avisar.
+  // Calendario previo (antes de procesar): aún no hay paridad RGB/T que avisar; el giro se pinta siempre ('?' si no hay dato).
   const motivos = vuelo.previo ? [] : motivosAviso(vuelo)
   const textoMotivos = motivos.join(' · ')
   const color = motivos.length ? COLOR_AVISO : COLOR_VUELO
   const cubetas = cubetasPorHora(vuelo)
+  const parcial = seg.parte !== 'unico'
+  const hora = parcial ? textoHorasBloque('rango', seg.iniMin, seg.finMin) : textoRangoHora(vuelo.inicio, vuelo.fin, seg.iniMin, seg.finMin, conSegundos)
+  const fotos = textoFotos(vuelo)
+  const personas = [vuelo.equipo, vuelo.piloto].filter(Boolean).join(' · ')
+  const tit = [
+    etiquetaCompacta(vuelo), vuelo.equipo ? `Dron: ${vuelo.equipo}` : null, vuelo.piloto ? `Piloto: ${vuelo.piloto}` : null,
+    hora, fotos, giro.etiqueta, motivos.length ? `Aviso: ${textoMotivos}` : null,
+  ].filter(Boolean).join(' · ')
   return (
-    <div className="ri-vuelo" data-testid="ri-vuelo"
-         title={`${etiquetaCompacta(vuelo)}${vuelo.equipo ? ` · Dron: ${vuelo.equipo}` : ''}${vuelo.piloto ? ` · Piloto: ${vuelo.piloto}` : ''} · ${formatearHora(seg.iniMin)}-${formatearHora(seg.finMin)} · ${vuelo.n_rgb} RGB / ${vuelo.n_t} T${motivos.length ? ` · Aviso: ${textoMotivos}` : ''}`}
+    <div className={`ri-vuelo ri-${modo}`} data-testid="ri-vuelo" aria-label={tit} title={tit}
          style={{
            top, height: Math.max(alto - 1, 0), left: `calc(${seg.col * w}% + ${GAP_CARRIL_PX / 2}px)`,
            width: `max(${ANCHO_MIN_BLOQUE_PX}px, calc(${w}% - ${GAP_CARRIL_PX}px))`,
            borderColor: `${color}b3`, backgroundColor: `${color}2e`,
          }}>
-      <div className="ri-vuelo-tit">{etiquetaCompacta(vuelo)}</div>
-      {vuelo.previo ? null : <IconoGiro giro={giro} pequeno={fmt.iconoPequeno} />}
-      {vuelo.equipo || vuelo.piloto ? (
-        <div className="ri-vuelo-equipo" data-testid="ri-vuelo-equipo">
-          {[vuelo.equipo, vuelo.piloto].filter(Boolean).join(' · ')}
-        </div>
-      ) : null}
-      <div className="ri-vuelo-hora">
-        {textoHorasBloque(fmt.linea2, seg.iniMin, seg.finMin)}
-        {fmt.linea2 !== 'completa' && motivos.length ? <span className="ri-vuelo-aviso" title={`Aviso: ${textoMotivos}`}> ⚠</span> : null}
-      </div>
-      {fmt.linea2 === 'completa' && motivos.length ? (
-        <div className="ri-vuelo-motivo" data-testid="ri-vuelo-motivo" title={`Aviso: ${textoMotivos}`}>⚠ {textoMotivos}</div>
-      ) : null}
-      {fmt.linea2 === 'completa' && cubetas.length ? (
-        <div className="ri-cubetas">
-          {cubetas.map((c) => <span key={c.hora} className="ri-cubeta" title={`${String(c.hora).padStart(2, '0')}h: ${c.n_rgb} RGB, ${c.n_t} T`}>{c.hora}h·{c.n_rgb + c.n_t + c.n_otro}</span>)}
-        </div>
-      ) : null}
+      <IconoGiro giro={giro} pequeno={fmt.iconoPequeno || modo !== 'completo'} />
+      {modo === 'minimo' ? null : modo === 'compacto' ? (
+        <div className="ri-vuelo-tit ri-una-linea">{etiquetaCompacta(vuelo)} · {hora}{motivos.length ? ' ⚠' : ''}</div>
+      ) : (
+        <>
+          <div className="ri-vuelo-tit">{etiquetaCompacta(vuelo)}</div>
+          {personas ? <div className="ri-vuelo-equipo" data-testid="ri-vuelo-equipo">{personas}</div> : null}
+          <div className="ri-vuelo-hora">
+            {hora}
+            {motivos.length ? <span className="ri-vuelo-aviso" title={`Aviso: ${textoMotivos}`}> ⚠</span> : null}
+          </div>
+          {alto >= 70 && motivos.length ? (
+            <div className="ri-vuelo-motivo" data-testid="ri-vuelo-motivo" title={`Aviso: ${textoMotivos}`}>⚠ {textoMotivos}</div>
+          ) : null}
+          {alto >= 58 && fotos ? <div className="ri-vuelo-fotos" data-testid="ri-vuelo-fotos">{fotos}</div> : null}
+        </>
+      )}
     </div>
   )
 }
 
-function BloqueTramo({ seg, vuelos, seleccion, onSeleccion, desdeMin, altoHora, minDuracionMin }) {
+function BloqueTramo({ seg, vuelos, seleccion, onSeleccion, desdeMin, altoHora, conSegundos }) {
   const t = seg.tramo
   const top = ((seg.iniMin - desdeMin) / 60) * altoHora
-  const alto = Math.max((Math.max(seg.finMin - seg.iniMin, minDuracionMin) / 60) * altoHora, ALTO_MIN_BLOQUE_PX)
+  const alto = altoReal(seg, altoHora)
+  const modo = modoContenido(alto)
   const w = 100 / seg.nCols
   const dentro = vueloQueContiene(t, vuelos)
-  const cls = ['ri-tramo', t.id === seleccion ? 'act' : '', dentro ? 'aviso' : ''].filter(Boolean).join(' ')
-  const txt = `${formatearHora(t.iniMin)}-${formatearHora(t.finMin)}`
+  const cls = ['ri-tramo', `ri-${modo}`, t.id === seleccion ? 'act' : '', dentro ? 'aviso' : ''].filter(Boolean).join(' ')
+  const txt = textoRangoHora(t.ini, t.fin, t.iniMin, t.finMin, conSegundos)
+  const info = `Tramo sin colocar ${txt} · ${t.n} fotos`
   return (
     <button type="button" data-testid="ri-tramo-bloque" className={cls}
             style={{
               top, height: Math.max(alto - 1, 0), left: `calc(${seg.col * w}% + ${GAP_CARRIL_PX / 2}px)`,
               width: `max(${ANCHO_MIN_BLOQUE_PX}px, calc(${w}% - ${GAP_CARRIL_PX}px))`,
             }}
-            title={dentro ? `AVISO: cae dentro de PB${dentro.pb}/V${dentro.vuelo}` : `Tramo ${txt} · ${t.n} fotos`}
-            aria-label={`Tramo ${txt}, ${t.n} fotos`}
+            title={dentro ? `AVISO: cae dentro de PB${dentro.pb}/V${dentro.vuelo} · ${info}` : info}
+            aria-label={info}
             onClick={() => onSeleccion?.(t.id === seleccion ? null : t.id)}>
-      <span className="ri-tramo-tit">{dentro ? '⚠ ' : ''}Sin colocar</span>
-      <span className="ri-tramo-hora">{txt} · {t.n} fotos</span>
+      {modo === 'minimo' ? null : modo === 'compacto' ? (
+        <span className="ri-tramo-tit ri-una-linea">{dentro ? '⚠ ' : ''}Sin colocar · {txt}</span>
+      ) : (
+        <>
+          <span className="ri-tramo-tit">{dentro ? '⚠ ' : ''}Sin colocar</span>
+          <span className="ri-tramo-hora">{txt} · {t.n} fotos</span>
+        </>
+      )}
     </button>
   )
 }
@@ -119,6 +135,13 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
   const [ancho, setAncho] = useState(0)
   const [altoDisp, setAltoDisp] = useState(0)
   const [scrollX, setScrollX] = useState(0)
+  const [zoom, setZoom] = useState(null) // hora entera ampliada, o null = rango completo
+  useEffect(() => {
+    if (zoom === null) return undefined
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); setZoom(null) } }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [zoom])
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return undefined
@@ -154,7 +177,8 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
     return { dias, porDia, porClave, rango: todos.length ? rangoHoras(todos) : null }
   }, [vuelos, tramos])
 
-  const { dias, porDia, porClave, rango } = calc
+  const { dias, porDia, porClave } = calc
+  const rango = calc.rango && zoom !== null ? rangoZoomHora(zoom) : calc.rango
   if (!rango) return <p className="ri-vacio">Sin vuelos con hora de cámara.</p>
 
   const anchoDias = Math.max(ancho - ANCHO_HORAS_PX, 0)
@@ -171,7 +195,7 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
   )
   const inicios = anchos.map((_, i) => anchos.slice(0, i).reduce((a, b) => a + b, 0))
   const alto = (spanMin / 60) * altoHora
-  const { paso, marcas } = marcasEje(rango.desdeMin, rango.hastaMin, altoHora)
+  const { paso, marcas } = marcasEje(rango.desdeMin, rango.hastaMin, altoHora, zoom !== null ? PASOS_EJE_ZOOM : undefined)
   // Rayas al paso de las etiquetas, ancladas a la primera marca.
   const pasoPx = (paso / 60) * altoHora
   const primeraPx = (((Math.ceil(rango.desdeMin / paso) * paso) - rango.desdeMin) / 60) * altoHora
@@ -181,12 +205,25 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
     const destino = dir > 0 ? semanas.find((x) => x > scrollX + 1) : [...semanas].reverse().find((x) => x < scrollX - 1)
     scrollRef.current?.scrollTo?.({ left: destino ?? (dir > 0 ? maxScroll : 0), behavior: 'smooth' })
   }
-  
+  const clickCuerpo = (e) => {
+    if (zoom !== null || !(e.target === e.currentTarget || e.target.classList?.contains('ri-vuelos'))) return
+    const y = e.clientY - e.currentTarget.getBoundingClientRect().top
+    setZoom(Math.min(23, Math.max(0, Math.floor((rango.desdeMin + (y / altoHora) * 60) / 60))))
+  }
+
   return (
     <div className="ri-cal" data-testid="ri-calendario">
       <div className="ri-cal-barra">
         <button type="button" className="btn-ghost ri-nav" onClick={() => mover(-1)} disabled={scrollX <= 1} aria-label="Semana anterior">‹</button>
         <button type="button" className="btn-ghost ri-nav" onClick={() => mover(1)} disabled={scrollX >= maxScroll - 1} aria-label="Semana siguiente">›</button>
+        {zoom !== null ? (
+          <>
+            <button type="button" className="btn-ghost ri-nav" onClick={() => setZoom(horaZoomVecina(zoom, -1))} disabled={zoom <= 0} aria-label="Hora anterior">↑ hora</button>
+            <button type="button" className="btn-ghost ri-nav" onClick={() => setZoom(horaZoomVecina(zoom, 1))} disabled={zoom >= 23} aria-label="Hora siguiente">↓ hora</button>
+            <button type="button" className="btn-ghost ri-nav" data-testid="ri-ver-todo" onClick={() => setZoom(null)}>Ver todo</button>
+            <span className="ri-cal-eje">Zoom {String(zoom).padStart(2, '0')}:00-{String(zoom + 1).padStart(2, '0')}:00 (Esc: ver todo)</span>
+          </>
+        ) : <span className="ri-cal-eje ri-cal-ayuda">Pulsa una hora para ampliarla</span>}
         <span className="ri-cal-eje">Eje: hora cámara (EXIF, sin zona)</span>
       </div>
       <ul className="ri-leyenda" data-testid="ri-leyenda" aria-label="Leyenda">
@@ -205,7 +242,8 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
           <div className="ri-cal-horas" style={{ width: ANCHO_HORAS_PX }}>
             <div className="ri-cal-horas-cab" style={{ height: ALTO_CABECERA_PX }}>hora cámara</div>
             <div className="ri-escala-cuerpo" style={{ height: alto }}>
-              {marcas.map((m) => <span key={m} className="ri-hora" style={{ top: ((m - rango.desdeMin) / 60) * altoHora }}>{formatearHora(m)}</span>)}
+              {marcas.map((m) => <span key={m} className={zoom === null ? 'ri-hora clic' : 'ri-hora'} style={{ top: ((m - rango.desdeMin) / 60) * altoHora }}
+                    data-testid="ri-hora" {...(zoom === null ? { role: 'button', tabIndex: 0, title: `Ampliar ${String(Math.floor(m / 60) % 24).padStart(2, '0')}h`, onClick: () => setZoom(Math.min(23, Math.floor(m / 60))), onKeyDown: (e) => { if (e.key === 'Enter') setZoom(Math.min(23, Math.floor(m / 60))) } } : {})}>{formatearHora(m)}</span>)}
             </div>
           </div>
           {dias.map((fecha, i) => {
@@ -222,14 +260,14 @@ export default function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion
                 {vacio ? (
                   <div className="ri-dia-vacio" style={{ height: alto }}><span>sin vuelos</span></div>
                 ) : (
-                  <div className="ri-dia-cuerpo" style={{ height: alto, backgroundSize: `100% ${pasoPx}px`, backgroundPosition: `0 ${primeraPx}px` }}>
+                  <div className={zoom === null ? 'ri-dia-cuerpo clic' : 'ri-dia-cuerpo'} onClick={clickCuerpo} style={{ height: alto, backgroundSize: `100% ${pasoPx}px`, backgroundPosition: `0 ${primeraPx}px` }}>
                     <div className="ri-vuelos">
                       {segs.map((s) => (s.tramo ? (
                         <BloqueTramo key={s.clave} seg={s} vuelos={vuelos} seleccion={seleccion} onSeleccion={onSeleccion}
-                                     desdeMin={rango.desdeMin} altoHora={altoHora} minDuracionMin={minDur} />
+                                     desdeMin={rango.desdeMin}altoHora={altoHora} conSegundos={zoom !== null} />
                       ) : (
                         <EventoVuelo key={`${s.clave}|${s.fecha}`} seg={s} vuelo={porClave.get(s.clave)} desdeMin={rango.desdeMin}
-                                     altoHora={altoHora} anchoCol={anchos[i]} minDuracionMin={minDur} />
+                                     altoHora={altoHora} anchoCol={anchos[i]} conSegundos={zoom !== null} />
                       )))}
                     </div>
                   </div>
