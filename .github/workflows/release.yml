@@ -107,6 +107,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
       # `no-undef` es la regla que caza los identificadores que dejó atrás un
       # refactor. Sin ella el bundle compila tan feliz y falla al pulsar.
       - name: Lint y tests de la UI
@@ -204,6 +206,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
       - name: Build React UI (Vite)
         working-directory: webui
         run: |
@@ -289,6 +293,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
       - name: Build React UI (Vite)
         working-directory: webui
         run: |
