@@ -25,7 +25,9 @@ FASES: tuple[str, ...] = ("termica", "indice", "rgb", "subida", "io")
 # 5 = fase ``indice`` (T2): una wheel ABI 4 no trae ``parsear_cabecera``.
 # 6 = fase ``rgb`` (T3): una wheel ABI 5 no trae ``rgb_procesar``.
 # 7 = fase ``io`` (4a): una wheel ABI 6 no trae ``leer_completo``/``ErrorFila``.
-ABI_ESPERADA: int = 7
+# 8 = solo Rust: ``rgb_procesar`` (caja i64, L/CMYK, TIFF/PNG, decode tolerante) y
+#     ``parsear_cabecera`` (firma nueva, ``necesita_completo``/``formato``).
+ABI_ESPERADA: int = 8
 
 # Símbolos que ``atom_rs`` debe exponer para cada fase activa. Se validan en
 # ``modulo()`` (arranque de ``organize.run_task`` y cada ``exigir``), así una

@@ -56,9 +56,9 @@ def test_abi_distinta_lanza(monkeypatch):
         rust_bridge.exigir("indice")
 
 
-def test_abi_esperada_es_siete():
-    # Debe coincidir con `ABI` de rust/atom_rs/src/lib.rs (7 = fase io, 4a).
-    assert rust_bridge.ABI_ESPERADA == 7
+def test_abi_esperada_es_ocho():
+    # Debe coincidir con `ABI` de rust/atom_rs/src/lib.rs (8 = solo Rust).
+    assert rust_bridge.ABI_ESPERADA == 8
 
 
 def test_fase_subida_registrada():

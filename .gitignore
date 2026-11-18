@@ -25,3 +25,4 @@ bench/
 tmpwork/
 .dfout.txt
 webui/test-results/
+rust/atom_rs/target/
