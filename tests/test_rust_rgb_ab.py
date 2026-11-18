@@ -543,8 +543,9 @@ def test_errores_de_entrada_son_visibles(tmp_path):
         rs.rgb_procesar(datos, None, None, 0, 40, 40, o, None, "b")
     with pytest.raises(ValueError, match="EXIF data is too long"):
         rs.rgb_procesar(datos, b"E" * 70000, None, 0, 40, 40, o, None, "a")
-    st = rs.rgb_procesar(b"no soy un jpeg", None, None, 0, 40, 40, o, None, "a")
-    assert st.motivo  # decode no limpio: no escribe, decide Pillow
+    # F2 sin fallback Pillow: un origen que no es JPEG/PNG/TIFF es error visible.
+    with pytest.raises(ValueError, match="formato de origen no reconocido"):
+        rs.rgb_procesar(b"no soy un jpeg", None, None, 0, 40, 40, o, None, "a")
     assert not os.path.exists(o) and not (tmp_path / "c.jpg").exists()
 
 
