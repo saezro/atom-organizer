@@ -325,7 +325,8 @@ fn caminar<'a>(buf: &'a [u8], r: &mut Recorrido<'a>) -> Paso {
             return Paso::Corto;
         };
         if ff != 0xFF {
-            return Paso::Incierto; // Pillow salta basura; no se modela
+            pos += 1; // Pillow: "Skip non-0xFF junk" (`s = fp.read(1); continue`)
+            continue;
         }
         let Some(&m) = buf.get(pos + 1) else {
             return Paso::Corto;

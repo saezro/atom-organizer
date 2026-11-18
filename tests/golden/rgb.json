@@ -351,12 +351,12 @@
         "a270_crop_fuera": {
           "salidas_sha256": {
             "crop_CROP.JPG": "f16770a1dc4049117687b2b3d87b1ed652dd1836dad22a7f4cbc0fad60235622",
-            "orig.JPG": "57155178e4ce0b7114fa4c2edb488d9c33f7e273c7c5e7d07923a140bf01b58f"
+            "orig.JPG": "6ad047a2af8443738687b44c32833e9fe51498bff6b9a98d75dceb866ae801f1"
           }
         },
         "a90_sin_crop": {
           "salidas_sha256": {
-            "orig.JPG": "57155178e4ce0b7114fa4c2edb488d9c33f7e273c7c5e7d07923a140bf01b58f"
+            "orig.JPG": "6ad047a2af8443738687b44c32833e9fe51498bff6b9a98d75dceb866ae801f1"
           }
         }
       }
@@ -373,12 +373,12 @@
         "a270_crop_fuera": {
           "salidas_sha256": {
             "crop_CROP.JPG": "fbf701bfa737e77a288c2f3f91468d6e36f30c47ca2632af09098138f8cd3081",
-            "orig.JPG": "83c4c776d8f2d0cfd7af7f95dfb20a3d7c574a3f8134baec06f689a1790b9f19"
+            "orig.JPG": "e1490eaab2ed34417d77cc8313d00724d9185a888da76447c2e2f96c1e27a4c8"
           }
         },
         "a90_sin_crop": {
           "salidas_sha256": {
-            "orig.JPG": "07c50b84c75524fa5282ae0c78b3fbda0ecbf910c646eb8f52afe32205f6c34d"
+            "orig.JPG": "cdd67eab7c06c8e7c42e482ab22b8b85bc1692849019f6132b7bb8498436ccff"
           }
         }
       }

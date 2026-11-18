@@ -535,6 +535,7 @@ def _escribir_salidas_de_fila_rust(rs, fila: Mapping[str, Any], cfg, pipeline_mo
                 # Cualquier modo/formato (RGB, L, CMYK, TIFF, PNG): Rust decide; un modo
                 # que Pillow tampoco escribe como JPEG sale como OSError de fila.
                 ancho, alto = img.size
+                modo_origen = img.mode  # Rust conserva el modo del origen (L, CMYK, RGB)
                 exif_bytes = img.getexif().tobytes()
                 # COM del origen: Pillow lo copia en crop/transpose y lo escribe en el save.
                 comentario = img.info.get("comment")
@@ -584,7 +585,7 @@ def _escribir_salidas_de_fila_rust(rs, fila: Mapping[str, Any], cfg, pipeline_mo
                 if not destino:
                     continue
                 # XMP ya insertado por Rust (APP1 tras el EXIF): sin releer ni reescribir.
-                verificar_salida_rust(parcial, *dims)
+                verificar_salida_rust(parcial, *dims, modo=modo_origen)
                 with perfil_rgb.medir("escritura"):
                     _publicar_parcial(parcial, destino)
                 vivos.discard(parcial)
@@ -691,6 +692,10 @@ def _escribir_salidas_de_fila_python(fila: Mapping[str, Any], cfg, pipeline_mod)
             # `crop_box`), así que sigue intacto para girarlo aquí.
             if transpose is not None:
                 girada = img.transpose(transpose)
+                # Un TIFF girado pierde `tag_v2` y `getexif()` sale vacío: el original
+                # conserva el EXIF del origen, como el `_CROP` (que lo toma antes del giro).
+                if "exif" not in girada.info:
+                    girada._exif = img.getexif()
             base = girada if girada is not None else img
 
             ruta_original = fila["ruta_salida_original"]
