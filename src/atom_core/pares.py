@@ -49,3 +49,39 @@ def idx_toma(nombre: str) -> "int | None":
     misma toma (T+W+Z). None si el nombre no sigue el patrón."""
     m = _RE_CLAVE_PAREJA.search(os.path.splitext(os.path.basename(str(nombre)))[0])
     return int(m.group(1)) if m else None
+
+
+def desfase_por_carpeta(termicas, rgbs, max_segundos: float = 5.0) -> "dict[str, int]":
+    """Desfase `idx_W - idx_T` por carpeta (DJI incrementa el contador por FICHERO:
+    `DJI_0695_W` <-> `DJI_0696_T`, desfase 1). `termicas` y `rgbs` = iterables de
+    `(carpeta, idx, timestamp|None)`. Por carpeta: moda de `idx_W - idx_T` entre T/W con
+    timestamps a <= `max_segundos` (empate = sin evidencia); si no hay, el d de
+    (0, 1, -1, 2, -2) que más T empareje con una W en `idx + d`. Solo carpetas con T."""
+    from collections import Counter, defaultdict
+    ts_t, ts_w = defaultdict(list), defaultdict(list)
+    idx_t, idx_w = defaultdict(set), defaultdict(set)
+    for car, idx, ts in termicas:
+        idx_t[car].add(idx)
+        if ts is not None:
+            ts_t[car].append((idx, ts))
+    for car, idx, ts in rgbs:
+        idx_w[car].add(idx)
+        if ts is not None:
+            ts_w[car].append((idx, ts))
+    out: "dict[str, int]" = {}
+    for car, tset in idx_t.items():
+        cuenta = Counter(iw - it for it, tt in ts_t.get(car, ())
+                         for iw, tw in ts_w.get(car, ())
+                         if abs((tw - tt).total_seconds()) <= max_segundos)
+        top = cuenta.most_common(2)
+        if top and (len(top) == 1 or top[0][1] > top[1][1]):
+            out[car] = top[0][0]
+            continue
+        wset = idx_w.get(car, set())
+        mejor, d_ok = -1, 0
+        for d in (0, 1, -1, 2, -2):
+            n = sum(1 for k in tset if (k + d) in wset)
+            if n > mejor:
+                mejor, d_ok = n, d
+        out[car] = d_ok
+    return out
