@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import io
+import logging
 import os
 import time
 from typing import Iterator
@@ -54,9 +56,10 @@ _CABECERA = (
     "t_encode_original,t_encode_crop,t_thumbnail,t_escritura,t_total\n"
 )
 
-#: Tamaño máximo de una línea del CSV. Una sola `write()` por debajo de este
-#: límite es atómica en POSIX (`PIPE_BUF`/página de FS de sobra) y en la
-#: práctica también en Windows para una única línea de texto corta.
+#: Tamaño máximo de una línea del CSV. Cada fila se emite con UNA sola
+#: `os.write` sobre un fd abierto con O_APPEND: atómico en POSIX. En Windows
+#: el CRT hace seek+write y NO es atómico entre procesos; `resumen()` tolera
+#: filas corruptas (las descarta).
 _MAX_LINEA_BYTES = 4096
 
 #: Acumulador de tiempos por etapa del PROCESO actual — se resetea en cada
@@ -116,25 +119,41 @@ def _emitir_fila(ts_inicio: float, ts_fin: float, nombre: str, bytes_origen: int
     # El nombre viaja tal cual salvo que contenga el separador: una coma en
     # el nombre de fichero descuadraría las columnas siguientes.
     nombre_seguro = str(nombre).replace(",", "_")
-    valores_etapa = ",".join(f"{_acumulado.get(etapa, 0.0):.4f}" for etapa in _ETAPAS)
-    linea = (
-        f"{ts_inicio:.4f},{ts_fin:.4f},{os.getpid()},{nombre_seguro},{bytes_origen},"
-        f"{valores_etapa},{t_total:.4f}\n"
-    )
-    datos = linea.encode("utf-8", errors="replace")
+    valores_etapa = [f"{_acumulado.get(etapa, 0.0):.4f}" for etapa in _ETAPAS]
+
+    def _serializar(nom: str) -> bytes:
+        buf = io.StringIO()
+        csv.writer(buf, lineterminator="\n").writerow(
+            [f"{ts_inicio:.4f}", f"{ts_fin:.4f}", os.getpid(), nom, bytes_origen,
+             *valores_etapa, f"{t_total:.4f}"]
+        )
+        return buf.getvalue().encode("utf-8", errors="replace")
+
+    datos = _serializar(nombre_seguro)
     if len(datos) >= _MAX_LINEA_BYTES:
         # Defensivo: un nombre de fichero absurdamente largo no debe poder
         # romper la atomicidad de la escritura ni tirar la fila entera.
+        # Se recorta en bytes UTF-8 (un char multibyte pesa >1) y se
+        # re-valida hasta quedar por debajo del límite.
+        nom_b = nombre_seguro.encode("utf-8", errors="replace")
         exceso = len(datos) - _MAX_LINEA_BYTES + 1
-        nombre_seguro = nombre_seguro[: max(0, len(nombre_seguro) - exceso)]
-        linea = (
-            f"{ts_inicio:.4f},{ts_fin:.4f},{os.getpid()},{nombre_seguro},{bytes_origen},"
-            f"{valores_etapa},{t_total:.4f}\n"
-        )
-        datos = linea.encode("utf-8", errors="replace")
-    with open(_RUTA_CSV, "ab") as f:
-        f.write(datos)
-        f.flush()
+        while True:
+            nom_b = nom_b[: max(0, len(nom_b) - exceso)]
+            nombre_seguro = nom_b.decode("utf-8", errors="ignore")
+            datos = _serializar(nombre_seguro)
+            if len(datos) < _MAX_LINEA_BYTES or not nom_b:
+                break
+            exceso = len(datos) - _MAX_LINEA_BYTES + 1
+    # UNA sola llamada os.write sobre fd O_APPEND: atómica entre procesos.
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0)
+    fd = os.open(_RUTA_CSV, flags, 0o644)
+    try:
+        n = os.write(fd, datos)
+        if n != len(datos):
+            logging.getLogger(__name__).warning(
+                "perfil_rgb: escritura parcial (%d de %d bytes)", n, len(datos))
+    finally:
+        os.close(fd)
 
 
 def escribir_cabecera() -> None:
@@ -161,9 +180,16 @@ def resumen() -> "dict | None":
         return None
     columnas = ("t_lectura", "t_decode", "t_encode_original", "t_encode_crop",
                 "t_thumbnail", "t_escritura", "t_total")
-    n = len(filas)
-    medias = {
-        columna: sum(float(fila[columna]) for fila in filas) / n
-        for columna in columnas
-    }
-    return {"n_imagenes": n, "medias": medias}
+    validas = []
+    for fila in filas:
+        try:
+            validas.append({c: float(fila[c]) for c in columnas})
+        except (TypeError, ValueError, KeyError):
+            continue
+    descartadas = len(filas) - len(validas)
+    if not validas:
+        return {"n_imagenes": 0, "medias": {c: 0.0 for c in columnas},
+                "filas_descartadas": descartadas}
+    n = len(validas)
+    medias = {c: sum(f[c] for f in validas) / n for c in columnas}
+    return {"n_imagenes": n, "medias": medias, "filas_descartadas": descartadas}
