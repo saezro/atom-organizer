@@ -15,7 +15,8 @@ pyo3 = { version = "0.23", features = ["abi3-py311"] }
 rayon = "1.10"
 # JPEG de gris/colormap con libjpeg-turbo (la misma familia que trae Pillow).
 # Sin `pkg-config`: se compila la libjpeg-turbo vendorizada con cmake. `require-simd`
-# hace fallar el build si falta nasm (en vez de caer a C, más lento); CI instala nasm.
+# hace fallar el build si falta nasm (en vez de caer a C, más lento); CI instala nasm
+# (Windows con setup-nasm, Linux x86_64 con apt; el runner Linux no lo trae).
 turbojpeg = { version = "=1.5.1", default-features = false, features = ["cmake", "require-simd"] }
 # Fija la libjpeg-turbo vendorizada (3.1.0): `termica::LIBJPEG_TURBO_VERSION` la declara.
 turbojpeg-sys = { version = "=1.2.0", default-features = false }
