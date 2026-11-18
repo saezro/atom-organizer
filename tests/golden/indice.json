@@ -1,0 +1,596 @@
+{
+  "_meta": {
+    "libjpeg_turbo": "3.1.4.1",
+    "numpy": "2.4.6",
+    "pillow": "12.3.0"
+  },
+  "casos": {
+    "jpeg_cmyk": {
+      "entrada_sha256": "681acd7df90aaa8a7e930d69cce78bcb63d1958fa8cf879f42ed5463f25e64f2",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": null,
+        "gps": null,
+        "jpeg_sin_eoi": false,
+        "make": null,
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": null,
+        "nombre": "jpeg_cmyk.JPG",
+        "pitch": 0.0,
+        "posicion": {
+          "altitud_abs": "0",
+          "alto_px": 240,
+          "altura_relativa": "0",
+          "ancho_px": 320,
+          "flight_yaw": "0",
+          "gimbal_pitch": "0",
+          "gimbal_roll": "0",
+          "gimbal_yaw": "0",
+          "lat": null,
+          "lon": null
+        },
+        "timestamp": null,
+        "yaw": 0.0
+      }
+    },
+    "jpeg_dji_app3_64k": {
+      "entrada_sha256": "6b2f365f45afdde8dde4a691c6569cc5a218f29c031b5ef1674524795c1953c0",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": -86.9,
+        "gps": [
+          40.420094444444445,
+          -3.684861111111111
+        ],
+        "jpeg_sin_eoi": false,
+        "make": "DJI",
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": "FC6310",
+        "nombre": "jpeg_dji_app3_64k.JPG",
+        "pitch": -45.2,
+        "posicion": {
+          "altitud_abs": "512.30",
+          "alto_px": 48,
+          "altura_relativa": "48.30",
+          "ancho_px": 64,
+          "flight_yaw": "-86.90",
+          "gimbal_pitch": "-45.20",
+          "gimbal_roll": "0.00",
+          "gimbal_yaw": "-87.40",
+          "lat": 40.420094444444445,
+          "lon": -3.684861111111111
+        },
+        "timestamp": "2026-08-20T10:11:12",
+        "yaw": -87.4
+      }
+    },
+    "jpeg_dji_app3_roto_256k": {
+      "entrada_sha256": "a4e0d956427877479c67e1d87dd25e5e9dceddb6b6d4583f5cbd815c913abc43",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": -86.9,
+        "gps": null,
+        "jpeg_sin_eoi": false,
+        "make": "DJI",
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": "FC6310",
+        "nombre": "jpeg_dji_app3_roto_256k.JPG",
+        "pitch": -45.2,
+        "posicion": {
+          "altitud_abs": "512.30",
+          "alto_px": null,
+          "altura_relativa": "48.30",
+          "ancho_px": null,
+          "flight_yaw": "-86.90",
+          "gimbal_pitch": "-45.20",
+          "gimbal_roll": "0.00",
+          "gimbal_yaw": "-87.40",
+          "lat": null,
+          "lon": null
+        },
+        "timestamp": null,
+        "yaw": -87.4
+      }
+    },
+    "jpeg_dji_full": {
+      "entrada_sha256": "a0b322143a78050f70f1d465203d7c3fdee04a9dec34da65ad1944a11c4dae7f",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": -86.9,
+        "gps": [
+          40.420094444444445,
+          -3.684861111111111
+        ],
+        "jpeg_sin_eoi": false,
+        "make": "DJI",
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": "FC6310",
+        "nombre": "jpeg_dji_full.JPG",
+        "pitch": -45.2,
+        "posicion": {
+          "altitud_abs": "512.30",
+          "alto_px": 240,
+          "altura_relativa": "48.30",
+          "ancho_px": 320,
+          "flight_yaw": "-86.90",
+          "gimbal_pitch": "-45.20",
+          "gimbal_roll": "0.00",
+          "gimbal_yaw": "-87.40",
+          "lat": 40.420094444444445,
+          "lon": -3.684861111111111
+        },
+        "timestamp": "2026-08-20T10:11:12",
+        "yaw": -87.4
+      }
+    },
+    "jpeg_l": {
+      "entrada_sha256": "4db135ead093887d73b3f211debbad48579f8d6e9984d0ab13b748308dc97ce8",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": null,
+        "gps": null,
+        "jpeg_sin_eoi": false,
+        "make": null,
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": null,
+        "nombre": "jpeg_l.JPG",
+        "pitch": 0.0,
+        "posicion": {
+          "altitud_abs": "0",
+          "alto_px": 240,
+          "altura_relativa": "0",
+          "ancho_px": 320,
+          "flight_yaw": "0",
+          "gimbal_pitch": "0",
+          "gimbal_roll": "0",
+          "gimbal_yaw": "0",
+          "lat": null,
+          "lon": null
+        },
+        "timestamp": null,
+        "yaw": 0.0
+      }
+    },
+    "jpeg_mutado_bytes_extra": {
+      "entrada_sha256": "3f63b8b278800f62bb5667434d74cb4114e1e033564889fc6f7a872f60e913cb",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": null,
+        "gps": [
+          40.43346666666667,
+          -3.7038
+        ],
+        "jpeg_sin_eoi": false,
+        "make": "DJI",
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": "M3T",
+        "nombre": "jpeg_mutado_bytes_extra.JPG",
+        "pitch": -90.0,
+        "posicion": {
+          "altitud_abs": "0",
+          "alto_px": 240,
+          "altura_relativa": "48.30",
+          "ancho_px": 320,
+          "flight_yaw": "0",
+          "gimbal_pitch": "-90.00",
+          "gimbal_roll": "0",
+          "gimbal_yaw": "-87.40",
+          "lat": 40.43346666666667,
+          "lon": -3.7038
+        },
+        "timestamp": "2026-08-20T10:11:12",
+        "yaw": -87.4
+      }
+    },
+    "jpeg_mutado_hueco_de_ceros": {
+      "entrada_sha256": "930a7f2a7b6caa09072039b56ff4d2285e71c5d0aaec206e620ab52e96d78808",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": null,
+        "gps": [
+          40.43346666666667,
+          -3.7038
+        ],
+        "jpeg_sin_eoi": false,
+        "make": "DJI",
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": "M3T",
+        "nombre": "jpeg_mutado_hueco_de_ceros.JPG",
+        "pitch": -90.0,
+        "posicion": {
+          "altitud_abs": "0",
+          "alto_px": 240,
+          "altura_relativa": "48.30",
+          "ancho_px": 320,
+          "flight_yaw": "0",
+          "gimbal_pitch": "-90.00",
+          "gimbal_roll": "0",
+          "gimbal_yaw": "-87.40",
+          "lat": 40.43346666666667,
+          "lon": -3.7038
+        },
+        "timestamp": "2026-08-20T10:11:12",
+        "yaw": -87.4
+      }
+    },
+    "jpeg_mutado_marcador_invalido": {
+      "entrada_sha256": "52d0cb5236194d1c2b0e195c1e9dbb48593f51a31db1b19afd178b61253dc223",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": null,
+        "gps": [
+          40.43346666666667,
+          -3.7038
+        ],
+        "jpeg_sin_eoi": false,
+        "make": "DJI",
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": "M3T",
+        "nombre": "jpeg_mutado_marcador_invalido.JPG",
+        "pitch": -90.0,
+        "posicion": {
+          "altitud_abs": "0",
+          "alto_px": 240,
+          "altura_relativa": "48.30",
+          "ancho_px": 320,
+          "flight_yaw": "0",
+          "gimbal_pitch": "-90.00",
+          "gimbal_roll": "0",
+          "gimbal_yaw": "-87.40",
+          "lat": 40.43346666666667,
+          "lon": -3.7038
+        },
+        "timestamp": "2026-08-20T10:11:12",
+        "yaw": -87.4
+      }
+    },
+    "jpeg_mutado_scan_corrupto": {
+      "entrada_sha256": "3d038f48951ccd1d17c8dcb53f7f78ddd9cb0cdcb6413ae698754940f7021625",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": null,
+        "gps": [
+          40.43346666666667,
+          -3.7038
+        ],
+        "jpeg_sin_eoi": false,
+        "make": "DJI",
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": "M3T",
+        "nombre": "jpeg_mutado_scan_corrupto.JPG",
+        "pitch": -90.0,
+        "posicion": {
+          "altitud_abs": "0",
+          "alto_px": 240,
+          "altura_relativa": "48.30",
+          "ancho_px": 320,
+          "flight_yaw": "0",
+          "gimbal_pitch": "-90.00",
+          "gimbal_roll": "0",
+          "gimbal_yaw": "-87.40",
+          "lat": 40.43346666666667,
+          "lon": -3.7038
+        },
+        "timestamp": "2026-08-20T10:11:12",
+        "yaw": -87.4
+      }
+    },
+    "jpeg_mutado_truncado_con_eoi": {
+      "entrada_sha256": "acbcd746c152e7e91705949c601bd833bc1ed63a473e749504fa435078f2db42",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": null,
+        "gps": [
+          40.43346666666667,
+          -3.7038
+        ],
+        "jpeg_sin_eoi": false,
+        "make": "DJI",
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": "M3T",
+        "nombre": "jpeg_mutado_truncado_con_eoi.JPG",
+        "pitch": -90.0,
+        "posicion": {
+          "altitud_abs": "0",
+          "alto_px": 240,
+          "altura_relativa": "48.30",
+          "ancho_px": 320,
+          "flight_yaw": "0",
+          "gimbal_pitch": "-90.00",
+          "gimbal_roll": "0",
+          "gimbal_yaw": "-87.40",
+          "lat": 40.43346666666667,
+          "lon": -3.7038
+        },
+        "timestamp": "2026-08-20T10:11:12",
+        "yaw": -87.4
+      }
+    },
+    "jpeg_rgb": {
+      "entrada_sha256": "94aba404b1f36ddb622a63b69500afb7ebfd2bc8904cbc1127362e6dbb88c07c",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": null,
+        "gps": [
+          40.43346666666667,
+          -3.7038
+        ],
+        "jpeg_sin_eoi": false,
+        "make": "DJI",
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": "M3T",
+        "nombre": "jpeg_rgb.JPG",
+        "pitch": -90.0,
+        "posicion": {
+          "altitud_abs": "0",
+          "alto_px": 240,
+          "altura_relativa": "48.30",
+          "ancho_px": 320,
+          "flight_yaw": "0",
+          "gimbal_pitch": "-90.00",
+          "gimbal_roll": "0",
+          "gimbal_yaw": "-87.40",
+          "lat": 40.43346666666667,
+          "lon": -3.7038
+        },
+        "timestamp": "2026-08-20T10:11:12",
+        "yaw": -87.4
+      }
+    },
+    "jpeg_truncado_mitad": {
+      "entrada_sha256": "851f9cc275d505bb7f7a135893b0f6cf610cfeeae0bc382d86f92699bcdf305c",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": null,
+        "gps": [
+          40.43346666666667,
+          -3.7038
+        ],
+        "jpeg_sin_eoi": true,
+        "make": "DJI",
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": "M3T",
+        "nombre": "jpeg_truncado_mitad.JPG",
+        "pitch": -90.0,
+        "posicion": {
+          "altitud_abs": "0",
+          "alto_px": 240,
+          "altura_relativa": "48.30",
+          "ancho_px": 320,
+          "flight_yaw": "0",
+          "gimbal_pitch": "-90.00",
+          "gimbal_roll": "0",
+          "gimbal_yaw": "-87.40",
+          "lat": 40.43346666666667,
+          "lon": -3.7038
+        },
+        "timestamp": "2026-08-20T10:11:12",
+        "yaw": -87.4
+      }
+    },
+    "jpeg_truncado_sin_eoi": {
+      "entrada_sha256": "41ce8895aebe72f062323d97fbf1e6c375b1d04d8ea0e255f8667590115ea3ba",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": null,
+        "gps": [
+          40.43346666666667,
+          -3.7038
+        ],
+        "jpeg_sin_eoi": true,
+        "make": "DJI",
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": "M3T",
+        "nombre": "jpeg_truncado_sin_eoi.JPG",
+        "pitch": -90.0,
+        "posicion": {
+          "altitud_abs": "0",
+          "alto_px": 240,
+          "altura_relativa": "48.30",
+          "ancho_px": 320,
+          "flight_yaw": "0",
+          "gimbal_pitch": "-90.00",
+          "gimbal_roll": "0",
+          "gimbal_yaw": "-87.40",
+          "lat": 40.43346666666667,
+          "lon": -3.7038
+        },
+        "timestamp": "2026-08-20T10:11:12",
+        "yaw": -87.4
+      }
+    },
+    "png_exif_itxt": {
+      "entrada_sha256": "c65c9f5f24244585feee78a51d471e129c965bc2989e5ac80530c952c9a23d17",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": -86.9,
+        "gps": [
+          40.420094444444445,
+          -3.684861111111111
+        ],
+        "jpeg_sin_eoi": null,
+        "make": "DJI",
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": "FC6310",
+        "nombre": "png_exif_itxt.PNG",
+        "pitch": -45.2,
+        "posicion": {
+          "altitud_abs": "512.30",
+          "alto_px": 48,
+          "altura_relativa": "48.30",
+          "ancho_px": 64,
+          "flight_yaw": "-86.90",
+          "gimbal_pitch": "-45.20",
+          "gimbal_roll": "0.00",
+          "gimbal_yaw": "-87.40",
+          "lat": 40.420094444444445,
+          "lon": -3.684861111111111
+        },
+        "timestamp": "2026-08-20T10:11:12",
+        "yaw": -87.4
+      }
+    },
+    "png_p": {
+      "entrada_sha256": "c97f30c91acc6d11f38c2de2997307ae2699660e7debb9e8d9d9f3a4f4faaedf",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": null,
+        "gps": null,
+        "jpeg_sin_eoi": null,
+        "make": null,
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": null,
+        "nombre": "png_p.PNG",
+        "pitch": 0.0,
+        "posicion": {
+          "altitud_abs": "0",
+          "alto_px": 240,
+          "altura_relativa": "0",
+          "ancho_px": 320,
+          "flight_yaw": "0",
+          "gimbal_pitch": "0",
+          "gimbal_roll": "0",
+          "gimbal_yaw": "0",
+          "lat": null,
+          "lon": null
+        },
+        "timestamp": null,
+        "yaw": 0.0
+      }
+    },
+    "png_rgb": {
+      "entrada_sha256": "0af0517ea697b118150c3b853eccad4762373459f6d754b40d13452aa4bc509d",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": null,
+        "gps": null,
+        "jpeg_sin_eoi": null,
+        "make": null,
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": null,
+        "nombre": "png_rgb.PNG",
+        "pitch": 0.0,
+        "posicion": {
+          "altitud_abs": "0",
+          "alto_px": 240,
+          "altura_relativa": "0",
+          "ancho_px": 320,
+          "flight_yaw": "0",
+          "gimbal_pitch": "0",
+          "gimbal_roll": "0",
+          "gimbal_yaw": "0",
+          "lat": null,
+          "lon": null
+        },
+        "timestamp": null,
+        "yaw": 0.0
+      }
+    },
+    "png_rgba": {
+      "entrada_sha256": "b690593a05e975c91edcd184e1bd9d3df1296e366a768a9e9b0eba1ac8e8d66c",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": null,
+        "gps": null,
+        "jpeg_sin_eoi": null,
+        "make": null,
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": null,
+        "nombre": "png_rgba.PNG",
+        "pitch": 0.0,
+        "posicion": {
+          "altitud_abs": "0",
+          "alto_px": 240,
+          "altura_relativa": "0",
+          "ancho_px": 320,
+          "flight_yaw": "0",
+          "gimbal_pitch": "0",
+          "gimbal_roll": "0",
+          "gimbal_yaw": "0",
+          "lat": null,
+          "lon": null
+        },
+        "timestamp": null,
+        "yaw": 0.0
+      }
+    },
+    "tiff_exif_gps_xmp700": {
+      "entrada_sha256": "996a7adc972b2bc391a59db8a38aae3a650ef99ce01c53878f571aaa27d6ce01",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": -86.9,
+        "gps": [
+          40.420094444444445,
+          -3.684861111111111
+        ],
+        "jpeg_sin_eoi": null,
+        "make": "DJI",
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": "FC6310",
+        "nombre": "tiff_exif_gps_xmp700.TIF",
+        "pitch": -45.2,
+        "posicion": {
+          "altitud_abs": "512.30",
+          "alto_px": 48,
+          "altura_relativa": "48.30",
+          "ancho_px": 64,
+          "flight_yaw": "-86.90",
+          "gimbal_pitch": "-45.20",
+          "gimbal_roll": "0.00",
+          "gimbal_yaw": "-87.40",
+          "lat": 40.420094444444445,
+          "lon": -3.684861111111111
+        },
+        "timestamp": null,
+        "yaw": -87.4
+      }
+    },
+    "tiff_rgb": {
+      "entrada_sha256": "7216d68f59277f5e23769d8bc39469b11fb74229a66502493073a87c4a54a4d9",
+      "metadatos": {
+        "a_medias": false,
+        "flight_yaw": null,
+        "gps": null,
+        "jpeg_sin_eoi": null,
+        "make": null,
+        "make_ilegible": false,
+        "meta_leida": true,
+        "modelo": null,
+        "nombre": "tiff_rgb.TIF",
+        "pitch": 0.0,
+        "posicion": {
+          "altitud_abs": "0",
+          "alto_px": 240,
+          "altura_relativa": "0",
+          "ancho_px": 320,
+          "flight_yaw": "0",
+          "gimbal_pitch": "0",
+          "gimbal_roll": "0",
+          "gimbal_yaw": "0",
+          "lat": null,
+          "lon": null
+        },
+        "timestamp": null,
+        "yaw": 0.0
+      }
+    }
+  }
+}
