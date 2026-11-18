@@ -145,3 +145,44 @@ def test_con_env_var_escribe_csv_con_cabecera_y_una_fila_por_imagen(
     # No hay giro real medido como etapa propia (queda dentro de t_total);
     # thumbnail no aplica en este camino: ambas quedan a 0.0 siempre.
     assert resumen["medias"]["t_thumbnail"] == 0.0
+
+
+def test_resumen_descarta_filas_truncadas(tmp_path, monkeypatch, _reimportar_perfil_rgb):
+    ruta = tmp_path / "perfil.csv"
+    monkeypatch.setenv("ORGANIZER_PERFIL_RGB", str(ruta))
+    perfil_rgb = _reimportar_perfil_rgb()
+    perfil_rgb.escribir_cabecera()
+    with open(ruta, "a", encoding="utf-8") as f:
+        f.write("1.0,2.0,10,a.jpg,100,0.1,0.1,0.1,0.1,0.0,0.1,0.5\n")
+        f.write("9\n")
+    res = perfil_rgb.resumen()
+    assert res["n_imagenes"] == 1
+    assert res["filas_descartadas"] == 1
+
+
+def test_nombre_con_comillas_y_coma_no_descuadra_columnas(tmp_path, monkeypatch,
+                                                           _reimportar_perfil_rgb):
+    ruta = tmp_path / "perfil.csv"
+    monkeypatch.setenv("ORGANIZER_PERFIL_RGB", str(ruta))
+    perfil_rgb = _reimportar_perfil_rgb()
+    perfil_rgb.escribir_cabecera()
+    with perfil_rgb.medir_imagen('foto "a",b.jpg', 123):
+        pass
+    res = perfil_rgb.resumen()
+    assert res["n_imagenes"] == 1
+    assert res.get("filas_descartadas", 0) == 0
+
+
+def test_nombre_multibyte_muy_largo_queda_bajo_limite(tmp_path, monkeypatch,
+                                                       _reimportar_perfil_rgb):
+    ruta = tmp_path / "perfil.csv"
+    monkeypatch.setenv("ORGANIZER_PERFIL_RGB", str(ruta))
+    perfil_rgb = _reimportar_perfil_rgb()
+    perfil_rgb.escribir_cabecera()
+    with perfil_rgb.medir_imagen("ñ€😀" * 3000 + ".jpg", 1):
+        pass
+    lineas = ruta.read_bytes().splitlines(keepends=True)
+    assert len(lineas) == 2
+    assert len(lineas[1]) < perfil_rgb._MAX_LINEA_BYTES
+    res = perfil_rgb.resumen()
+    assert res is not None and res["n_imagenes"] == 1

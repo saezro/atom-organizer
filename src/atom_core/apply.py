@@ -937,10 +937,21 @@ def _emitir_resumen_perfil_rgb(progress_callback) -> None:
     `ORGANIZER_PERFIL_RGB` no está definida. Con la env var activa, relee el
     CSV ya escrito (una fila por imagen, de ambos caminos: secuencial y
     pool) y loguea la media de cada etapa."""
+    try:
+        _emitir_resumen_perfil_rgb_impl(progress_callback)
+    except Exception as exc:  # un fallo de perfil nunca aborta la fase
+        logging.getLogger(__name__).warning("perfil_rgb: resumen omitido: %s", exc,
+                                            exc_info=True)
+
+
+def _emitir_resumen_perfil_rgb_impl(progress_callback) -> None:
     resumen = perfil_rgb.resumen()
     if resumen is None:
         return
     medias = resumen["medias"]
+    descartadas = resumen.get("filas_descartadas", 0)
+    if descartadas:
+        progress_callback.emit(f"\n[perfil_rgb] {descartadas} fila(s) incompleta(s) descartada(s)\n")
     progress_callback.emit(
         f"\n[perfil_rgb] {resumen['n_imagenes']} imagen(es) — medias (s): "
         f"lectura={medias['t_lectura']:.4f} decode={medias['t_decode']:.4f} "
