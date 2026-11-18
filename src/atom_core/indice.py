@@ -1467,22 +1467,29 @@ def _heredar_vuelo_por_pareja(asignaciones: list[tuple[_MetadatosImagen, dict | 
     y se avisa con recuento por vuelo."""
     termicas: dict[tuple[str, int], list[tuple[_MetadatosImagen, dict | None]]] = {}
     con_w: set[tuple[str, int]] = set()
+    lista_t, lista_w = [], []
     for dato, ventana in asignaciones:
         clave = _clave_toma(dato.nombre, rgb)
         if not clave:
             continue
-        k = (os.path.dirname(dato.ruta), clave[0])
+        carpeta = os.path.dirname(dato.ruta)
+        k = (carpeta, clave[0])
         if clave[1] == "T":
             termicas.setdefault(k, []).append((dato, ventana))
+            lista_t.append((carpeta, clave[0], dato.timestamp))
         else:
             con_w.add(k)
+            lista_w.append((carpeta, clave[0], dato.timestamp))
+    # DJI incrementa el contador por fichero: la W de la T `idx` suele ser `idx + d`.
+    desfase = pares_mod.desfase_por_carpeta(lista_t, lista_w, _SEGUNDOS_MAX_PAREJA_TW)
     resultado = []
     heredadas = ambiguas = t_sin_vuelo_w_con = 0
     cortes: dict[str, dict] = {}
     for dato, ventana in asignaciones:
         clave = _clave_toma(dato.nombre, rgb)
         if clave and clave[1] == "W":
-            candidatas = termicas.get((os.path.dirname(dato.ruta), clave[0]))
+            carpeta = os.path.dirname(dato.ruta)
+            candidatas = termicas.get((carpeta, clave[0] - desfase.get(carpeta, 0)))
             if candidatas:
                 ventanas_t = [v for _, v in candidatas]
                 distintas = any(v is not ventanas_t[0] and v != ventanas_t[0] for v in ventanas_t)
@@ -1509,7 +1516,7 @@ def _heredar_vuelo_por_pareja(asignaciones: list[tuple[_MetadatosImagen, dict | 
         resultado.append((dato, ventana))
     t_sin_w: dict[str, int] = {}
     for k, lista in termicas.items():
-        if k not in con_w:
+        if (k[0], k[1] + desfase.get(k[0], 0)) not in con_w:
             for _, v in lista:
                 etiqueta = f"PB{v['pb']}/V{v['vuelo']}" if v else "sin vuelo"
                 t_sin_w[etiqueta] = t_sin_w.get(etiqueta, 0) + 1
