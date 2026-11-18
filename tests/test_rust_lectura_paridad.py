@@ -412,3 +412,50 @@ def test_traducir_otra_excepcion_se_devuelve_igual():
     e = ValueError("x")
     assert rust_bridge.traducir_error(e) is e
 
+
+
+# --------------------------------------------------------------------------- wrapper (T3.1)
+
+class _RsFalso:
+    """Doble de ``atom_rs`` para probar la delegación de ``lectura_segura`` sin wheel."""
+    def __init__(self, excepcion=None):
+        self.llamadas = []
+        self._exc = excepcion
+
+    def leer_completo(self, *a):
+        self.llamadas.append(a)
+        if self._exc is not None:
+            raise self._exc
+        return b"rs"
+
+    def jpeg_integro_por_cola(self, datos):
+        self.llamadas.append(datos)
+        return True
+
+
+def test_wrapper_delega_en_rust_y_normaliza_argumentos(tmp_path, monkeypatch):
+    rs = _RsFalso()
+    monkeypatch.setattr(rust_bridge, "exigir", lambda fase: rs)
+    assert ls.leer_completo(tmp_path / "a.jpg", bytes_origen=0) == b"rs"
+    assert rs.llamadas == [(str(tmp_path / "a.jpg"), 5, 0.5, 8.0, None)]
+    assert ls.jpeg_integro_por_cola(b"xx") is True
+
+
+def test_wrapper_traduce_error_fila(tmp_path, monkeypatch):
+    class ErrorFila(Exception):
+        tipo = "lectura_incompleta"
+        ruta = "r"
+        leidos, esperados, intentos = 1, 2, 3
+
+    monkeypatch.setattr(rust_bridge, "exigir", lambda fase: _RsFalso(ErrorFila("x")))
+    with pytest.raises(ls.LecturaIncompleta) as ei:
+        ls.leer_completo(tmp_path / "a.jpg")
+    assert "leídos 1 de 2 bytes tras 3 intentos (r)" in str(ei.value)
+
+
+def test_wrapper_sin_fase_usa_python(tmp_path, monkeypatch):
+    monkeypatch.setattr(rust_bridge, "exigir", lambda fase: None)
+    f = _fichero(tmp_path)
+    assert ls.leer_completo(f) == f.read_bytes()
+    ls.copiar_completo(f, tmp_path / "b.jpg")
+    assert (tmp_path / "b.jpg").read_bytes() == f.read_bytes()
