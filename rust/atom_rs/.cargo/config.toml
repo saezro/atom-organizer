@@ -1,0 +1,9 @@
+# libjpeg-turbo (turbojpeg-sys -> cmake-rs) en Windows MSVC sale SIN /O2 /Ob2:
+# cmake-rs descarta los -O/ /O de cc-rs (skip_arg) y, con el generador Visual Studio,
+# fija CMAKE_C_FLAGS_RELEASE = "-nologo -MD -Brepro -W0", pisando el "/O2 /Ob2 /DNDEBUG"
+# por defecto de CMake (cmake-0.1.58 src/lib.rs:721-766). `_CL_` lo lee el propio cl.exe
+# (se AÑADE tras la linea de comandos, asi gana al /Od que MSBuild emite si el vcxproj no lleva /O), asi que recupera la optimizacion sin tocar cmake-rs.
+# Solo cl.exe lo interpreta: gcc/clang/zig (Linux, aarch64) lo ignoran.
+# Sin /fp:fast ni /arch: la IDCT de libjpeg-turbo es entera (islow) y el SIMD es nasm.
+[env]
+_CL_ = "/O2 /Ob2 /DNDEBUG"
