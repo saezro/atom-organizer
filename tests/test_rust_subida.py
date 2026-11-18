@@ -448,3 +448,50 @@ def test_subir_resultado_flag_off_camino_actual_dos_grupos(tmp_path, monkeypatch
 
     sr.subir_resultado(tmp_path, 7, sr.MODO_NORMAL, None, proveedor=ProvResultado({}), subir=subir)
     assert llamadas == [4, 2]  # urgentes y luego resto, como hoy
+
+
+# ---------------------------------------------------------------- T4.1: objeto suelto (app_webview)
+
+def test_subir_objeto_fichero_delega_en_subir_lote_con_1_item(tmp_path, monkeypatch):
+    import app_webview as aw
+
+    f = tmp_path / "est.csv"
+    f.write_bytes(b"datos")
+    falso = instalar(monkeypatch, Falso(lambda kw: [
+        hecho(subidos=1, bytes_enviados=5, md5={"KL05/ESTADILLOS/est.csv": "MD5B64"})]))
+    monkeypatch.setattr(cu, "upload_file", lambda *a, **k: pytest.fail("python"))
+    monkeypatch.setattr(cu.GcsOAuthProvider, "headers",
+                        lambda self: {"Authorization": "Bearer TOK"})
+    api = aw.Api.__new__(aw.Api)
+    monkeypatch.setattr(api, "_get_auth", lambda: Auth(), raising=False)
+    api._subir_objeto_fichero("KL05/ESTADILLOS/est.csv", str(f), prefix="KL05")
+    (ll,) = falso.llamadas
+    assert ll["items"] == [(str(f), "KL05/ESTADILLOS/est.csv", 5, False, False)]
+    assert ll["modo"] == "oauth" and ll["prefijo"] == "KL05/ESTADILLOS/"
+    assert ll["token_fn"]() == "Bearer TOK" and callable(ll["recover_fn"])
+
+
+def test_upload_one_traduce_errores(tmp_path, monkeypatch):
+    f = tmp_path / "a.csv"
+    f.write_bytes(b"x")
+    item = cu.UploadItem(local=f, remote="P/a.csv", size=1)
+    instalar(monkeypatch, Falso(lambda kw: [hecho(saltados_412=1)]))
+    with pytest.raises(cu.YaExiste):
+        cu.upload_one(item, OAuthProv())
+    instalar(monkeypatch, Falso(lambda kw: [hecho(fallidos=[["P/a.csv", "boom"]])]))
+    with pytest.raises(RuntimeError, match="boom"):
+        cu.upload_one(item, OAuthProv())
+    instalar(monkeypatch, Falso(lambda kw: [hecho(abortado="403 persistente")]))
+    with pytest.raises(cu.GcsRechazado):
+        cu.upload_one(item, OAuthProv())
+
+
+def test_upload_one_fase_off_va_por_upload_file(tmp_path, monkeypatch):
+    f = tmp_path / "a.csv"
+    f.write_bytes(b"x")
+    item = cu.UploadItem(local=f, remote="P/a.csv", size=1)
+    falso = instalar(monkeypatch, Falso(), fases=None)
+    llamadas = []
+    monkeypatch.setattr(cu, "upload_file", lambda i, p, **k: llamadas.append(i) or "MD5")
+    assert cu.upload_one(item, OAuthProv()) == "MD5"
+    assert llamadas == [item] and falso.llamadas == []

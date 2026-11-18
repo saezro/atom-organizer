@@ -3689,8 +3689,8 @@ class Api:
                               inspeccion_id: int | None = None,
                               planta_id: int | None = None,
                               ambito: str | None = None) -> None:
-        """Puente fino a `cloud_upload.upload_file`: sube un fichero local ya
-        existente al objeto `remoto` del bucket. Sin lógica propia."""
+        """Puente fino a `cloud_upload.upload_one` (atom_rs `subir_lote`, 1 item):
+        sube un fichero local ya existente al objeto `remoto` del bucket."""
         from atom_core import cloud_config, cloud_upload
 
         provider = cloud_upload.GcsOAuthProvider(
@@ -3700,7 +3700,7 @@ class Api:
         item = cloud_upload.UploadItem(
             local=Path(ruta_local), remote=remoto, size=os.path.getsize(ruta_local),
         )
-        cloud_upload.upload_file(item, provider)
+        cloud_upload.upload_one(item, provider)
 
     def _subir_objeto_json(self, remoto: str, contenido: dict, *,
                            prefix: str | None = None,

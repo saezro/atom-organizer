@@ -80,6 +80,7 @@ __all__ = [
     "YaExiste",
     "build_plan",
     "upload_plan",
+    "upload_one",
     "objetos_en_prefijo",
     "listar_objetos_remotos",
     "descargar_objeto",
@@ -1435,6 +1436,55 @@ def _upload_plan_rust(rust, plan, provider, pending, result, manifest, bytes_pen
     for objeto, motivo in result.failed:
         _log.error("FALLÓ %s → %s", objeto, motivo)
     return result
+
+
+class _ManifiestoNulo:
+    """Manifiesto sin disco para `upload_one`: un objeto suelto no se reanuda."""
+
+    def mark(self, item, md5_b64) -> None:
+        pass
+
+    def flush(self) -> None:
+        pass
+
+
+class _ManifiestoMd5(_ManifiestoNulo):
+    def __init__(self, destino: dict) -> None:
+        self._d = destino
+
+    def mark(self, item, md5_b64) -> None:
+        self._d[item.remote] = md5_b64
+
+
+def upload_one(item: UploadItem, provider: UrlProvider, *,
+               should_stop: Callable[[], bool] | None = None) -> str | None:
+    """Sube UN fichero vía `atom_rs.subir_lote` (1 item) reutilizando `_upload_plan_rust`.
+
+    Mantiene el contrato de errores del antiguo `upload_file`: lanza `YaExiste` si
+    GCS contesta 412 (objeto ya en destino y sin `sobrescribir`), `GcsRechazado`
+    si la subida se aborta por 403 persistente y `RuntimeError(motivo)` ante
+    cualquier otro fallo. Devuelve el MD5 (base64) verificado por Rust.
+    Sin atom_rs/ABI válida: `RustNoDisponible` (sin fallback a Python).
+    """
+    upload_log.get_logger()
+    rust = rust_bridge.exigir("subida")
+    if rust is None:  # fase off: camino Python actual (el gate se quita en F5)
+        return upload_file(item, provider)
+    remote = item.remote
+    plan = UploadPlan(root=Path(item.local).parent, items=[item],
+                      prefix=remote.rsplit("/", 1)[0] if "/" in remote else "")
+    md5: dict[str, str] = {}
+    man = _ManifiestoMd5(md5)
+
+    res = _upload_plan_rust(rust, plan, provider, [item], UploadResult(), man,
+                            item.size, set(), None, None, should_stop, None)
+    if res.abortado:
+        raise GcsRechazado(res.abortado)
+    if res.failed:
+        raise RuntimeError(res.failed[0][1])
+    if res.skipped_precondicion:
+        raise YaExiste(remote)
+    return md5.get(remote)
 
 
 def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
