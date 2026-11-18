@@ -1009,9 +1009,10 @@ def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: "bytes | None",
     - Un campo `None` es dato ausente: se guarda tal cual (p. ej. DJI roto tras 256 KiB:
       fecha/GPS/dimensiones `None`). Sin XMP, Rust da los valores por defecto "0" de
       `get_gimbal_yaw_pitch`/`get_xmp_data` (yaw 0.0).
-    - Formato no soportado (`cab.formato == "desconocido"`: firma que no es JPEG/TIFF/PNG,
-      p. ej. un `.jpg` corrupto), error de Rust, error de lectura o tope de tamaño: sube
-      como excepción; `_leer_lote` la convierte en error visible de ese fichero."""
+    - `cab.make_ilegible`: ExifRead lanzaría al leer Make (el `get_make` de Python); se
+      refleja tal cual salvo en `gs://` (allí Python no relee por ruta).
+    - Formato "desconocido" NO es error (metadatos vacíos como Python). Error de Rust,
+      error de lectura o tope de tamaño: sube como excepción; `_leer_lote` la convierte en error visible de ese fichero."""
     completo = buf is None
     if completo:
         buf = _leer_fichero_entero(ruta)
@@ -1022,9 +1023,9 @@ def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: "bytes | None",
         cab = rs.parsear_cabecera(buf, True)
     if cab.necesita_completo or not cab.xmp_presente:
         raise RuntimeError(f"parsear_cabecera no resolvió '{ruta}' con el fichero entero")
-    if cab.formato == "desconocido":
-        raise ValueError("formato de imagen no soportado (firma no JPEG/TIFF/PNG)")
-
+    # `cab.formato == "desconocido"` (firma que no es JPEG/TIFF/PNG, p. ej. un `.jpg`
+    # cortado a 1 byte) NO es error: Pillow y ExifRead tampoco lo abren y Python deja los
+    # metadatos vacíos (defaults XMP "0"), igual que Rust.
     timestamp = None
     if cab.timestamp_iso is not None:
         try:
@@ -1066,7 +1067,8 @@ def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: "bytes | None",
     return _MetadatosImagen(ruta=ruta, nombre=nombre, timestamp=timestamp,
                             modelo=modelo, yaw=yaw, gps=gps,
                             posicion=posicion, meta_leida=True, make=make,
-                            make_ilegible=False,
+                            # Como Python: en `gs://` no se relee por ruta, no hay ilegible.
+                            make_ilegible=bool(cab.make_ilegible) and not almacen.es_uri_gcs(ruta),
                             pitch=pitch, flight_yaw=flight_yaw, jpeg_sin_eoi=jpeg_sin_eoi)
 
 

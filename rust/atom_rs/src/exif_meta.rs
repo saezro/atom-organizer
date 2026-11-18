@@ -551,99 +551,203 @@ fn estado_pil(paso: Paso, r: &Recorrido<'_>) -> EstadoPil {
     }
 }
 
-/// `str(tags["Image Model"])` / `str(tags["Image Make"])` de ExifRead, solo en la
-/// disposición DJI (APP1 `Exif` justo tras el SOI: ExifRead y Pillow leen el mismo
-/// TIFF en `buf[12..]`). `None` = no se fía (Python ejecuta su réplica).
-///
-/// Devuelve `(modelo, make, modelo_ausente, make_ausente)`: `*_ausente` solo es true si
-/// el IFD0 se leyó entero y NO trae el tag (ausencia cierta, no "no se modela").
-fn modelo_make_exifread(buf: &[u8]) -> (Option<String>, Option<String>, bool, bool) {
+/// `(modelo, make, modelo_ausente, make_ausente, make_ilegible)`. `*_ausente` solo es
+/// true si el IFD0 se leyó entero y NO trae el tag (ausencia cierta). `make_ilegible` =
+/// ExifRead LANZARÍA al procesar el fichero (Python: `get_make` falla y la fila queda
+/// con `make_ilegible=True`, modelo y make `None`).
+type ModeloMake = (Option<String>, Option<String>, bool, bool, bool);
+
+/// `str(tags["Image Model"])` / `str(tags["Image Make"])` de ExifRead sobre un JPEG
+/// (`find_jpeg_exif` portado, incluido su comportamiento con ficheros truncados).
+fn modelo_make_exifread(buf: &[u8]) -> ModeloMake {
     match exif_exifread_jpeg(buf) {
-        Some(datos) => modelo_make_tiff(datos),
-        None => (None, None, false, false),
+        ExifJpeg::Tiff(datos) => modelo_make_tiff(datos),
+        ExifJpeg::Vacio => (None, None, false, false, false),
+        ExifJpeg::Lanza => (None, None, false, false, true),
     }
 }
 
-/// TIFF del segmento `Exif` que ExifRead localiza en un JPEG: SOI y, saltando los
-/// segmentos JFIF/JFXX/OLYM/Phot iniciales (bucle `while` de `find_exif_header`), el
-/// primer marcador con identificador `Exif`. `None` = otra disposición (no se modela).
-fn exif_exifread_jpeg(buf: &[u8]) -> Option<&[u8]> {
+/// Resultado de localizar el EXIF como `exifread.core.find_exif.determine_type`.
+enum ExifJpeg<'a> {
+    /// TIFF desde `base + 12` hasta el final del buffer (ExifRead lee el fichero, no el
+    /// segmento APP1).
+    Tiff(&'a [u8]),
+    /// `ExifNotFound`/`InvalidExif`: ExifRead devuelve `{}` (sin error, sin tags).
+    Vacio,
+    /// Excepción que ExifRead NO captura (IndexError sobre un fichero corto/truncado).
+    Lanza,
+}
+
+/// `data[a:b]` de Python (recorta en vez de fallar).
+fn corte(d: &[u8], a: usize, b: usize) -> &[u8] {
+    let a = a.min(d.len());
+    let b = b.min(d.len());
+    &d[a..b]
+}
+
+/// `exifread.core.jpeg.find_jpeg_exif` (+ `get_endian_str`) sobre un buffer que empieza
+/// por SOI. Incluye los `logger.debug(...)` que evalúan `data[i]` y por eso lanzan
+/// IndexError con ficheros cortos.
+fn exif_exifread_jpeg(buf: &[u8]) -> ExifJpeg<'_> {
     if buf.get(..2) != Some(&[0xFF, 0xD8][..]) {
-        return None;
+        return ExifJpeg::Vacio;
     }
-    let mut pos: usize = 2;
+    let n = buf.len();
+    // `determine_type`: `data = fh.read(12)`.
+    let mut data: Vec<u8> = buf[..n.min(12)].to_vec();
+    let mut fpos = data.len();
+    let mut base: usize = 2;
+    // `_get_initial_base`: `ord_(data[2])`, `ord_(data[3])` en el debug inicial.
+    if data.len() < 4 {
+        return ExifJpeg::Lanza;
+    }
     loop {
-        if buf.get(pos) != Some(&0xFF) {
-            return None;
+        if data.len() < 3 {
+            return ExifJpeg::Lanza; // `ord_(data[2])` del `while` tras `b"\xff\x00" + read(10)`
         }
-        let l = usize::from(be16(buf, pos.checked_add(2)?)?);
-        let ident = buf.get(pos.checked_add(4)?..pos.checked_add(8)?)?;
-        match ident {
-            b"JFIF" | b"JFXX" | b"OLYM" | b"Phot" => {
-                pos = pos.checked_add(2)?.checked_add(l)?;
-            }
-            b"Exif" => {
-                if buf.get(pos + 8..pos + 10) != Some(&b"\0\0"[..]) {
-                    return None;
-                }
-                return buf.get(pos + 10..pos.checked_add(2)?.checked_add(l)?);
-            }
-            _ => return None,
+        let jfif = data[2] == 0xFF
+            && matches!(data.get(6..10), Some(b"JFIF" | b"JFXX" | b"OLYM" | b"Phot"));
+        if !jfif {
+            break;
         }
+        let length = usize::from(data[4]) * 256 + usize::from(data[5]);
+        // `fh.read(length - 8)`; negativo = leer hasta el final.
+        fpos = if length >= 8 { (fpos + length - 8).min(n) } else { n };
+        let fin = (fpos + 10).min(n);
+        let mut nuevo = vec![0xFF, 0x00];
+        nuevo.extend_from_slice(&buf[fpos..fin]);
+        fpos = fin;
+        data = nuevo;
+        base = if base > 2 { base + length + 2 } else { length + 4 };
+    }
+    // `fh.seek(0); data = fh.read(base + 4000)`.
+    let data = &buf[..n.min(base.saturating_add(4000))];
+    // `_get_base`.
+    loop {
+        let seg = corte(data, base, base + 2);
+        if matches!(seg, [0xFF, 0xDB]) {
+            break;
+        }
+        if data.len() <= base + 3 {
+            // APPn conocidos: el `logger.debug` lanza IndexError; el resto: `InvalidExif`.
+            let conocido = matches!(
+                seg,
+                [0xFF, 0xE0] | [0xFF, 0xE1] | [0xFF, 0xE2] | [0xFF, 0xEE] | [0xFF, 0xD8]
+                    | [0xFF, 0xEC]
+            );
+            return if conocido { ExifJpeg::Lanza } else { ExifJpeg::Vacio };
+        }
+        if matches!(seg, [0xFF, 0xE1]) && corte(data, base + 4, base + 8) == &b"Exif"[..] {
+            base -= 2;
+            break;
+        }
+        base += usize::from(data[base + 2]) * 256 + usize::from(data[base + 3]) + 2;
+    }
+    // `ord_(data[2 + base])` sin protección.
+    if data.len() <= base + 2 {
+        return ExifJpeg::Lanza;
+    }
+    if data[base + 2] != 0xFF {
+        return ExifJpeg::Vacio;
+    }
+    let ident5 = corte(data, base + 6, base + 11);
+    let hay_cabecera = corte(data, base + 6, base + 10) == &b"Exif"[..]
+        || ident5 == &b"Ducky"[..]
+        || ident5 == &b"Adobe"[..];
+    if !hay_cabecera {
+        return ExifJpeg::Vacio;
+    }
+    // `endian = fh.read(1)` -> `get_endian_str(b"")` lanza IndexError.
+    match buf.get(base + 12..) {
+        Some(t) if !t.is_empty() => ExifJpeg::Tiff(t),
+        _ => ExifJpeg::Lanza,
     }
 }
 
-/// `modelo_make_exifread` sobre un TIFF ya localizado (`datos` empieza en la cabecera
-/// `II*\0`/`MM\0*`; los offsets son relativos a él).
-fn modelo_make_tiff(datos: &[u8]) -> (Option<String>, Option<String>, bool, bool) {
-    let nada = (None, None, false, false);
-    let Some(t) = Tiff::nuevo(datos) else {
-        return nada;
+/// `ExifHeader.s2n`: entero de `len` bytes; 0 si la lectura es corta o vacía.
+fn s2n(d: &[u8], le: bool, p: usize, len: usize) -> u32 {
+    let Some(b) = p.checked_add(len).and_then(|fin| d.get(p..fin)) else {
+        return 0;
     };
-    let Some(off) = t.primer_ifd() else {
-        return nada;
-    };
-    let off = off as usize;
-    let Some(n) = t.u16_en(off) else {
-        return nada;
-    };
-    let n = usize::from(n);
-    let fin_entradas = off + 2 + 12 * n;
-    if fin_entradas > datos.len() {
-        return nada;
+    let mut v: u32 = 0;
+    if le {
+        for &x in b.iter().rev() {
+            v = (v << 8) | u32::from(x);
+        }
+    } else {
+        for &x in b {
+            v = (v << 8) | u32::from(x);
+        }
     }
+    v
+}
+
+fn s2n16(d: &[u8], le: bool, p: usize) -> u16 {
+    u16::try_from(s2n(d, le, p, 2)).unwrap_or(0)
+}
+
+/// ¿`values` queda vacío para la entrada en `e` (IndexError en `values[0]`)?
+fn valores_vacios(d: &[u8], le: bool, e: usize, tipo: u16, count: u32) -> bool {
+    if tipo == 2 {
+        if count == 0 {
+            return true;
+        }
+        let pos = if count > 4 { s2n(d, le, e + 8, 4) as usize } else { e + 8 };
+        // ASCII: `read(count)` y corte en el primer NUL.
+        return d.get(pos).is_none_or(|&b| b == 0);
+    }
+    count == 0 || count >= 1000
+}
+
+/// `modelo_make_exifread` sobre un TIFF ya localizado (`datos` empieza en el byte de
+/// endian; los offsets son relativos a él). Réplica de `process_file` de ExifRead con
+/// `s2n` tolerante: una lectura corta da 0, nunca falla.
+fn modelo_make_tiff(datos: &[u8]) -> ModeloMake {
+    let nada: ModeloMake = (None, None, false, false, false);
+    let Some(&e0) = datos.first() else {
+        return nada;
+    };
+    let le = e0 == b'I'; // ExifRead: "<" solo si el byte es 'I'; cualquier otro, ">".
+    let off = s2n(datos, le, 4, 4) as usize;
+    if off == 0 {
+        return nada; // `list_ifd` vacío
+    }
+    let n = usize::from(s2n16(datos, le, off));
+    let fin_entradas = off + 2 + 12 * n;
     // `None` = sin tag; `Some(None)` = tag que no se modela; `Some(Some(v))` = valor.
     let mut modelo: Option<Option<String>> = None;
     let mut make: Option<Option<String>> = None;
+    let mut ilegible = false;
     for i in 0..n {
         let e = off + 2 + 12 * i;
-        let (Some(tag), Some(tipo), Some(count)) = (t.u16_en(e), t.u16_en(e + 2), t.u32_en(e + 4))
-        else {
-            return nada;
+        let tag = s2n16(datos, le, e);
+        let tipo = s2n16(datos, le, e + 2);
+        let count = s2n(datos, le, e + 4, 4);
+        // Tipo desconocido/PROPRIETARY (también entradas más allá del final): salta.
+        let Some(unidad) = unidad_exifread(tipo) else {
+            continue;
         };
-        // `exifread/__init__.py`: `exif_off.values[0]` lanza IndexError / TypeError si
-        // ExifOffset no es un SHORT/LONG de recuento 1. No se modela: decide Python.
-        if tag == 0x8769 && !(matches!(tipo, 3 | 4) && count == 1) {
-            return nada;
+        // `process_file`: `exif_off.values[0]` lanza IndexError si `values` está vacío.
+        if tag == 0x8769 && valores_vacios(datos, le, e, tipo, count) {
+            ilegible = true;
         }
         if tag != 0x010F && tag != 0x0110 {
             continue;
         }
-        let Some(unidad) = unidad_exifread(tipo) else {
-            continue; // ExifRead salta tipos desconocidos (no pisa el anterior)
-        };
         let valor = if tipo != 2 {
             None
         } else if count == 0 {
             Some(String::new())
         } else {
-            let tam = u64::from(count) * unidad;
-            let pos = if tam > 4 { t.u32_en(e + 8).map(|p| p as usize) } else { Some(e + 8) };
-            pos.and_then(|p| datos.get(p..p.checked_add(count as usize)?))
-                .and_then(|b| {
-                    let corte = b.iter().position(|&c| c == 0).unwrap_or(b.len());
-                    String::from_utf8(b.get(..corte)?.to_vec()).ok()
-                })
+            let pos = if u64::from(count) * unidad > 4 {
+                s2n(datos, le, e + 8, 4) as usize
+            } else {
+                e + 8
+            };
+            let resto = datos.get(pos..).unwrap_or(&[]);
+            let b = &resto[..resto.len().min(count as usize)];
+            let corte_nul = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+            String::from_utf8(b[..corte_nul].to_vec()).ok()
         };
         if tag == 0x0110 {
             modelo = Some(valor);
@@ -651,38 +755,48 @@ fn modelo_make_tiff(datos: &[u8]) -> (Option<String>, Option<String>, bool, bool
             make = Some(valor);
         }
     }
-    // Miniatura TIFF sin comprimir en IFD1: `extract_tiff_thumbnail` puede lanzar.
-    let Some(sig) = t.u32_en(fin_entradas) else {
-        return nada;
-    };
-    if sig != 0 && sig as usize != off {
-        let ifd1 = sig as usize;
-        let Some(n1) = t.u16_en(ifd1) else {
-            return nada;
-        };
-        if ifd1 + 2 + 12 * usize::from(n1) > datos.len() {
-            return nada;
-        }
-        for i in 0..usize::from(n1) {
-            let e = ifd1 + 2 + 12 * i;
-            let tag = t.u16_en(e);
-            if tag == Some(0x0103) && (t.u16_en(e + 2) != Some(3) || t.u16_en(e + 8) == Some(1)) {
-                return nada;
+    // IFD0 entero (entradas + puntero al siguiente) dentro de los datos: ausencia cierta.
+    let ifd0_entero = fin_entradas + 4 <= datos.len();
+    let sig = s2n(datos, le, fin_entradas, 4) as usize;
+    if sig != 0 && sig != off {
+        // IFD1 = "Thumbnail": `extract_tiff_thumbnail` / `extract_jpeg_thumbnail`.
+        let n1 = usize::from(s2n16(datos, le, sig));
+        let (mut t_off, mut t_len): (Option<(u16, u32)>, Option<(u16, u32)>) = (None, None);
+        for i in 0..n1 {
+            let e = sig + 2 + 12 * i;
+            let tag = s2n16(datos, le, e);
+            let tipo = s2n16(datos, le, e + 2);
+            let count = s2n(datos, le, e + 4, 4);
+            if unidad_exifread(tipo).is_none() {
+                continue;
             }
-            // `extract_jpeg_thumbnail` hace `values[0]`: lista vacía (recuento 0 o
-            // >= 1000, que `_process_field` no lee) -> IndexError.
-            // `self.offset + values[0]` lanza TypeError si el tipo no es entero
-            // (ASCII, RATIONAL, FLOAT...): solo SHORT/LONG son seguros.
-            if matches!(tag, Some(0x0201) | Some(0x0202))
-                && (!matches!(t.u16_en(e + 2), Some(3) | Some(4))
-                    || t.u32_en(e + 4).is_none_or(|c| c == 0 || c >= 1000))
-            {
-                return nada;
+            if tag == 0x0103 && (tipo != 3 || s2n16(datos, le, e + 8) == 1) {
+                // Miniatura TIFF sin comprimir: puede lanzar o no; no se modela.
+                return (None, None, false, false, ilegible);
+            }
+            match tag {
+                0x0201 => t_off = Some((tipo, count)),
+                0x0202 => t_len = Some((tipo, count)),
+                _ => {}
+            }
+        }
+        // Con ambos tags: `seek(offset + values[0])` / `read(values[0])` lanzan si
+        // `values` está vacío o `values[0]` no es un entero (ASCII, RATIONAL, FLOAT).
+        if let (Some(a), Some(b)) = (t_off, t_len) {
+            let invalido = |(tipo, count): (u16, u32)| {
+                matches!(tipo, 2 | 5 | 10 | 11 | 12) || count == 0 || count >= 1000
+            };
+            if invalido(a) || invalido(b) {
+                ilegible = true;
             }
         }
     }
-    let (modelo_ausente, make_ausente) = (modelo.is_none(), make.is_none());
-    (modelo.flatten(), make.flatten(), modelo_ausente, make_ausente)
+    if ilegible {
+        return (None, None, false, false, true);
+    }
+    let modelo_ausente = ifd0_entero && modelo.is_none();
+    let make_ausente = ifd0_entero && make.is_none();
+    (modelo.flatten(), make.flatten(), modelo_ausente, make_ausente, false)
 }
 
 /// Resultado de `parsear_cabecera` (getters de solo lectura). Un campo `None` es un
@@ -700,6 +814,8 @@ pub struct CabeceraParseada {
     pub modelo: Option<String>,
     /// `str(tags["Image Make"])` de ExifRead, SIN el `strip` (lo hace Python).
     pub make: Option<String>,
+    /// ExifRead lanzaría al leer Make (EXIF raro/truncado): Python deja `make_ilegible`.
+    pub make_ilegible: bool,
     pub gps: Option<(f64, f64)>,
     pub ancho: Option<u32>,
     pub alto: Option<u32>,
@@ -772,6 +888,7 @@ struct Base {
     dims: Option<(u32, u32)>,
     modelo: Option<String>,
     make: Option<String>,
+    make_ilegible: bool,
     estado: &'static str,
     ausentes: Vec<String>,
     necesita_completo: bool,
@@ -785,6 +902,7 @@ impl Base {
             dims: None,
             modelo: None,
             make: None,
+            make_ilegible: false,
             estado,
             ausentes: Vec::new(),
             necesita_completo: false,
@@ -820,8 +938,9 @@ fn base_jpeg(buf: &[u8], completo: bool) -> Base {
     b
 }
 
-fn poner_modelo_make(b: &mut Base, v: (Option<String>, Option<String>, bool, bool)) {
-    let (modelo, make, modelo_ausente, make_ausente) = v;
+fn poner_modelo_make(b: &mut Base, v: ModeloMake) {
+    let (modelo, make, modelo_ausente, make_ausente, make_ilegible) = v;
+    b.make_ilegible = make_ilegible;
     if modelo_ausente {
         b.ausentes.push("modelo".to_string());
     }
@@ -992,6 +1111,7 @@ pub fn analizar_con(buf: &[u8], completo: bool) -> CabeceraParseada {
         timestamp_iso: base.timestamp_iso,
         modelo: base.modelo,
         make: base.make,
+        make_ilegible: base.make_ilegible,
         gps: base.gps,
         ancho: base.dims.map(|d| d.0),
         alto: base.dims.map(|d| d.1),
@@ -1115,6 +1235,57 @@ mod tests {
         let c = analizar(&j);
         assert!(c.modelo.is_none() && c.make.is_none());
         assert!(!c.ausentes.iter().any(|a| a == "modelo" || a == "make"));
+        assert!(c.make_ilegible);
+    }
+
+    /// TIFF LE: IFD0 con Make "DJI" inline y un IFD1 con JPEGInterchangeFormat de tipo
+    /// `tipo_off` y JPEGInterchangeFormatLength LONG.
+    fn tiff_con_ifd1(tipo_off: u16) -> Vec<u8> {
+        let mut t: Vec<u8> = b"II*\0\x08\0\0\0".to_vec();
+        let ent = |t: &mut Vec<u8>, tag: u16, tipo: u16, count: u32, val: [u8; 4]| {
+            t.extend_from_slice(&tag.to_le_bytes());
+            t.extend_from_slice(&tipo.to_le_bytes());
+            t.extend_from_slice(&count.to_le_bytes());
+            t.extend_from_slice(&val);
+        };
+        t.extend_from_slice(&1u16.to_le_bytes());
+        ent(&mut t, 0x010F, 2, 4, *b"DJI\0");
+        t.extend_from_slice(&26u32.to_le_bytes()); // IFD1 justo detrás
+        t.extend_from_slice(&2u16.to_le_bytes());
+        ent(&mut t, 0x0201, tipo_off, 1, [0; 4]);
+        ent(&mut t, 0x0202, 4, 1, [0; 4]);
+        t.extend_from_slice(&0u32.to_le_bytes());
+        t
+    }
+
+    #[test]
+    fn miniatura_jpeg_tipo_no_entero_es_make_ilegible() {
+        // Control: tipo LONG -> ExifRead no lanza y el Make sale.
+        let (modelo, make, _, _, ilegible) = modelo_make_tiff(&tiff_con_ifd1(4));
+        assert!(modelo.is_none() && make.as_deref() == Some("DJI") && !ilegible);
+        // ASCII: `offset + values[0]` lanza TypeError.
+        let (modelo, make, ma, mo, ilegible) = modelo_make_tiff(&tiff_con_ifd1(2));
+        assert!(modelo.is_none() && make.is_none() && !ma && !mo && ilegible);
+    }
+
+    #[test]
+    fn jpeg_truncado_como_exifread() {
+        let j = jpeg_minimo();
+        // `data[2]`/`data[3]`/`data[base+3]` de ExifRead lanzan IndexError (n = 2..=5) y,
+        // con la cabecera `Exif` completa pero sin endian, `get_endian_str(b"")` (n = 11).
+        for n in [2usize, 3, 4, 5, 11] {
+            assert!(analizar(&j[..n]).make_ilegible, "n={n}");
+        }
+        // 0/1 bytes: formato desconocido, ExifRead devuelve `{}`; 20: IFD0 fuera de datos.
+        for n in [0usize, 1, 6, 20] {
+            let c = analizar(&j[..n]);
+            assert!(!c.make_ilegible && c.make.is_none(), "n={n}");
+        }
+        // Make inline sí sale con el IFD0 cortado tras la primera entrada; Model queda "".
+        let c = analizar(&j[..40]);
+        assert_eq!(c.make.as_deref(), Some("DJI"));
+        assert_eq!(c.modelo.as_deref(), Some(""));
+        assert!(!c.make_ilegible);
     }
 
     #[test]

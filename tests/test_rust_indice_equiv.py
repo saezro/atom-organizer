@@ -192,7 +192,7 @@ def _cab(**kw):
     base = dict(timestamp_iso=None, modelo=None, make=None, gps=None, ancho=None, alto=None,
                 pil_estado="incierto", gimbal_yaw=None, gimbal_pitch=None, xmp=["0"] * 9,
                 xmp_presente=True, flight_yaw_en_xmp=False, ausentes=(),
-                necesita_completo=False, formato="jpeg")
+                necesita_completo=False, formato="jpeg", make_ilegible=False)
     base.update(kw)
     return types.SimpleNamespace(**base)
 
@@ -337,13 +337,23 @@ def test_local_excepcion_de_rust_es_error_visible(tmp_path, monkeypatch, logger)
         _leer(str(ruta), _gi(logger), monkeypatch, rust=True)
 
 
-def test_local_formato_desconocido_es_error(tmp_path, monkeypatch, logger):
+def test_local_formato_desconocido_no_es_error(tmp_path, monkeypatch, logger):
+    """Firma irreconocible con extensión aceptada: Python (Pillow/ExifRead) da metadatos
+    vacíos sin error; Rust igual (sin excepción)."""
+    ruta = tmp_path / "DJI_0001.JPG"
+    ruta.write_bytes(b"\xff")
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso(
+        lambda buf, completo=False: _cab(formato="desconocido")))
+    dato = _leer(str(ruta), _gi(logger), monkeypatch, rust=True)
+    assert dato.timestamp is None and dato.modelo is None and dato.make is None
+
+
+def test_local_make_ilegible_de_rust(tmp_path, monkeypatch, logger):
     ruta = tmp_path / "DJI_0001.JPG"
     ruta.write_bytes(_jpeg_dji(_exif_bytes(), _xmp_atributos(_XMP_DJI)))
     monkeypatch.setitem(sys.modules, "atom_rs", _falso(
-        lambda buf, completo=False: _cab(formato="desconocido")))
-    with pytest.raises(ValueError, match="formato de imagen no soportado"):
-        _leer(str(ruta), _gi(logger), monkeypatch, rust=True)
+        lambda buf, completo=False: _cab(make_ilegible=True)))
+    assert _leer(str(ruta), _gi(logger), monkeypatch, rust=True).make_ilegible is True
 
 
 def test_local_tope_de_tamano_es_error_visible(tmp_path, monkeypatch, logger):
@@ -505,8 +515,12 @@ def test_xmp_mas_alla_de_256k(tmp_path, monkeypatch, logger):
     monkeypatch.setattr(exif_mod, "leer_bloque_xmp", _espia)
     py = _leer(str(ruta), gi, monkeypatch, False)
     n_py = len(llamadas)
-    rus = _leer(str(ruta), gi, monkeypatch, True)
-    assert n_py == 1 and len(llamadas) == 2
+    contador = indice._ContadorRust()
+    rus = _leer(str(ruta), gi, monkeypatch, True, contador)
+    # Rust no usa `leer_bloque_xmp` (sin caída a Python): la cabecera no trae el XMP y
+    # `necesita_completo` hace releer el fichero ENTERO una vez (`contador.corto`).
+    assert n_py == 1 and len(llamadas) == n_py
+    assert contador.corto == 1
     assert _diferencias(py, rus) == []
     assert rus.yaw == -87.4
 

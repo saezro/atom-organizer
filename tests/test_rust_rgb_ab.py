@@ -535,8 +535,10 @@ def test_errores_de_entrada_son_visibles(tmp_path):
     o = str(tmp_path / "o.parcial.jpg")
     with pytest.raises(ValueError):  # ángulo inválido
         rs.rgb_procesar(datos, None, None, 45, 40, 40, o, None, "a")
-    with pytest.raises(ValueError):  # caja fuera de la imagen
-        rs.rgb_procesar(datos, None, (0, 0, 100, 100), 0, 40, 40, o, str(tmp_path / "c.jpg"), "a")
+    # Caja fuera de la imagen: ya NO es error (F2 rellena en negro como Pillow `crop`).
+    o_fuera, c_fuera = str(tmp_path / "fuera.parcial.jpg"), str(tmp_path / "fuera_c.jpg")
+    rs.rgb_procesar(datos, None, (0, 0, 100, 100), 0, 40, 40, o_fuera, c_fuera, "a")
+    assert os.path.exists(o_fuera) and os.path.exists(c_fuera)
     with pytest.raises(ValueError):  # modo b aplazado
         rs.rgb_procesar(datos, None, None, 0, 40, 40, o, None, "b")
     with pytest.raises(ValueError, match="EXIF data is too long"):
