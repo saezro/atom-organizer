@@ -63,10 +63,14 @@ jobs:
       - name: maturin (+ ziglang)
         if: steps.cache-wheel.outputs.cache-hit != 'true'
         run: python -m pip install -r packaging/requirements/requirements-rust.txt
-      # `require-simd` de turbojpeg exige nasm en Windows (Linux x86_64 lo trae el runner).
+      # `require-simd` de turbojpeg exige nasm: Windows vía setup-nasm, Linux x86_64 vía apt
+      # (el runner no lo trae; linux-aarch64 no lo necesita, cruza con zig sin SIMD x86).
       - name: nasm (Windows, requerido por turbojpeg require-simd)
         if: ${{ !matrix.zig && steps.cache-wheel.outputs.cache-hit != 'true' }}
         uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+      - name: nasm (Linux x86_64, requerido por turbojpeg require-simd)
+        if: ${{ matrix.nombre == 'linux-x86_64' && steps.cache-wheel.outputs.cache-hit != 'true' }}
+        run: sudo apt-get update && sudo apt-get install -y nasm
       # Los tests de cargo solo corren en el target nativo (aarch64 es cruzado).
       - name: cargo test
         if: matrix.nombre != 'linux-aarch64' && steps.cache-wheel.outputs.cache-hit != 'true'
@@ -193,6 +197,9 @@ jobs:
       - name: maturin (+ ziglang)
         if: steps.cache-wheel.outputs.cache-hit != 'true'
         run: python -m pip install -r packaging/requirements/requirements-rust.txt
+      - name: nasm (requerido por turbojpeg require-simd)
+        if: steps.cache-wheel.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y nasm
       - name: maturin build (wheel de TEST, feature inyeccion-fallos)
         if: steps.cache-wheel.outputs.cache-hit != 'true'
         working-directory: rust/atom_rs
