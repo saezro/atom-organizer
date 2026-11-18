@@ -1,7 +1,7 @@
 // Medición de la subida del resultado: serie para la gráfica y diagnóstico del
 // cuello de botella. Funciones PURAS (sin React) para poder probarlas con datos
 // fabricados. Regla de la casa: solo se afirma lo que el backend mide
-// (`cloud_upload.upload_file` → `medidas`); si un dato no llega, no se opina.
+// (`cloud_upload.upload_one` → `medidas`); si un dato no llega, no se opina.
 
 export const VENTANA_VELOCIDAD_S = 5      // la velocidad «actual» es la media de los últimos 5 s
 export const MAX_MUESTRAS = 600           // tope de la serie; al pasarse se aclara a la mitad

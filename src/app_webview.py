@@ -2209,7 +2209,7 @@ class Api:
     # ---- inventario del destino, en background ---------------------------
     # Cuánto vale un inventario ya calculado. Diez minutos son de sobra para
     # que el operario lea el estadillo y elija inspección, y lo que se cuele en
-    # el bucket mientras tanto no rompe nada: `upload_file` manda la
+    # el bucket mientras tanto no rompe nada: `upload_one` manda la
     # precondición `ifGenerationMatch=0` y GCS corta con 412 sin gastar bytes
     # (ver `cloud_upload.YaExiste`). Esa red de seguridad es lo que permite
     # fiarse de una foto del bucket ligeramente vieja.

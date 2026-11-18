@@ -996,7 +996,7 @@ def _leer_fichero_entero(ruta: str) -> bytes:
 def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: "bytes | None",
                          jpeg_sin_eoi: "bool | None",
                          contador: _ContadorRust) -> "_MetadatosImagen":
-    """`_leer_metadatos` con la fase Rust `indice` activa: TODOS los campos salen de
+    """`_leer_metadatos` vía la fase Rust `indice`: TODOS los campos salen de
     `atom_rs.parsear_cabecera` (sin GIL), sin caer nunca al camino Python.
 
     Contrato Python <-> Rust:
@@ -1107,124 +1107,13 @@ def _leer_metadatos(ruta: str, exif, progress_callback,
         try:
             buf = almacen.leer_cabecera(ruta, _BYTES_CABECERA)
         except almacen.errores_lectura_gcs() as exc:
-            # Sin cabecera: cada campo cae a su función por ruta (más lento), con aviso visible.
+            # Sin cabecera: Rust lee el fichero entero por ruta (más lento), con aviso visible.
             _LOG.warning("Cabecera por rango ilegible en '%s' (%s: %s); se usa la lectura por ruta",
                          ruta, type(exc).__name__, exc)
             buf = None
-    buf_exif = buf if buf is not None and _exif_entero_en_buffer(buf) else None
-
-    # Fase Rust `indice` (ATOM_RUST_FASES=indice): mismo resultado, parseo en Rust.
-    # Flag off -> None y el camino de abajo, intacto.
     rs = rust_bridge.exigir("indice")
-    if rs is not None:
-        propio = contador_rust if contador_rust is not None else _ContadorRust()
-        return _leer_metadatos_rust(rs, ruta, nombre, buf, jpeg_sin_eoi, propio)
-
-    timestamp = None
-    if buf_exif is not None:
-        try:
-            timestamp = _con_reintento_fichero_completo(_timestamp_desde_buffer, buf_exif, ruta)
-        except Exception:  # noqa: BLE001
-            timestamp = None
-    if timestamp is None:
-        try:
-            timestamp = exif.get_timestamp_from_image(ruta)
-        except Exception:  # noqa: BLE001 — una imagen ilegible no tumba el índice
-            timestamp = None
-
-    modelo = None
-    if buf_exif is not None:
-        try:
-            modelo = _con_reintento_fichero_completo(_modelo_desde_buffer, buf_exif, ruta)
-        except Exception:  # noqa: BLE001
-            modelo = None
-    if modelo is None:
-        try:
-            modelo = exif.get_model(ruta, progress_callback)
-        except Exception:  # noqa: BLE001
-            modelo = None
-
-    make = None
-    make_ilegible = False
-    make_resuelto = False  # True si el buffer ya dio un veredicto (valor o "sin tag")
-    if buf_exif is not None:
-        try:
-            make = _con_reintento_fichero_completo(_make_desde_buffer, buf_exif, ruta)
-            make_resuelto = True
-        except Exception:  # noqa: BLE001 — se reintenta abajo con el fichero entero
-            make = None
-    if make is None and not make_resuelto and not almacen.es_uri_gcs(ruta):
-        try:
-            make = exif.get_make(ruta) or None
-        except Exception:  # noqa: BLE001 — Make ilegible: no se descarta
-            make = None
-            make_ilegible = True
-
-    yaw = None
-    gimbal = None
-    xmp = None
-    flight_yaw = None
-    try:
-        if buf is not None:
-            bloque_xmp = _bloque_xmp_desde_buffer(buf, ruta)
-            gimbal = exif.get_gimbal_yaw_pitch(ruta, bloque_xmp=bloque_xmp)
-            try:
-                xmp = exif.get_xmp_data(ruta, bloque_xmp=bloque_xmp)
-            except Exception:  # noqa: BLE001
-                xmp = None
-        else:
-            gimbal = exif.get_gimbal_yaw_pitch(ruta)
-        yaw = float(gimbal[0])
-    except Exception:  # noqa: BLE001
-        yaw = None
-    # `get_xmp_data` rellena "0" si falta la etiqueta: solo vale si está en el XMP.
-    try:
-        if xmp is not None and 'FlightYawDegree' in bloque_xmp:
-            flight_yaw = float(xmp[4])
-    except Exception:  # noqa: BLE001
-        flight_yaw = None
-    pitch = None
-    try:
-        pitch = float(gimbal[1])
-    except Exception:  # noqa: BLE001 — sin pitch el yaw se usa tal cual
-        pitch = None
-
-    gps = None
-    if buf is not None:
-        try:
-            if buf_exif is not None:
-                gps = _con_reintento_fichero_completo(_gps_desde_buffer, buf_exif, ruta)
-            else:
-                with almacen.abrir_para_lectura(ruta) as ruta_local, open(ruta_local, 'rb') as fd:
-                    gps = _gps_desde_buffer(fd.read())
-        except Exception:  # noqa: BLE001 — sin GPS la fila queda fuera de meta/location, como hoy
-            gps = None
-
-    # Con buffer, gimbal y XMP leídos (local o `gs://…`). Lectura rota ->
-    # `meta_leida=False` y el cierre relee el fichero de salida como siempre.
-    posicion = None
-    meta_leida = buf is not None and gimbal is not None and xmp is not None
-    if meta_leida:
-        ancho, alto = _dimensiones_desde_buffer(buf)
-        if ancho is None:
-            # SOF más allá de `_BYTES_CABECERA`: reintento con el fichero ENTERO (mismo
-            # patrón y tope `_MAX_BYTES_FICHERO_ENTERO` que `_leer_fichero_entero`).
-            try:
-                ancho, alto = _dimensiones_desde_buffer(_leer_fichero_entero(ruta))
-            except Exception:  # noqa: BLE001 — dato informativo, no bloquea
-                ancho, alto = None, None
-        posicion = _Posicion(
-            lat=gps[0] if gps else None, lon=gps[1] if gps else None,
-            altitud_abs=xmp[0], altura_relativa=xmp[1],
-            gimbal_yaw=gimbal[0], gimbal_pitch=gimbal[1],
-            gimbal_roll=xmp[2], flight_yaw=xmp[4],
-            ancho_px=ancho, alto_px=alto)
-
-    return _MetadatosImagen(ruta=ruta, nombre=nombre, timestamp=timestamp,
-                            modelo=modelo, yaw=yaw, gps=gps,
-                            posicion=posicion, meta_leida=meta_leida, make=make,
-                            make_ilegible=make_ilegible,
-                            pitch=pitch, flight_yaw=flight_yaw, jpeg_sin_eoi=jpeg_sin_eoi)
+    propio = contador_rust if contador_rust is not None else _ContadorRust()
+    return _leer_metadatos_rust(rs, ruta, nombre, buf, jpeg_sin_eoi, propio)
 
 
 def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
@@ -2241,13 +2130,10 @@ def _leer_lote(imagenes: list[str], exif, progress_callback, emisor, hilos: int,
     lentas: list[str] = []
     estado_de: dict[str, tuple[str, str | None]] = {}
     errores_lectura: list[tuple[str, str]] = []
-    # Fase Rust `indice`: contador propio de este lote. Flag off ->
-    # `_leer_metadatos(ruta, exif, progress_callback)` como siempre.
-    contador_rust = _ContadorRust() if rust_bridge.fase_activa("indice") else None
+    # Contador propio de este lote (fase Rust `indice`).
+    contador_rust = _ContadorRust()
 
     def _leer_una(ruta: str):
-        if contador_rust is None:
-            return _leer_metadatos(ruta, exif, progress_callback)
         try:
             return _leer_metadatos(ruta, exif, progress_callback, contador_rust=contador_rust)
         except Exception as exc:  # noqa: BLE001 — error de ESTE fichero, no tumba el lote

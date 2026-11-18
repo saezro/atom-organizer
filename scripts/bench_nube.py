@@ -296,8 +296,6 @@ def main(argv=None) -> int:
         "inicio_madrid": inicio, "fin_madrid": ahora_madrid(),
         "vcpu": os.cpu_count(), "memoria_bytes": memoria_bytes(),
         "imagen": os.environ.get("BENCH_IMAGE"),
-        "atom_rust": os.environ.get("ATOM_RUST"),
-        "atom_rust_fases": os.environ.get("ATOM_RUST_FASES"),
         "atom_rs_version": _version_atom_rs(),
         "corpus": a.corpus, "estadillo": a.estadillo,
         "n_pares": len(pares), "n_ficheros": len(nombres),

@@ -484,30 +484,6 @@ def test_el_provider_exige_bucket():
         cu.GcsOAuthProvider("", _AuthFalso(["t"]))
 
 
-def test_un_token_caducado_a_mitad_no_pierde_los_bytes_ya_subidos(tmp_path, monkeypatch):
-    """Con OAuth, el 403 se arregla refrescando: la sesión resumable sigue viva
-    y GCS conserva lo confirmado. Reabrirla resubiría el fichero entero."""
-    from tests.test_cloud_upload import FakeGCS, _vuelo
-
-    server = FakeGCS(expire_after=2)
-    monkeypatch.setattr(cu.urllib.request, "urlopen", server.urlopen)
-    monkeypatch.setattr(cu, "CHUNK_SIZE", 1024)
-    monkeypatch.setattr(cu.time, "sleep", lambda _s: None)
-
-    fake_auth = _AuthFalso(["tok-viejo", "tok-nuevo"])
-    prov = cu.GcsOAuthProvider("b", fake_auth)
-
-    root = _vuelo(tmp_path, {"a.jpg": b"z" * 3000})
-    item = cu.build_plan(root).items[0]
-
-    cu.upload_file(item, prov)
-
-    # FakeGCS nombra el objeto por el último segmento de la URL.
-    assert server.objects["a.jpg"] == b"z" * 3000
-    assert server.opened == 1          # la sesión NO se reabrió
-    assert "tok-nuevo" in fake_auth.emitidos  # pero el token sí se renovó
-
-
 # --------------------------------------------------------------------------
 # Almacén cifrado: migración desde el JSON en claro y estado de la sesión
 # --------------------------------------------------------------------------

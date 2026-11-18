@@ -41,7 +41,6 @@ import external_tools
 import dji_worker_pool
 import pipeline
 import utils
-from exif import extraer_bloque_xmp_crudo
 from atom_core import almacen as almacen_mod
 from atom_core import cancelacion
 from atom_core import indice as indice_mod
@@ -514,7 +513,7 @@ def _escribir_salidas_de_fila_rust(rs, fila: Mapping[str, Any], cfg, pipeline_mo
         bytes_origen = int(fila.get("bytes_origen") or 0) or _tamano_ruta(fila["ruta_origen"])
     except Exception:  # noqa: BLE001 — gs:// puede dar errores del SDK, no solo OSError
         bytes_origen = 0
-    modo = rust_bridge.rgb_modo()
+    modo = "a"  # único modo: bytes idénticos a Pillow
 
     with perfil_rgb.medir_imagen(nombre, bytes_origen):
         angulo = fila["angulo_giro"] or 0
@@ -596,122 +595,11 @@ def _escribir_salidas_de_fila_rust(rs, fila: Mapping[str, Any], cfg, pipeline_mo
 
 
 def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str:
-    """Punto de entrada de una fila RGB. Flag `rgb` off: camino Pillow de siempre (se
-    borra en F5). Activo: Rust (`_escribir_salidas_de_fila_rust`) sin retroceso
-    a Pillow por fila; cualquier fallo es excepción de la fila."""
+    """Punto de entrada de una fila RGB: siempre Rust (`_escribir_salidas_de_fila_rust`).
+    Sin `atom_rs` válido, `exigir` lanza `RustNoDisponible`; sin retroceso a Pillow por
+    fila: el error de Rust es el error de la fila."""
     rs = rust_bridge.exigir("rgb")
-    if rs is None:
-        return _escribir_salidas_de_fila_python(fila, cfg, pipeline_mod)
-    # Sin retroceso a Pillow por fila: el error de Rust es el error de la fila.
     return _escribir_salidas_de_fila_rust(rs, fila, cfg, pipeline_mod)
-
-
-def _escribir_salidas_de_fila_python(fila: Mapping[str, Any], cfg, pipeline_mod) -> str:
-    """Escribe el original y su `_CROP` (si la fila lleva) desde UN solo
-    decode. Devuelve la cadena de verificación (ruta:tamaño de cada fichero
-    escrito), que el manifiesto guarda en `verificacion` al marcar la fila
-    hecha.
-
-    Orden de escritura — NO es arbitrario: el `_CROP` se escribe SIEMPRE
-    antes que el original. `pipeline._procesar_y_guardar_imagen` reasigna su
-    variable local `img` solo si aplica `crop` o `transpose`, y cierra esa
-    variable local al terminar (`finally: img.close()`). El `_CROP` siempre
-    aplica `crop_box`, así que su cierre nunca toca el `img` de fuera. El
-    original, cuando el ángulo es 0, no aplica NINGUNA transformación — su
-    llamada recibiría literalmente el mismo objeto que pasamos, y sería ESE
-    el que se cerraría. Escribirlo el último es lo que permite que ambas
-    salidas compartan el mismo decode sin que la primera escritura cierre el
-    fichero que necesita la segunda.
-
-    El `_CROP` recorta EN COORDENADAS DEL ORIGINAL, sin girar (Correcciones
-    §4: replicar al Organizer original, `_caja_recorte_termico` — proporción
-    5:4, no simétrica al recorte antiguo). Ya no conmuta con el giro de 90°
-    (esa propiedad era del recorte simétrico viejo, `ancho*pct x alto*pct`;
-    la caja 5:4 no la conserva), así que el `_CROP` gira DESPUÉS de recortar,
-    dentro del propio `_procesar_y_guardar_imagen` (`crop_box` +
-    `rotate_degrees` en la misma llamada) — no reutiliza la `girada` del
-    original. El original SÍ sigue reutilizando una única `girada` para su
-    propia escritura (sin recorte): cuando la fila gira, hay dos `transpose`
-    en total (uno para el `_CROP`, sobre la región ya recortada — barata — y
-    uno para el original completo), no uno.
-
-    Instrumentación OPT-IN (`atom_core.perfil_rgb`, activa solo con
-    `ORGANIZER_PERFIL_RGB` definida): la lectura del fichero de origen y su
-    decode van en las etapas `"lectura"`/`"decode"`, cada `_guardar_atomico`
-    mide su propio encode (`"encode_crop"`/`"encode_original"`) y su
-    escritura (`"escritura"`); el giro (`transpose`) no tiene columna propia
-    en el CSV, así que su tiempo queda dentro de `t_total` sin repartir en
-    ninguna etapa — es fiel al "no existe en este camino" del resto de
-    columnas cuando no aplica.
-    """
-    nombre = os.path.basename(fila["ruta_origen"])
-    try:
-        # Si el manifiesto ya trae el tamaño no se pide por metadatos GCS (1 llamada/imagen).
-        bytes_origen = int(fila.get("bytes_origen") or 0) or _tamano_ruta(fila["ruta_origen"])
-    except Exception:  # noqa: BLE001 — gs:// puede dar errores del SDK, no solo OSError
-        bytes_origen = 0
-
-    with perfil_rgb.medir_imagen(nombre, bytes_origen):
-        angulo = fila["angulo_giro"] or 0
-        transpose = _transpose_para_angulo(angulo, pipeline_mod)
-        calidad_original = pipeline_mod._ROTATION_JPEG_QUALITY if angulo else cfg.compress_level
-        calidad_crop = pipeline_mod._ROTATION_JPEG_QUALITY if angulo else _CROP_JPEG_QUALITY
-
-        with perfil_rgb.medir("lectura"):
-            datos_origen = _leer_origen_verificado(fila, bytes_origen)
-            img = pipeline_mod.Image.open(io.BytesIO(datos_origen))
-            bloque_xmp = _bloque_xmp_de_bytes(datos_origen)
-        with perfil_rgb.medir("decode"):
-            img.load()
-
-        escritas: list[str] = []
-        girada = None
-        try:
-            ruta_crop = fila["ruta_salida_crop"]
-            if ruta_crop:
-                # Caja en coordenadas del `img` SIN girar; el giro (si toca)
-                # lo aplica `_guardar_atomico`/`_procesar_y_guardar_imagen`
-                # DESPUÉS del crop, en la misma llamada — ver docstring.
-                # `pct_recorte` None con `_CROP` = centinela «sin recorte»: copia íntegra.
-                caja = (None if fila["pct_recorte"] is None else
-                        _caja_recorte_termico(img.width, img.height, fila["pct_recorte"]))
-                # Sin caja ni giro `_procesar_y_guardar_imagen` cerraría `img` (aún
-                # hace falta para el original): se le pasa una copia.
-                _guardar_atomico(img.copy() if caja is None else img, ruta_crop,
-                                 transpose, caja, calidad_crop,
-                                 pipeline_mod, etapa_encode="encode_crop",
-                                 bloque_xmp=bloque_xmp)
-                escritas.append(ruta_crop)
-
-            # El original reutiliza una única `girada` para su propia
-            # escritura (sin recorte): el `_CROP` de arriba nunca cierra ni
-            # toca `img` (siempre reasigna su copia local al aplicar
-            # `crop_box`), así que sigue intacto para girarlo aquí.
-            if transpose is not None:
-                girada = img.transpose(transpose)
-                # Un TIFF girado pierde `tag_v2` y `getexif()` sale vacío: el original
-                # conserva el EXIF del origen, como el `_CROP` (que lo toma antes del giro).
-                if "exif" not in girada.info:
-                    girada._exif = img.getexif()
-            base = girada if girada is not None else img
-
-            ruta_original = fila["ruta_salida_original"]
-            _guardar_atomico(base, ruta_original, None, None, calidad_original, pipeline_mod,
-                             etapa_encode="encode_original", bloque_xmp=bloque_xmp)
-            escritas.append(ruta_original)
-        finally:
-            # Defensivo: el original ya cerró `base` (ahora nunca aplica
-            # transformación en su llamada, ver docstring); un segundo `close()`
-            # sobre una imagen PIL ya cerrada es un no-op seguro.
-            for imagen in (girada, img):
-                if imagen is None:
-                    continue
-                try:
-                    imagen.close()
-                except Exception:
-                    pass
-
-    return "; ".join(f"{ruta}:{_tamano_ruta(ruta)}" for ruta in escritas)
 
 
 #: Recreaciones máximas del pool RGB tras un `BrokenProcessPool` antes de bajar
@@ -1244,8 +1132,7 @@ def _publicar_tiff_girado(ruta_staging: str, destino: str, angulo: int,
 
     `ya_girado=True` (fase Rust `termica`): el conversor ya entregó el TIFF
     girado con `angulo` (ver `_convertir_una_termica`), así que se mueve tal
-    cual, sin reabrirlo con PIL. Los bytes son los mismos que daría el giro PIL
-    (tests/test_rust_termica_ab.py).
+    cual, sin reabrirlo con PIL. Los bytes son los mismos que daría el giro PIL.
 
     Escritura atómica: `<raíz>.parcial<ext>` + `os.replace`, igual que el
     resto de salidas de este módulo."""
@@ -1556,11 +1443,8 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
                 fila["ruta_origen"], rjpeg_local, bytes_origen=fila.get("bytes_origen"))
         elif not os.path.isfile(rjpeg_local):
             raise FileNotFoundError(f"falta el R-JPEG descargado: {rjpeg_local}")
-        # Fase Rust `termica`: el TIFF sale YA girado del conversor (Rust gira en el
-        # mismo paso en que escribe), y `_publicar_tiff_girado` solo lo mueve. Se
-        # decide UNA vez aquí para que conversor y publicación no discrepen. Sin la
-        # fase, los flags de giro siguen a False y gira la publicación, como siempre.
-        rust_termica = rust_bridge.fase_activa("termica")
+        # El TIFF sale YA girado del conversor (Rust gira en el mismo paso en que
+        # escribe), y `_publicar_tiff_girado` solo lo mueve.
         angulo_giro = fila["angulo_giro"] or 0
         resultado = pipeline_obj.convert_dji_image_to_tif(
             carpeta_in, carpeta_out, nombre_imagen, exiftool_exe, dji_utility,
@@ -1570,8 +1454,8 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
             auto_temp=bool(cfg.convert_to_tif_temp_auto),
             up_threshold_temperature=cfg.convert_to_tif_up_temperature,
             low_threshold_temperature=cfg.convert_to_tif_low_temperature,
-            rotate_90=rust_termica and angulo_giro == 90,
-            rotate_minus_90=rust_termica and angulo_giro == 270,
+            rotate_90=angulo_giro == 90,
+            rotate_minus_90=angulo_giro == 270,
             auto_rotate=False,
             just_atom_selection=bool(cfg.convert_to_tif_solo_seleccion_atom),
             generate_gray_scale_images=bool(cfg.convert_to_tif_create_gray_scale_images),
@@ -1591,7 +1475,7 @@ def _convertir_una_termica(fila: dict, cfg, pipeline_obj, exiftool_exe: str, dji
             # desde el R-JPEG local -> publicación atómica. Mismo resultado que
             # antes (EXIF sobre el TIFF ya girado), sin reescribir el destino.
             tiff_listo = os.path.join(staging_salida, "listo_" + os.path.basename(ruta_tiff_destino))
-            _publicar_tiff_girado(tiff_staging, tiff_listo, angulo_giro, ya_girado=rust_termica)
+            _publicar_tiff_girado(tiff_staging, tiff_listo, angulo_giro, ya_girado=True)
             if copiar_exif is not None:
                 copiar_exif(rjpeg_local, tiff_listo)
             if diferido is None:
@@ -1840,7 +1724,7 @@ def _aplicar_termicas_impl(manifiesto, cfg, pipeline, progress_callback, progres
         # manifiesto (y `cierre.verificar` reporta un desajuste inexistente).
         lock_contadores = threading.Lock()
 
-        # Flag Rust activo sin módulo válido: aborta la fase entera (no es fallo
+        # Rust sin módulo válido: aborta la fase entera (no es fallo
         # de una fila). En el camino paralelo `wait` no relanza, así que se guarda
         # aquí y se relanza tras esperar los futuros.
         rust_fatal: list = []

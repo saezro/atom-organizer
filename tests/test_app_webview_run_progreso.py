@@ -105,7 +105,7 @@ class _SinkFalso:
 @pytest.fixture
 def api(monkeypatch, tmp_path):
     """`Api(broker=True)` con auth falsa siempre logueada, sink capturado y
-    `GcsOAuthProvider`/`upload_file` fuera de juego (nunca se toca red).
+    `GcsOAuthProvider`/`upload_plan` fuera de juego (nunca se toca red).
 
     `detectar_estadillos` y `_subir_objeto_json` van fuera de juego también:
     estos tests son de la telemetría del reporter (`RunReporter`), no del

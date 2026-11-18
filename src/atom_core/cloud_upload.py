@@ -62,7 +62,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -136,7 +135,7 @@ IGNORED_NAMES = {"thumbs.db", "desktop.ini", ".ds_store"}
 class YaExiste(Exception):
     """El objeto ya estaba en el bucket y la subida se abortó sin gastar bytes.
 
-    La lanza `upload_file` cuando GCS contesta 412 a la precondición
+    La lanza `upload_one` cuando GCS contesta 412 a la precondición
     `ifGenerationMatch=0` (ver `GcsOAuthProvider.upload_url`). No es un fallo:
     significa que el listado previo no llegó a ver ese objeto (tope de páginas,
     o subido por otra sesión mientras tanto) y que la red de seguridad ha hecho
@@ -360,7 +359,7 @@ def descargar_objeto(bucket: str, name: str, auth, dest_path: "Path", *,
                      ambito: str | None = None) -> None:
     """Baja UN objeto del bucket a `dest_path` (JSON API, `alt=media`).
 
-    Contraparte de lectura de `upload_file`: mismo esquema de auth
+    Contraparte de lectura de `upload_one`: mismo esquema de auth
     (`auth.access_token()`) y mismo `urllib` de stdlib, sin dependencias
     nuevas. Escribe directo a `dest_path`; quien llama decide el nombre final
     (no pisa nada por sí sola).
@@ -545,7 +544,7 @@ def reconciliar(plan: UploadPlan, remotos: dict[str, RemoteObject],
             continue
         # En los tres casos de abajo el objeto YA existe en el bucket (solo que
         # no es el que se quiere tener ahí), así que se marca `sobrescribir`:
-        # sin eso, `upload_file` mandaría la precondición `ifGenerationMatch=0`
+        # sin eso, `upload_one` mandaría la precondición `ifGenerationMatch=0`
         # y GCS respondería 412 justo a la resubida que se está forzando aquí.
         if remoto.size != item.size:
             _log.debug("resubo %s: tamaño distinto (local %d, bucket %d)",
@@ -935,141 +934,6 @@ class Manifest:
         return nuevas
 
 
-# --------------------------------------------------------------------------
-# Subida de un fichero (protocolo resumable de GCS)
-# --------------------------------------------------------------------------
-
-def _url_sin_credenciales(url: str) -> str:
-    """URL para log: objeto + solo los parámetros que no son firma/token."""
-    parts = urllib.parse.urlsplit(url)
-    query = urllib.parse.urlencode(
-        [(k, v) for k, v in urllib.parse.parse_qsl(parts.query)
-         if k.lower() in _QUERY_LOGUEABLE])
-    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path,
-                                    query, ""))
-
-
-def _body_de_error(exc: urllib.error.HTTPError) -> str:
-    """Primeros `BODY_LOG_MAX` caracteres del body de la respuesta (cacheado).
-
-    GCS da ahí el motivo real («does not have storage.objects.create access»);
-    `HTTPError.__str__` solo dice «HTTP Error 403: Forbidden».
-    """
-    cached = getattr(exc, "gcs_body", None)
-    if cached is not None:
-        return cached
-    try:
-        texto = exc.read(BODY_LOG_MAX * 4).decode("utf-8", "replace")
-    except Exception:  # noqa: BLE001 - diagnóstico, nunca debe fallar
-        texto = ""
-    texto = " ".join(texto.split())[:BODY_LOG_MAX]
-    try:
-        exc.gcs_body = texto  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001
-        pass
-    return texto
-
-
-def _log_http_error(method: str, url: str, exc: urllib.error.HTTPError) -> None:
-    """Deja en el log qué petición falló y por qué. Nunca el Bearer."""
-    if exc.code in (308, 412):  # protocolo normal, no son fallos
-        return
-    _log.error("GCS %s %s -> %d %s | body: %s", method,
-               _url_sin_credenciales(url), exc.code, exc.reason,
-               _body_de_error(exc))
-
-
-def _open_session(url: str, extra: dict[str, str] | None = None,
-                  content_type: str = "application/octet-stream") -> str:
-    """Inicia la sesión resumable y devuelve la URI de sesión."""
-    req = urllib.request.Request(
-        url,
-        data=b"",
-        method="POST",
-        headers={
-            "x-goog-resumable": "start",
-            "Content-Type": content_type,
-            "Content-Length": "0",
-            "User-Agent": USER_AGENT,
-            **(extra or {}),
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            location = resp.headers.get("Location")
-    except urllib.error.HTTPError as exc:
-        _log_http_error("POST", url, exc)
-        raise
-    if not location:
-        raise RuntimeError("GCS no devolvió Location al abrir la sesión resumable")
-    return location
-
-
-def _committed_offset(session_uri: str, total: int,
-                      extra: dict[str, str] | None = None) -> int:
-    """Pregunta a GCS cuántos bytes tiene ya confirmados.
-
-    Es lo que permite reanudar: se manda un PUT vacío con `bytes */total` y
-    GCS responde 308 con el rango recibido.
-    """
-    req = urllib.request.Request(
-        session_uri,
-        data=b"",
-        method="PUT",
-        headers={
-            "Content-Range": f"bytes */{total}",
-            "Content-Length": "0",
-            "User-Agent": USER_AGENT,
-            **(extra or {}),
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            if resp.status in (200, 201):
-                return total  # ya estaba completo
-            return 0
-    except urllib.error.HTTPError as exc:
-        if exc.code != 308:
-            raise
-        # `Range: bytes=0-N` significa que tiene confirmados N+1 bytes. Si no
-        # viene la cabecera, no tiene nada.
-        rng = exc.headers.get("Range")
-        if not rng or "-" not in rng:
-            return 0
-        return int(rng.rsplit("-", 1)[1]) + 1
-
-
-def _put_chunk(session_uri: str, chunk: bytes, start: int, total: int,
-               extra: dict[str, str] | None = None) -> bool:
-    """Sube un trozo. Devuelve True si con esto el objeto quedó completo."""
-    if total == 0:
-        # Objeto vacío: no hay rango que declarar. `bytes 0--1/0` sería lo que
-        # saldría de la fórmula general y GCS lo rechaza; el protocolo pide
-        # `bytes */0` para cerrar un objeto de longitud cero.
-        content_range = "bytes */0"
-    else:
-        content_range = f"bytes {start}-{start + len(chunk) - 1}/{total}"
-    req = urllib.request.Request(
-        session_uri,
-        data=chunk,
-        method="PUT",
-        headers={
-            "Content-Range": content_range,
-            "Content-Length": str(len(chunk)),
-            "User-Agent": USER_AGENT,
-            **(extra or {}),
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            return resp.status in (200, 201)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 308:
-            return False  # aceptado, faltan trozos
-        _log_http_error("PUT", session_uri, exc)
-        raise
-
-
 def _file_md5_b64(path: Path) -> str:
     """MD5 en base64, que es el formato en el que GCS expone el suyo.
 
@@ -1082,25 +946,6 @@ def _file_md5_b64(path: Path) -> str:
             h.update(block)
     return base64.b64encode(h.digest()).decode()
 
-
-def _needs_new_session(exc: Exception) -> bool:
-    """401/403: la autorización de esta sesión ya no vale, hay que pedir otra.
-
-    Con vuelos que tardan horas es esperable que la signed URL o el token del
-    proveedor caduquen a mitad. No es un error definitivo: se pide una URL nueva
-    y se abre otra sesión resumable.
-    """
-    return isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403)
-
-
-def _is_retryable(exc: Exception) -> bool:
-    if isinstance(exc, urllib.error.HTTPError):
-        # 408 timeout, 429 rate limit, 5xx del lado servidor. 401/403 también,
-        # porque se resuelven reabriendo sesión (ver `_needs_new_session`); sin
-        # esto, el reintento con credencial fresca nunca llegaba a ejecutarse.
-        return (exc.code in (401, 403, 408, 429)
-                or 500 <= exc.code < 600)
-    return isinstance(exc, (urllib.error.URLError, TimeoutError, OSError))
 
 # Claves de `medidas` (segundos-hilo acumulados y reintentos por causa). Es lo
 # único que la UI usa para decir «limitado por red / disco / ...»: solo se
@@ -1126,165 +971,6 @@ def sumar_medidas(a: dict | None, b: dict | None) -> dict:
     return out
 
 
-def _causa_retry(exc: Exception) -> str:
-    """Por qué se reintenta: 429 (límite), 5xx (servidor), auth (401/403),
-    http (otro código) o red (corte/timeout, sin respuesta HTTP)."""
-    if isinstance(exc, urllib.error.HTTPError):
-        if exc.code == 429:
-            return "429"
-        if exc.code >= 500:
-            return "5xx"
-        if exc.code in (401, 403):
-            return "auth"
-        return "http"
-    return "red"
-
-
-def upload_file(item: UploadItem, provider: UrlProvider, *,
-                on_bytes: Callable[[int], None] | None = None,
-                should_stop: Callable[[], bool] | None = None,
-                on_retry: Callable[[], None] | None = None,
-                on_medida: Callable[[str, float], None] | None = None) -> str:
-    """Sube un fichero completo. Devuelve su MD5 en base64.
-
-    Reintenta con backoff exponencial ante errores de red o 5xx, reanudando
-    desde el offset que GCS confirme — no desde el principio.
-
-    `on_retry` se avisa en cada reintento para poder contarlos: son la señal de
-    que la red va mal, y sin contarlos un «tardó tres horas» no se distingue de
-    un «tardó tres horas porque hubo 400 microcortes».
-
-    `on_medida(clave, valor)` recibe tiempos (`disco_s`, `red_s`, `sesion_s`,
-    `espera_s`, `token_s`, en segundos) y `retry:<causa>` (+1). Es opcional y
-    ligero: dos `monotonic()` por trozo de 8 MB.
-
-    Lanza `YaExiste` si el objeto ya estaba en el bucket (y el item no venía
-    marcado para sobreescribir): eso no es un fallo, es un saltado tardío.
-    """
-    total = item.size
-    session_uri: str | None = None
-    delay = 1.0
-    empezado = time.monotonic()
-    refrescado_403 = False
-
-    def _med(clave: str, valor: float) -> None:
-        if on_medida is not None:
-            on_medida(clave, valor)
-
-    for attempt in range(MAX_RETRIES):
-        try:
-            if session_uri is None:
-                t_ses = time.monotonic()
-                url = provider.upload_url(item.remote, total,
-                                          sobrescribir=item.sobrescribir)
-                try:
-                    session_uri = _open_session(url, provider.headers())
-                    _med("sesion_s", time.monotonic() - t_ses)
-                except urllib.error.HTTPError as exc:
-                    # 412: la precondición `ifGenerationMatch=0` ha cortado
-                    # porque el objeto ya está ahí. GCS no ha aceptado ni un
-                    # byte, así que no hay nada que reintentar ni que limpiar.
-                    if exc.code == 412:
-                        raise YaExiste(item.remote) from exc
-                    raise
-                offset = 0
-            else:
-                t_res = time.monotonic()
-                try:
-                    offset = _committed_offset(session_uri, total, provider.headers())
-                finally:
-                    _med("red_s", time.monotonic() - t_res)
-                _log.info("reanudo %s en el byte %d de %d (%.0f%% ya confirmado "
-                          "en el bucket)", item.remote, offset, total,
-                          100.0 * offset / total if total else 100.0)
-
-            if total == 0:
-                # Un fichero vacío se cierra con un PUT de longitud cero.
-                _put_chunk(session_uri, b"", 0, 0, provider.headers())
-                t_md = time.monotonic()
-                md5_vacio = _file_md5_b64(item.local)
-                _med("disco_s", time.monotonic() - t_md)
-                return md5_vacio
-
-            with open(item.local, "rb") as fh:
-                fh.seek(offset)
-                while offset < total:
-                    if should_stop is not None and should_stop():
-                        raise InterruptedError("subida cancelada")
-                    t_lec = time.monotonic()
-                    chunk = fh.read(CHUNK_SIZE)
-                    _med("disco_s", time.monotonic() - t_lec)
-                    if not chunk:
-                        break
-                    # Las cabeceras se piden por trozo: en un fichero de varios
-                    # GB el token puede caducar entre el primero y el último.
-                    t_red = time.monotonic()
-                    try:
-                        _put_chunk(session_uri, chunk, offset, total, provider.headers())
-                    finally:
-                        _med("red_s", time.monotonic() - t_red)
-                    offset += len(chunk)
-                    # Trozo aceptado: el token funciona; un 403 posterior
-                    # (caducidad en ficheros de horas) vuelve a poder refrescar.
-                    refrescado_403 = False
-                    if on_bytes is not None:
-                        on_bytes(len(chunk))
-
-            duracion = time.monotonic() - empezado
-            _log.debug("subido %s (%.1f MB en %.1fs%s)", item.remote,
-                       total / 1024 ** 2, duracion,
-                       f", {attempt} reintento(s)" if attempt else "")
-            t_md = time.monotonic()
-            md5 = _file_md5_b64(item.local)
-            _med("disco_s", time.monotonic() - t_md)
-            return md5
-
-        except (InterruptedError, YaExiste):
-            raise
-        except Exception as exc:  # noqa: BLE001 - se reclasifica justo debajo
-            if isinstance(exc, urllib.error.HTTPError) and exc.code == 403:
-                if refrescado_403:
-                    # Ya se refrescó el token y GCS sigue diciendo 403: no es
-                    # caducidad sino un permiso que falta. Reintentar no sirve.
-                    raise GcsRechazado(_body_de_error(exc) or str(exc)) from exc
-                refrescado_403 = True
-            if attempt == MAX_RETRIES - 1 or not _is_retryable(exc):
-                _log.error("%s FALLA definitivamente tras %d intento(s): %s: %s",
-                           item.remote, attempt + 1, type(exc).__name__, exc)
-                raise
-            if on_retry is not None:
-                on_retry()
-            _med("retry:" + _causa_retry(exc), 1)
-            _log.warning("%s: %s: %s — reintento %d/%d en %.0fs",
-                         item.remote, type(exc).__name__, exc,
-                         attempt + 1, MAX_RETRIES - 1, delay)
-            if _needs_new_session(exc):
-                # 401/403: la autorización murió a mitad. Con OAuth basta
-                # refrescar el token y la sesión resumable sigue viva (los
-                # bytes confirmados en GCS no se pierden). Con signed URL hay
-                # que pedir otra y abrir sesión nueva.
-                t_tok = time.monotonic()
-                try:
-                    if not provider.recover_auth():
-                        session_uri = None
-                        _log.info("%s: credencial caducada, abro sesión nueva",
-                                  item.remote)
-                    else:
-                        _log.info("%s: token refrescado, la sesión resumable sigue",
-                                  item.remote)
-                except Exception as exc2:  # noqa: BLE001 - el error original manda
-                    session_uri = None
-                    # El refresco no llegó a hacerse: este 403 no es definitivo.
-                    refrescado_403 = False
-                    _log.warning("%s: no se pudo recuperar la autorización (%s)",
-                                 item.remote, exc2)
-                _med("token_s", time.monotonic() - t_tok)
-            t_esp = time.monotonic()
-            time.sleep(delay)
-            _med("espera_s", time.monotonic() - t_esp)
-            delay = min(delay * 2, 30)
-
-    raise RuntimeError(f"no se pudo subir {item.remote}")  # pragma: no cover
 
 
 # --------------------------------------------------------------------------
@@ -1460,7 +1146,7 @@ def upload_one(item: UploadItem, provider: UrlProvider, *,
                should_stop: Callable[[], bool] | None = None) -> str | None:
     """Sube UN fichero vía `atom_rs.subir_lote` (1 item) reutilizando `_upload_plan_rust`.
 
-    Mantiene el contrato de errores del antiguo `upload_file`: lanza `YaExiste` si
+    Mantiene el contrato de errores del antiguo `upload_file` (retirado): lanza `YaExiste` si
     GCS contesta 412 (objeto ya en destino y sin `sobrescribir`), `GcsRechazado`
     si la subida se aborta por 403 persistente y `RuntimeError(motivo)` ante
     cualquier otro fallo. Devuelve el MD5 (base64) verificado por Rust.
@@ -1468,8 +1154,6 @@ def upload_one(item: UploadItem, provider: UrlProvider, *,
     """
     upload_log.get_logger()
     rust = rust_bridge.exigir("subida")
-    if rust is None:  # fase off: camino Python actual (el gate se quita en F5)
-        return upload_file(item, provider)
     remote = item.remote
     plan = UploadPlan(root=Path(item.local).parent, items=[item],
                       prefix=remote.rsplit("/", 1)[0] if "/" in remote else "")
@@ -1500,7 +1184,7 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
     """Sube todos los ficheros del plan, en paralelo, reanudando y sin repetir.
 
     `urgentes` (remotos urgentes) y `on_evento` (`pb_listo`/`error`) solo los usa la
-    subida en Rust (fase `subida`); con el flag OFF se ignoran.
+    subida en Rust.
 
     Antes de mover un byte se pregunta al bucket qué hay ya en el destino y se
     descarta de la lista (ver `reconciliar`). Eso es lo que hace que volver a
@@ -1522,8 +1206,8 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
     """
     upload_log.get_logger()  # asegura que hay fichero donde escribir
     result = UploadResult()
-    # Flag ON: módulo/símbolo/ABI se validan AQUÍ, antes de listar o subir nada.
-    # Sin try/except: el error es visible, jamás se cae a Python en silencio.
+    # Módulo/símbolo/ABI se validan AQUÍ, antes de listar o subir nada.
+    # Sin try/except: el error es visible, no hay retroceso silencioso.
     rust = rust_bridge.exigir("subida")
     if manifest is None:
         manifest = Manifest(plan.root / Manifest.FILENAME)
@@ -1576,189 +1260,6 @@ def upload_plan(plan: UploadPlan, provider: UrlProvider, *,
         _log.info("no hay nada que subir: el destino ya está completo")
         return result
 
-    if rust is not None:
-        return _upload_plan_rust(rust, plan, provider, pending, result, manifest,
-                                 bytes_pendientes, urgentes or set(), on_progress,
-                                 on_stats, should_stop, on_evento)
-
-    sent_lock = threading.Lock()
-    counter = {"bytes": 0, "files": 0, "retries": 0, "ultimo_aviso": 0.0, "activos": 0,
-               "actual": "", "fallidas": 0}
-    medidas = medidas_vacias()
-    started = time.monotonic()
-
-    def _stats(final: bool = False) -> dict:
-        """Foto del progreso, pensada para pintarla tal cual."""
-        elapsed = max(time.monotonic() - started, 1e-6)
-        enviados = counter["bytes"]
-        bps = enviados / elapsed
-        restantes = max(bytes_pendientes - enviados, 0)
-        return {
-            "files_done": counter["files"],
-            "files_total": len(pending),
-            "bytes_done": enviados,
-            "bytes_total": bytes_pendientes,
-            "elapsed": elapsed,
-            # ETA a la velocidad media de lo que va de subida. Se manda `None`
-            # hasta tener 3 s de muestra: al principio la media oscila tanto que
-            # el número saltaría de «2 min» a «4 horas» y no serviría de nada.
-            "eta": (restantes / bps) if (bps > 0 and elapsed > 3) else None,
-            "mbps": bps * 8 / 1_000_000,  # megabITS/s (bytes*8), no MB/s
-            "files_per_s": counter["files"] / elapsed,
-            "retries": counter["retries"],
-            # Hilos subiendo AHORA frente al máximo configurado: si hay pocos
-            # activos con muchos ficheros pendientes, el cuello no es el ancho.
-            "hilos_activos": counter["activos"],
-            # Último fichero que arrancó (nombre relativo al destino) y fallidas en vivo.
-            "fichero_actual": counter["actual"],
-            "fallidas": counter["fallidas"],
-            "hilos_max": max(1, concurrency),
-            "medidas": {**{k: medidas[k] for k in MEDIDAS_SEGUNDOS},
-                        "reintentos": dict(medidas["reintentos"])},
-            "final": final,
-        }
-
-    def _avisar(forzar: bool = False) -> None:
-        """Manda el progreso a la UI, como mucho una vez por segundo.
-
-        El throttle es por TIEMPO y no por número de ficheros: un fichero de 2
-        GB tarda minutos, y contando ficheros la pantalla se quedaría clavada
-        justo cuando el usuario más mira si aquello sigue vivo.
-
-        Reservar el turno y anotar la marca de tiempo ocurre **dentro del
-        lock**: los 16 hilos de subida llaman aquí a la vez, y comprobar fuera
-        dejaba pasar a varios en la misma ventana. `on_stats` acaba en
-        `evaluate_js`, así que un aviso duplicado son dos saltos al motor JS,
-        no solo una línea de más.
-        """
-        if on_stats is None:
-            return
-        with sent_lock:
-            ahora = time.monotonic()
-            if not forzar and ahora - counter["ultimo_aviso"] < 1.0:
-                return
-            counter["ultimo_aviso"] = ahora
-            foto = _stats(final=forzar)
-        # La llamada, fuera del lock: cruza a la UI y no debe bloquear a los
-        # otros 15 hilos mientras tanto.
-        on_stats(foto)
-
-    def _bump(n: int) -> None:
-        with sent_lock:
-            counter["bytes"] += n
-        _avisar()
-
-    def _retry() -> None:
-        with sent_lock:
-            counter["retries"] += 1
-
-    def _medir(clave: str, valor: float) -> None:
-        with sent_lock:
-            if clave.startswith("retry:"):
-                medidas["reintentos"][clave[6:]] += int(valor)
-            else:
-                medidas[clave] += valor
-
-    # Circuit breaker: 403 persistente (tras refrescar) en K ficheros seguidos.
-    cb = {"seguidos": 0, "motivo": None}
-
-    def _parar() -> bool:
-        return cb["motivo"] is not None or bool(should_stop and should_stop())
-
-    def _one(item: UploadItem) -> tuple[UploadItem, str | None, str | None, bool]:
-        if cb["motivo"] is not None:
-            return item, None, "cancelado", False
-        with sent_lock:
-            counter["activos"] += 1
-            counter["actual"] = item.remote.rsplit("/", 1)[-1]
-        try:
-            md5 = upload_file(item, provider, on_bytes=_bump,
-                              should_stop=_parar, on_retry=_retry, on_medida=_medir)
-            with sent_lock:
-                cb["seguidos"] = 0
-            return item, md5, None, False
-        except GcsRechazado as exc:
-            with sent_lock:
-                cb["seguidos"] += 1
-                if cb["seguidos"] >= MAX_403_CONSECUTIVOS and cb["motivo"] is None:
-                    cb["motivo"] = str(exc)
-            return item, None, f"{type(exc).__name__}: {exc}", False
-        except InterruptedError:
-            return item, None, "cancelado", False
-        except YaExiste:
-            with sent_lock:
-                cb["seguidos"] = 0
-            # Ya estaba en el destino: ni error ni subida. No se toca el
-            # manifiesto porque no se ha visto el MD5 del objeto remoto, y
-            # apuntar el local haría pasar por verificado algo que no lo está;
-            # la próxima corrida lo verá en el listado y lo hidratará bien.
-            _log.info("%s ya estaba en el bucket (412), lo salto", item.remote)
-            return item, None, None, True
-        except Exception as exc:  # noqa: BLE001 - se reporta, no se traga
-            with sent_lock:
-                cb["seguidos"] = 0
-            return item, None, f"{type(exc).__name__}: {exc}", False
-        finally:
-            with sent_lock:
-                counter["activos"] -= 1
-
-    try:
-        with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
-            futures = [pool.submit(_one, item) for item in pending]
-            for fut in as_completed(futures):
-                item, md5, err, ya_estaba = fut.result()
-                if cb["motivo"] is not None and err == "cancelado":
-                    continue  # víctima del corte, no un fallo propio
-                if ya_estaba:
-                    result.skipped += 1
-                    result.skipped_precondicion += 1
-                elif err is None and md5 is not None:
-                    manifest.mark(item, md5)
-                    result.uploaded += 1
-                else:
-                    result.failed.append((item.remote, err or "error desconocido"))
-                    if err != "cancelado":
-                        counter["fallidas"] += 1
-
-                counter["files"] += 1
-                if on_item is not None and err != "cancelado":
-                    try:
-                        on_item(item, err is None)
-                    except Exception:  # noqa: BLE001 - el desglose nunca rompe la subida
-                        _log.debug("on_item falló", exc_info=True)
-                _avisar()
-                if cb["motivo"] is not None and result.abortado is None:
-                    result.abortado = (f"{cb['motivo']} · subida abortada tras "
-                                       f"{MAX_403_CONSECUTIVOS} ficheros seguidos")
-                    _log.error("ABORTO: %s", result.abortado)
-                    # No se cancelan los futures pendientes: `_one` ya devuelve
-                    # «cancelado» al ver `cb["motivo"]`, y `fut.result()` de un
-                    # future cancelado lanzaría CancelledError.
-                    if on_progress is not None:
-                        on_progress(f"ERROR: {result.abortado}")
-                if on_progress is not None and counter["files"] % 25 == 0:
-                    done_gb = counter["bytes"] / 1024 ** 3
-                    elapsed = max(time.monotonic() - started, 1e-6)
-                    speed = (counter["bytes"] * 8) / elapsed / 1_000_000
-                    linea = (f"{counter['files']}/{len(pending)} · "
-                             f"{done_gb:.2f} GB · {speed:.0f} Mbps")
-                    on_progress(linea)
-                    _log.info("%s · %d reintentos acumulados", linea, counter["retries"])
-    finally:
-        manifest.flush()  # también en cancelación/error
-
-    _avisar(forzar=True)
-    result.bytes_sent = counter["bytes"]
-    result.elapsed = time.monotonic() - started
-    result.retries = counter["retries"]
-    result.medidas = {**{k: medidas[k] for k in MEDIDAS_SEGUNDOS},
-                      "reintentos": dict(medidas["reintentos"])}
-
-    _log.info("FIN · %d subidos · %d omitidos (%d por precondición) · %.2f GB "
-              "en %.0fs (%.0f Mbps) · %d reintentos · %d fallos",
-              result.uploaded, result.skipped, result.skipped_precondicion,
-              result.bytes_sent / 1024 ** 3,
-              result.elapsed, result.mbps, result.retries, len(result.failed))
-    for objeto, motivo in result.failed:
-        _log.error("FALLÓ %s → %s", objeto, motivo)
-    return result
+    return _upload_plan_rust(rust, plan, provider, pending, result, manifest,
+                             bytes_pendientes, urgentes or set(), on_progress,
+                             on_stats, should_stop, on_evento)

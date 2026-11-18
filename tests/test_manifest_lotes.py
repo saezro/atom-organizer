@@ -73,24 +73,18 @@ def test_flush_por_tiempo(tmp_path, monkeypatch):
     assert (tmp_path / "m.json").exists()
 
 
-def test_excepcion_a_mitad_deja_lo_marcado_en_disco(tmp_path, monkeypatch):
+def test_lo_verificado_por_rust_queda_en_disco_aunque_falle_el_resto(tmp_path, monkeypatch):
+    from tests.test_cloud_upload import FakeGCS, StaticProvider
+
     items = [_item(tmp_path, f"u{i}.jpg") for i in range(10)]
     plan = cu.UploadPlan(root=tmp_path, items=items, prefix=PREFIJO.strip("/"))
-    vistos = []
-
-    def falso(item, *a, **k):
-        vistos.append(item)
-        if len(vistos) > 4:
-            raise KeyboardInterrupt  # BaseException: sale del bucle de upload_plan
-        return "AA=="
-
-    monkeypatch.setattr(cu, "upload_file", falso)
+    FakeGCS(rechazar=tuple(f"u{i}.jpg" for i in range(4, 10))).instalar(monkeypatch)
     m = cu.Manifest(tmp_path / "m.json")
-    with pytest.raises(KeyboardInterrupt):
-        cu.upload_plan(plan, cu.UrlProvider(), concurrency=1, manifest=m, remotos={})
+    res = cu.upload_plan(plan, StaticProvider(), manifest=m, remotos={})
+    assert res.uploaded == 4 and len(res.failed) == 6
     en_disco = json.loads((tmp_path / "m.json").read_text())["done"]
     assert len(en_disco) == 4
-    assert set(en_disco) == {i.key for i in vistos[:4]}
+    assert set(en_disco) == {i.key for i in items[:4]}
 
 
 def test_subir_resultado_hace_flush_final_aunque_subir_falle(tmp_path):

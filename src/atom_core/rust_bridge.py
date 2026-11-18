@@ -1,12 +1,9 @@
-"""Puente Python<->Rust (``atom_rs``): flags por fase y carga estricta del módulo.
+"""Puente Python<->Rust (``atom_rs``): carga estricta del módulo.
 
-Flags (se leen del entorno en CADA llamada, sin cachear estado):
-  - ``ATOM_RUST=1``            activa todas las fases de ``FASES``.
-  - ``ATOM_RUST_FASES=a,b``    activa solo esas fases (lista separada por comas).
-Sin ninguno de los dos, el módulo NO se importa jamás: el comportamiento es el
-de Python puro. Con un flag activo, que falte ``atom_rs``, que su ABI no
-coincida o que no exponga los símbolos de una fase activa (wheel vieja) es un
-error (``RustNoDisponible``), nunca un retroceso silencioso a Python.
+Rust es el único camino: no hay flags ni fases opcionales. Que falte
+``atom_rs``, que su ABI no coincida o que no exponga los símbolos de una fase
+(wheel vieja) es un error visible (``RustNoDisponible``), nunca un retroceso
+silencioso a Python.
 """
 from __future__ import annotations
 
@@ -40,64 +37,19 @@ SIMBOLOS_POR_FASE: dict[str, tuple[str, ...]] = {
     "io": ("leer_completo", "jpeg_integro_por_cola"),
 }
 
-_VERDADEROS = {"1", "true", "yes", "on", "si", "sí"}
-
-
 class RustNoDisponible(RuntimeError):
-    """Flag Rust activo pero ``atom_rs`` no se puede usar."""
-
-
-def _fases_activas() -> tuple[str, ...]:
-    crudo = os.environ.get("ATOM_RUST_FASES", "").strip()
-    if crudo:
-        pedidas = [f.strip().lower() for f in crudo.split(",") if f.strip()]
-        for f in pedidas:
-            if f not in FASES:
-                raise ValueError(
-                    f"ATOM_RUST_FASES: fase desconocida {f!r}. Válidas: {', '.join(FASES)}."
-                )
-        return tuple(f for f in FASES if f in pedidas)
-    if os.environ.get("ATOM_RUST", "").strip().lower() in _VERDADEROS:
-        return FASES
-    return ()
-
-
-def fases_activas() -> tuple[str, ...]:
-    """Fases con Rust activo según el entorno actual (vacío = flag off)."""
-    return _fases_activas()
-
-
-def fase_activa(fase: str) -> bool:
-    if fase not in FASES:
-        raise ValueError(f"Fase Rust desconocida: {fase!r}. Válidas: {', '.join(FASES)}.")
-    return fase in _fases_activas()
-
-
-def rgb_modo() -> str:
-    """Modo de la fase ``rgb`` (``ATOM_RUST_RGB_MODO``): ``a`` (defecto) = bytes
-    idénticos a Pillow. ``b`` (sin pérdida, cambia bytes y tamaños) exige
-    ``ATOM_RUST_RGB_B_APROBADO=1`` y además está aplazado (sin implementar)."""
-    modo = os.environ.get("ATOM_RUST_RGB_MODO", "").strip().lower() or "a"
-    if modo == "a":
-        return "a"
-    if modo != "b":
-        raise ValueError(f"ATOM_RUST_RGB_MODO: modo desconocido {modo!r}. Válidos: a, b.")
-    if os.environ.get("ATOM_RUST_RGB_B_APROBADO", "").strip().lower() not in _VERDADEROS:
-        raise RustNoDisponible(
-            "ATOM_RUST_RGB_MODO=b requiere OK de Rodrigo para entregas a cliente "
-            "(cambia bytes y tamaños de salida): defínelo con ATOM_RUST_RGB_B_APROBADO=1.")
-    raise RustNoDisponible("ATOM_RUST_RGB_MODO=b: modo b aplazado, aún no implementado en atom_rs.")
+    """``atom_rs`` no se puede usar (falta, ABI distinta o faltan símbolos)."""
 
 
 def modulo(fases: Optional[tuple[str, ...]] = None) -> types.ModuleType:
     """Importa ``atom_rs`` y valida su ABI y los símbolos de ``fases`` (por
-    defecto, las activas en el entorno). Falla siempre con ``RustNoDisponible``."""
+    defecto, todas las de ``FASES``). Falla siempre con ``RustNoDisponible``."""
     try:
         m = importlib.import_module("atom_rs")
     except Exception as e:  # ImportError, módulo None en sys.modules, DLL rota...
         raise RustNoDisponible(
             f"No se pudo importar atom_rs ({type(e).__name__}: {e}). "
-            f"Intérprete: {sys.executable}. Instala la wheel atom_rs o desactiva ATOM_RUST."
+            f"Intérprete: {sys.executable}. Instala la wheel atom_rs."
         ) from e
     try:
         abi = m.version_abi()
@@ -112,24 +64,23 @@ def modulo(fases: Optional[tuple[str, ...]] = None) -> types.ModuleType:
             f"Reinstala la wheel de esta versión. Intérprete: {sys.executable}."
         )
     if fases is None:
-        fases = _fases_activas()
-    if "rgb" in fases:
-        rgb_modo()  # modo b sin aprobación / sin implementar: error al arrancar, no a mitad
-    faltan = [f"{f}: {s}" for f in fases for s in SIMBOLOS_POR_FASE.get(f, ())
+        fases = FASES
+    for f in fases:
+        if f not in SIMBOLOS_POR_FASE:
+            raise ValueError(f"Fase Rust desconocida: {f!r}. Válidas: {', '.join(FASES)}.")
+    faltan = [f"{f}: {s}" for f in fases for s in SIMBOLOS_POR_FASE[f]
               if not hasattr(m, s)]
     if faltan:
         raise RustNoDisponible(
-            f"atom_rs no expone los símbolos de las fases activas ({', '.join(faltan)}). "
-            f"Wheel anterior a esas fases: reinstálala o quítalas de ATOM_RUST_FASES. "
-            f"Intérprete: {sys.executable}."
+            f"atom_rs no expone los símbolos requeridos ({', '.join(faltan)}). "
+            f"Wheel anterior: reinstálala. Intérprete: {sys.executable}."
         )
     return m
 
 
-def exigir(fase: str) -> Optional[types.ModuleType]:
-    """None solo si la fase NO está activa; activa y sin módulo válido -> raise."""
-    if not fase_activa(fase):
-        return None
+def exigir(fase: str) -> types.ModuleType:
+    """Devuelve ``atom_rs`` validado (ABI + símbolos de ``fase``) o lanza
+    ``RustNoDisponible``. Nunca devuelve None."""
     return modulo((fase,))
 
 
@@ -139,7 +90,7 @@ class PanicRust(RuntimeError):
 
 
 def _es_error_fila(exc: BaseException) -> bool:
-    # Por nombre: no se importa ``atom_rs`` aquí (con el flag off no se toca).
+    # Por nombre: no se importa ``atom_rs`` aquí.
     return type(exc).__name__ == "ErrorFila" and hasattr(exc, "tipo")
 
 

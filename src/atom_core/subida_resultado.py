@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Callable
 
 from . import cloud_upload as cu
-from . import rust_bridge
 from .manifiesto import NOMBRE_CARPETA_MANIFIESTO, NOMBRE_FICHERO_MANIFIESTO
 
 logger = logging.getLogger(__name__)
@@ -762,7 +761,6 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
     grupos = [("urgentes", sel.urgentes)]
     if modo == MODO_NORMAL:
         grupos.append(("resto", sel.resto))
-    rust_on = rust_bridge.fase_activa("subida")
 
     def _evento(ev: dict) -> None:
         if on_evento is not None:
@@ -848,71 +846,7 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
         emitir("resto" if "resto" in pend_por_grupo else "urgentes")
 
     try:
-        if rust_on:
-            rust_pasada()
-        for nombre, items in ([] if rust_on else grupos):
-            if should_stop is not None and should_stop():
-                resumen.cancelado = True
-                break
-            cont = getattr(resumen, nombre)
-            part = particionar(
-                items, remotos, manifest, prefijo, concurrency=concurrency,
-                on_progreso=lambda h, t, nombre=nombre: emitir(nombre, None, (h, t)),
-                forzar=forzar)
-            cont.hechos = len(part.hechos)
-            cont.pendientes = len(part.pendientes)
-            resumen.conflictos += part.conflictos
-            bytes_ya[0] += sum(it.size for it in part.hechos)
-            for it in part.hechos:
-                por_pb.marcar(it, True)
-            resumen.metricas[nombre] = {
-                "omitidos": len(part.hechos), "pendientes": len(part.pendientes),
-                "bytes_omitidos": sum(it.size for it in part.hechos),
-                "bytes_pendientes": sum(it.size for it in part.pendientes),
-                "subidos": 0, "bytes_subidos": 0,
-                **_metricas_grupo(items, prefijo),
-            }
-            emitir(nombre)
-            if simular or not part.pendientes:
-                continue
-            base = cont.hechos
-            plan = cu.UploadPlan(root=destino, items=part.pendientes, prefix=prefijo.strip("/"))
-
-            def _stats(s: dict, cont=cont, base=base, nombre=nombre) -> None:
-                cont.hechos = base + int(s.get("files_done", 0))
-                emitir(nombre, s)
-
-            # `remotos={}`: la partición ya cruzó local y bucket. Con {} `reconciliar` deja los
-            # items tal cual (conserva `sobrescribir`) y no vuelve a listar.
-            res = subir(plan, proveedor, concurrency=concurrency, manifest=manifest,
-                        on_stats=_stats, should_stop=should_stop, remotos={},
-                        on_item=por_pb.marcar)
-            cont.hechos = base + res.uploaded + res.skipped
-            fall = {f[0] for f in res.failed}
-            ok_items = [it for it in part.pendientes if it.remote not in fall]
-            for it in ok_items:  # red de seguridad: ya notificados por `on_item` no se duplican
-                por_pb.marcar(it, True)
-            env_prev[0] += int(getattr(res, "bytes_sent", 0) or 0)
-            sub_prev[0] += int(res.uploaded)
-            med_prev = cu.sumar_medidas(med_prev, getattr(res, "medidas", None))
-            if res.uploaded or not fall:
-                resumen.metricas[nombre]["subidos"] = int(res.uploaded)
-                resumen.metricas[nombre]["bytes_subidos"] = int(getattr(res, "bytes_sent", 0) or
-                                                               sum(it.size for it in ok_items))
-                # Desglose de lo SUBIDO (no de toda la selección). Aproximado: incluye
-                # el raro 412 «ya estaba» (ver `UploadResult.skipped_precondicion`).
-                tipos, vuelos = _desglose(ok_items, prefijo)
-                resumen.metricas[nombre]["subidos_por_tipo"] = tipos
-                resumen.metricas[nombre]["subidos_por_vuelo"] = vuelos
-            resumen.fallidas += [f for f in res.failed if f[1] != "cancelado"]
-            if should_stop is not None and should_stop():
-                resumen.cancelado = True
-            else:
-                # Cortada sin que nadie lo pidiera: antes se filtraban y quedaba ok.
-                resumen.cancelados += [f[0] for f in res.failed if f[1] == "cancelado"]
-            emitir(nombre)
-            if resumen.cancelado or resumen.fallidas:
-                break
+        rust_pasada()
     finally:
         resumen.metricas["duracion_s"] = round(time.monotonic() - t0, 1)
         resumen.metricas["conflictos_n"] = len(resumen.conflictos)

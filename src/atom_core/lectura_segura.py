@@ -11,11 +11,8 @@ from __future__ import annotations
 
 import os
 import shutil
-import time
 
 from atom_core import rust_bridge
-
-_BLOQUE = 1024 * 1024
 
 
 class LecturaIncompleta(OSError):
@@ -123,24 +120,8 @@ def jpeg_cola_valida(bytes_cola: bytes) -> bool:
 
 def jpeg_integro_por_cola(datos: bytes) -> bool:
     """Condición contraria al truncado de `apply`: `jpeg_cola_valida` de la cola
-    (<=64 KiB) o EOI en cola útil o EOI por segmentos. Fase Rust `io` (`atom_rs`)
-    si está activa; si no, Python."""
-    rs = rust_bridge.exigir("io")
-    if rs is not None:
-        return rs.jpeg_integro_por_cola(datos)
-    return (jpeg_cola_valida(datos[-VENTANA_COLA_JPEG:])
-            or jpeg_eoi_en_cola_util(datos)
-            or jpeg_eoi_por_segmentos(datos))
-
-
-def _hidratar(ruta) -> None:
-    """Fuerza la hidratación: lee el fichero entero en secuencial hasta EOF."""
-    try:
-        with open(ruta, "rb") as f:
-            while f.read(_BLOQUE):
-                pass
-    except OSError:
-        pass
+    (<=64 KiB) o EOI en cola útil o EOI por segmentos. Siempre `atom_rs` (fase `io`)."""
+    return rust_bridge.exigir("io").jpeg_integro_por_cola(datos)
 
 
 class FicheroCambiado(LecturaIncompleta):
@@ -160,15 +141,6 @@ class FicheroCambiado(LecturaIncompleta):
 
     def __reduce__(self):
         return (type(self), (self.ruta, self.actual, self.indexado))
-
-
-def _esperados(ruta, bytes_origen) -> int:
-    """Tamaño esperado = `stat` del SO. Si `bytes_origen` (índice) existe y difiere,
-    el fichero cambió desde el índice: falla al momento con `FicheroCambiado`."""
-    esperados = os.stat(ruta).st_size
-    if bytes_origen and int(bytes_origen) != esperados:
-        raise FicheroCambiado(ruta, esperados, int(bytes_origen))
-    return esperados
 
 
 def _leer_completo_gcs(ruta, bytes_origen) -> bytes:
@@ -198,41 +170,18 @@ def leer_completo(ruta, intentos: int = 5, backoff: float = 0.5, backoff_max: fl
     normal (lectura completa a la primera) no espera nada."""
     if str(ruta).lower().startswith("gs://"):
         return _leer_completo_gcs(ruta, bytes_origen)
-    # Fase Rust `io`: misma lectura/errores/esperas en `atom_rs.lectura`. Los
-    # `ErrorFila` se traducen a LecturaIncompleta/FicheroCambiado/OSError (mismo
-    # tipo y `str` que el camino Python). Sin la fase activa -> camino Python.
+    # `atom_rs.lectura`: los `ErrorFila` se traducen a LecturaIncompleta/
+    # FicheroCambiado/OSError (mismo tipo y `str`).
     rs = rust_bridge.exigir("io")
-    if rs is not None:
-        try:
-            return rs.leer_completo(
-                os.fspath(ruta), intentos, backoff, backoff_max,
-                int(bytes_origen) if bytes_origen else None)
-        except Exception as exc:  # noqa: BLE001
-            traducida = rust_bridge.traducir_error(exc)
-            if traducida is exc:
-                raise
-            raise traducida from None
-    espera = backoff
-    leidos = 0
-    esperados = 0
-    previo = None
-    for n in range(1, max(1, intentos) + 1):
-        esperados = _esperados(ruta, bytes_origen)
-        with open(ruta, "rb") as f:
-            datos = f.read()
-        leidos = len(datos)
-        if leidos >= esperados:
-            return datos
-        if n > 1 and leidos == previo:
-            # EOF estable: dos lecturas seguidas devuelven los mismos bytes,
-            # menos de los declarados. Reintentar no va a cambiarlo: falla ya.
-            raise LecturaIncompleta(ruta, leidos, esperados, n)
-        previo = leidos
-        if n < intentos:
-            time.sleep(espera)
-            espera = min(espera * 2, backoff_max)
-            _hidratar(ruta)
-    raise LecturaIncompleta(ruta, leidos, esperados, intentos)
+    try:
+        return rs.leer_completo(
+            os.fspath(ruta), intentos, backoff, backoff_max,
+            int(bytes_origen) if bytes_origen else None)
+    except Exception as exc:  # noqa: BLE001
+        traducida = rust_bridge.traducir_error(exc)
+        if traducida is exc:
+            raise
+        raise traducida from None
 
 
 def verificar_completo(ruta, **kw) -> None:
