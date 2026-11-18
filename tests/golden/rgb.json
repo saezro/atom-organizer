@@ -1,0 +1,387 @@
+{
+  "_meta": {
+    "libjpeg_turbo": "3.1.4.1",
+    "numpy": "2.4.6",
+    "pillow": "12.3.0"
+  },
+  "casos": {
+    "jpeg_cmyk": {
+      "entrada_sha256": "681acd7df90aaa8a7e930d69cce78bcb63d1958fa8cf879f42ed5463f25e64f2",
+      "variantes": {
+        "a0_crop70": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "4b17941a56c23c5e6d27980b2d6792013346adc0404f846aef882eafdb9408b2",
+            "orig.JPG": "a91b1a22cf87b8512a010b74204fa9e087611c085e981e2cad2d162c9dd2a7fa"
+          }
+        },
+        "a270_crop_fuera": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "382b71c22e757619b785ffe1f13fdff41a9780f3e67447e38ca52a2989d05fa7",
+            "orig.JPG": "6d2b49eeeeb3f15111755c28addf104eb2387dcb0d6b33584d3e0e39c30c6201"
+          }
+        },
+        "a90_sin_crop": {
+          "salidas_sha256": {
+            "orig.JPG": "60f90768bca971ff3ff7b9af25274324c5ac970d2d252b22982c7145128053e4"
+          }
+        }
+      }
+    },
+    "jpeg_dji_app3_64k": {
+      "entrada_sha256": "6b2f365f45afdde8dde4a691c6569cc5a218f29c031b5ef1674524795c1953c0",
+      "variantes": {
+        "a0_crop70": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "60dd4728b9bc5f9c1e4dfbf1b6716be71a0e7e9ba92680230b74d6c9d5e65038",
+            "orig.JPG": "4d3624be843fd9c9abbb93be5a4788d0c3a6873c3e84cd76d8eb7166b7cdd4e8"
+          }
+        },
+        "a270_crop_fuera": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "7e19d3d0e89ed70c6228d80c6fca831b13e3742a730a313ddba16bccf77bb185",
+            "orig.JPG": "aea2771a915afbd77a5f722fb61297eec446c92154673563c42615bd2e3cd7f9"
+          }
+        },
+        "a90_sin_crop": {
+          "salidas_sha256": {
+            "orig.JPG": "aea2771a915afbd77a5f722fb61297eec446c92154673563c42615bd2e3cd7f9"
+          }
+        }
+      }
+    },
+    "jpeg_dji_app3_roto_256k": {
+      "entrada_sha256": "a4e0d956427877479c67e1d87dd25e5e9dceddb6b6d4583f5cbd815c913abc43",
+      "variantes": {
+        "a0_crop70": {
+          "excepcion": "UnidentifiedImageError: cannot identify image file <_io.BytesIO object at 0x?>"
+        },
+        "a270_crop_fuera": {
+          "excepcion": "UnidentifiedImageError: cannot identify image file <_io.BytesIO object at 0x?>"
+        },
+        "a90_sin_crop": {
+          "excepcion": "UnidentifiedImageError: cannot identify image file <_io.BytesIO object at 0x?>"
+        }
+      }
+    },
+    "jpeg_dji_full": {
+      "entrada_sha256": "a0b322143a78050f70f1d465203d7c3fdee04a9dec34da65ad1944a11c4dae7f",
+      "variantes": {
+        "a0_crop70": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "1057bf5c7518857d609a88a3faffe81b9564c48ecbf3d14913a85c2b46a12965",
+            "orig.JPG": "39e005c557843a50e467062b3aefc0341eab47600f6a4c6c89da52adaafb29fb"
+          }
+        },
+        "a270_crop_fuera": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "fe6845059338c0c8f0506ddff6edae611032bb7e598fb859f3473e3ee91ac84d",
+            "orig.JPG": "691c8a4a250f30418c8aed800d7fa060edd353cdfed3b183626ddc19157a7b8b"
+          }
+        },
+        "a90_sin_crop": {
+          "salidas_sha256": {
+            "orig.JPG": "691c8a4a250f30418c8aed800d7fa060edd353cdfed3b183626ddc19157a7b8b"
+          }
+        }
+      }
+    },
+    "jpeg_l": {
+      "entrada_sha256": "4db135ead093887d73b3f211debbad48579f8d6e9984d0ab13b748308dc97ce8",
+      "variantes": {
+        "a0_crop70": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "7ec0e4b94633307802ba29075d42b98e027bc15908a3c9905ceab13eac0af853",
+            "orig.JPG": "2dc3d9aa6d1181e8a2065bcd0228456f5df7e15d7bce5ea22756fd8f036e8ed2"
+          }
+        },
+        "a270_crop_fuera": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "f4686c8f64449613671c0343897cd1de391606148c02cbd287a08f3a4aefd12a",
+            "orig.JPG": "00f86df4dd66dd603b6087cae34a85be3057517a31c3a210986e32dd77a28f40"
+          }
+        },
+        "a90_sin_crop": {
+          "salidas_sha256": {
+            "orig.JPG": "407992101380153f7239c52c77b9080b499b1cc081b412ac78b74f4057796cbe"
+          }
+        }
+      }
+    },
+    "jpeg_mutado_bytes_extra": {
+      "entrada_sha256": "3f63b8b278800f62bb5667434d74cb4114e1e033564889fc6f7a872f60e913cb",
+      "variantes": {
+        "a0_crop70": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "58e81b9135959ba7da44eb476fc606326ae35d03327a551bb07f0d44016c69c8",
+            "orig.JPG": "adf3ab5835e83fa40ea8394d1dc49a6045e516f1bbed1c8bbd9b39b6fb97d0fa"
+          }
+        },
+        "a270_crop_fuera": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "2491f7e95ad82816b06ac09541848e6e4958c54d1d2aa1f359bcae4adad58a68",
+            "orig.JPG": "4026fda829e265aa3049fe30dd472479cd7f69a8e70bec35ad650b4c3cd04504"
+          }
+        },
+        "a90_sin_crop": {
+          "salidas_sha256": {
+            "orig.JPG": "dc4078bd9853a4a8edcfea39a1d33c20d48b6350f2179796017ecb44646550a5"
+          }
+        }
+      }
+    },
+    "jpeg_mutado_hueco_de_ceros": {
+      "entrada_sha256": "930a7f2a7b6caa09072039b56ff4d2285e71c5d0aaec206e620ab52e96d78808",
+      "variantes": {
+        "a0_crop70": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "72ad264ef07d64d9633ef150dfc8e0b7094f2eef2f2e8cfe91c432f2781bd320",
+            "orig.JPG": "e3be1c76c3441d02427902b174848c69e56ccfbed91570325078c8ee9c980b77"
+          }
+        },
+        "a270_crop_fuera": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "96d0a3604774ccfed334d8a787454f12f0256a44772eaff7d481b779de85bb61",
+            "orig.JPG": "5afe83c0e1a0361088a9ef146835f4c2aafa998745ecaa13c40779c826784085"
+          }
+        },
+        "a90_sin_crop": {
+          "salidas_sha256": {
+            "orig.JPG": "d7dd2aa508c969ee4028948e71035d4659453089c3e06c353247fb84861129dc"
+          }
+        }
+      }
+    },
+    "jpeg_mutado_marcador_invalido": {
+      "entrada_sha256": "52d0cb5236194d1c2b0e195c1e9dbb48593f51a31db1b19afd178b61253dc223",
+      "variantes": {
+        "a0_crop70": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "12f6594be5d559fca026073bc8d475fc83109dae32f40d07a7262fe8ff037004",
+            "orig.JPG": "91cdd2cd1e575ead1243c94480be3b46e1f8d44936c6ce4243ecb815ef70c48b"
+          }
+        },
+        "a270_crop_fuera": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "2a421e6d36c0ed2b24c16df5ce17835710108d67adfb23ed5525818588dadd51",
+            "orig.JPG": "b086ed5d9488464a3d424caecb9476320832a33e295b9324f1a2455217051528"
+          }
+        },
+        "a90_sin_crop": {
+          "salidas_sha256": {
+            "orig.JPG": "8b8425d5362d5762e91a3c22c3727833977e2438356a0fc8fc5d5d06a6b23b3a"
+          }
+        }
+      }
+    },
+    "jpeg_mutado_scan_corrupto": {
+      "entrada_sha256": "3d038f48951ccd1d17c8dcb53f7f78ddd9cb0cdcb6413ae698754940f7021625",
+      "variantes": {
+        "a0_crop70": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "8fa9576cccec9eef064d04cc3bed545b55e25dc61f60a29c53956e45e1eb5ce3",
+            "orig.JPG": "6cef8a77f5829168ef5279d7e78fc40db9d96c509ae7714a089990d50901ecfd"
+          }
+        },
+        "a270_crop_fuera": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "1df6371b8fcf3f62ce6fa913de45f891d19eac7b3698b43426217f667f4d483c",
+            "orig.JPG": "01729dd219a76f53f9ec159ac98b6f5f05775bb3ec828eb2bc94ae4a77cdbfb3"
+          }
+        },
+        "a90_sin_crop": {
+          "salidas_sha256": {
+            "orig.JPG": "2baf90447bace73b1cc72ecc72593f3852148e909a26a03f8b57895b2c9e2e7a"
+          }
+        }
+      }
+    },
+    "jpeg_mutado_truncado_con_eoi": {
+      "entrada_sha256": "acbcd746c152e7e91705949c601bd833bc1ed63a473e749504fa435078f2db42",
+      "variantes": {
+        "a0_crop70": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "dd5cafce455784bb1fd12ae6b8d25883d397060650150e449f343464e22e919a",
+            "orig.JPG": "9c141a0ea7be8e79f5d8990ab51412f8ea4b5b17eaa9cf291b651e378d1cd961"
+          }
+        },
+        "a270_crop_fuera": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "ddd73b38591ce328c5b2c304d98e4ef8cde37ea57f15025affa5e807dbd0ef5d",
+            "orig.JPG": "632d65be3c3763816bcaa81c134754bae3f5d5575eb22185e4bc415a7ab36314"
+          }
+        },
+        "a90_sin_crop": {
+          "salidas_sha256": {
+            "orig.JPG": "b80a68443f83dd2ca70da8556e576f6d0346d86e37aa3e1169a08cbf8ef09e70"
+          }
+        }
+      }
+    },
+    "jpeg_rgb": {
+      "entrada_sha256": "94aba404b1f36ddb622a63b69500afb7ebfd2bc8904cbc1127362e6dbb88c07c",
+      "variantes": {
+        "a0_crop70": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "58e81b9135959ba7da44eb476fc606326ae35d03327a551bb07f0d44016c69c8",
+            "orig.JPG": "adf3ab5835e83fa40ea8394d1dc49a6045e516f1bbed1c8bbd9b39b6fb97d0fa"
+          }
+        },
+        "a270_crop_fuera": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "2491f7e95ad82816b06ac09541848e6e4958c54d1d2aa1f359bcae4adad58a68",
+            "orig.JPG": "4026fda829e265aa3049fe30dd472479cd7f69a8e70bec35ad650b4c3cd04504"
+          }
+        },
+        "a90_sin_crop": {
+          "salidas_sha256": {
+            "orig.JPG": "dc4078bd9853a4a8edcfea39a1d33c20d48b6350f2179796017ecb44646550a5"
+          }
+        }
+      }
+    },
+    "jpeg_truncado_mitad": {
+      "entrada_sha256": "851f9cc275d505bb7f7a135893b0f6cf610cfeeae0bc382d86f92699bcdf305c",
+      "variantes": {
+        "a0_crop70": {
+          "excepcion": "OSError: JPEG truncado en origen (cola a ceros/sin EOI): <TMP>/jpeg_truncado_mitad.JPG"
+        },
+        "a270_crop_fuera": {
+          "excepcion": "OSError: JPEG truncado en origen (cola a ceros/sin EOI): <TMP>/jpeg_truncado_mitad.JPG"
+        },
+        "a90_sin_crop": {
+          "excepcion": "OSError: JPEG truncado en origen (cola a ceros/sin EOI): <TMP>/jpeg_truncado_mitad.JPG"
+        }
+      }
+    },
+    "jpeg_truncado_sin_eoi": {
+      "entrada_sha256": "41ce8895aebe72f062323d97fbf1e6c375b1d04d8ea0e255f8667590115ea3ba",
+      "variantes": {
+        "a0_crop70": {
+          "excepcion": "OSError: JPEG truncado en origen (cola a ceros/sin EOI): <TMP>/jpeg_truncado_sin_eoi.JPG"
+        },
+        "a270_crop_fuera": {
+          "excepcion": "OSError: JPEG truncado en origen (cola a ceros/sin EOI): <TMP>/jpeg_truncado_sin_eoi.JPG"
+        },
+        "a90_sin_crop": {
+          "excepcion": "OSError: JPEG truncado en origen (cola a ceros/sin EOI): <TMP>/jpeg_truncado_sin_eoi.JPG"
+        }
+      }
+    },
+    "png_exif_itxt": {
+      "entrada_sha256": "c65c9f5f24244585feee78a51d471e129c965bc2989e5ac80530c952c9a23d17",
+      "variantes": {
+        "a0_crop70": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "869dd1f7536279c11219d5f4e7b5af9f68e5f1ede4715d1a5d9ba479537993d6",
+            "orig.JPG": "fa149b5644272be620b9947868808ab657549cf0aa9459c63b08b9947d50d4bf"
+          }
+        },
+        "a270_crop_fuera": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "8da67bcdb244f49ba390b66cabaa65c560b5625e671583d3f92e0a7f34b8ac38",
+            "orig.JPG": "5d6b9b3fbbc9ad28678fe4c7cce30e89223d2d11a293a51066e1d90e1e6197b9"
+          }
+        },
+        "a90_sin_crop": {
+          "salidas_sha256": {
+            "orig.JPG": "5d6b9b3fbbc9ad28678fe4c7cce30e89223d2d11a293a51066e1d90e1e6197b9"
+          }
+        }
+      }
+    },
+    "png_p": {
+      "entrada_sha256": "c97f30c91acc6d11f38c2de2997307ae2699660e7debb9e8d9d9f3a4f4faaedf",
+      "variantes": {
+        "a0_crop70": {
+          "excepcion": "OSError: cannot write mode P as JPEG"
+        },
+        "a270_crop_fuera": {
+          "excepcion": "OSError: cannot write mode P as JPEG"
+        },
+        "a90_sin_crop": {
+          "excepcion": "OSError: cannot write mode P as JPEG"
+        }
+      }
+    },
+    "png_rgb": {
+      "entrada_sha256": "0af0517ea697b118150c3b853eccad4762373459f6d754b40d13452aa4bc509d",
+      "variantes": {
+        "a0_crop70": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "4102b3050a51f088ad76022188e50bbaa8e7bcbcba9c8eb734ef91a8fc5b0c29",
+            "orig.JPG": "5003da407267bf7b3e44ef04985e338fd327aa8ff062e7fc89f379b1c7435118"
+          }
+        },
+        "a270_crop_fuera": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "affdc1e1dfdaf4fceb9f0ce17718b54d9102832695baf598db3eaac07f79785c",
+            "orig.JPG": "bfa826d32a93c46736d473ac229b9cae8d218a34f487e07e95766912ac3f2359"
+          }
+        },
+        "a90_sin_crop": {
+          "salidas_sha256": {
+            "orig.JPG": "25403953b44493a7802e6f45f438da2e0f9679da7c52d376077685721a416bb5"
+          }
+        }
+      }
+    },
+    "png_rgba": {
+      "entrada_sha256": "b690593a05e975c91edcd184e1bd9d3df1296e366a768a9e9b0eba1ac8e8d66c",
+      "variantes": {
+        "a0_crop70": {
+          "excepcion": "OSError: cannot write mode RGBA as JPEG"
+        },
+        "a270_crop_fuera": {
+          "excepcion": "OSError: cannot write mode RGBA as JPEG"
+        },
+        "a90_sin_crop": {
+          "excepcion": "OSError: cannot write mode RGBA as JPEG"
+        }
+      }
+    },
+    "tiff_exif_gps_xmp700": {
+      "entrada_sha256": "996a7adc972b2bc391a59db8a38aae3a650ef99ce01c53878f571aaa27d6ce01",
+      "variantes": {
+        "a0_crop70": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "a3e17c142ad0dacada7a67177e1a2ab705f63f0ac523eba76e99b04e601bf2cd",
+            "orig.JPG": "babf00161a9b70e0694a64cb5388e691f6a95c708e9d116ef2af9261245c6c50"
+          }
+        },
+        "a270_crop_fuera": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "f16770a1dc4049117687b2b3d87b1ed652dd1836dad22a7f4cbc0fad60235622",
+            "orig.JPG": "57155178e4ce0b7114fa4c2edb488d9c33f7e273c7c5e7d07923a140bf01b58f"
+          }
+        },
+        "a90_sin_crop": {
+          "salidas_sha256": {
+            "orig.JPG": "57155178e4ce0b7114fa4c2edb488d9c33f7e273c7c5e7d07923a140bf01b58f"
+          }
+        }
+      }
+    },
+    "tiff_rgb": {
+      "entrada_sha256": "7216d68f59277f5e23769d8bc39469b11fb74229a66502493073a87c4a54a4d9",
+      "variantes": {
+        "a0_crop70": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "516e118bb42f8b22e30dc8d8e9a142e1a73735c0787a269dc92a9dc0e5c3d78e",
+            "orig.JPG": "c9140e232973e3e19749a2db9039a2114e12a900f84ab4f805b69708f20e8615"
+          }
+        },
+        "a270_crop_fuera": {
+          "salidas_sha256": {
+            "crop_CROP.JPG": "fbf701bfa737e77a288c2f3f91468d6e36f30c47ca2632af09098138f8cd3081",
+            "orig.JPG": "83c4c776d8f2d0cfd7af7f95dfb20a3d7c574a3f8134baec06f689a1790b9f19"
+          }
+        },
+        "a90_sin_crop": {
+          "salidas_sha256": {
+            "orig.JPG": "07c50b84c75524fa5282ae0c78b3fbda0ecbf910c646eb8f52afe32205f6c34d"
+          }
+        }
+      }
+    }
+  }
+}

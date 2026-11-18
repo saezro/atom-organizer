@@ -1,0 +1,54 @@
+{
+  "_meta": {
+    "libjpeg_turbo": "3.1.4.1",
+    "numpy": "2.4.6",
+    "pillow": "12.3.0"
+  },
+  "casos": {
+    "1280x1024_g0": {
+      "jpg_sha256": "383929828eae0529cba3adef6c164aee07320fc43268330f7e7e8e24121a6c40",
+      "raw_sha256": "f3f04b816ccd3519a211704006ccad0eed5bce0dbf6d8949890a59ebef73f401",
+      "salidas_sha256": {
+        "color": "4b98f7ab287aec7031396ea9b587408fade16e84d2e499c0eb9efcafff165688",
+        "gris": "2c6531190a6ae6f325d8a9184c86bc09c840c4f12668e4a9ba119ed6eb2951ee",
+        "tiff": "3b77e03d51bc895c028b19ab116e7f8c203d4ad9bf45db137227f6987418ce42"
+      }
+    },
+    "640x512_g0": {
+      "jpg_sha256": "0dbe15ef2183d8ff26604b264855e3e0a8f63e359d277934e7f825bc94812818",
+      "raw_sha256": "08830b7996993cfd81dc0a9b267449c2498a24e3ebadaf4c46ac6a2b861b6c20",
+      "salidas_sha256": {
+        "color": "c2c11cda4ab6d7c8a0b57dac20203c4d29c8ff629629e625f6109f6a26a98b50",
+        "gris": "e60873580b5d2fe65ced7df827184cba6d5eb2a5dd3f9ad14d5666ea6e567dd3",
+        "tiff": "0471939091b8d7a625c000cfa59ef95d181be6375f936e5b1aa45ea0f33d1de3"
+      }
+    },
+    "640x512_g270_auto": {
+      "jpg_sha256": "0dbe15ef2183d8ff26604b264855e3e0a8f63e359d277934e7f825bc94812818",
+      "raw_sha256": "e0477ef17a84bfbbf4c3a3d623be60ceeade6e9aaf8d1242061941cd5ce74c85",
+      "salidas_sha256": {
+        "color": "666c80bd4962e02d4be418137c21cf98a271c5aae5f7d0f75b26f1782a465eb3",
+        "gris": "7f40cbce8e1708eeb737bcbb6833260253cf60a35cdc86b71a0070d33c42a846",
+        "tiff": "12e18b49ac8670122776d95f276d95479ff03c375555c531d6b909376c62366b"
+      }
+    },
+    "640x512_g90": {
+      "jpg_sha256": "0dbe15ef2183d8ff26604b264855e3e0a8f63e359d277934e7f825bc94812818",
+      "raw_sha256": "08830b7996993cfd81dc0a9b267449c2498a24e3ebadaf4c46ac6a2b861b6c20",
+      "salidas_sha256": {
+        "color": "52bf6d5976400e6f2069dd825982fe93ad66456ab22fce9a653679e031cb1831",
+        "gris": "5c1fb4da21969b8788c9a3fdf96fd330bbd1becaf2b14606c9d5a70d6abec39e",
+        "tiff": "43c32dda8e40b08262c74d851792684f099f350abbb1366b8fccfcdc803018f8"
+      }
+    },
+    "64x48_fijo_g0": {
+      "jpg_sha256": "37e09631063f942bfd9c55c18330890f877238ad20feac4694bbe0437c78b91f",
+      "raw_sha256": "8e37ee749ed639113822a658529fda5432ac25a5737d6497c4bd6bbecae6f1f5",
+      "salidas_sha256": {
+        "color": "d9163bdfba2ff56851f8e1bd570259a425c51b25b9346f6f62f82165b79ff9b4",
+        "gris": "816a4fd0c8e7e8e04bab009976756a36ab2603e342207b8d8ff8503539a5f8fe",
+        "tiff": "a0d59d4de2aa1210fde549467dee988c9d32244d5bb77fd97ab8ca73e3c03033"
+      }
+    }
+  }
+}
