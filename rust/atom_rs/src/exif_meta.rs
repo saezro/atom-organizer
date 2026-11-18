@@ -1097,7 +1097,12 @@ mod tests {
         let (lat, lon) = c.gps.expect("gps");
         assert_eq!(lat, 40.0 + 25.0 / 60.0 + 12.34 / 3600.0);
         assert_eq!(lon, (3.0 + 41.0 / 60.0 + 5.5 / 3600.0) * -1.0);
-        assert!(!c.xmp_presente);
+        // F2: un buffer < 256 KiB es el fichero entero (`completo` inferido), así que el
+        // bloque XMP "resuelto" es el texto completo y `xmp_presente` es true aunque no
+        // haya XMP (valores por defecto "0", como `get_xmp_data` sobre `leer_bloque_xmp`).
+        // `xmp_presente=false` solo ocurre con cabecera de 256 KiB sin cierre XMP.
+        assert!(c.xmp_presente && !c.flight_yaw_en_xmp && !c.necesita_completo);
+        assert_eq!(c.xmp.as_ref().map(|v| v.len()), Some(9));
     }
 
     #[test]
