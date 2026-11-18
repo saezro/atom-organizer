@@ -192,7 +192,7 @@ def test_flag_on_llama_termica_procesar_con_sus_argumentos(tmp_path, logger, mon
 
 
 def test_flag_on_sin_gris_pasa_none(tmp_path, logger, monkeypatch, rust_falso):
-    monkeypatch.setenv("ATOM_RUST", "1")
+    monkeypatch.setenv("ATOM_RUST_FASES", "termica")
     raiz = _carpeta(tmp_path, "r", _jpg_bytes(_W, _H))
     _convertir(logger, monkeypatch, raiz, _raw_sintetico(), gris=False, color=False)
     args = rust_falso.llamadas[0]
