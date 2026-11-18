@@ -10,10 +10,11 @@
 //! Python reescribe el fichero, y Pillow tampoco lo hacía); el
 //! `verificar_parcial` y el `os.replace` siguen en Python.
 //!
-//! Hilos: NUNCA el pool global de rayon. Cada llamada construye un pool LOCAL
-//! (`ATOM_RS_HILOS`, defecto 2) y lo destruye al acabar. Un pool global creado en
-//! el padre deja el registro sin hilos en un hijo `fork` (deadlock), y con un
-//! `ProcessPoolExecutor` serían ncpu hilos por proceso (sobresuscripción).
+//! Hilos: NUNCA el pool global de rayon. Todo uso de rayon va dentro de
+//! `pool(n).install(..)`, un pool propio que recuerda el pid que lo creó: tras un
+//! `fork` el hijo no hereda hilos, así que ve otro pid, olvida (sin drop) el pool
+//! del padre y crea uno nuevo. Un pool global creado en el padre dejaría el
+//! registro sin hilos en el hijo (deadlock).
 //!
 //! Decode no limpio: si libjpeg-turbo avisa o falla al decodificar (datos
 //! corruptos, truncado), Rust NO da la imagen por buena ni escribe nada: devuelve
@@ -25,7 +26,7 @@ use crate::error::AtomError;
 use crate::jpeg::{codificar_rgb, decodificar_rgb, devolver_buffer_rgb, validar_exif};
 use pyo3::prelude::*;
 use rayon::prelude::*;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use std::time::Instant;
 
 /// Resultado de `rgb_procesar`. Tiempos en ms (`encode_crop` = 0 sin `_CROP`).
@@ -89,6 +90,10 @@ pub fn rotar_rgb(src: &[u8], ancho: usize, alto: usize, grados: i32) -> Vec<u8> 
         return src.to_vec();
     }
     let mut out = vec![0u8; src.len()];
+    let Ok(pool) = pool_bandas() else {
+        return rotar_serie(src, ancho, alto, grados);
+    };
+    pool.install(|| {
     out.par_chunks_mut(BANDA * alto * 3)
         .enumerate()
         .for_each(|(b, trozo)| {
@@ -108,6 +113,21 @@ pub fn rotar_rgb(src: &[u8], ancho: usize, alto: usize, grados: i32) -> Vec<u8> 
                 }
             }
         });
+    });
+    out
+}
+
+/// Giro en serie (solo si no se pudo crear el pool de bandas).
+fn rotar_serie(src: &[u8], ancho: usize, alto: usize, grados: i32) -> Vec<u8> {
+    let mut out = vec![0u8; src.len()];
+    for i in 0..ancho {
+        for j in 0..alto {
+            let (f, c) = if grados == 90 { (alto - 1 - j, i) } else { (j, ancho - 1 - i) };
+            let s = (f * ancho + c) * 3;
+            let d = (i * alto + j) * 3;
+            out[d..d + 3].copy_from_slice(&src[s..s + 3]);
+        }
+    }
     out
 }
 
@@ -121,9 +141,11 @@ fn recortar_rgb(src: &[u8], ancho: usize, alto: usize, caja: (u32, u32, u32, u32
     }
     let (cw, ch) = (r - l, b - t);
     let mut out = vec![0u8; cw * ch * 3];
-    out.par_chunks_mut(cw * 3).enumerate().for_each(|(y, fila)| {
-        let s = ((t + y) * ancho + l) * 3;
-        fila.copy_from_slice(&src[s..s + cw * 3]);
+    pool_bandas()?.install(|| {
+        out.par_chunks_mut(cw * 3).enumerate().for_each(|(y, fila)| {
+            let s = ((t + y) * ancho + l) * 3;
+            fila.copy_from_slice(&src[s..s + cw * 3]);
+        });
     });
     Ok((out, cw, ch))
 }
@@ -147,15 +169,43 @@ fn hilos() -> usize {
         .unwrap_or(1)
 }
 
-/// Pool rayon compartido (solo con `ATOM_RS_HILOS` > 1), creado una vez.
-static POOL: OnceLock<Result<rayon::ThreadPool, String>> = OnceLock::new();
+type EstadoPool = Mutex<Option<(u32, usize, &'static rayon::ThreadPool)>>;
+
+/// Pool de encode (`hilos()`) y pool de bandas (nproc). Cada uno guarda (pid, n).
+static POOL_ENC: EstadoPool = Mutex::new(None);
+static POOL_BANDAS: EstadoPool = Mutex::new(None);
+
+/// Pool pid-aware de `n` hilos. Si no existe, cambió `n` o el pid difiere (hijo de
+/// `fork`), crea uno nuevo y lo filtra con `Box::leak`: el viejo NUNCA se droppea
+/// (en el hijo sus hilos no existen; soltarlo intentaría joinearlos).
+fn pool_en(estado: &'static EstadoPool, n: usize) -> Result<&'static rayon::ThreadPool, AtomError> {
+    let pid = std::process::id();
+    let mut g = match estado.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    if let Some((p, m, pool)) = *g {
+        if p == pid && m == n {
+            return Ok(pool);
+        }
+    }
+    let nuevo = rayon::ThreadPoolBuilder::new()
+        .num_threads(n)
+        .build()
+        .map_err(|e| AtomError::Io(format!("pool de hilos: {e}")))?;
+    let nuevo: &'static rayon::ThreadPool = Box::leak(Box::new(nuevo));
+    *g = Some((pid, n, nuevo));
+    Ok(nuevo)
+}
 
 fn pool(n: usize) -> Result<&'static rayon::ThreadPool, AtomError> {
-    POOL.get_or_init(|| {
-        rayon::ThreadPoolBuilder::new().num_threads(n).build().map_err(|e| e.to_string())
-    })
-    .as_ref()
-    .map_err(|e| AtomError::Io(format!("pool de hilos: {e}")))
+    pool_en(&POOL_ENC, n)
+}
+
+/// Pool para rotar/recortar por bandas (nproc hilos).
+pub(crate) fn pool_bandas() -> Result<&'static rayon::ThreadPool, AtomError> {
+    let n = std::thread::available_parallelism().map_or(1, |n| n.get());
+    pool_en(&POOL_BANDAS, n)
 }
 
 /// Codifica `px` y lo escribe en `ruta`; devuelve los ms de encode (sin escritura).

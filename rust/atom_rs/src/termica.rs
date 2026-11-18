@@ -328,8 +328,9 @@ pub fn procesar(p: &Parametros<'_>) -> Result<TermicaStats, AtomError> {
             _ => Ok(None),
         }
     };
-    let (r_tiff, (r_gris, r_color)) =
-        rayon::join(tarea_tiff, || rayon::join(tarea_gris, tarea_color));
+    // Siempre dentro de un pool pid-aware (nunca el global de rayon: deadlock tras fork).
+    let (r_tiff, (r_gris, r_color)) = crate::rgb::pool_bandas()?
+        .install(|| rayon::join(tarea_tiff, || rayon::join(tarea_gris, tarea_color)));
 
     // Publicar solo si TODO salió bien; si no, borrar los `.parcial` que haya.
     let limpiar = |rs: &[Option<&String>]| {
