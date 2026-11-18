@@ -13,6 +13,8 @@ import os
 import shutil
 import time
 
+from atom_core import rust_bridge
+
 _BLOQUE = 1024 * 1024
 
 
@@ -119,6 +121,18 @@ def jpeg_cola_valida(bytes_cola: bytes) -> bool:
     return bool(bytes_cola) and any(bytes_cola) and b"\xff\xd9" in bytes_cola
 
 
+def jpeg_integro_por_cola(datos: bytes) -> bool:
+    """Condición contraria al truncado de `apply`: `jpeg_cola_valida` de la cola
+    (<=64 KiB) o EOI en cola útil o EOI por segmentos. Fase Rust `io` (`atom_rs`)
+    si está activa; si no, Python."""
+    rs = rust_bridge.exigir("io")
+    if rs is not None:
+        return rs.jpeg_integro_por_cola(datos)
+    return (jpeg_cola_valida(datos[-VENTANA_COLA_JPEG:])
+            or jpeg_eoi_en_cola_util(datos)
+            or jpeg_eoi_por_segmentos(datos))
+
+
 def _hidratar(ruta) -> None:
     """Fuerza la hidratación: lee el fichero entero en secuencial hasta EOF."""
     try:
@@ -184,6 +198,20 @@ def leer_completo(ruta, intentos: int = 5, backoff: float = 0.5, backoff_max: fl
     normal (lectura completa a la primera) no espera nada."""
     if str(ruta).lower().startswith("gs://"):
         return _leer_completo_gcs(ruta, bytes_origen)
+    # Fase Rust `io`: misma lectura/errores/esperas en `atom_rs.lectura`. Los
+    # `ErrorFila` se traducen a LecturaIncompleta/FicheroCambiado/OSError (mismo
+    # tipo y `str` que el camino Python). Sin la fase activa -> camino Python.
+    rs = rust_bridge.exigir("io")
+    if rs is not None:
+        try:
+            return rs.leer_completo(
+                os.fspath(ruta), intentos, backoff, backoff_max,
+                int(bytes_origen) if bytes_origen else None)
+        except Exception as exc:  # noqa: BLE001
+            traducida = rust_bridge.traducir_error(exc)
+            if traducida is exc:
+                raise
+            raise traducida from None
     espera = backoff
     leidos = 0
     esperados = 0

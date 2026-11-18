@@ -494,10 +494,7 @@ def _leer_origen_verificado(fila: Mapping[str, Any], bytes_origen: int) -> bytes
     datos_origen = lectura_segura.leer_completo(
         fila["ruta_origen"], bytes_origen=fila.get("bytes_origen") or bytes_origen)
     if (os.path.splitext(fila["ruta_origen"])[1].lower() in (".jpg", ".jpeg")
-            and not lectura_segura.jpeg_cola_valida(
-                datos_origen[-lectura_segura.VENTANA_COLA_JPEG:])
-            and not lectura_segura.jpeg_eoi_en_cola_util(datos_origen)
-            and not lectura_segura.jpeg_eoi_por_segmentos(datos_origen)):
+            and not lectura_segura.jpeg_integro_por_cola(datos_origen)):
         # Sin decode extra: si hay EOI en la cola útil, el `img.load()` de
         # abajo (decode que ya se hace) detecta un truncado real.
         raise OSError("JPEG truncado en origen (cola a ceros/sin EOI): "
