@@ -1,7 +1,7 @@
 """Subida GCS en Rust (Task 6, fase ``subida``): contrato de ``subir_lote`` con un
 ``atom_rs`` FALSO (sin red, sin wheel). TDD: los tests marcados ``DEPENDE 6k``/``6l``
 quedan en rojo hasta que ``cloud_upload.upload_plan``/``subida_resultado`` tengan la
-rama Rust. Los de ``rust_bridge`` (6i) y el caso 1 (flag OFF) ya deben pasar."""
+rama Rust. Rust es el único camino: sin flags, sin ruta Python."""
 from __future__ import annotations
 
 import sys
@@ -22,12 +22,6 @@ CLAVES_STATS = {
     "files_per_s", "retries", "hilos_activos", "fichero_actual", "fallidas", "hilos_max",
     "medidas", "final",
 }
-
-
-@pytest.fixture(autouse=True)
-def _entorno_limpio(monkeypatch):
-    monkeypatch.delenv("ATOM_RUST", raising=False)
-    monkeypatch.delenv("ATOM_RUST_FASES", raising=False)
 
 
 # ---------------------------------------------------------------- doble de atom_rs
@@ -72,9 +66,7 @@ def progreso(**kw) -> dict:
     return base
 
 
-def instalar(monkeypatch, falso: Falso | None, fases="subida") -> Falso | None:
-    if fases:
-        monkeypatch.setenv("ATOM_RUST_FASES", fases)
+def instalar(monkeypatch, falso: Falso | None) -> Falso | None:
     if falso is None:
         monkeypatch.setitem(sys.modules, "atom_rs", None)
         return None
@@ -136,43 +128,22 @@ ARBOL = {
 
 
 def _no_red(monkeypatch):
-    """Cualquier petición urllib o ``upload_file`` en la ruta Rust = fallo."""
+    """Cualquier petición urllib en la ruta Rust = fallo."""
     def _boom(*a, **k):
-        pytest.fail("la ruta Rust no debe usar la red/upload_file de Python")
+        pytest.fail("la ruta Rust no debe usar la red de Python")
     monkeypatch.setattr(cu.urllib.request, "urlopen", _boom)
-    monkeypatch.setattr(cu, "upload_file", _boom)
 
 
-# ---------------------------------------------------------------- 1 flag OFF
-
-def test_flag_off_no_importa_atom_rs_y_usa_camino_python(tmp_path, monkeypatch):
-    monkeypatch.setitem(sys.modules, "atom_rs", None)  # si se importara, RustNoDisponible
-    plan = _plan(tmp_path, ARBOL)
-    llamados = []
-
-    def _uf(item, provider, **k):
-        llamados.append(item.remote)
-        return "AA=="
-
-    monkeypatch.setattr(cu, "upload_file", _uf)
-    r = cu.upload_plan(plan, OAuthProv(), concurrency=2, remotos={},
-                       manifest=cu.Manifest(tmp_path / "m.json"))
-    assert sorted(llamados) == sorted(i.remote for i in plan.items)
-    assert r.uploaded == 3 and not r.failed
-
-
-# ---------------------------------------------------------------- 2 flag ON sin Rust válido
-# DEPENDE 6k (rama Rust en upload_plan): hoy upload_plan ignora el flag.
+# ---------------------------------------------------------------- 2 sin Rust válido
 
 def _contar_red(monkeypatch):
     peticiones = []
     monkeypatch.setattr(cu.urllib.request, "urlopen",
                         lambda *a, **k: peticiones.append(a) or pytest.fail("red tocada"))
-    monkeypatch.setattr(cu, "upload_file", lambda *a, **k: peticiones.append(a) or pytest.fail("python"))
     return peticiones
 
 
-def test_flag_on_sin_modulo_lanza_antes_de_subir(tmp_path, monkeypatch):
+def test_sin_modulo_lanza_antes_de_subir(tmp_path, monkeypatch):
     instalar(monkeypatch, None)
     pet = _contar_red(monkeypatch)
     plan = _plan(tmp_path, ARBOL)
@@ -181,7 +152,7 @@ def test_flag_on_sin_modulo_lanza_antes_de_subir(tmp_path, monkeypatch):
     assert pet == []
 
 
-def test_flag_on_abi_mala_lanza_antes_de_subir(tmp_path, monkeypatch):
+def test_abi_mala_lanza_antes_de_subir(tmp_path, monkeypatch):
     f = instalar(monkeypatch, Falso())
     sys.modules["atom_rs"].version_abi = lambda: rust_bridge.ABI_ESPERADA - 1
     pet = _contar_red(monkeypatch)
@@ -191,7 +162,7 @@ def test_flag_on_abi_mala_lanza_antes_de_subir(tmp_path, monkeypatch):
     assert pet == [] and f.llamadas == []
 
 
-def test_flag_on_sin_simbolo_lanza_antes_de_subir(tmp_path, monkeypatch):
+def test_sin_simbolo_lanza_antes_de_subir(tmp_path, monkeypatch):
     instalar(monkeypatch, Falso())
     del sys.modules["atom_rs"].subir_lote
     pet = _contar_red(monkeypatch)
@@ -399,7 +370,6 @@ def _remoto(rel: str, datos: bytes):
 
 def test_subir_resultado_una_sola_llamada_con_urgente_correcto(tmp_path, monkeypatch):
     _arbol(tmp_path)
-    monkeypatch.setenv("ATOM_RUST_FASES", "subida")
     llamadas = []
 
     def subir(plan, prov, *, urgentes=None, on_evento=None, **k):
@@ -420,7 +390,6 @@ def test_subir_resultado_una_sola_llamada_con_urgente_correcto(tmp_path, monkeyp
 
 def test_subir_resultado_pb_sin_pendientes_emite_pb_listo_desde_python(tmp_path, monkeypatch):
     _arbol(tmp_path)
-    monkeypatch.setenv("ATOM_RUST_FASES", "subida")
     # PB2 ya está entero en el bucket: no hay nada que subir de él.
     remotos = dict(_remoto(r, SALIDA[r]) for r in SALIDA if "/PB2/" in r)
     eventos, llamadas = [], []
@@ -436,20 +405,6 @@ def test_subir_resultado_pb_sin_pendientes_emite_pb_listo_desde_python(tmp_path,
     assert pbs == ["PB2"]  # PB1 lo anunciará Rust al verificar su último fichero
 
 
-def test_subir_resultado_flag_off_camino_actual_dos_grupos(tmp_path, monkeypatch):
-    _arbol(tmp_path)
-    monkeypatch.setitem(sys.modules, "atom_rs", None)
-    llamadas = []
-
-    def subir(plan, prov, **k):
-        assert "urgentes" not in k and "on_evento" not in k
-        llamadas.append(len(plan.items))
-        return cu.UploadResult()
-
-    sr.subir_resultado(tmp_path, 7, sr.MODO_NORMAL, None, proveedor=ProvResultado({}), subir=subir)
-    assert llamadas == [4, 2]  # urgentes y luego resto, como hoy
-
-
 # ---------------------------------------------------------------- T4.1: objeto suelto (app_webview)
 
 def test_subir_objeto_fichero_delega_en_subir_lote_con_1_item(tmp_path, monkeypatch):
@@ -459,7 +414,6 @@ def test_subir_objeto_fichero_delega_en_subir_lote_con_1_item(tmp_path, monkeypa
     f.write_bytes(b"datos")
     falso = instalar(monkeypatch, Falso(lambda kw: [
         hecho(subidos=1, bytes_enviados=5, md5={"KL05/ESTADILLOS/est.csv": "MD5B64"})]))
-    monkeypatch.setattr(cu, "upload_file", lambda *a, **k: pytest.fail("python"))
     monkeypatch.setattr(cu.GcsOAuthProvider, "headers",
                         lambda self: {"Authorization": "Bearer TOK"})
     api = aw.Api.__new__(aw.Api)
@@ -484,14 +438,3 @@ def test_upload_one_traduce_errores(tmp_path, monkeypatch):
     instalar(monkeypatch, Falso(lambda kw: [hecho(abortado="403 persistente")]))
     with pytest.raises(cu.GcsRechazado):
         cu.upload_one(item, OAuthProv())
-
-
-def test_upload_one_fase_off_va_por_upload_file(tmp_path, monkeypatch):
-    f = tmp_path / "a.csv"
-    f.write_bytes(b"x")
-    item = cu.UploadItem(local=f, remote="P/a.csv", size=1)
-    falso = instalar(monkeypatch, Falso(), fases=None)
-    llamadas = []
-    monkeypatch.setattr(cu, "upload_file", lambda i, p, **k: llamadas.append(i) or "MD5")
-    assert cu.upload_one(item, OAuthProv()) == "MD5"
-    assert llamadas == [item] and falso.llamadas == []

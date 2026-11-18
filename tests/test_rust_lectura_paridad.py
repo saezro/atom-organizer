@@ -1,11 +1,12 @@
-"""Fase Rust ``io`` (4a, ABI 7): ``atom_rs.leer_completo`` y ``jpeg_integro_por_cola``
-frente a ``atom_core.lectura_segura`` (referencia).
+"""Fase Rust ``io`` (ABI 8): contrato de ``atom_rs.leer_completo`` y
+``jpeg_integro_por_cola``.
 
-Cada caso de lectura se ejecuta con Python (helpers de ``helpers_lectura``) y con Rust
-(puntos de inyección de la feature ``inyeccion-fallos``: la wheel de TEST) y se comparan
-bytes, tipo de excepción tras ``rust_bridge.traducir_error``, ``str(exc)``, atributos y
-la secuencia de esperas. En Rust las esperas no duermen (``_sin_dormir``): se compara la
-secuencia calculada.
+Cada caso de lectura se ejecuta con Rust (puntos de inyección de la feature
+``inyeccion-fallos``: la wheel de TEST) y se comprueban bytes, tipo de excepción tras
+``rust_bridge.traducir_error``, ``str(exc)``, atributos y la secuencia de esperas
+esperada. En Rust las esperas no duermen (``_sin_dormir``): se compara la secuencia
+calculada. La integridad de cola JPEG se contrasta con los helpers que aún viven en
+``lectura_segura`` (``jpeg_cola_valida``/``jpeg_eoi_*``, usados por ``apply``/``indice``).
 
 Sin la extensión (o sin la inyección) los tests de paridad se SALTAN en local; con
 ``ATOM_RUST_AB_ESTRICTO=1`` o ``ATOM_RS_REQUIRED=1`` FALLAN. Los tests de
@@ -25,7 +26,6 @@ import pytest
 
 from atom_core import lectura_segura as ls
 from atom_core import rust_bridge
-from tests.helpers_lectura import parchear_guion, parchear_tam_stat
 
 def _estricto():
     return (os.environ.get("ATOM_RUST_AB_ESTRICTO") == "1"
@@ -67,22 +67,6 @@ def _resumen(exc):
             {k: getattr(exc, k) for k in _ATRIBUTOS if hasattr(exc, k)})
 
 
-def _python(monkeypatch, f, guion=None, stat=None, **kw):
-    """Camino Python con los helpers; devuelve (resultado, esperas, eventos)."""
-    esperas, eventos = [], []
-    with monkeypatch.context() as mp:
-        mp.setattr(ls.time, "sleep", lambda s: esperas.append(s))
-        if guion is not None:
-            parchear_guion(mp, f, guion, eventos=eventos)
-        if stat is not None:
-            parchear_tam_stat(mp, f, stat)
-        try:
-            res = ("ok", ls.leer_completo(f, **kw))
-        except Exception as e:  # noqa: BLE001
-            res = ("err", e)
-    return res, esperas, eventos
-
-
 def _rust(rs, f, guion=None, stat=None, **kw):
     rs._reset()
     rs._sin_dormir(True)
@@ -102,18 +86,9 @@ def _rust(rs, f, guion=None, stat=None, **kw):
 
 
 def _paridad(monkeypatch, rs, f, guion=None, stat=None, **kw):
-    py, esp_py, ev_py = _python(monkeypatch, f, guion=guion, stat=stat, **kw)
-    ru, esp_ru, ev_ru = _rust(rs, f, guion=guion, stat=stat, **kw)
-    assert py[0] == ru[0], f"Python={py!r} Rust={ru!r}"
-    if py[0] == "ok":
-        assert ru[1] == py[1]
-    else:
-        assert _resumen(ru[1]) == _resumen(py[1])
-        assert isinstance(ru[1], type(py[1])) and type(ru[1]) is type(py[1])
-    assert esp_ru == esp_py
-    if guion is not None:
-        assert ev_ru == ev_py
-    return py, esp_py, ev_py
+    """Ejecuta SOLO Rust (el camino Python de lectura ya no existe)."""
+    res, esperas, eventos = _rust(rs, f, guion=guion, stat=stat, **kw)
+    return res, esperas, eventos
 
 
 def _fichero(tmp_path, n=1000, nombre="a.jpg"):
@@ -188,7 +163,7 @@ def test_bytes_origen_cero_no_comprueba(tmp_path, monkeypatch, rs):
 def test_hidrata_entre_intentos(tmp_path, monkeypatch, rs, guion, intentos, eventos):
     f = _fichero(tmp_path, 1000)
     _, _, ev = _paridad(monkeypatch, rs, f, guion=guion, intentos=intentos)
-    assert ev == eventos  # (_paridad ya exige que Rust registre lo mismo)
+    assert ev == eventos  # 
 
 
 def test_stat_falso_mayor_que_el_fichero(tmp_path, monkeypatch, rs):
@@ -201,7 +176,8 @@ def test_stat_falso_mayor_que_el_fichero(tmp_path, monkeypatch, rs):
 @pytest.mark.parametrize("intentos", [0, 1, -3])
 def test_intentos_limite_sin_panic(tmp_path, monkeypatch, rs, intentos):
     f = _fichero(tmp_path, 1000)
-    _paridad(monkeypatch, rs, f, guion=[500], intentos=intentos)
+    res, _, _ = _paridad(monkeypatch, rs, f, guion=[500], intentos=intentos)
+    assert res[0] == "ok" or not isinstance(res[1], rust_bridge.PanicRust)
 
 
 def test_fichero_vacio(tmp_path, monkeypatch, rs):
@@ -220,18 +196,13 @@ def test_ruta_gs_es_error_visible_en_rust(rs):
         rs.leer_completo("gs://bucket/x.jpg")
 
 
-def test_espera_negativa_mismo_error(tmp_path, monkeypatch, rs):
-    """`time.sleep(-1)` real de Python lanza ValueError; Rust igual (sin panic)."""
+def test_espera_negativa_lanza_value_error(tmp_path, rs):
+    """Una espera negativa lanza ValueError (sin panic)."""
     f = _fichero(tmp_path, 1000)
-    with pytest.raises(ValueError) as ep:
-        with monkeypatch.context() as mp:
-            parchear_guion(mp, f, [500, -1])
-            ls.leer_completo(f, backoff=-1.0)
     rs._reset()
     rs._guion_lecturas(str(f), [500, -1])
-    with pytest.raises(ValueError) as er:
+    with pytest.raises(ValueError):
         rs.leer_completo(str(f), backoff=-1.0)
-    assert str(er.value) == str(ep.value)
 
 
 # --------------------------------------------------------------------------- picklado
@@ -453,9 +424,10 @@ def test_wrapper_traduce_error_fila(tmp_path, monkeypatch):
     assert "leídos 1 de 2 bytes tras 3 intentos (r)" in str(ei.value)
 
 
-def test_wrapper_sin_fase_usa_python(tmp_path, monkeypatch):
-    monkeypatch.setattr(rust_bridge, "exigir", lambda fase: None)
+def test_wrapper_sin_modulo_lanza(tmp_path, monkeypatch):
+    def _sin(fase):
+        raise rust_bridge.RustNoDisponible("atom_rs")
+    monkeypatch.setattr(rust_bridge, "exigir", _sin)
     f = _fichero(tmp_path)
-    assert ls.leer_completo(f) == f.read_bytes()
-    ls.copiar_completo(f, tmp_path / "b.jpg")
-    assert (tmp_path / "b.jpg").read_bytes() == f.read_bytes()
+    with pytest.raises(rust_bridge.RustNoDisponible):
+        ls.leer_completo(f)

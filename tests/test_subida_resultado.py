@@ -200,11 +200,7 @@ from tests.test_cloud_upload import FakeGCS, StaticProvider  # noqa: E402,F401
 
 @pytest.fixture
 def gcs(monkeypatch):
-    server = FakeGCS()
-    monkeypatch.setattr(cu.urllib.request, "urlopen", server.urlopen)
-    monkeypatch.setattr(cu, "CHUNK_SIZE", 1024)
-    monkeypatch.setattr(cu.time, "sleep", lambda _s: None)
-    return server
+    return FakeGCS().instalar(monkeypatch)
 
 
 _SIN = object()
@@ -390,17 +386,21 @@ def test_subir_csv_cambiado_se_sobrescribe_y_la_imagen_distinta_es_conflicto(tmp
     assert not r.ok  # un conflicto deja la subida «con incidencias»
 
 
-def test_urgentes_con_fallidas_no_intentan_el_resto(tmp_path):
+def test_normal_es_una_sola_cola_con_urgentes_marcados_y_un_fallo_deja_incidencias(tmp_path):
+    # Una sola llamada a `subir` con urgentes+resto; `urgentes` marca cuáles lo son
+    # (el frenado de un PB tras un urgente fallido lo decide Rust, no Python).
     _arbol(tmp_path, SALIDA_PEQUENA)
     llamadas = []
 
     def subir(plan, provider, **kw):
-        llamadas.append([i.remote.removeprefix(PREFIJO) for i in plan.items])
+        llamadas.append(([i.remote.removeprefix(PREFIJO) for i in plan.items], kw["urgentes"]))
         return cu.UploadResult(uploaded=0, failed=[(plan.items[0].remote, "boom")])
 
     r = sr.subir_resultado(tmp_path, 7, sr.MODO_NORMAL, auth=None, proveedor=ProveedorFalso(), subir=subir)
     assert len(llamadas) == 1
-    assert r.fallidas == [(PREFIJO + llamadas[0][0], "boom")] or len(r.fallidas) == 1
+    items, urg = llamadas[0]
+    assert len(items) == 8 and len(urg) == 5
+    assert len(r.fallidas) == 1
     assert not r.ok
 
 
@@ -689,7 +689,7 @@ def test_estado_lleva_t_bytes_enviados_y_medidas_y_metricas_el_desglose_por_vuel
     assert sum(v["ficheros"] for v in up["subidos_por_tipo"].values()) == up["subidos"] == 5
 
 
-def test_medidas_se_acumulan_entre_urgentes_y_resto(tmp_path, gcs):
+def test_medidas_de_la_cola_unica_llegan_a_metricas(tmp_path, gcs):
     _arbol(tmp_path, SALIDA_PEQUENA)
     llamadas = []
 
@@ -699,9 +699,9 @@ def test_medidas_se_acumulan_entre_urgentes_y_resto(tmp_path, gcs):
         return cu.UploadResult(uploaded=len(plan.items), bytes_sent=len(plan.items) * 10, medidas=m)
 
     r = sr.subir_resultado(tmp_path, 7, sr.MODO_NORMAL, auth=None, proveedor=ProveedorFalso(), subir=subir)
-    assert len(llamadas) == 2
-    assert r.metricas["medidas"]["red_s"] == 3.0
-    assert r.metricas["medidas"]["reintentos"]["429"] == 4
+    assert llamadas == [8]  # una sola cola: urgentes+resto en una llamada
+    assert r.metricas["medidas"]["red_s"] == 1.5
+    assert r.metricas["medidas"]["reintentos"]["429"] == 2
     assert r.metricas["bytes_enviados"] == sum(llamadas) * 10
 
 

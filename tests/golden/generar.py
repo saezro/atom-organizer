@@ -1,4 +1,7 @@
-"""Golden de paridad del Organizer: congela la salida del camino Python (corpus sintético).
+"""Golden de paridad del Organizer: congela la salida del camino Rust (corpus sintético).
+
+Genera con el camino Rust de producción: REQUIERE el módulo `atom_rs` instalado
+(sin él, `rust_bridge.exigir` lanza `RustNoDisponible`).
 
 Uso (desde la raíz del repo, con el venv del proyecto):
 
@@ -21,7 +24,6 @@ import json
 import math
 import os
 import re
-import struct
 import sys
 import tempfile
 import types
@@ -45,11 +47,7 @@ import exif as exif_mod  # noqa: E402
 import pipeline  # noqa: E402
 from atom_core import apply, indice  # noqa: E402
 from tests.test_apply_rgb import _cfg, _fila_dict  # noqa: E402
-from tests import test_rust_indice_equiv as _ie  # noqa: E402
-from tests import test_rust_rgb_ab as _rgb  # noqa: E402
-from tests import test_rust_termica_ab as _te  # noqa: E402
-
-_VAR_RUST = ("ATOM_RUST", "ATOM_RUST_FASES", "ATOM_RUST_RGB_MODO", "ATOM_RUST_RGB_B_APROBADO")
+from tests import corpus_helpers as _ch  # noqa: E402
 
 
 def sha(b: bytes) -> str:
@@ -61,20 +59,20 @@ def sha(b: bytes) -> str:
 def _png_exif_itxt(w: int = 64, h: int = 48) -> bytes:
     """PNG con chunk eXIf (Make/Model/fecha/GPS) e iTXt `XML:com.adobe.xmp` con XMP DJI."""
     info = PngImagePlugin.PngInfo()
-    info.add_text("XML:com.adobe.xmp", _ie._xmp_atributos(_ie._XMP_DJI).decode("latin-1"),
+    info.add_text("XML:com.adobe.xmp", _ch._xmp_atributos(_ch._XMP_DJI).decode("latin-1"),
                   zip=False)
     info.add_itxt("Comment", "golden ñ", lang="es", tkey="Comment")
     b = io.BytesIO()
     Image.new("RGB", (w, h), (40, 90, 140)).save(b, format="PNG", pnginfo=info,
-                                                 exif=_ie._exif_bytes())
+                                                 exif=_ch._exif_bytes())
     return b.getvalue()
 
 
 def _tiff_exif_gps_xmp(w: int = 64, h: int = 48) -> bytes:
     """TIFF con EXIF (Make/Model/fecha/GPS) y XMP en el tag 700."""
     ex = Image.Exif()  # `tiffinfo=` pisaría `exif=`: el tag 700 va dentro del propio Exif
-    ex.load(_ie._exif_bytes())
-    ex[700] = _ie._xmp_atributos(_ie._XMP_DJI)
+    ex.load(_ch._exif_bytes())
+    ex[700] = _ch._xmp_atributos(_ch._XMP_DJI)
     b = io.BytesIO()
     Image.new("RGB", (w, h), (60, 70, 80)).save(b, format="TIFF", exif=ex)
     return b.getvalue()
@@ -96,7 +94,7 @@ def _guardar(img: Image.Image, formato: str, **kw) -> bytes:
 def corpus() -> dict[str, tuple[str, bytes]]:
     """nombre de caso -> (extensión, bytes). Orden y contenido deterministas."""
     with tempfile.TemporaryDirectory() as t:
-        jpg_rgb = _rgb._origen(Path(t) / "o.JPG", 320, 240, semilla=1)
+        jpg_rgb = _ch._origen(Path(t) / "o.JPG", 320, 240, semilla=1)
     c: dict[str, tuple[str, bytes]] = {}
     c["jpeg_rgb"] = ("JPG", jpg_rgb)
     c["jpeg_l"] = ("JPG", _guardar(Image.fromarray(_ruido(320, 240, 1, 2)[..., 0], "L"),
@@ -110,18 +108,18 @@ def corpus() -> dict[str, tuple[str, bytes]]:
                                   .convert("P", palette=Image.ADAPTIVE, colors=64), "PNG"))
     c["jpeg_truncado_sin_eoi"] = ("JPG", jpg_rgb[:len(jpg_rgb) * 6 // 10])
     c["jpeg_truncado_mitad"] = ("JPG", jpg_rgb[:len(jpg_rgb) // 2])
-    for nombre, muta in (("bytes_extra", _rgb._muta_bytes_extra),
-                         ("hueco_de_ceros", _rgb._muta_hueco_de_ceros),
-                         ("scan_corrupto", _rgb._muta_scan_corrupto),
-                         ("truncado_con_eoi", _rgb._muta_truncado_con_eoi),
-                         ("marcador_invalido", _rgb._muta_marcador_invalido)):
+    for nombre, muta in (("bytes_extra", _ch._muta_bytes_extra),
+                         ("hueco_de_ceros", _ch._muta_hueco_de_ceros),
+                         ("scan_corrupto", _ch._muta_scan_corrupto),
+                         ("truncado_con_eoi", _ch._muta_truncado_con_eoi),
+                         ("marcador_invalido", _ch._muta_marcador_invalido)):
         c[f"jpeg_mutado_{nombre}"] = ("JPG", muta(jpg_rgb))
-    c["jpeg_dji_full"] = ("JPG", _ie._jpeg_dji(_ie._exif_bytes(), _ie._xmp_atributos(_ie._XMP_DJI),
+    c["jpeg_dji_full"] = ("JPG", _ch._jpeg_dji(_ch._exif_bytes(), _ch._xmp_atributos(_ch._XMP_DJI),
                                                ancho=320, alto=240))
-    c["jpeg_dji_app3_64k"] = ("JPG", _ie._jpeg_dji(_ie._exif_bytes(),
-                                                   _ie._xmp_atributos(_ie._XMP_DJI),
+    c["jpeg_dji_app3_64k"] = ("JPG", _ch._jpeg_dji(_ch._exif_bytes(),
+                                                   _ch._xmp_atributos(_ch._XMP_DJI),
                                                    relleno_app3=65_000))
-    c["jpeg_dji_app3_roto_256k"] = ("JPG", _ie._jpeg_roto_tras_256k())  # pil_estado "corto"
+    c["jpeg_dji_app3_roto_256k"] = ("JPG", _ch._jpeg_roto_tras_256k())  # pil_estado "corto"
     c["tiff_exif_gps_xmp700"] = ("TIF", _tiff_exif_gps_xmp())
     c["png_exif_itxt"] = ("PNG", _png_exif_itxt())
     return c
@@ -158,11 +156,6 @@ class _Cb:
         pass
 
 
-def _sin_rust() -> None:
-    for v in _VAR_RUST:
-        os.environ.pop(v, None)
-
-
 # ------------------------------------------------------------------ índice
 
 def resultado_indice(nombre: str, ext: str, datos: bytes, tmp: Path, logger) -> dict:
@@ -187,7 +180,7 @@ def resultado_indice(nombre: str, ext: str, datos: bytes, tmp: Path, logger) -> 
 VARIANTES_RGB = (("a0_crop70", 0, 0.7), ("a90_sin_crop", 90, None), ("a270_crop_fuera", 270, 0.97))
 
 
-def resultado_rgb(nombre: str, ext: str, datos: bytes, tmp: Path, variante, python_puro: bool) -> dict:
+def resultado_rgb(nombre: str, ext: str, datos: bytes, tmp: Path, variante) -> dict:
     vid, angulo, pct = variante
     origen = tmp / f"{nombre}.{ext}"
     origen.write_bytes(datos)
@@ -195,9 +188,8 @@ def resultado_rgb(nombre: str, ext: str, datos: bytes, tmp: Path, variante, pyth
     fila = _fila_dict(str(origen), str(sal / "orig.JPG"),
                       str(sal / "crop_CROP.JPG") if pct is not None else None,
                       angulo_giro=angulo, pct_recorte=pct)
-    fn = apply._escribir_salidas_de_fila_python if python_puro else apply._escribir_salidas_de_fila
     try:
-        fn(fila, _cfg(), pipeline)
+        apply._escribir_salidas_de_fila(fila, _cfg(), pipeline)
     except Exception as e:  # noqa: BLE001
         # Un fallo a mitad puede dejar el _CROP escrito: solo cuenta la excepción.
         return {"excepcion": _exc(e, str(tmp))}
@@ -218,13 +210,13 @@ CASOS_TERMICA = (
 
 
 def resultado_termica(caso, tmp: Path, logger) -> dict:
-    """`SplitImages.convert_dji_image_to_tif` real (rama `else` de pipeline.py, flag off) con
+    """`SplitImages.convert_dji_image_to_tif` real (camino Rust de pipeline.py) con
     el SDK de DJI sustituido por un doble que escribe el .raw sintético. Es invocable aislada:
     mismo patrón que tests/test_rust_termica_ab.py."""
     cid, w, h, semilla, grados, auto, low, up = caso
-    jpg = _te._jpg_bytes(w, h)
-    raw = _te._raw_sintetico(w, h, semilla=semilla)
-    raiz = _te._carpeta(tmp, f"t_{cid}", jpg)
+    jpg = _ch._jpg_bytes(w, h)
+    raw = _ch._raw_sintetico(w, h, semilla=semilla)
+    raiz = _ch._carpeta(tmp, f"t_{cid}", jpg)
 
     def _sdk_falso(self, image_path, raw_path, humidity, emissivity, lib_dir):
         with open(raw_path, "wb") as fh:
@@ -237,7 +229,7 @@ def resultado_termica(caso, tmp: Path, logger) -> dict:
         obj = pipeline.SplitImages(logger)
         try:
             obj.convert_dji_image_to_tif(
-                str(raiz), str(raiz), _te._IMG, "exiftool", "/no/existe/dji_irp", prog, prog,
+                str(raiz), str(raiz), _ch._IMG, "exiftool", "/no/existe/dji_irp", prog, prog,
                 emissivity=0.9, humidity=50.0, auto_temp=auto,
                 up_threshold_temperature=up, low_threshold_temperature=low,
                 rotate_90=(grados == 90), rotate_minus_90=(grados == 270), auto_rotate=False,
@@ -246,7 +238,7 @@ def resultado_termica(caso, tmp: Path, logger) -> dict:
         except Exception as e:  # noqa: BLE001
             out["excepcion"] = _exc(e, str(tmp))
             return out
-    out["salidas_sha256"] = {k: sha(p.read_bytes()) for k, p in _te._salidas(raiz).items()}
+    out["salidas_sha256"] = {k: sha(p.read_bytes()) for k, p in _ch._salidas(raiz).items()}
     return out
 
 
@@ -264,7 +256,6 @@ def meta() -> dict:
 
 
 def generar_todo() -> dict[str, dict]:
-    _sin_rust()
     casos = corpus()
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
@@ -275,7 +266,7 @@ def generar_todo() -> dict[str, dict]:
         for nombre, (ext, datos) in casos.items():
             indice_j["casos"][nombre] = resultado_indice(nombre, ext, datos, tmp, logger)
             rgb_j["casos"][nombre] = {"entrada_sha256": sha(datos), "variantes": {
-                v[0]: resultado_rgb(nombre, ext, datos, tmp, v, True) for v in VARIANTES_RGB}}
+                v[0]: resultado_rgb(nombre, ext, datos, tmp, v) for v in VARIANTES_RGB}}
         for caso in CASOS_TERMICA:
             ter_j["casos"][caso[0]] = resultado_termica(caso, tmp, logger)
     return {"indice": indice_j, "rgb": rgb_j, "termica": ter_j}

@@ -262,9 +262,3 @@ def _user_data_dir_aislado(request, monkeypatch, tmp_path_factory):
         return  # prueba el `user_data_dir` real (ya redirige HOME a tmp por su cuenta)
     destino = tmp_path_factory.mktemp("user_data")
     monkeypatch.setattr(google_auth, "user_data_dir", lambda: destino)
-
-
-def pytest_configure(config):
-    # A/B Rust vs Python sobre corpus real (banco): tests/test_rust_termica_ab.py.
-    config.addinivalue_line(
-        "markers", "rust_ab: A/B atom_rs vs Python (requiere atom_rs; corpus vía ATOM_RUST_CORPUS)")

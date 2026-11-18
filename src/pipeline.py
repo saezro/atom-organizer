@@ -30,7 +30,6 @@ import pathlib
 import re
 import shutil
 import sqlite3
-import struct
 import subprocess
 import tempfile
 import threading
@@ -3260,9 +3259,8 @@ class SplitImages:
                 input_folder, input_folder, image, exiftool_exe, dji_utility,
                 progress_callback, progress_bar, defer_exif=True, **convert_kwargs)
         except rust_bridge.RustNoDisponible:
-            # Flag Rust activo sin módulo válido: NO es un fallo de esta imagen sino
-            # de la instalación; se relanza para abortar el vuelo (sin retroceso a
-            # Python ni «se omite y se continúa»).
+            # Rust sin módulo válido: NO es un fallo de esta imagen sino de la
+            # instalación; se relanza para abortar el vuelo (sin «se omite y se continúa»).
             raise
         except Exception as e:
             with self._stats_lock:
@@ -3873,8 +3871,8 @@ class SplitImages:
                       rotate_90: bool, rotate_minus_90: bool, auto_rotate: bool,
                       input_folder: str, progress_callback,
                       generate_gray_scale_images: bool, generate_colormap_images: bool) -> None:
-        """Rama Rust de `convert_dji_image_to_tif` (fase `termica`): mismo orden y
-        mismas salidas que la rama Python (umbrales solo si `not auto_temp` -> giro
+        """Conversión térmica de `convert_dji_image_to_tif` (fase `termica`): orden
+        de pasos (umbrales solo si `not auto_temp` -> giro
         de `rotar_arrays_termicos` -> gris -> colormap -> TIFF float32), escritas por
         `atom_rs.termica_procesar` de forma atómica (`.parcial` + rename, el TIFF el
         último). La resolución se sigue deduciendo aquí con `resolucion_desde_raw` y
@@ -3887,7 +3885,7 @@ class SplitImages:
         if not hasattr(rs, "termica_procesar"):
             raise rust_bridge.RustNoDisponible(
                 "atom_rs no expone termica_procesar (wheel anterior a la fase termica). "
-                "Intérprete: {0}. Reinstala la wheel o quita 'termica' de ATOM_RUST_FASES."
+                "Intérprete: {0}. Reinstala la wheel atom_rs."
                 .format(sys.executable))
         if len(data) % 4:
             # Mismo tipo de error que daba `np.frombuffer(data, dtype="<f4")`.
@@ -3902,8 +3900,8 @@ class SplitImages:
                      if generate_colormap_images else None)
         # Misma LUT que `apply_thermal_colormap` (colormap por defecto "inferno").
         lut = _get_thermal_lut("inferno").tobytes() if generate_colormap_images else None
-        # 75 = calidad por defecto de libjpeg, la que aplica PIL en `save(..., format='JPEG')`
-        # sin `quality=` (así guarda la rama Python el gris y el colormap).
+        # 75 = calidad por defecto de libjpeg (la de PIL en `save(..., format='JPEG')`
+        # sin `quality=`), fijada para gris y colormap.
         calidad_jpeg_pil = 75
         try:
             stats = rs.termica_procesar(
@@ -4232,77 +4230,14 @@ class SplitImages:
 
             # self.organizer_logger.logger.info("The length of the data is {0}".format(len(data)))
 
-            # Fase Rust `termica` (ATOM_RUST / ATOM_RUST_FASES): normalización, giro,
-            # gris, colormap y TIFF float32 salen de `atom_rs.termica_procesar`, bit a
-            # bit iguales a la rama Python de abajo (tests/test_rust_termica_ab.py).
-            # Con el flag activo y sin módulo válido -> RustNoDisponible: NUNCA se
-            # cae en silencio a Python. Sin flag, la rama `else` es el código de siempre.
-            if rust_bridge.fase_activa("termica"):
-                self._termica_rust(
-                    data, size, image_name, disk_output_folder, auto_temp,
-                    up_threshold_temperature, low_threshold_temperature,
-                    rotate_90, rotate_minus_90, auto_rotate, input_folder, progress_callback,
-                    generate_gray_scale_images, generate_colormap_images)
-            else:
-                # El .raw que escribe el SDK (--measurefmt float32) es un array plano de float32
-                # little-endian: np.frombuffer lo mapea sin recorrerlo. Antes esto era
-                # `np.array(struct.unpack("<N>f", data))`, que materializaba una tupla de 327.680
-                # objetos float de Python por imagen -- 20,5 ms de intérprete RETENIENDO EL GIL,
-                # que era lo que impedía que el pool de conversión escalase con los hilos.
-                # Medido: 20,46 -> 0,16 ms por imagen (128x), con el .astype ya incluido.
-                # El .astype(np.float64) reproduce el tipo que daba struct.unpack (floats de
-                # Python, doble precisión). NO es lo que fija el formato del .tiff: PIL guarda
-                # en modo 'F', que es float32, así que el fichero entregado era y sigue siendo
-                # float32 -- verificado por sha256 en el A/B de 60 térmicas reales. Lo que
-                # preserva es la ARITMÉTICA intermedia: los umbrales y la normalización de la
-                # escala de grises operaban en float64. Hace además el array escribible, que
-                # np.frombuffer por sí solo no da (devuelve una vista de solo lectura).
-                arr = np.frombuffer(data, dtype="<f4").astype(np.float64)
-                # 3.4.50: la forma se deduce del TAMANO REAL del .raw, no del tamano del JPG.
-                # El atajo anterior ("si el JPG es 1280x1024 el termico es 640x512") es cierto
-                # en la H20T (JPG reescalado) y FALSO en la H30T, que tiene termico real
-                # 1280x1024: ahi el SDK escribe 1.310.720 floats y el reshape a (512,640)
-                # reventaba imagen a imagen con "cannot reshape array of size 1310720 into
-                # shape (512,640)", dejando el vuelo entero sin TIFF (CLARE, 2026-08-21).
-                # Se reutiliza `resolucion_desde_raw` de rjpeg_a_tiff.py, que ya resolvia esto
-                # en el script standalone y tiene sus pruebas: JPG -> resoluciones DJI
-                # conocidas -> misma relacion de aspecto. No se duplica el criterio.
-                from rjpeg_a_tiff import resolucion_desde_raw
-                _ancho_t, _alto_t = resolucion_desde_raw(arr.size, size)
-                arr = arr.reshape(_alto_t, _ancho_t)
-
-                # self.organizer_logger.logger.info("The size of the array is {0}".format(arr.size))
-                # self.organizer_logger.logger.info("The shape of the array is {0}".format(arr.shape))
-                # self.organizer_logger.logger.info("The max of the array is {0}".format(arr.max()))
-                # self.organizer_logger.logger.info("The min of the array is {0}".format(arr.min()))
-
-                array_to_normalize = arr.copy()
-                if not auto_temp:
-                    array_to_normalize[array_to_normalize > up_threshold_temperature] = up_threshold_temperature # replace all elements greater than up_threshold_temperature with up_threshold_temperature.
-                    array_to_normalize[array_to_normalize < low_threshold_temperature] = low_threshold_temperature # replace all elements less than low_threshold_temperature with up_threshold_temperature.
-    
-                degree = self.degree_de_giro(rotate_90, rotate_minus_90, auto_rotate, input_folder, progress_callback)
-                arr, array_to_normalize = self.rotar_arrays_termicos(arr, array_to_normalize, degree)
-
-                if generate_gray_scale_images:
-                    normalizedData = (array_to_normalize-np.min(array_to_normalize))/(np.max(array_to_normalize)-np.min(array_to_normalize))*255 # Normalizamos datos para grabar la imagen en escala de grises. Da igual si con auto_temp o no, ya que se ajusta a los datos del array.
-                    normalizedData = normalizedData.astype(np.uint8)
-                    im_normalized = Image.fromarray(normalizedData, 'L')
-                    # La carpeta ya se pre-crea en convert_dji_images_to_tif, antes del pool.
-                    # Llamar aquí a prepare_output_folder repetía un os.listdir() de la carpeta
-                    # del vuelo -- con sus 1300+ ficheros dentro -- una vez POR IMAGEN, para
-                    # comprobar algo que ya es cierto. Además era la llamada no thread-safe que
-                    # obligó a pre-crearlas.
-                    im_normalized.save(os.path.join(disk_output_folder,"Escala_de_grises", image_name), format='JPEG')
-
-                if generate_colormap_images:
-                    rgb_colormap = apply_thermal_colormap(array_to_normalize, low_threshold_temperature, up_threshold_temperature)
-                    Image.fromarray(rgb_colormap, 'RGB').save(os.path.join(disk_output_folder, "Color_gradiente", image_name), format='JPEG')
-
-                im = Image.fromarray(arr)
-                # Buscar tiffinfo como parámetro para save.
-                im.save(os.path.join(disk_output_folder, os.path.splitext(image_name)[0] + ".tiff"), format='TIFF')
-                im.close()
+            # Normalización, giro, gris, colormap y TIFF float32 salen de
+            # `atom_rs.termica_procesar`. Sin módulo válido -> RustNoDisponible
+            # (nunca se cae en silencio a otra implementación).
+            self._termica_rust(
+                data, size, image_name, disk_output_folder, auto_temp,
+                up_threshold_temperature, low_threshold_temperature,
+                rotate_90, rotate_minus_90, auto_rotate, input_folder, progress_callback,
+                generate_gray_scale_images, generate_colormap_images)
             # os.remove(raw_path)
             # Intentamos eliminar el .raw de forma segura. En Windows puede dar PermissionError si
             # otro proceso aún mantiene el fichero abierto, así que reintentamos varias veces.
