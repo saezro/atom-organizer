@@ -229,6 +229,20 @@ def test_conserva_el_xmp_dji_en_original_y_crop(tmp_path, make_dji_jpeg, angulo_
         assert b"RelativeAltitude" in datos and b"12.5" in datos
 
 
+def _calidad_efectiva(ruta):
+    """Tablas de cuantización del JPEG escrito: identifican la calidad real
+    con la que Rust codificó (modo `a`: mismas tablas que Pillow)."""
+    with PILImage.open(str(ruta)) as im:
+        return {k: list(v) for k, v in im.quantization.items()}
+
+
+def _tablas_pillow(tmp_path, origen, calidad):
+    ref = tmp_path / f"ref_q{calidad}.jpg"
+    with PILImage.open(str(origen)) as im:
+        im.convert("RGB").save(str(ref), quality=calidad)
+    return _calidad_efectiva(ref)
+
+
 def test_la_rotacion_usa_la_calidad_del_motor_viejo(tmp_path, make_dji_jpeg, monkeypatch):
     """Decisión del responsable (2026-09-08, Correcciones §4): replicar el
     criterio del motor viejo, no mejorarlo por sorpresa. Una RGB girada se
@@ -238,25 +252,15 @@ def test_la_rotacion_usa_la_calidad_del_motor_viejo(tmp_path, make_dji_jpeg, mon
     origen.parent.mkdir()
     make_dji_jpeg(str(origen))
 
-    calidades = []
-    guardado_real = PILImage.Image.save
-
-    def _save_que_apunta(self, fp, *args, **kwargs):
-        calidades.append(kwargs.get("quality"))
-        return guardado_real(self, fp, *args, **kwargs)
-
-    monkeypatch.setattr(PILImage.Image, "save", _save_que_apunta)
-
     cfg = _cfg(compress_level=77)
 
-    fila_girada = _fila_dict(str(origen), str(tmp_path / "girada.jpg"), angulo_giro=90)
-    apply._escribir_salidas_de_fila(fila_girada, cfg, pipeline_real)
-    assert calidades == [40]
+    girada = tmp_path / "girada.jpg"
+    apply._escribir_salidas_de_fila(_fila_dict(str(origen), str(girada), angulo_giro=90), cfg, pipeline_real)
+    assert _calidad_efectiva(girada) == _tablas_pillow(tmp_path, origen, 40)
 
-    calidades.clear()
-    fila_recta = _fila_dict(str(origen), str(tmp_path / "recta.jpg"), angulo_giro=0)
-    apply._escribir_salidas_de_fila(fila_recta, cfg, pipeline_real)
-    assert calidades == [77]
+    recta = tmp_path / "recta.jpg"
+    apply._escribir_salidas_de_fila(_fila_dict(str(origen), str(recta), angulo_giro=0), cfg, pipeline_real)
+    assert _calidad_efectiva(recta) == _tablas_pillow(tmp_path, origen, 77)
 
 
 def test_un_fallo_marca_la_fila_y_no_para_el_run(tmp_path, make_dji_jpeg):
@@ -303,10 +307,17 @@ def test_no_deja_ficheros_parciales(tmp_path, make_dji_jpeg, monkeypatch):
     destino = carpeta_salida / "DJI_0001.JPG"
     fila = _fila_dict(str(origen), str(destino), angulo_giro=0)
 
-    def _save_que_revienta(self, fp, *args, **kwargs):
-        raise OSError("disco lleno (simulado)")
+    # Rust escribe los `.parcial` y el fallo llega DESPUÉS (disco lleno al
+    # publicar): Python debe limpiarlos todos.
+    from atom_core import rust_bridge
+    rs_real = rust_bridge.exigir("rgb")
 
-    monkeypatch.setattr(PILImage.Image, "save", _save_que_revienta)
+    class _RsQueFallaTrasEscribir:
+        def rgb_procesar(self, *args, **kwargs):
+            rs_real.rgb_procesar(*args, **kwargs)
+            raise OSError("disco lleno (simulado)")
+
+    monkeypatch.setattr(rust_bridge, "exigir", lambda *a, **k: _RsQueFallaTrasEscribir())
 
     with pytest.raises(OSError):
         apply._escribir_salidas_de_fila(fila, _cfg(), pipeline_real)
@@ -487,33 +498,28 @@ def test_stats_apply_rotacion_acumula_entre_rgb_y_termicas(tmp_path, make_dji_jp
 
 
 def test_una_fila_girada_transpone_el_original_y_el_crop_por_separado(
-    tmp_path, make_dji_jpeg, monkeypatch
+    tmp_path, make_dji_jpeg
 ):
-    """Correcciones §4: el `_CROP` ahora es una caja 5:4 (`_caja_recorte_termico`,
-    la de la térmica), no el recorte simétrico `ancho*pct x alto*pct` de antes —
-    y esa caja NO conmuta con el giro de 90° (la simetría que lo permitía era
-    justo la del recorte viejo). El `_CROP` tiene que recortarse en coordenadas
-    del original y girarse DESPUÉS, sin reutilizar la `girada` del original: dos
-    `transpose` en total cuando la fila gira, uno por salida — ya no uno solo."""
+    """Correcciones §4: el `_CROP` es una caja 5:4 (`_caja_recorte_termico`) recortada
+    en coordenadas del original y girada DESPUÉS; original y crop se giran por
+    separado. Observable: ambas salidas quedan giradas 90° (ancho/alto
+    intercambiados respecto a su versión sin girar)."""
     origen = tmp_path / "origen" / "DJI_0010.JPG"
     origen.parent.mkdir()
     make_dji_jpeg(str(origen))
 
-    transposes = []
-    transpose_real = PILImage.Image.transpose
-
-    def _transpose_que_apunta(self, method):
-        transposes.append(method)
-        return transpose_real(self, method)
-
-    monkeypatch.setattr(PILImage.Image, "transpose", _transpose_que_apunta)
-
-    fila = _fila_dict(str(origen), str(tmp_path / "salida" / "DJI_0010.JPG"),
-                      str(tmp_path / "salida" / "DJI_0010_CROP.JPG"),
-                      angulo_giro=90, pct_recorte=0.71)
+    salida = tmp_path / "salida" / "DJI_0010.JPG"
+    crop = tmp_path / "salida" / "DJI_0010_CROP.JPG"
+    fila = _fila_dict(str(origen), str(salida), str(crop), angulo_giro=90, pct_recorte=0.71)
     apply._escribir_salidas_de_fila(fila, _cfg(), pipeline_real)
 
-    assert len(transposes) == 2, f"se transpuso {len(transposes)} veces, esperado 2"
+    with PILImage.open(str(origen)) as bruta:
+        ancho, alto = bruta.size
+    caja = apply._caja_recorte_termico(ancho, alto, 0.71)
+    with PILImage.open(str(salida)) as im:
+        assert im.size == (alto, ancho)
+    with PILImage.open(str(crop)) as im:
+        assert im.size == (caja[3] - caja[1], caja[2] - caja[0])
 
 
 def test_el_crop_recorta_en_coordenadas_del_original_y_luego_gira(tmp_path, make_dji_jpeg):
@@ -615,30 +621,21 @@ def test_calidad_del_crop_75_sin_girar_40_girada(tmp_path, make_dji_jpeg, monkey
     origen.parent.mkdir()
     make_dji_jpeg(str(origen))
 
-    calidades = []
-    guardado_real = PILImage.Image.save
-
-    def _save_que_apunta(self, fp, *args, **kwargs):
-        calidades.append(kwargs.get("quality"))
-        return guardado_real(self, fp, *args, **kwargs)
-
-    monkeypatch.setattr(PILImage.Image, "save", _save_que_apunta)
-
     cfg = _cfg(compress_level=77)
 
-    fila_recta = _fila_dict(str(origen), str(tmp_path / "recta.jpg"),
-                            str(tmp_path / "recta_CROP.jpg"),
-                            angulo_giro=0, pct_recorte=0.7)
-    apply._escribir_salidas_de_fila(fila_recta, cfg, pipeline_real)
-    # Orden de escritura: CROP primero, original después (ver docstring).
-    assert calidades == [75, 77]
+    recta, recta_crop = tmp_path / "recta.jpg", tmp_path / "recta_CROP.jpg"
+    apply._escribir_salidas_de_fila(
+        _fila_dict(str(origen), str(recta), str(recta_crop), angulo_giro=0, pct_recorte=0.7),
+        cfg, pipeline_real)
+    assert _calidad_efectiva(recta_crop) == _tablas_pillow(tmp_path, origen, 75)
+    assert _calidad_efectiva(recta) == _tablas_pillow(tmp_path, origen, 77)
 
-    calidades.clear()
-    fila_girada = _fila_dict(str(origen), str(tmp_path / "girada.jpg"),
-                             str(tmp_path / "girada_CROP.jpg"),
-                             angulo_giro=90, pct_recorte=0.7)
-    apply._escribir_salidas_de_fila(fila_girada, cfg, pipeline_real)
-    assert calidades == [40, 40]
+    girada, girada_crop = tmp_path / "girada.jpg", tmp_path / "girada_CROP.jpg"
+    apply._escribir_salidas_de_fila(
+        _fila_dict(str(origen), str(girada), str(girada_crop), angulo_giro=90, pct_recorte=0.7),
+        cfg, pipeline_real)
+    assert _calidad_efectiva(girada_crop) == _tablas_pillow(tmp_path, origen, 40)
+    assert _calidad_efectiva(girada) == _tablas_pillow(tmp_path, origen, 40)
 
 
 def test_el_crop_conserva_el_exif(tmp_path, make_dji_jpeg):
