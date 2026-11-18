@@ -141,8 +141,8 @@ def _modulo_falso(llamadas: list, fallar: bool = False):
     m.version = lambda: "9.9.9"
 
     def rgb_procesar(datos, exif, caja, angulo, q_orig, q_crop, salida_orig, salida_crop, modo,
-                    comentario=None):
-        llamadas.append(dict(caja=caja, angulo=angulo, q_orig=q_orig, q_crop=q_crop,
+                    comentario=None, xmp=None):
+        llamadas.append(dict(xmp=xmp, caja=caja, angulo=angulo, q_orig=q_orig, q_crop=q_crop,
                              salida_orig=salida_orig, salida_crop=salida_crop, modo=modo, comentario=comentario))
         transpose = apply._transpose_para_angulo(angulo, pipeline)
         img = Image.open(io.BytesIO(datos))
@@ -156,8 +156,15 @@ def _modulo_falso(llamadas: list, fallar: bool = False):
             raise OSError("fallo simulado a mitad de rgb_procesar")
         o = img.transpose(transpose) if transpose is not None else img
         o.save(salida_orig, quality=q_orig, exif=exif, comment=comentario)
-        return types.SimpleNamespace(ms_decode=1.0, ms_encode_orig=2.0, ms_encode_crop=3.0,
-                                     motivo=None)
+        if xmp:  # Rust inserta el APP1 XMP dentro de la propia llamada
+            for ruta in (salida_crop, salida_orig):
+                if ruta:
+                    apply.insertar_xmp_app1(ruta, ruta + ".x", xmp)
+                    os.replace(ruta + ".x", ruta)
+        return types.SimpleNamespace(
+            ms_decode=1.0, ms_encode_orig=2.0, ms_encode_crop=3.0, motivo=None,
+            ancho_orig=o.size[0], alto_orig=o.size[1],
+            ancho_crop=c.size[0] if salida_crop else 0, alto_crop=c.size[1] if salida_crop else 0)
 
     for n in rust_bridge.SIMBOLOS_POR_FASE.values():
         for s in n:
