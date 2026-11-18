@@ -307,33 +307,32 @@ def _lote_con_fallback(tmp_path, monkeypatch, modulo, origen: Path, angulo=90, c
         _fila(tmp_path, origen, "rs", angulo, con_crop), _cfg(), pipeline)
 
 
-def test_fallback_panic_de_rust_va_por_pillow(tmp_path, monkeypatch):
+def test_panic_de_rust_es_error_de_fila_visible(tmp_path, monkeypatch):
+    """Sin retroceso a Pillow: un panic de Rust es `PanicRust` de ESA fila y no deja parciales."""
     origen = tmp_path / "o.JPG"
     _origen(origen)
-    apply._escribir_salidas_de_fila(_fila(tmp_path, origen, "py", 90, True), _cfg(), pipeline)
 
     def _panico():
         raise PanicException("boom")
 
-    r = _lote_con_fallback(tmp_path, monkeypatch, _modulo_con(_panico), origen)
-    assert "panic de Rust" in r.motivo_fallback
-    assert _ficheros(tmp_path / "rs") == _ficheros(tmp_path / "py")
+    with pytest.raises(rust_bridge.PanicRust, match="panic de Rust: boom"):
+        _lote_con_fallback(tmp_path, monkeypatch, _modulo_con(_panico), origen)
+    assert not list((tmp_path / "rs").rglob("*.parcial*"))
 
 
-def test_fallback_decode_no_limpio_va_por_pillow(tmp_path, monkeypatch):
+def test_decode_con_warnings_lo_procesa_rust_tolerante(tmp_path, monkeypatch):
+    """Antes un decode no limpio iba a Pillow; ahora Rust es tolerante y procesa (motivo None)."""
     origen = tmp_path / "o.JPG"
     _origen(origen)
     apply._escribir_salidas_de_fila(_fila(tmp_path, origen, "py", 270, True), _cfg(), pipeline)
-    m = _modulo_con(lambda: types.SimpleNamespace(
-        ms_decode=1.0, ms_encode_orig=0, ms_encode_crop=0,
-        motivo="libjpeg-turbo: Premature end of JPEG file"))
-    r = _lote_con_fallback(tmp_path, monkeypatch, m, origen, angulo=270)
-    assert "decode no limpio" in r.motivo_fallback
+    llam: list = []
+    r = _lote_con_fallback(tmp_path, monkeypatch, _modulo_falso(llam), origen, angulo=270)
+    assert len(llam) == 1
     assert _ficheros(tmp_path / "rs") == _ficheros(tmp_path / "py")
 
 
-def test_fallback_caja_fuera_de_la_imagen_no_llama_a_rust(tmp_path, monkeypatch):
-    """pct 0.95 en 4:3 da top negativo: Pillow rellena en negro; decide Pillow."""
+def test_caja_fuera_de_la_imagen_llama_a_rust(tmp_path, monkeypatch):
+    """pct 0.95 en 4:3 da top negativo: Rust rellena como `Image.crop` (ya no decide Pillow)."""
     origen = tmp_path / "o.JPG"
     _origen(origen, 640, 480)
     assert apply._caja_recorte_termico(640, 480, 0.95)[1] < 0
@@ -342,29 +341,43 @@ def test_fallback_caja_fuera_de_la_imagen_no_llama_a_rust(tmp_path, monkeypatch)
     pyfila = dict(fila, ruta_salida_original=str(tmp_path / "py" / "o.JPG"),
                   ruta_salida_crop=str(tmp_path / "py" / "c.JPG"))
     apply._escribir_salidas_de_fila(pyfila, _cfg(), pipeline)
-    m = _modulo_falso([])
-    llam: list = []
-    m = _modulo_falso(llam)
-    monkeypatch.setenv("ATOM_RUST_FASES", "rgb")
-    monkeypatch.setitem(sys.modules, "atom_rs", m)
-    r = apply._escribir_salidas_de_fila(fila, _cfg(), pipeline)
-    assert llam == [] and "fuera de la imagen" in r.motivo_fallback
-    assert _ficheros(tmp_path / "rs") == _ficheros(tmp_path / "py")
-
-
-def test_fallback_origen_no_rgb_va_por_pillow(tmp_path, monkeypatch):
-    origen = tmp_path / "o.JPG"
-    Image.new("L", (64, 48), 90).save(origen, quality=90)
     llam: list = []
     monkeypatch.setenv("ATOM_RUST_FASES", "rgb")
     monkeypatch.setitem(sys.modules, "atom_rs", _modulo_falso(llam))
-    r = apply._escribir_salidas_de_fila(_fila(tmp_path, origen, "rs", 90, False), _cfg(), pipeline)
-    assert llam == [] and "no RGB" in r.motivo_fallback
+    apply._escribir_salidas_de_fila(fila, _cfg(), pipeline)
+    assert len(llam) == 1 and llam[0]["caja"][1] < 0
+    assert _ficheros(tmp_path / "rs") == _ficheros(tmp_path / "py")
+
+
+@pytest.mark.parametrize("modo", ["L", "CMYK"])
+def test_origen_no_rgb_lo_procesa_rust(tmp_path, monkeypatch, modo):
+    origen = tmp_path / "o.JPG"
+    Image.new(modo, (64, 48), 90).save(origen, quality=90)
+    llam: list = []
+    monkeypatch.setenv("ATOM_RUST_FASES", "rgb")
+    monkeypatch.setitem(sys.modules, "atom_rs", _modulo_falso(llam))
+    # El falso (Pillow) conserva L/CMYK; la verificación de modo de salida no es lo que se prueba aquí.
+    monkeypatch.setattr(apply, "verificar_salida_rust", lambda *a, **k: None)
+    apply._escribir_salidas_de_fila(_fila(tmp_path, origen, "rs", 90, False), _cfg(), pipeline)
+    assert len(llam) == 1
     assert (tmp_path / "rs" / "orig.JPG").exists()
 
 
-def test_fallback_visible_en_el_log_y_picklable(tmp_path, monkeypatch, make_dji_jpeg):
-    import pickle
+@pytest.mark.parametrize("modo", ["RGBA", "P"])
+def test_origen_rgba_o_paleta_es_error_de_fila_con_texto_pillow(tmp_path, monkeypatch, modo):
+    """Modo que Pillow tampoco escribe como JPEG: error de fila (texto Pillow), sin parciales."""
+    origen = tmp_path / "o.png"
+    Image.new(modo, (64, 48)).save(origen, format="PNG")
+    llam: list = []
+    monkeypatch.setenv("ATOM_RUST_FASES", "rgb")
+    monkeypatch.setitem(sys.modules, "atom_rs", _modulo_falso(llam))
+    with pytest.raises(OSError, match="cannot write mode"):
+        apply._escribir_salidas_de_fila(_fila(tmp_path, origen, "rs", 90, False), _cfg(), pipeline)
+    assert not list((tmp_path / "rs").rglob("*.parcial*"))
+
+
+def test_resumen_rgb_sin_fallbacks(tmp_path, monkeypatch, make_dji_jpeg):
+    """Sin retroceso a Pillow no hay contador de fallbacks ni AVISO en el log."""
     from tests.test_apply_rgb import _ControladorFalso, _SignalFalsa, _fila_manifiesto
     from atom_core.manifiesto import Manifiesto
     m = Manifiesto(tmp_path / "m.db")
@@ -383,9 +396,7 @@ def test_fallback_visible_en_el_log_y_picklable(tmp_path, monkeypatch, make_dji_
     res = apply.aplicar_rgb(m, _cfg(), pipeline, msgs, _SignalFalsa(), _SignalFalsa())
     assert res == {"hecho": 3, "fallido": 0}
     texto = "".join(str(x) for x in msgs.mensajes)
-    assert "rust_rgb_fallbacks=3" in texto and "AVISO RGB · Rust" in texto
-    v = apply._VerificacionConFallback("x:1", "motivo")
-    assert pickle.loads(pickle.dumps(v)).motivo_fallback == "motivo"
+    assert "rust_rgb_fallbacks" not in texto and "AVISO RGB · Rust" not in texto
 
 
 def test_flag_rgb_sin_simbolo_lanza_al_arrancar(monkeypatch):
@@ -655,9 +666,9 @@ def test_calidad_cero_como_pillow(tmp_path, calidad):
     _comparar(rs, ref, got, f"calidad={calidad}")
 
 
-def test_caja_fuera_de_la_imagen_igual_que_sin_flag(tmp_path, monkeypatch):
+def test_caja_fuera_de_la_imagen_rust_igual_que_sin_flag(tmp_path, monkeypatch):
     """I2: pct >= 0.94 en 4:3 y 16:9 da caja fuera (Pillow rellena en negro). Con la
-    fase activa va por Pillow: mismos bytes que sin flag y fallback contado."""
+    fase activa Rust rellena igual: mismos bytes que sin flag."""
     _rs_real()
     for w, h in ((640, 480), (640, 360)):
         origen = tmp_path / f"o{w}.JPG"
@@ -670,8 +681,7 @@ def test_caja_fuera_de_la_imagen_igual_que_sin_flag(tmp_path, monkeypatch):
         monkeypatch.delenv("ATOM_RUST_FASES", raising=False)
         apply._escribir_salidas_de_fila(f(f"py{w}"), _cfg(), pipeline)
         monkeypatch.setenv("ATOM_RUST_FASES", "rgb")
-        r = apply._escribir_salidas_de_fila(f(f"rs{w}"), _cfg(), pipeline)
-        assert "fuera de la imagen" in r.motivo_fallback
+        apply._escribir_salidas_de_fila(f(f"rs{w}"), _cfg(), pipeline)
         assert _ficheros(tmp_path / f"rs{w}") == _ficheros(tmp_path / f"py{w}")
 
 

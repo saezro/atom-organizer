@@ -23,8 +23,10 @@ pub mod xmp;
 /// fase. 2 = fase `termica` (T1). 3 = sonda
 /// libjpeg-turbo (P). 4 = fase `subida` (T6, `subir_lote`). 5 = fase `indice`
 /// (T2, `parsear_cabecera`). 6 = fase `rgb` (T3, `rgb_procesar`). 7 = fase `io` (4a, `leer_completo`,
-/// `jpeg_integro_por_cola`, excepción `ErrorFila`).
-pub const ABI: u32 = 7;
+/// `jpeg_integro_por_cola`, excepción `ErrorFila`). 8 = solo Rust: `rgb_procesar`
+/// (caja `i64`, JPEG L/CMYK, origen TIFF/PNG, decode tolerante) y `parsear_cabecera`
+/// (firma nueva; `CabeceraParseada.necesita_completo`/`formato`).
+pub const ABI: u32 = 8;
 
 /// Versión del crate (Cargo.toml).
 #[pyfunction]
@@ -74,8 +76,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn abi_es_siete() {
-        assert_eq!(version_abi(), 7);
+    fn abi_es_ocho() {
+        assert_eq!(version_abi(), 8);
     }
 
     #[test]

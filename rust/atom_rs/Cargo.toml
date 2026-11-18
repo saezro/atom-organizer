@@ -29,6 +29,11 @@ base64 = "0.22"
 # Cuerpo de los PUT como `Bytes` (clon por refcount al reintentar). Aprobado por Rodrigo 2026-11-16.
 bytes = "1"
 
+# Origen PNG/TIFF del RGB (T2.6): crates aprobados por Rodrigo 2026-11-18. `tiff` sin
+# JPEG-en-TIFF (zune-jpeg no sería libjpeg-turbo): solo deflate + lzw.
+png = "0.18"
+tiff = { version = "0.11", default-features = false, features = ["deflate", "lzw"] }
+
 [features]
 # maturin activa extension-module al construir la wheel; `cargo test` va sin él
 # para poder enlazar contra libpython.

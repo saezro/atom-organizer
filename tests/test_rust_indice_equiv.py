@@ -6,8 +6,9 @@ Dos bloques:
    integración de ``indice._leer_metadatos``:
    - flag off -> no se toca ``atom_rs`` (camino Python de siempre);
    - flag on  -> los campos que da Rust se usan tal cual y NO se ejecutan las réplicas
-     Python; un campo que Rust no da (``None``) cae al encadenado original y suma 1 a
-     ``rust_parse_fallbacks`` (visible en el log del índice, nunca silencioso);
+     Python; un campo ``None`` de Rust es dato ausente. `necesita_completo` reparsea el
+     fichero entero (cuenta `rust_parse_corto`); un fallo de Rust/lectura es error
+     visible de ese fichero, nunca cae a Python;
    - flag on + wheel sin ``parsear_cabecera`` -> ``RustNoDisponible``.
 
 2. Tests con ``atom_rs`` REAL (se saltan limpiamente si el módulo cargado no expone
@@ -189,8 +190,9 @@ def _gi(logger):
 
 def _cab(**kw):
     base = dict(timestamp_iso=None, modelo=None, make=None, gps=None, ancho=None, alto=None,
-                pil_estado="incierto", gimbal_yaw=None, gimbal_pitch=None, xmp=None,
-                xmp_presente=False, flight_yaw_en_xmp=False, ausentes=())
+                pil_estado="incierto", gimbal_yaw=None, gimbal_pitch=None, xmp=["0"] * 9,
+                xmp_presente=True, flight_yaw_en_xmp=False, ausentes=(),
+                necesita_completo=False, formato="jpeg")
     base.update(kw)
     return types.SimpleNamespace(**base)
 
@@ -202,7 +204,7 @@ def _falso(parsear=None, con_simbolo=True):
         for s in nombres:
             setattr(m, s, lambda *a, **k: None)
     if con_simbolo:
-        m.parsear_cabecera = parsear or (lambda buf: _cab())
+        m.parsear_cabecera = parsear or (lambda buf, completo=False: _cab())
     elif hasattr(m, "parsear_cabecera"):
         delattr(m, "parsear_cabecera")
     return m
@@ -217,7 +219,7 @@ def test_local_flag_off_no_toca_atom_rs(tmp_path, monkeypatch, logger):
     ruta = tmp_path / "DJI_0001.JPG"
     ruta.write_bytes(_jpeg_dji(_exif_bytes(), _xmp_atributos(_XMP_DJI)))
 
-    def _boom(buf):
+    def _boom(buf, completo=False):
         raise AssertionError("flag off: no debe llamarse a Rust")
     monkeypatch.setitem(sys.modules, "atom_rs", _falso(_boom))
     dato = indice._leer_metadatos(str(ruta), _gi(logger), _Cb())
@@ -240,7 +242,7 @@ def test_local_flag_on_usa_rust_sin_replicas(tmp_path, monkeypatch, logger):
     xmp = ["512.30", "48.30", "0.00", "1.10", "-86.90", "-2.30", "0", "0", "50"]
     vistos = []
 
-    def _parsear(buf):
+    def _parsear(buf, completo=False):
         vistos.append(len(buf))
         return _cab(timestamp_iso="2030:01:02 03:04:05", modelo="RUST", make=" DJI\x00",
                     gps=(1.5, -2.5), ancho=640, alto=512, pil_estado="abre",
@@ -267,21 +269,18 @@ def test_local_flag_on_usa_rust_sin_replicas(tmp_path, monkeypatch, logger):
     assert (p.ancho_px, p.alto_px, p.altitud_abs, p.altura_relativa, p.gimbal_roll,
             p.flight_yaw, p.lat, p.lon) == (640, 512, "512.30", "48.30", "0.00", "-86.90",
                                              1.5, -2.5)
-    assert contador.total == 0
+    assert contador.corto == 0
 
 
-def test_local_flag_on_none_cae_a_python_identico_y_cuenta(tmp_path, monkeypatch, logger):
+def test_local_none_de_rust_se_guarda_tal_cual(tmp_path, monkeypatch, logger):
+    """Campo `None` de Rust = dato ausente: se guarda None, sin réplica Python."""
     ruta = tmp_path / "DJI_0001.JPG"
     ruta.write_bytes(_jpeg_dji(_exif_bytes(), _xmp_atributos(_XMP_DJI)))
-    monkeypatch.setitem(sys.modules, "atom_rs", _falso(lambda buf: _cab()))
-    gi = _gi(logger)
-    py = _leer(str(ruta), gi, monkeypatch, rust=False)
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso(lambda buf, completo=False: _cab()))
     contador = indice._ContadorRust()
-    rs = _leer(str(ruta), gi, monkeypatch, rust=True, contador=contador)
-    assert _diferencias(py, rs) == []
-    # `xmp` no suma: con el fichero entero en el buffer, sin bloque XMP = ausencia cierta.
-    assert set(contador.por_campo) == {"timestamp", "modelo", "make", "gps", "dimensiones"}
-    assert contador.total == 5 and contador.ejemplos == [str(ruta)]
+    dato = _leer(str(ruta), _gi(logger), monkeypatch, rust=True, contador=contador)
+    assert (dato.timestamp, dato.modelo, dato.gps, dato.make) == (None, None, None, None)
+    assert contador.corto == 0
 
 
 def _jpeg_roto_tras_256k() -> bytes:
@@ -297,117 +296,115 @@ def _jpeg_roto_tras_256k() -> bytes:
     return roto
 
 
-_CAB_CORTO_CON_VALORES = dict(
-    timestamp_iso="2026:08:20 10:11:12", modelo="FC6310", make="DJI",
-    gps=(40.4, -3.7), ancho=64, alto=48, pil_estado="corto", gimbal_yaw="-87.40",
-    gimbal_pitch="-45.20",
-    xmp=["512.30", "48.30", "0.00", "1.10", "-86.90", "-2.30", "0", "0", "50"],
-    xmp_presente=True, flight_yaw_en_xmp=True)
+def test_local_corto_reparsea_con_fichero_entero(tmp_path, monkeypatch, logger):
+    """`necesita_completo`: segunda llamada `parsear_cabecera(buf, True)` con el fichero
+    ENTERO; la respuesta de esa segunda llamada es la definitiva y suma 1 a `corto`."""
+    ruta = tmp_path / "DJI_0001.JPG"
+    datos = _jpeg_roto_tras_256k()
+    ruta.write_bytes(datos)
+    llamadas = []
+
+    def _parsear(buf, completo=False):
+        llamadas.append((len(buf), completo))
+        if not completo:
+            return _cab(necesita_completo=True)
+        return _cab(timestamp_iso="2030:01:02 03:04:05", modelo="RUST", ancho=7, alto=9)
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso(_parsear))
+    contador = indice._ContadorRust()
+    dato = _leer(str(ruta), _gi(logger), monkeypatch, rust=True, contador=contador)
+    assert llamadas == [(indice._BYTES_CABECERA, False), (len(datos), True)]
+    assert dato.modelo == "RUST" and dato.timestamp == dt.datetime(2030, 1, 2, 3, 4, 5)
+    assert contador.corto == 1
 
 
-def test_local_corto_va_siempre_por_python(tmp_path, monkeypatch, logger):
-    """`pil_estado="corto"`: fecha, GPS y dimensiones por el camino Python original
-    aunque Rust traiga valores (decisión del controlador), y suman al contador."""
+def test_local_sigue_necesitando_completo_es_error(tmp_path, monkeypatch, logger):
     ruta = tmp_path / "DJI_0001.JPG"
     ruta.write_bytes(_jpeg_dji(_exif_bytes(), _xmp_atributos(_XMP_DJI)))
-    cab = dict(_CAB_CORTO_CON_VALORES, timestamp_iso="2030:01:02 03:04:05", gps=(9.0, 9.0),
-               ancho=1, alto=1)
-    monkeypatch.setitem(sys.modules, "atom_rs", _falso(lambda buf: _cab(**cab)))
-    gi = _gi(logger)
-    py = _leer(str(ruta), gi, monkeypatch, rust=False)
-    contador = indice._ContadorRust()
-    dato = _leer(str(ruta), gi, monkeypatch, rust=True, contador=contador)
-    assert _diferencias(py, dato) == []
-    assert (dato.posicion.ancho_px, dato.posicion.alto_px) == (64, 48)  # de Python
-    assert dato.timestamp == dt.datetime(2026, 8, 20, 10, 11, 12)
-    # `corto` es lo esperado: 1 en `corto`, ningún fallback inesperado.
-    assert (contador.total, contador.corto, dict(contador.por_campo)) == (0, 1, {})
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso(
+        lambda buf, completo=False: _cab(necesita_completo=True)))
+    with pytest.raises(RuntimeError, match="no resolvió"):
+        _leer(str(ruta), _gi(logger), monkeypatch, rust=True)
 
 
-def test_local_corto_marcadores_rotos_tras_256k_mismos_none(tmp_path, monkeypatch, logger):
-    """Con EOI y marcadores rotos tras 256 KiB, Python da fecha/GPS None; aunque Rust
-    (falso) trajera valores en `corto`, el resultado es el de Python."""
-    monkeypatch.setattr(indice, "_FILTRO_ARCHIVO_A_MEDIAS", True)  # cola/EOI real
-    ruta = tmp_path / "DJI_0001.JPG"
-    ruta.write_bytes(_jpeg_roto_tras_256k())
-    monkeypatch.setitem(sys.modules, "atom_rs",
-                        _falso(lambda buf: _cab(**_CAB_CORTO_CON_VALORES)))
-    gi = _gi(logger)
-    py = _leer(str(ruta), gi, monkeypatch, rust=False)
-    assert py.jpeg_sin_eoi is False
-    assert py.timestamp is None and py.gps is None
-    contador = indice._ContadorRust()
-    rus = _leer(str(ruta), gi, monkeypatch, rust=True, contador=contador)
-    assert _diferencias(py, rus) == []
-    assert (contador.total, contador.corto) == (0, 1)
-
-
-def test_local_excepcion_de_rust_cuenta_y_lee_con_python(tmp_path, monkeypatch, logger):
+def test_local_excepcion_de_rust_es_error_visible(tmp_path, monkeypatch, logger):
     ruta = tmp_path / "DJI_0001.JPG"
     ruta.write_bytes(_jpeg_dji(_exif_bytes(), _xmp_atributos(_XMP_DJI)))
 
-    def _revienta(buf):
+    def _revienta(buf, completo=False):
         raise ValueError("fallo simulado")
     monkeypatch.setitem(sys.modules, "atom_rs", _falso(_revienta))
-    gi = _gi(logger)
-    py = _leer(str(ruta), gi, monkeypatch, rust=False)
-    contador = indice._ContadorRust()
-    rus = _leer(str(ruta), gi, monkeypatch, rust=True, contador=contador)
-    assert _diferencias(py, rus) == []
-    assert (contador.total, dict(contador.por_campo), contador.corto) == (1, {"excepcion": 1}, 0)
+    with pytest.raises(ValueError, match="fallo simulado"):  # sin caer a Python
+        _leer(str(ruta), _gi(logger), monkeypatch, rust=True)
+
+
+def test_local_formato_desconocido_es_error(tmp_path, monkeypatch, logger):
+    ruta = tmp_path / "DJI_0001.JPG"
+    ruta.write_bytes(_jpeg_dji(_exif_bytes(), _xmp_atributos(_XMP_DJI)))
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso(
+        lambda buf, completo=False: _cab(formato="desconocido")))
+    with pytest.raises(ValueError, match="formato de imagen no soportado"):
+        _leer(str(ruta), _gi(logger), monkeypatch, rust=True)
+
+
+def test_local_tope_de_tamano_es_error_visible(tmp_path, monkeypatch, logger):
+    """Fichero que necesita lectura completa y supera el tope: no se lee entero; error
+    de ese fichero (OSError) y, en `_leer_lote`, el resto del lote sigue."""
+    monkeypatch.setattr(indice, "_MAX_BYTES_FICHERO_ENTERO", 1000)
+    grande = tmp_path / "DJI_0001.JPG"
+    grande.write_bytes(_jpeg_roto_tras_256k())
+    buena = tmp_path / "DJI_0002.JPG"
+    buena.write_bytes(_jpeg_dji(_exif_bytes(), _xmp_atributos(_XMP_DJI)))
+    leidos = []
+
+    def _parsear(buf, completo=False):
+        leidos.append(len(buf))
+        return _cab(necesita_completo=not completo and len(buf) >= indice._BYTES_CABECERA,
+                    modelo="RUST", make="DJI")
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso(_parsear))
+    with pytest.raises(OSError, match="supera el tope"):
+        _leer(str(grande), _gi(logger), monkeypatch, rust=True)
+    assert max(leidos) <= indice._BYTES_CABECERA  # nunca se parseó el fichero entero
+
+    monkeypatch.setenv("ATOM_RUST_FASES", "indice")
+    cb = _Cb()
+    lote = indice._leer_lote([str(grande), str(buena)], _gi(logger), cb,
+                             indice._EmisorIndice(cb, _Cb()), 2, 30.0, 30.0, 60.0)
+    assert [d.ruta for d in lote.metadatos] == [str(buena)]
+    assert [r for r, _m in lote.errores_lectura] == [str(grande)]
+    assert "supera el tope" in lote.errores_lectura[0][1]
+
+
+def test_local_leer_lote_error_de_un_fichero_no_tumba_el_lote(tmp_path, monkeypatch, logger):
+    buena = tmp_path / "DJI_0001.JPG"
+    buena.write_bytes(_jpeg_dji(_exif_bytes(), _xmp_atributos(_XMP_DJI)))
+    mala = tmp_path / "DJI_0002.JPG"
+    mala.write_bytes(_jpeg_dji(_exif_bytes(), _xmp_atributos(_XMP_DJI)) + b"x")
+
+    def _parsear(buf, completo=False):
+        if buf.endswith(b"x"):
+            raise ValueError("fallo simulado")
+        return _cab(modelo="RUST", make="DJI")
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso(_parsear))
+    monkeypatch.setenv("ATOM_RUST_FASES", "indice")
+    cb = _Cb()
+    lote = indice._leer_lote([str(buena), str(mala)], _gi(logger), cb,
+                             indice._EmisorIndice(cb, _Cb()), 2, 30.0, 30.0, 60.0)
+    assert [d.ruta for d in lote.metadatos] == [str(buena)]
+    assert lote.errores_lectura == [(str(mala), "ValueError: fallo simulado")]
+    assert ("no_disponible", "ValueError: fallo simulado") == lote.registros[1][1:3]
+    assert "rust_parse_corto=0" in "".join(cb.lineas)
 
 
 def test_local_leer_lote_linea_con_corto(tmp_path, monkeypatch, logger):
     ruta = tmp_path / "DJI_0001.JPG"
-    ruta.write_bytes(_jpeg_dji(_exif_bytes(), _xmp_atributos(_XMP_DJI)))
-    monkeypatch.setitem(sys.modules, "atom_rs",
-                        _falso(lambda buf: _cab(**_CAB_CORTO_CON_VALORES)))
+    ruta.write_bytes(_jpeg_roto_tras_256k())
+    monkeypatch.setitem(sys.modules, "atom_rs", _falso(
+        lambda buf, completo=False: _cab(necesita_completo=not completo)))
     monkeypatch.setenv("ATOM_RUST_FASES", "indice")
     cb = _Cb()
     indice._leer_lote([str(ruta)], _gi(logger), cb, indice._EmisorIndice(cb, _Cb()),
                       2, 30.0, 30.0, 60.0)
-    assert ("rust_parse_fallbacks=0 rust_parse_corto=1 rust_parse_no_soportado=0"
-            in "".join(cb.lineas))
-
-
-def test_local_leer_lote_reporta_contador(tmp_path, monkeypatch, logger):
-    buena = tmp_path / "DJI_0001.JPG"
-    buena.write_bytes(_jpeg_dji(_exif_bytes(), _xmp_atributos(_XMP_DJI)))
-    monkeypatch.setitem(sys.modules, "atom_rs", _falso(lambda buf: _cab()))
-    monkeypatch.setenv("ATOM_RUST_FASES", "indice")
-    cb = _Cb()
-    emisor = indice._EmisorIndice(cb, _Cb())
-    indice._leer_lote([str(buena)], _gi(logger), cb, emisor, 2, 30.0, 30.0, 60.0)
-    texto = "".join(cb.lineas)
-    assert "rust_parse_fallbacks=5" in texto and "DJI_0001.JPG" in texto
-
-
-def test_local_ausentes_y_no_soportado_no_son_fallback(tmp_path, monkeypatch, logger):
-    """Tag inexistente (``ausentes``) y formato no JPEG: no suman a ``rust_parse_fallbacks``;
-    el TIFF/PNG va entero por Python con su contador aparte y Rust ni se llama."""
-    ruta = tmp_path / "DJI_0001.JPG"
-    ruta.write_bytes(_jpeg_dji(_exif_bytes(), _xmp_atributos(_XMP_DJI)))
-    monkeypatch.setitem(sys.modules, "atom_rs", _falso(
-        lambda buf: _cab(pil_estado="abre", ancho=64, alto=48,
-                         ausentes=("timestamp", "gps", "modelo", "make"))))
-    gi = _gi(logger)
-    py = _leer(str(ruta), gi, monkeypatch, rust=False)
-    c = indice._ContadorRust()
-    rus = _leer(str(ruta), gi, monkeypatch, rust=True, contador=c)
-    assert _diferencias(py, rus) == []
-    assert (c.total, c.corto, c.no_soportado) == (0, 0, 0)
-
-    llamadas = []
-    monkeypatch.setitem(sys.modules, "atom_rs", _falso(lambda b: llamadas.append(1) or _cab()))
-    for nombre, formato in (("a.png", "PNG"), ("a.tif", "TIFF")):
-        f = tmp_path / nombre
-        Image.new("RGB", (8, 8)).save(f, format=formato)
-        py = _leer(str(f), gi, monkeypatch, rust=False)
-        c = indice._ContadorRust()
-        rus = _leer(str(f), gi, monkeypatch, rust=True, contador=c)
-        assert _diferencias(py, rus) == []
-        assert (c.total, c.corto, c.no_soportado) == (0, 0, 1)
-    assert llamadas == []
+    assert "rust_parse_corto=1" in "".join(cb.lineas)
 
 
 def test_diferencias_nan_igual_a_nan():
@@ -424,7 +421,7 @@ def test_local_leer_lote_flag_off_sin_linea_rust(tmp_path, logger):
     cb = _Cb()
     indice._leer_lote([str(buena)], _gi(logger), cb, indice._EmisorIndice(cb, _Cb()),
                       2, 30.0, 30.0, 60.0)
-    assert "rust_parse_fallbacks" not in "".join(cb.lineas)
+    assert "rust_parse_corto" not in "".join(cb.lineas)
 
 
 # ------------------------------------------------- 2. atom_rs real
@@ -527,7 +524,7 @@ def test_marcadores_rotos_tras_256k_mismos_none(tmp_path, monkeypatch, logger):
     py = _leer(str(ruta), gi, monkeypatch, False)
     contador = indice._ContadorRust()
     rus = _leer(str(ruta), gi, monkeypatch, True, contador)
-    assert (contador.total, contador.corto) == (0, 1)
+    assert contador.corto == 1
     assert py.jpeg_sin_eoi is False
     assert py.timestamp is None and py.gps is None
     assert _diferencias(py, rus) == []
@@ -634,7 +631,7 @@ def test_exifread_miniatura_jpeg_tipo_no_entero_decide_python(tag, tmp_path, mon
 
 def test_ausentes_no_cuentan_como_fallback(tmp_path, monkeypatch, logger):
     """I1: sin GPS, sin Model, sin fecha o sin XMP no es un fallo; un TIFF/PNG va por
-    Python con ``rust_parse_no_soportado``."""
+    Rust (con ``corto`` si la cabecera no basta)."""
     _rs_real()
     gi = _gi(logger)
     contador = indice._ContadorRust()
@@ -648,14 +645,12 @@ def test_ausentes_no_cuentan_como_fallback(tmp_path, monkeypatch, logger):
     sin_xmp.write_bytes(_jpeg_dji(_exif_bytes(), None))
     assert _diferencias(_leer(str(sin_xmp), gi, monkeypatch, False),
                         _leer(str(sin_xmp), gi, monkeypatch, True, contador)) == []
-    assert (contador.total, contador.corto, contador.no_soportado) == (0, 0, 0), \
-        (dict(contador.por_campo), contador.ejemplos)
+    assert contador.corto == 0
     for nombre, formato in (("a.png", "PNG"), ("a.tif", "TIFF")):
         f = tmp_path / nombre
         Image.new("RGB", (8, 8)).save(f, format=formato)
         assert _diferencias(_leer(str(f), gi, monkeypatch, False),
                             _leer(str(f), gi, monkeypatch, True, contador)) == []
-    assert (contador.total, contador.no_soportado) == (0, 2)
 
 
 def test_gps_y_fecha_variantes(tmp_path, monkeypatch, logger):
@@ -669,29 +664,6 @@ def test_gps_y_fecha_variantes(tmp_path, monkeypatch, logger):
         ruta.write_bytes(_jpeg_dji(_exif_bytes(**kw), _xmp_atributos(_XMP_DJI)))
         assert _diferencias(_leer(str(ruta), gi, monkeypatch, False),
                             _leer(str(ruta), gi, monkeypatch, True)) == [], kw
-
-
-def test_contador_fallbacks_visible(tmp_path, monkeypatch, logger):
-    _rs_real()
-    gi = _gi(logger)
-    buenas = []
-    for i in range(3):
-        r = tmp_path / f"DJI_{i:04d}.JPG"
-        r.write_bytes(_jpeg_dji(_exif_bytes(), _xmp_atributos(_XMP_DJI)))
-        buenas.append(str(r))
-    monkeypatch.setenv("ATOM_RUST_FASES", "indice")
-    cb = _Cb()
-    indice._leer_lote(buenas, gi, cb, indice._EmisorIndice(cb, _Cb()), 2, 30.0, 30.0, 60.0)
-    assert "rust_parse_fallbacks=0" in "".join(cb.lineas)
-    rota = tmp_path / "DJI_9999.JPG"
-    rota.write_bytes(b"\xff\xd8\xff\xe1\x00\x10Exif\x00\x00II*\x00" + b"\x00" * 50)
-    cb = _Cb()
-    indice._leer_lote(buenas + [str(rota)], gi, cb, indice._EmisorIndice(cb, _Cb()),
-                      2, 30.0, 30.0, 60.0)
-    texto = "".join(cb.lineas)
-    assert "rust_parse_fallbacks=0" not in texto
-    assert "rust_parse_fallbacks=" in texto and "rust_parse_corto=" in texto
-    assert "DJI_9999.JPG" in texto
 
 
 def test_paridad_con_gs_uri_sin_cambios(monkeypatch, logger):
@@ -756,8 +728,4 @@ def test_equivalencia_campo_a_campo_corpus(tmp_path, monkeypatch, logger):
     assert not distintas, f"{len(distintas)} de {len(rutas)} con diferencias:\n" + \
         "\n".join(distintas[:50])
     print(f"\n[rust_ab indice] {len(rutas)} ficheros, 0 diferencias, "
-          f"rust_parse_fallbacks={contador.total} {dict(contador.por_campo)} "
-          f"rust_parse_corto={contador.corto} "
-          f"rust_parse_no_soportado={contador.no_soportado}")
-    assert contador.corto >= 0 and contador.no_soportado >= 0
-    assert contador.total == 0, (contador.total, dict(contador.por_campo), contador.ejemplos)
+          f"rust_parse_corto={contador.corto}")

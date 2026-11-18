@@ -509,7 +509,7 @@ def _escribir_salidas_de_fila_rust(rs, fila: Mapping[str, Any], cfg, pipeline_mo
     """Misma fila que `_escribir_salidas_de_fila` con la fase Rust `rgb`: Python
     lee y valida (`lectura_segura`), calcula `exif_bytes` (cabecera, sin decode),
     `bloque_xmp`, la caja y las rutas `.parcial`; `atom_rs.rgb_procesar` hace
-    decode + crop + giro + encode x2 (modo a, bytes de Pillow) sin GIL; luego
+    decode + crop + giro + encode x2 (modo a, paridad byte-idéntica con Pillow) sin GIL; luego
     Python inserta el XMP, verifica y publica cada salida como siempre (`_CROP`
     primero). Un error en cualquier punto no deja ningún `.parcial`."""
     nombre = os.path.basename(fila["ruta_origen"])
@@ -532,8 +532,8 @@ def _escribir_salidas_de_fila_rust(rs, fila: Mapping[str, Any], cfg, pipeline_mo
             # lo haría `img.save(exif=img.getexif())`.
             img = pipeline_mod.Image.open(io.BytesIO(datos_origen))
             try:
-                if img.mode != "RGB":
-                    return _FallbackRust(f"origen no RGB (modo {img.mode!r})")
+                # Cualquier modo/formato (RGB, L, CMYK, TIFF, PNG): Rust decide; un modo
+                # que Pillow tampoco escribe como JPEG sale como OSError de fila.
                 ancho, alto = img.size
                 exif_bytes = img.getexif().tobytes()
                 # COM del origen: Pillow lo copia en crop/transpose y lo escribe en el save.
@@ -548,9 +548,7 @@ def _escribir_salidas_de_fila_rust(rs, fila: Mapping[str, Any], cfg, pipeline_mo
         # `pct_recorte` None con `_CROP` = centinela «sin recorte»: copia íntegra.
         caja = (None if not ruta_crop or fila["pct_recorte"] is None else
                 _caja_recorte_termico(ancho, alto, fila["pct_recorte"]))
-        if caja is not None and (caja[0] < 0 or caja[1] < 0 or caja[2] > ancho or caja[3] > alto):
-            # Pillow rellena en negro fuera de la imagen: no se replica, decide Pillow.
-            return _FallbackRust(f"caja de recorte {caja} fuera de la imagen {ancho}x{alto}")
+        # Caja parcial o totalmente fuera de la imagen: Rust rellena como `Image.crop`.
 
         for destino in (ruta_crop, ruta_original):
             if destino and not _es_gcs(destino):
@@ -568,14 +566,13 @@ def _escribir_salidas_de_fila_rust(rs, fila: Mapping[str, Any], cfg, pipeline_mo
                     parcial_original, parcial_crop, modo, comentario, bloque_xmp or None)
             except BaseException as exc:  # noqa: BLE001
                 # `pyo3_runtime.PanicException` hereda de BaseException: un panic de Rust
-                # es un fallo de ESTA fila (Pillow decide), nunca tumba el run.
-                if type(exc).__name__ != "PanicException":
+                # es un fallo visible de ESTA fila, nunca tumba el run ni va a Pillow.
+                if type(exc).__name__ == "PanicException":
+                    raise rust_bridge.PanicRust(f"panic de Rust: {exc}") from exc
+                traducida = rust_bridge.traducir_error(exc)
+                if traducida is exc:
                     raise
-                return _FallbackRust(f"panic de Rust: {exc}")
-            if stats.motivo:
-                # libjpeg avisó/falló al decodificar: Rust no escribió nada ni da la imagen
-                # por buena (aceptar/rechazar lo decide Pillow, que ignora ciertos avisos).
-                return _FallbackRust(f"decode no limpio: {stats.motivo}")
+                raise traducida from exc
             perfil_rgb.sumar("decode", stats.ms_decode / 1000.0)
             perfil_rgb.sumar("encode_original", stats.ms_encode_orig / 1000.0)
             perfil_rgb.sumar("encode_crop", stats.ms_encode_crop / 1000.0)
@@ -600,69 +597,15 @@ def _escribir_salidas_de_fila_rust(rs, fila: Mapping[str, Any], cfg, pipeline_mo
     return "; ".join(f"{ruta}:{_tamano_ruta(ruta)}" for ruta in escritas)
 
 
-class _FallbackRust:
-    """Señal interna: la fila NO se procesó con Rust (nada escrito) y debe ir por
-    Pillow. `motivo` alimenta el contador visible `rust_rgb_fallbacks`."""
-
-    def __init__(self, motivo: str) -> None:
-        self.motivo = motivo
-
-
-class _VerificacionConFallback(str):
-    """`verificacion` de una fila que fue por Pillow estando activa la fase Rust.
-    Es un `str` normal (picklable entre procesos) con el motivo del fallback."""
-
-    def __new__(cls, valor: str, motivo: "str | None" = None):
-        obj = super().__new__(cls, valor)
-        obj.motivo_fallback = motivo
-        return obj
-
-
 def _escribir_salidas_de_fila(fila: Mapping[str, Any], cfg, pipeline_mod) -> str:
-    """Punto de entrada de una fila RGB. Flag `rgb` off: camino Pillow de siempre.
-    Activo: Rust (`_escribir_salidas_de_fila_rust`); si Rust declara que no puede
-    dar la imagen por buena (origen no RGB, caja fuera de la imagen, decode no
-    limpio, panic) NO ha escrito nada y la fila va por Pillow, que decide, con el
-    motivo anotado (resultado o excepción) para el contador del log."""
+    """Punto de entrada de una fila RGB. Flag `rgb` off: camino Pillow de siempre (se
+    borra en F5). Activo: Rust (`_escribir_salidas_de_fila_rust`) sin retroceso
+    a Pillow por fila; cualquier fallo es excepción de la fila."""
     rs = rust_bridge.exigir("rgb")
     if rs is None:
         return _escribir_salidas_de_fila_python(fila, cfg, pipeline_mod)
-    r = _escribir_salidas_de_fila_rust(rs, fila, cfg, pipeline_mod)
-    if not isinstance(r, _FallbackRust):
-        return r
-    try:
-        res = _escribir_salidas_de_fila_python(fila, cfg, pipeline_mod)
-    except Exception as exc:
-        exc.motivo_fallback = r.motivo
-        raise
-    return _VerificacionConFallback(res, r.motivo)
-
-
-class _ContadorRustRgb:
-    """Filas RGB que, con la fase Rust activa, fueron por Pillow (visible en el log,
-    como `rust_parse_fallbacks` del índice). Se llena en el proceso padre."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self.total = 0
-        self.ejemplos: list[str] = []
-
-    def sumar(self, ruta: str, motivo: str) -> None:
-        with self._lock:
-            self.total += 1
-            if len(self.ejemplos) < 10:
-                self.ejemplos.append(f"{os.path.basename(ruta)}: {motivo}")
-
-
-def _emitir_resumen_rust_rgb(progress_callback, contador) -> None:
-    if contador is None:
-        return
-    progress_callback.emit(f"\nRGB · Rust: rust_rgb_fallbacks={contador.total}\n")
-    if contador.total:
-        progress_callback.emit(
-            "AVISO RGB · Rust: "
-            f"{contador.total} imagen(es) fueron por Pillow (decide PIL). Ejemplos: "
-            + " | ".join(contador.ejemplos) + "\n")
+    # Sin retroceso a Pillow por fila: el error de Rust es el error de la fila.
+    return _escribir_salidas_de_fila_rust(rs, fila, cfg, pipeline_mod)
 
 
 def _escribir_salidas_de_fila_python(fila: Mapping[str, Any], cfg, pipeline_mod) -> str:
@@ -1029,15 +972,9 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
     # `add_done_callback`). Un lock los deja a salvo de cualquier cambio
     # futuro en quién llama, y su coste es nulo frente al de la imagen.
     lock_resultado = threading.Lock()
-    contador_rust = _ContadorRustRgb() if rust_bridge.fase_activa("rgb") else None
 
     def _cerrar_fila(fila: dict, verificacion=None, error: Exception = None) -> None:
         contador_rotacion.registrar(fila["angulo_giro"] or 0)
-        if contador_rust is not None:
-            motivo = getattr(error if error is not None else verificacion,
-                             "motivo_fallback", None)
-            if motivo:
-                contador_rust.sumar(fila["ruta_origen"], motivo)
         if error is not None:
             manifiesto.marcar_fallida(fila["id"], str(error))
             # Cada fallo RGB deja su línea en el log con el motivo real: antes
@@ -1067,7 +1004,6 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
         rgb_gpu.aplicar(filas, cfg, pipeline_mod, sys.modules[__name__], _cerrar_fila,
                         lambda fila: _escribir_salidas_de_fila(fila, cfg, pipeline_mod),
                         progress_bar, progress_callback)
-        _emitir_resumen_rust_rgb(progress_callback, contador_rust)
         _emitir_resumen_perfil_rgb(progress_callback)
         return resultado
     if (os.environ.get("ORGANIZER_RGB_GPU") == "1" and rgb_gpu._ESTADO.get("error")
@@ -1089,7 +1025,6 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
             else:
                 _cerrar_fila(fila, verificacion=verificacion)
             progress_bar.emit(int(indice / total * 100))
-        _emitir_resumen_rust_rgb(progress_callback, contador_rust)
         _emitir_resumen_perfil_rgb(progress_callback)
         return resultado
 
@@ -1238,7 +1173,6 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
         raise cancelacion.RunCancelado()
     _emitir_resumen_fase(progress_callback, "Imágenes RGB", "proceso(s)", total,
                          aforo.resumen(controlador.maximo))
-    _emitir_resumen_rust_rgb(progress_callback, contador_rust)
     _emitir_resumen_perfil_rgb(progress_callback)
     return resultado
 

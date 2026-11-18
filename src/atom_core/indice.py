@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import exifread
 import PIL.Image
@@ -945,238 +945,128 @@ def _motivo_no_dji(dato) -> str | None:
     return None
 
 
-_MAX_EJEMPLOS_FALLBACK_RUST = 10
+# Tope de lectura ENTERA de un fichero en memoria (hasta 32 hilos a la vez + copia en
+# `normalizar_saltos`): por encima, error visible del fichero, nunca lectura a pelo.
+_MAX_BYTES_FICHERO_ENTERO = 512 * 1024 * 1024
 
 
 class _ContadorRust:
-    """Contadores de la fase Rust `indice`, compartidos por los hilos de `_leer_lote`
-    y se imprimen al final de la lectura (nunca silencioso):
-
-    - `total` (`rust_parse_fallbacks`): fallos INESPERADOS, por campo: estado
-      `incierto`, campo `None` con estado `abre` (o un campo no-PIL `None`) y excepción
-      de `parsear_cabecera`. Ese campo se calculó con la réplica Python original (mismo
-      resultado, más lento). En un corpus DJI sano debe ser 0.
-    - `corto` (`rust_parse_corto`): imágenes con estado `corto` (térmicas DJI con el
-      SOS tras 256 KiB). Es lo ESPERADO: fecha/GPS/dimensiones van por Python como hoy.
-      1 por imagen.
-    - `no_soportado` (`rust_parse_no_soportado`): ficheros que no son JPEG (TIFF, PNG...);
-      Rust solo trata JPEG, así que ni se llama y la imagen va entera por Python. Es
-      contador aparte de `corto` porque la causa es otra (formato, no posición del SOS)
-      y mezclarlos taparía una térmica con el SOS demasiado lejos o un TIFF inesperado.
-      Un tag que no existe (sin GPS/Model/XMP) NO cuenta en ninguno de los tres.
-    Un `None` de Rust solo suma a `total` si NO es una ausencia cierta (`ausentes`)."""
+    """Contador de la fase Rust `indice`, compartido por los hilos de `_leer_lote` y
+    visible al final de la lectura: `corto` (`rust_parse_corto`) = imágenes que Rust no
+    resolvió con la cabecera (`necesita_completo`: térmicas DJI con el SOS tras 256 KiB,
+    TIFF/PNG grandes) y se reparsearon con el fichero ENTERO, también en Rust. Es lo
+    ESPERADO: 1 por imagen. Un fallo de Rust o de lectura no se cuenta aquí: es un error
+    visible del fichero (`_ErrorLectura`)."""
 
     def __init__(self) -> None:
         self._cerrojo = threading.Lock()
-        self.total = 0
         self.corto = 0
-        self.no_soportado = 0
-        self.por_campo: Counter = Counter()
-        self.ejemplos: list[str] = []
 
     def sumar_corto(self) -> None:
         with self._cerrojo:
             self.corto += 1
 
-    def sumar_no_soportado(self) -> None:
-        with self._cerrojo:
-            self.no_soportado += 1
-
-    def sumar(self, campo: str, ruta: str) -> None:
-        with self._cerrojo:
-            self.total += 1
-            self.por_campo[campo] += 1
-            if len(self.ejemplos) < _MAX_EJEMPLOS_FALLBACK_RUST and ruta not in self.ejemplos:
-                self.ejemplos.append(ruta)
-
     def texto(self) -> str:
         with self._cerrojo:
-            cifras = (f"rust_parse_fallbacks={self.total} rust_parse_corto={self.corto} "
-                      f"rust_parse_no_soportado={self.no_soportado}")
-            if not self.total:
-                return f"\nÍndice · Rust: {cifras}\n"
-            campos = ", ".join(f"{c}={n}" for c, n in sorted(self.por_campo.items()))
-            ejemplos = ", ".join(os.path.basename(r) for r in self.ejemplos)
-            return (f"\nAVISO: Índice · Rust: {cifras} "
-                    f"(campos calculados con Python: {campos}; ejemplos: {ejemplos}"
-                    f"{'…' if len(self.ejemplos) >= _MAX_EJEMPLOS_FALLBACK_RUST else ''})\n")
+            return f"\nÍndice · Rust: rust_parse_corto={self.corto}\n"
 
 
-def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: bytes, buf_exif: "bytes | None",
-                         jpeg_sin_eoi: "bool | None", exif, progress_callback,
-                         contador: _ContadorRust) -> "_MetadatosImagen | None":
-    """`_leer_metadatos` con la fase Rust `indice` activa: UNA llamada a
-    `atom_rs.parsear_cabecera(buf)` (sin GIL) sustituye a las réplicas en memoria
-    (`_timestamp_desde_buffer`, `_modelo_desde_buffer`, `_make_desde_buffer`,
-    `_gps_desde_buffer`, `_dimensiones_desde_buffer`, `get_gimbal_yaw_pitch` y
-    `get_xmp_data` sobre el bloque del buffer). Cada campo que Rust no da (`None`)
-    se calcula EXACTAMENTE con el encadenado original de ese campo (réplica, relectura
-    del fichero entero, función por ruta) y suma 1 a `contador`. El resultado es el
-    mismo `_MetadatosImagen` que sin Rust.
+class _ErrorLectura:
+    """Resultado de `_leer_una` cuando la lectura de UN fichero falló (Rust, E/S, tope de
+    tamaño, formato no soportado): el lote sigue y el fichero se informa en el resumen."""
 
-    `pil_estado` (cómo le iría a `PIL.Image.open` con ESTE buffer):
-    - `abre`: los valores PIL (fecha, GPS, dimensiones) salen del propio buffer.
-    - `corto` (el buffer se acaba antes del SOS, p. ej. térmicas DJI con APP3 de 64 KiB)
-      e `incierto`: fecha, GPS y dimensiones van SIEMPRE por el camino Python original
-      (que relee el fichero entero si hace falta) y suman al contador. Decisión del
-      controlador: Rust nunca puede dar un valor donde Python da None (p. ej. marcadores
-      rotos tras 256 KiB), y la ganancia en esta fase es irrelevante."""
-    if buf[:2] != b"\xff\xd8":
-        # No es JPEG (TIFF, PNG...): Rust no lo trata; camino Python entero, contado aparte.
-        contador.sumar_no_soportado()
-        return None
-    try:
-        cab = rs.parsear_cabecera(buf)
-    except Exception as exc:  # noqa: BLE001 — contado y avisado; Python hace la imagen
-        contador.sumar("excepcion", ruta)
-        _LOG.warning("parsear_cabecera falló en '%s' (%s: %s); se lee con Python",
-                     ruta, type(exc).__name__, exc)
-        return None
-    # `corto`: fecha/GPS/dimensiones por Python como hoy (esperado, contador aparte).
-    corto = cab.pil_estado == "corto"
-    if corto:
+    def __init__(self, ruta: str, excepcion: BaseException) -> None:
+        self.ruta = ruta
+        self.motivo = f"{type(excepcion).__name__}: {excepcion}"
+
+
+def _leer_fichero_entero(ruta: str) -> bytes:
+    """Fichero ENTERO en memoria (local, o `gs://` vía temporal). Solo para lo que Rust
+    no resuelve con la cabecera (`necesita_completo`). Un fichero por encima de
+    `_MAX_BYTES_FICHERO_ENTERO` o un error de lectura suben como excepción (error visible
+    de ESE fichero en `_leer_lote`)."""
+    with almacen.abrir_para_lectura(ruta) as ruta_local, open(ruta_local, 'rb') as fd:
+        tamano = os.fstat(fd.fileno()).st_size
+        if tamano > _MAX_BYTES_FICHERO_ENTERO:
+            raise OSError(f"fichero de {tamano} bytes: supera el tope de lectura completa "
+                          f"({_MAX_BYTES_FICHERO_ENTERO} bytes)")
+        return fd.read()
+
+
+def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: "bytes | None",
+                         jpeg_sin_eoi: "bool | None",
+                         contador: _ContadorRust) -> "_MetadatosImagen":
+    """`_leer_metadatos` con la fase Rust `indice` activa: TODOS los campos salen de
+    `atom_rs.parsear_cabecera` (sin GIL), sin caer nunca al camino Python.
+
+    Contrato Python <-> Rust:
+    - Primera llamada `parsear_cabecera(buf)` con la cabecera (`_BYTES_CABECERA`); un
+      buffer más corto es el fichero entero y Rust lo infiere. Sin cabecera (`buf` None:
+      `gs://` con rango ilegible) se lee el fichero entero y se llama con `completo=True`.
+    - Si `cab.necesita_completo` (JPEG que no abre con la cabecera o sin XMP cerrado en
+      ella; TIFF/PNG grandes) se relee el FICHERO ENTERO una vez y se llama de nuevo con
+      `completo=True`; la respuesta ya es definitiva. Suma 1 a `contador.corto`.
+    - Un campo `None` es dato ausente: se guarda tal cual (p. ej. DJI roto tras 256 KiB:
+      fecha/GPS/dimensiones `None`). Sin XMP, Rust da los valores por defecto "0" de
+      `get_gimbal_yaw_pitch`/`get_xmp_data` (yaw 0.0).
+    - Formato no soportado (`cab.formato == "desconocido"`: firma que no es JPEG/TIFF/PNG,
+      p. ej. un `.jpg` corrupto), error de Rust, error de lectura o tope de tamaño: sube
+      como excepción; `_leer_lote` la convierte en error visible de ese fichero."""
+    completo = buf is None
+    if completo:
+        buf = _leer_fichero_entero(ruta)
+    cab = rs.parsear_cabecera(buf, True) if completo else rs.parsear_cabecera(buf)
+    if not completo and cab.necesita_completo:
         contador.sumar_corto()
-    # Campos que Rust da como None porque el tag NO existe (ausencia cierta): Python
-    # reproduce el mismo None y no es un fallback.
-    ausentes = set(getattr(cab, "ausentes", ()) or ())
-    # Con el buffer entero del fichero (más corto que la cabecera) la falta de XMP es cierta.
-    xmp_ausente_cierto = len(buf) < _BYTES_CABECERA
-
-    def _fallback_pil(campo: str) -> None:
-        if not corto and campo not in ausentes:
-            contador.sumar(campo, ruta)
-
-    exif_pil_ok = buf_exif is not None and cab.pil_estado == "abre"
+        buf = _leer_fichero_entero(ruta)
+        cab = rs.parsear_cabecera(buf, True)
+    if cab.necesita_completo or not cab.xmp_presente:
+        raise RuntimeError(f"parsear_cabecera no resolvió '{ruta}' con el fichero entero")
+    if cab.formato == "desconocido":
+        raise ValueError("formato de imagen no soportado (firma no JPEG/TIFF/PNG)")
 
     timestamp = None
-    resuelto = False
-    if exif_pil_ok and cab.timestamp_iso is not None:
+    if cab.timestamp_iso is not None:
         try:
             fecha_hora = cab.timestamp_iso.split(' ')
             timestamp = datetime.datetime.strptime(fecha_hora[0] + '_' + fecha_hora[1],
                                                    '%Y:%m:%d_%H:%M:%S')
-            resuelto = True
-        except Exception:  # noqa: BLE001 — mismo camino que la réplica que lanza
-            timestamp = None
-    if not resuelto and buf_exif is not None:
-        _fallback_pil("timestamp")
-        try:
-            timestamp = _con_reintento_fichero_completo(_timestamp_desde_buffer, buf_exif, ruta)
-        except Exception:  # noqa: BLE001
-            timestamp = None
-    if timestamp is None:
-        try:
-            timestamp = exif.get_timestamp_from_image(ruta)
-        except Exception:  # noqa: BLE001 — una imagen ilegible no tumba el índice
+        except Exception:  # noqa: BLE001 — fecha mal formada: sin fecha, como la réplica
             timestamp = None
 
-    modelo = None
-    if buf_exif is not None:
-        if cab.modelo is not None:
-            modelo = cab.modelo
-        else:
-            if "modelo" not in ausentes:
-                contador.sumar("modelo", ruta)
-            try:
-                modelo = _con_reintento_fichero_completo(_modelo_desde_buffer, buf_exif, ruta)
-            except Exception:  # noqa: BLE001
-                modelo = None
-    if modelo is None:
-        try:
-            modelo = exif.get_model(ruta, progress_callback)
-        except Exception:  # noqa: BLE001
-            modelo = None
+    modelo = cab.modelo
+    make = (cab.make.strip("\x00").strip() or None) if cab.make is not None else None
 
-    make = None
-    make_ilegible = False
-    make_resuelto = False
-    if buf_exif is not None:
-        if cab.make is not None:
-            make = cab.make.strip("\x00").strip() or None
-            make_resuelto = True
-        else:
-            if "make" not in ausentes:
-                contador.sumar("make", ruta)
-            try:
-                make = _con_reintento_fichero_completo(_make_desde_buffer, buf_exif, ruta)
-                make_resuelto = True
-            except Exception:  # noqa: BLE001 — se reintenta abajo con el fichero entero
-                make = None
-    if make is None and not make_resuelto and not almacen.es_uri_gcs(ruta):
-        try:
-            make = exif.get_make(ruta) or None
-        except Exception:  # noqa: BLE001 — Make ilegible: no se descarta
-            make = None
-            make_ilegible = True
-
-    yaw = None
-    gimbal = None
-    xmp = None
-    flight_yaw = None
-    flight_en_xmp = False
+    gimbal = (cab.gimbal_yaw, cab.gimbal_pitch)
+    xmp = tuple(cab.xmp)
+    flight_en_xmp = cab.flight_yaw_en_xmp
     try:
-        if cab.xmp_presente:
-            gimbal = (cab.gimbal_yaw, cab.gimbal_pitch)
-            xmp = tuple(cab.xmp)
-            flight_en_xmp = cab.flight_yaw_en_xmp
-        else:
-            if not xmp_ausente_cierto:
-                contador.sumar("xmp", ruta)
-            bloque_xmp = _bloque_xmp_desde_buffer(buf, ruta)
-            gimbal = exif.get_gimbal_yaw_pitch(ruta, bloque_xmp=bloque_xmp)
-            try:
-                xmp = exif.get_xmp_data(ruta, bloque_xmp=bloque_xmp)
-            except Exception:  # noqa: BLE001
-                xmp = None
-            flight_en_xmp = 'FlightYawDegree' in bloque_xmp
         yaw = float(gimbal[0])
     except Exception:  # noqa: BLE001
         yaw = None
     # `get_xmp_data` rellena "0" si falta la etiqueta: solo vale si está en el XMP.
     try:
-        if xmp is not None and flight_en_xmp:
-            flight_yaw = float(xmp[4])
+        flight_yaw = float(xmp[4]) if flight_en_xmp else None
     except Exception:  # noqa: BLE001
         flight_yaw = None
-    pitch = None
     try:
         pitch = float(gimbal[1])
     except Exception:  # noqa: BLE001 — sin pitch el yaw se usa tal cual
         pitch = None
 
-    gps = None
-    try:
-        if buf_exif is not None:
-            if exif_pil_ok and cab.gps is not None:
-                gps = tuple(cab.gps)
-            else:
-                _fallback_pil("gps")
-                gps = _con_reintento_fichero_completo(_gps_desde_buffer, buf_exif, ruta)
-        else:
-            with almacen.abrir_para_lectura(ruta) as ruta_local, open(ruta_local, 'rb') as fd:
-                gps = _gps_desde_buffer(fd.read())
-    except Exception:  # noqa: BLE001 — sin GPS la fila queda fuera de meta/location, como hoy
-        gps = None
+    gps = tuple(cab.gps) if cab.gps is not None else None
 
-    posicion = None
-    meta_leida = gimbal is not None and xmp is not None
-    if meta_leida:
-        if cab.pil_estado == "abre" and cab.ancho is not None and cab.alto is not None:
-            ancho, alto = cab.ancho, cab.alto
-        else:
-            _fallback_pil("dimensiones")
-            ancho, alto = _dimensiones_desde_buffer(buf)
-        posicion = _Posicion(
-            lat=gps[0] if gps else None, lon=gps[1] if gps else None,
-            altitud_abs=xmp[0], altura_relativa=xmp[1],
-            gimbal_yaw=gimbal[0], gimbal_pitch=gimbal[1],
-            gimbal_roll=xmp[2], flight_yaw=xmp[4],
-            ancho_px=ancho, alto_px=alto)
+    posicion = _Posicion(
+        lat=gps[0] if gps else None, lon=gps[1] if gps else None,
+        altitud_abs=xmp[0], altura_relativa=xmp[1],
+        gimbal_yaw=gimbal[0], gimbal_pitch=gimbal[1],
+        gimbal_roll=xmp[2], flight_yaw=xmp[4],
+        ancho_px=cab.ancho, alto_px=cab.alto)
 
     return _MetadatosImagen(ruta=ruta, nombre=nombre, timestamp=timestamp,
                             modelo=modelo, yaw=yaw, gps=gps,
-                            posicion=posicion, meta_leida=meta_leida, make=make,
-                            make_ilegible=make_ilegible,
+                            posicion=posicion, meta_leida=True, make=make,
+                            make_ilegible=False,
                             pitch=pitch, flight_yaw=flight_yaw, jpeg_sin_eoi=jpeg_sin_eoi)
 
 
@@ -1224,17 +1114,9 @@ def _leer_metadatos(ruta: str, exif, progress_callback,
     # Fase Rust `indice` (ATOM_RUST_FASES=indice): mismo resultado, parseo en Rust.
     # Flag off -> None y el camino de abajo, intacto.
     rs = rust_bridge.exigir("indice")
-    if rs is not None and buf is not None:
-        # Sin contador del llamador (llamada suelta, fuera de `_leer_lote`): contador
-        # local cuyo aviso va a `_LOG`, nunca a un acumulador global que nadie lee.
+    if rs is not None:
         propio = contador_rust if contador_rust is not None else _ContadorRust()
-        dato = _leer_metadatos_rust(rs, ruta, nombre, buf, buf_exif, jpeg_sin_eoi, exif,
-                                    progress_callback, propio)
-        if contador_rust is None and propio.total:
-            _LOG.warning("%s", propio.texto().strip())
-        if dato is not None:
-            return dato
-        # Excepción de `parsear_cabecera` (contada y avisada): camino Python de abajo.
+        return _leer_metadatos_rust(rs, ruta, nombre, buf, jpeg_sin_eoi, propio)
 
     timestamp = None
     if buf_exif is not None:
@@ -2329,6 +2211,7 @@ class _LoteLeido:
     omitidas: list
     no_disponibles: list
     registros: list
+    errores_lectura: list = field(default_factory=list)  # [(ruta, motivo)]: fallo de lectura de ESE fichero
 
 
 def _leer_lote(imagenes: list[str], exif, progress_callback, emisor, hilos: int,
@@ -2348,14 +2231,18 @@ def _leer_lote(imagenes: list[str], exif, progress_callback, emisor, hilos: int,
     omitidas: list[str] = []
     lentas: list[str] = []
     estado_de: dict[str, tuple[str, str | None]] = {}
-    # Fase Rust `indice`: contador de fallbacks propio de este lote. Flag off ->
+    errores_lectura: list[tuple[str, str]] = []
+    # Fase Rust `indice`: contador propio de este lote. Flag off ->
     # `_leer_metadatos(ruta, exif, progress_callback)` como siempre.
     contador_rust = _ContadorRust() if rust_bridge.fase_activa("indice") else None
 
     def _leer_una(ruta: str):
         if contador_rust is None:
             return _leer_metadatos(ruta, exif, progress_callback)
-        return _leer_metadatos(ruta, exif, progress_callback, contador_rust=contador_rust)
+        try:
+            return _leer_metadatos(ruta, exif, progress_callback, contador_rust=contador_rust)
+        except Exception as exc:  # noqa: BLE001 — error de ESTE fichero, no tumba el lote
+            return _ErrorLectura(ruta, exc)
 
     if imagenes:
         emisor.iniciar("Leer EXIF/XMP", len(imagenes), barra=(5, 75))
@@ -2365,6 +2252,9 @@ def _leer_lote(imagenes: list[str], exif, progress_callback, emisor, hilos: int,
         for ruta, lectura in zip(imagenes, lecturas):
             if lectura is _VENCIDO:
                 lentas.append(ruta)
+            elif isinstance(lectura, _ErrorLectura):
+                errores_lectura.append((ruta, lectura.motivo))
+                estado_de[ruta] = ("no_disponible", lectura.motivo)
             elif lectura.a_medias:
                 omitidas.append(ruta)
                 estado_de[ruta] = ("a_medias", None)
@@ -2379,7 +2269,7 @@ def _leer_lote(imagenes: list[str], exif, progress_callback, emisor, hilos: int,
     if lentas:
         def _filtrar_y_leer(ruta: str):
             lectura = _leer_una(ruta)
-            return None if lectura.a_medias else lectura
+            return lectura if isinstance(lectura, _ErrorLectura) or not lectura.a_medias else None
 
         emisor.aviso(
             f"\nÍndice · {len(lentas)} fichero(s) lentos (más de {int(timeout_s)} s); "
@@ -2391,6 +2281,9 @@ def _leer_lote(imagenes: list[str], exif, progress_callback, emisor, hilos: int,
             if lectura is _VENCIDO:
                 no_disponibles.append(ruta)
                 estado_de[ruta] = ("no_disponible", None)
+            elif isinstance(lectura, _ErrorLectura):
+                errores_lectura.append((ruta, lectura.motivo))
+                estado_de[ruta] = ("no_disponible", lectura.motivo)
             elif lectura is None:
                 omitidas.append(ruta)
                 estado_de[ruta] = ("a_medias_reintento", None)
@@ -2402,19 +2295,16 @@ def _leer_lote(imagenes: list[str], exif, progress_callback, emisor, hilos: int,
                 estado_de[ruta] = ("ok", lectura)
         metadatos.sort(key=lambda dato: dato.ruta)
     if contador_rust is not None and imagenes:
-        # Resumen visible de la fase Rust (0 = todo salió de `parsear_cabecera`).
         texto_rust = contador_rust.texto()
         progress_callback.emit(texto_rust)
-        if contador_rust.total:
-            _LOG.warning("%s", texto_rust.strip())
-        else:
-            _LOG.info("%s", texto_rust.strip())
+        _LOG.info("%s", texto_rust.strip())
     registros = []
     for ruta in imagenes:
         estado, extra = estado_de[ruta]
         registros.append((ruta, estado, extra if isinstance(extra, str) else None,
                           extra if estado == "ok" else None))
-    return _LoteLeido(metadatos, no_dji, omitidas, no_disponibles, registros)
+    return _LoteLeido(metadatos, no_dji, omitidas, no_disponibles, registros,
+                      sorted(errores_lectura))
 
 
 def _lote_desde_parciales(imagenes: list[str], destino: str, reduce_desde: dict,
@@ -2434,6 +2324,7 @@ def _lote_desde_parciales(imagenes: list[str], destino: str, reduce_desde: dict,
     omitidas_reintento: list[str] = []
     no_dji_reintento: list[tuple[str, str]] = []
     no_disponibles: list[str] = []
+    errores_lectura: list[tuple[str, str]] = []
     for r in registros:
         estado, ruta = r["estado"], r["ruta"]
         if estado == "ok":
@@ -2446,10 +2337,12 @@ def _lote_desde_parciales(imagenes: list[str], destino: str, reduce_desde: dict,
             no_dji.append((ruta, r["motivo"]))
         elif estado == "no_dji_reintento":
             no_dji_reintento.append((ruta, r["motivo"]))
+        elif r.get("motivo"):  # error de lectura del fichero (Rust/E/S/tope), no timeout
+            errores_lectura.append((ruta, r["motivo"]))
         else:
             no_disponibles.append(ruta)
     return _LoteLeido(metadatos, no_dji + no_dji_reintento, omitidas + omitidas_reintento,
-                      no_disponibles, [])
+                      no_disponibles, [], sorted(errores_lectura))
 
 
 def _imagenes_del_origen(cfg, emisor, omitidas, tamanos_origen, listado):
@@ -3065,6 +2958,15 @@ def construir_indice(
             f"copiándose/subiendo (tamaño 0, en uso o incompletas): {ejemplos}"
             f"{'…' if len(omitidas_copiandose) > _MAX_EJEMPLOS_OMITIDAS else ''}. "
             "Se recogerán en la siguiente tanda.\n")
+
+    if lote.errores_lectura:
+        detalle_err = "\n".join(f"  - {ruta}: {motivo}" for ruta, motivo in lote.errores_lectura)
+        texto = (
+            f"\nHa habido {len(lote.errores_lectura)} error(es) en el Índice: "
+            f"{len(lote.errores_lectura)} fichero(s) no se han podido leer. No se han "
+            f"procesado ni asignado; revísalos o reemplázalos y vuelve a lanzar:\n{detalle_err}\n")
+        progress_callback.emit(texto)
+        progress_summarize.emit(texto)
 
     if no_disponibles:
         no_disponibles.sort()
