@@ -1206,6 +1206,13 @@ def _leer_metadatos(ruta: str, exif, progress_callback,
     meta_leida = buf is not None and gimbal is not None and xmp is not None
     if meta_leida:
         ancho, alto = _dimensiones_desde_buffer(buf)
+        if ancho is None:
+            # SOF más allá de `_BYTES_CABECERA`: reintento con el fichero ENTERO (mismo
+            # patrón y tope `_MAX_BYTES_FICHERO_ENTERO` que `_leer_fichero_entero`).
+            try:
+                ancho, alto = _dimensiones_desde_buffer(_leer_fichero_entero(ruta))
+            except Exception:  # noqa: BLE001 — dato informativo, no bloquea
+                ancho, alto = None, None
         posicion = _Posicion(
             lat=gps[0] if gps else None, lon=gps[1] if gps else None,
             altitud_abs=xmp[0], altura_relativa=xmp[1],
