@@ -63,6 +63,10 @@ jobs:
       - name: maturin (+ ziglang)
         if: steps.cache-wheel.outputs.cache-hit != 'true'
         run: python -m pip install -r packaging/requirements/requirements-rust.txt
+      # `require-simd` de turbojpeg exige nasm en Windows (Linux x86_64 lo trae el runner).
+      - name: nasm (Windows, requerido por turbojpeg require-simd)
+        if: ${{ !matrix.zig && steps.cache-wheel.outputs.cache-hit != 'true' }}
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
       # Los tests de cargo solo corren en el target nativo (aarch64 es cruzado).
       - name: cargo test
         if: matrix.nombre != 'linux-aarch64' && steps.cache-wheel.outputs.cache-hit != 'true'

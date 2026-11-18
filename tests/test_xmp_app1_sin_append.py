@@ -85,3 +85,43 @@ def test_guardar_atomico_xmp_cabecera_y_sin_parcial(tmp_path, make_dji_jpeg):
     ap.verificar_parcial(destino)
     assert exif_mod.extraer_bloque_xmp_crudo(destino) == XMP
     assert os.listdir(tmp_path / "sub") == ["d.jpg"]
+
+
+def test_verificar_salida_rust_barata(tmp_path):
+    ok = tmp_path / "ok.jpg"
+    _jpg(str(ok))
+    ap.verificar_salida_rust(str(ok), 64, 48)  # bueno: pasa
+    trunc = tmp_path / "t.jpg"
+    trunc.write_bytes(ok.read_bytes()[:-2])  # sin EOI
+    with pytest.raises(OSError, match="EOI"):
+        ap.verificar_salida_rust(str(trunc), 64, 48)
+    with pytest.raises(OSError, match="mide"):
+        ap.verificar_salida_rust(str(ok), 65, 48)
+    with pytest.raises(OSError, match="modo"):
+        ap.verificar_salida_rust(str(ok), 64, 48, "L")
+    vacio = tmp_path / "v.jpg"
+    vacio.write_bytes(b"")
+    with pytest.raises(OSError, match="vacío"):
+        ap.verificar_salida_rust(str(vacio), 64, 48)
+    nosoi = tmp_path / "n.jpg"
+    nosoi.write_bytes(b"\x00\x00" + ok.read_bytes()[2:])
+    with pytest.raises(OSError, match="SOI"):
+        ap.verificar_salida_rust(str(nosoi), 64, 48)
+
+
+def test_xmp_rust_queda_en_el_jpg_en_orden_exif_xmp_com(tmp_path):
+    rs = pytest.importorskip("atom_rs")
+    if "xmp" not in getattr(rs.rgb_procesar, "__text_signature__", "") + (rs.rgb_procesar.__doc__ or ""):
+        pytest.skip("wheel atom_rs anterior al parámetro xmp")
+    import io
+    src = tmp_path / "o.jpg"
+    Image.new("RGB", (64, 48), (120, 130, 140)).save(src, "JPEG", exif=Image.Exif().tobytes())
+    datos = src.read_bytes()
+    out = str(tmp_path / "s.parcial.jpg")
+    with Image.open(io.BytesIO(datos)) as im:
+        exif = im.getexif().tobytes()
+    rs.rgb_procesar(datos, exif, None, 0, 90, 90, out, None, "a", b"hola", XMP)
+    assert exif_mod.extraer_bloque_xmp_crudo(out) == XMP
+    d = open(out, "rb").read()
+    assert d.index(b"Exif\x00\x00") < d.index(b"http://ns.adobe.com/xap/1.0/") < d.index(b"hola")
+    ap.verificar_salida_rust(out, 64, 48)

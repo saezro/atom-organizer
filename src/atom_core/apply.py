@@ -322,6 +322,35 @@ def verificar_parcial(parcial: str) -> None:
         im.load()
 
 
+_MIN_JPEG_BYTES = 100
+
+
+def verificar_salida_rust(ruta: str, ancho: int, alto: int, modo: str = "RGB") -> None:
+    """Verificación barata (sin decode) de una salida de Rust, leída de disco:
+    tamaño > 0 y razonable, SOI `FFD8`, EOI `FFD9` y cabecera con las dimensiones
+    y el modo esperados. Lanza `OSError` si algo no cuadra (mismo flujo de fallo
+    que `verificar_parcial`)."""
+    from PIL import Image
+    tam = os.path.getsize(ruta)
+    if tam <= 0:
+        raise OSError(f"El temporal {ruta} está vacío")
+    if tam < _MIN_JPEG_BYTES or tam > ancho * alto * 3 + (1 << 20):
+        raise OSError(f"El temporal {ruta} tiene un tamaño irrazonable ({tam} B para {ancho}x{alto})")
+    with open(ruta, "rb") as fh:
+        cabeza = fh.read(2)
+        fh.seek(-2, os.SEEK_END)
+        cola = fh.read(2)
+    if cabeza != b"\xff\xd8":
+        raise OSError(f"El temporal {ruta} no empieza por SOI (FFD8)")
+    if cola != b"\xff\xd9":
+        raise OSError(f"El temporal {ruta} no termina en EOI (FFD9): truncado")
+    with Image.open(ruta) as im:  # solo cabecera, sin `load()`
+        if im.size != (ancho, alto) or im.mode != modo:
+            raise OSError(
+                f"El temporal {ruta} mide {im.size} modo {im.mode}; se esperaba "
+                f"{(ancho, alto)} modo {modo}")
+
+
 def insertar_xmp_app1(parcial: str, destino_tmp: str, bloque_xmp: bytes) -> None:
     """Escribe en `destino_tmp` (una sola apertura `wb`) el JPEG de `parcial` con
     el XMP como segmento APP1 justo tras SOI/APP0/APP1-Exif iniciales. Nunca
@@ -536,7 +565,7 @@ def _escribir_salidas_de_fila_rust(rs, fila: Mapping[str, Any], cfg, pipeline_mo
             try:
                 stats = rs.rgb_procesar(
                     datos_origen, exif_bytes, caja, angulo, calidad_original, calidad_crop,
-                    parcial_original, parcial_crop, modo, comentario)
+                    parcial_original, parcial_crop, modo, comentario, bloque_xmp or None)
             except BaseException as exc:  # noqa: BLE001
                 # `pyo3_runtime.PanicException` hereda de BaseException: un panic de Rust
                 # es un fallo de ESTA fila (Pillow decide), nunca tumba el run.
@@ -552,18 +581,13 @@ def _escribir_salidas_de_fila_rust(rs, fila: Mapping[str, Any], cfg, pipeline_mo
             perfil_rgb.sumar("encode_crop", stats.ms_encode_crop / 1000.0)
 
             escritas: list[str] = []
-            for parcial, destino in ((parcial_crop, ruta_crop),
-                                     (parcial_original, ruta_original)):
+            for parcial, destino, dims in (
+                    (parcial_crop, ruta_crop, (stats.ancho_crop, stats.alto_crop)),
+                    (parcial_original, ruta_original, (stats.ancho_orig, stats.alto_orig))):
                 if not destino:
                     continue
-                if bloque_xmp:
-                    parcial_xmp = _parcial_para(destino)
-                    vivos.add(parcial_xmp)
-                    insertar_xmp_app1(parcial, parcial_xmp, bloque_xmp)
-                    os.remove(parcial)
-                    vivos.discard(parcial)
-                    parcial = parcial_xmp
-                verificar_parcial(parcial)
+                # XMP ya insertado por Rust (APP1 tras el EXIF): sin releer ni reescribir.
+                verificar_salida_rust(parcial, *dims)
                 with perfil_rgb.medir("escritura"):
                     _publicar_parcial(parcial, destino)
                 vivos.discard(parcial)

@@ -3,6 +3,8 @@
 //! un APP1 EXIF opcional. La paridad con Pillow por plataforma la fija la
 //! sonda P (`jpeg_sonda`); aquí solo se reutilizan sus piezas.
 
+use std::cell::RefCell;
+
 use crate::error::AtomError;
 use crate::termica::codificar_jpeg;
 
@@ -33,17 +35,28 @@ fn pos_tras_app0(jpeg: &[u8]) -> Result<usize, AtomError> {
     Ok(pos)
 }
 
+/// Cabecera del APP1 XMP (idéntica a `_NS_XMP_APP1` de `apply.py`).
+pub const NS_XMP_APP1: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
+
 /// Inserta, tras SOI/APP0 y en el orden de Pillow 12.3.0, el APP1 EXIF (`exif`
-/// ya trae `Exif\0\0`, como lo pasa Pillow) y después el segmento COM
+/// ya trae `Exif\0\0`, como lo pasa Pillow), después el APP1 XMP (`xmp` = payload
+/// sin namespace; misma colocación que `insertar_xmp_app1` de Python) y luego el segmento COM
 /// (`comment` del origen: Pillow lo copia en `crop`/`transpose` y lo escribe
 /// tras el EXIF; un comentario vacío no genera marcador).
 pub fn insertar_segmentos(
     jpeg: &[u8],
     exif: Option<&[u8]>,
+    xmp: Option<&[u8]>,
     comentario: Option<&[u8]>,
 ) -> Result<Vec<u8>, AtomError> {
     if let Some(e) = exif {
         validar_exif(e)?;
+    }
+    let xmp = xmp.filter(|x| !x.is_empty());
+    if let Some(x) = xmp {
+        if x.len() + NS_XMP_APP1.len() > MAX_BYTES_APP1 {
+            return Err(AtomError::Entrada("XMP data is too long".into()));
+        }
     }
     let comentario = comentario.filter(|c| !c.is_empty());
     if let Some(c) = comentario {
@@ -53,13 +66,20 @@ pub fn insertar_segmentos(
     }
     let pos = pos_tras_app0(jpeg)?;
     let mut out = Vec::with_capacity(
-        jpeg.len() + exif.map_or(0, |e| e.len() + 4) + comentario.map_or(0, |c| c.len() + 4),
+        jpeg.len() + exif.map_or(0, |e| e.len() + 4)
+            + xmp.map_or(0, |x| x.len() + NS_XMP_APP1.len() + 4)
+            + comentario.map_or(0, |c| c.len() + 4),
     );
     out.extend_from_slice(&jpeg[..pos]);
-    for (marca, datos) in [(0xE1u8, exif), (0xFEu8, comentario)] {
+    for (marca, ns, datos) in [
+        (0xE1u8, &[][..], exif),
+        (0xE1u8, NS_XMP_APP1, xmp),
+        (0xFEu8, &[][..], comentario),
+    ] {
         if let Some(d) = datos {
             out.extend_from_slice(&[0xFF, marca]);
-            out.extend_from_slice(&((d.len() + 2) as u16).to_be_bytes());
+            out.extend_from_slice(&((ns.len() + d.len() + 2) as u16).to_be_bytes());
+            out.extend_from_slice(ns);
             out.extend_from_slice(d);
         }
     }
@@ -69,7 +89,7 @@ pub fn insertar_segmentos(
 
 /// Solo el APP1 EXIF (sonda de paridad).
 pub fn insertar_app1(jpeg: &[u8], exif: &[u8]) -> Result<Vec<u8>, AtomError> {
-    insertar_segmentos(jpeg, Some(exif), None)
+    insertar_segmentos(jpeg, Some(exif), None, None)
 }
 
 /// Como `Image.save(quality=q, exif=exif, comment=c)` de Pillow para RGB.
@@ -80,29 +100,78 @@ pub fn codificar_rgb(
     alto: usize,
     calidad: u8,
     exif: Option<&[u8]>,
+    xmp: Option<&[u8]>,
     comentario: Option<&[u8]>,
 ) -> Result<Vec<u8>, AtomError> {
     if let Some(e) = exif {
         validar_exif(e)?;
     }
     let j = codificar_jpeg(rgb, ancho, alto, false, calidad.max(1))?;
-    if exif.is_none() && comentario.map_or(true, |c| c.is_empty()) {
+    if exif.is_none()
+        && xmp.map_or(true, |x| x.is_empty())
+        && comentario.map_or(true, |c| c.is_empty())
+    {
         return Ok(j);
     }
-    insertar_segmentos(&j, exif, comentario)
+    insertar_segmentos(&j, exif, xmp, comentario)
+}
+
+thread_local! {
+    /// Decompresor reutilizado por hilo (evita `tj3Init`/destroy por imagen).
+    static DECOMPRESOR: RefCell<Option<turbojpeg::Decompressor>> = const { RefCell::new(None) };
+    /// Buffer de píxeles persistente por hilo: solo crece (el resize pone a cero
+    /// únicamente la parte nueva); un decode OK sobrescribe todos los bytes.
+    static BUFFER_RGB: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Devuelve al hilo actual el buffer de píxeles de un `decodificar_rgb` ya consumido,
+/// para que la siguiente imagen no reserve ni ponga a cero ~144 MB. Opcional.
+pub fn devolver_buffer_rgb(buf: Vec<u8>) {
+    BUFFER_RGB.with(|b| {
+        let mut b = b.borrow_mut();
+        if buf.capacity() > b.capacity() {
+            *b = buf;
+        }
+    });
 }
 
 /// Como `Image.open().convert("RGB")` de un JPEG RGB: `(ancho, alto, píxeles RGB compactos)`.
+/// Reutiliza decompresor y buffer del hilo; el `Vec` devuelto sale del buffer
+/// persistente (devolverlo con `devolver_buffer_rgb` para reciclarlo).
 pub fn decodificar_rgb(jpeg: &[u8]) -> Result<(usize, usize, Vec<u8>), AtomError> {
-    let img = turbojpeg::decompress(jpeg, turbojpeg::PixelFormat::RGB)
-        .map_err(|e| AtomError::Io(format!("libjpeg-turbo: {e}")))?;
-    if img.pitch != img.width * 3 || img.pixels.len() != img.width * img.height * 3 {
-        return Err(AtomError::Io(format!(
-            "libjpeg-turbo devolvió un buffer con pitch {} para {}x{}",
-            img.pitch, img.width, img.height
-        )));
+    let err = |e: turbojpeg::Error| AtomError::Io(format!("libjpeg-turbo: {e}"));
+    let mut buf = BUFFER_RGB.with(|b| std::mem::take(&mut *b.borrow_mut()));
+    let res: Result<(usize, usize), AtomError> = DECOMPRESOR.with(|d| {
+        let mut d = d.borrow_mut();
+        if d.is_none() {
+            *d = Some(turbojpeg::Decompressor::new().map_err(err)?);
+        }
+        let dec = d.as_mut().unwrap();
+        let cab = dec.read_header(jpeg).map_err(err)?;
+        let pitch = cab.width * 3;
+        let n = cab.height * pitch;
+        if buf.len() < n {
+            buf.resize(n, 0);
+        } else {
+            buf.truncate(n);
+        }
+        let img = turbojpeg::Image {
+            pixels: &mut buf[..],
+            width: cab.width,
+            pitch,
+            height: cab.height,
+            format: turbojpeg::PixelFormat::RGB,
+        };
+        dec.decompress(jpeg, img).map_err(err)?;
+        Ok((cab.width, cab.height))
+    });
+    match res {
+        Ok((w, h)) => Ok((w, h, buf)),
+        Err(e) => {
+            devolver_buffer_rgb(buf);
+            Err(e)
+        }
     }
-    Ok((img.width, img.height, img.pixels))
 }
 
 #[cfg(test)]
@@ -131,7 +200,7 @@ mod tests {
     fn roundtrip_dimensiones_no_multiplo_de_mcu() {
         let (w, h) = (37usize, 21usize);
         let px: Vec<u8> = (0..w * h * 3).map(|i| (i % 251) as u8).collect();
-        let j = codificar_rgb(&px, w, h, 90, Some(b"Exif\0\0ab"), None).unwrap();
+        let j = codificar_rgb(&px, w, h, 90, Some(b"Exif\0\0ab"), None, None).unwrap();
         let (dw, dh, d) = decodificar_rgb(&j).unwrap();
         assert_eq!((dw, dh, d.len()), (w, h, w * h * 3));
     }
@@ -139,13 +208,13 @@ mod tests {
     #[test]
     fn com_va_tras_el_exif_y_vacio_no_escribe() {
         let j = codificar_jpeg(&[10u8; 16 * 16 * 3], 16, 16, false, 75).unwrap();
-        let o = insertar_segmentos(&j, Some(b"Exif\0\0xx"), Some(b"hola")).unwrap();
+        let o = insertar_segmentos(&j, Some(b"Exif\0\0xx"), None, Some(b"hola")).unwrap();
         let l0 = u16::from_be_bytes([o[4], o[5]]) as usize;
         assert_eq!(&o[4 + l0..6 + l0], &[0xFF, 0xE1]);
         let p = 4 + l0 + 2 + 2 + 8;
         assert_eq!(&o[p..p + 2], &[0xFF, 0xFE]);
         assert_eq!(&o[p + 4..p + 8], b"hola");
-        let v = insertar_segmentos(&j, None, Some(b"")).unwrap();
+        let v = insertar_segmentos(&j, None, None, Some(b"")).unwrap();
         assert_eq!(v, j);
     }
 
@@ -153,8 +222,8 @@ mod tests {
     fn calidad_cero_como_uno() {
         let px = vec![77u8; 16 * 16 * 3];
         assert_eq!(
-            codificar_rgb(&px, 16, 16, 0, None, None).unwrap(),
-            codificar_rgb(&px, 16, 16, 1, None, None).unwrap()
+            codificar_rgb(&px, 16, 16, 0, None, None, None).unwrap(),
+            codificar_rgb(&px, 16, 16, 1, None, None, None).unwrap()
         );
     }
 

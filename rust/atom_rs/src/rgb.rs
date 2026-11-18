@@ -22,9 +22,10 @@
 //! Modo `b` (transformación DCT sin pérdida) está APLAZADO: se rechaza.
 
 use crate::error::AtomError;
-use crate::jpeg::{codificar_rgb, decodificar_rgb, validar_exif};
+use crate::jpeg::{codificar_rgb, decodificar_rgb, devolver_buffer_rgb, validar_exif};
 use pyo3::prelude::*;
 use rayon::prelude::*;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 /// Resultado de `rgb_procesar`. Tiempos en ms (`encode_crop` = 0 sin `_CROP`).
@@ -65,6 +66,8 @@ pub struct Parametros<'a> {
     pub salida_crop: Option<&'a str>,
     pub modo: &'a str,
     pub comentario: Option<&'a [u8]>,
+    /// Payload XMP (sin namespace) como APP1 tras el EXIF; `None` = sin XMP.
+    pub xmp: Option<&'a [u8]>,
 }
 
 fn validar_calidad(q: u8, que: &str) -> Result<(), AtomError> {
@@ -134,22 +137,33 @@ fn escribir(ruta: &str, datos: &[u8]) -> Result<(), AtomError> {
     Ok(())
 }
 
-/// Hilos del pool local de una llamada: `ATOM_RS_HILOS` (>=1) o 2 (suficiente
-/// para los dos encodes en paralelo sin sobresuscribir con N procesos).
+/// Hilos del pool: `ATOM_RS_HILOS` (>=1) o 1 (encode en serie, sin pool; con N
+/// procesos no se sobresuscribe).
 fn hilos() -> usize {
     std::env::var("ATOM_RS_HILOS")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|&n| n >= 1)
-        .unwrap_or(2)
+        .unwrap_or(1)
+}
+
+/// Pool rayon compartido (solo con `ATOM_RS_HILOS` > 1), creado una vez.
+static POOL: OnceLock<Result<rayon::ThreadPool, String>> = OnceLock::new();
+
+fn pool(n: usize) -> Result<&'static rayon::ThreadPool, AtomError> {
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new().num_threads(n).build().map_err(|e| e.to_string())
+    })
+    .as_ref()
+    .map_err(|e| AtomError::Io(format!("pool de hilos: {e}")))
 }
 
 /// Codifica `px` y lo escribe en `ruta`; devuelve los ms de encode (sin escritura).
 fn codificar_y_escribir(
-    px: &[u8], w: usize, h: usize, calidad: u8, exif: Option<&[u8]>, com: Option<&[u8]>, ruta: &str,
+    px: &[u8], w: usize, h: usize, calidad: u8, exif: Option<&[u8]>, xmp: Option<&[u8]>, com: Option<&[u8]>, ruta: &str,
 ) -> Result<f64, AtomError> {
     let t0 = Instant::now();
-    let jpeg = codificar_rgb(px, w, h, calidad, exif, com)?;
+    let jpeg = codificar_rgb(px, w, h, calidad, exif, xmp, com)?;
     let ms = t0.elapsed().as_secs_f64() * 1000.0;
     escribir(ruta, &jpeg)?;
     Ok(ms)
@@ -179,6 +193,11 @@ pub fn procesar(p: &Parametros<'_>) -> Result<RgbStats, AtomError> {
     if let Some(e) = p.exif_bytes {
         validar_exif(e)?;
     }
+    if let Some(x) = p.xmp.filter(|x| !x.is_empty()) {
+        if x.len() + crate::jpeg::NS_XMP_APP1.len() > crate::jpeg::MAX_BYTES_APP1 {
+            return Err(AtomError::Entrada("XMP data is too long".into()));
+        }
+    }
 
     let t0 = Instant::now();
     let (w, h, px) = match decodificar_rgb(p.datos_origen) {
@@ -199,20 +218,27 @@ pub fn procesar(p: &Parametros<'_>) -> Result<RgbStats, AtomError> {
     };
     let ms_decode = t0.elapsed().as_secs_f64() * 1000.0;
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(hilos())
-        .build()
-        .map_err(|e| AtomError::Io(format!("pool de hilos: {e}")))?;
-    pool.install(|| transformar_y_escribir(p, w, h, &px, ms_decode))
+    let n = hilos();
+    let r = if n <= 1 {
+        transformar_y_escribir(p, w, h, &px, ms_decode, false)
+    } else {
+        match pool(n) {
+            Ok(pool) => pool.install(|| transformar_y_escribir(p, w, h, &px, ms_decode, true)),
+            Err(e) => Err(e),
+        }
+    };
+    devolver_buffer_rgb(px);
+    r
 }
 
-/// Crop + giro + encode x2 + escritura. Se ejecuta DENTRO del pool local.
+/// Crop + giro + encode x2 + escritura. Con `paralelo` se ejecuta DENTRO del pool.
 fn transformar_y_escribir(
     p: &Parametros<'_>,
     w: usize,
     h: usize,
     px: &[u8],
     ms_decode: f64,
+    paralelo: bool,
 ) -> Result<RgbStats, AtomError> {
     // _CROP: recorte en coordenadas del origen SIN girar y luego giro.
     let crop: Option<(Vec<u8>, usize, usize)> = match (p.salida_crop, p.caja) {
@@ -240,15 +266,20 @@ fn transformar_y_escribir(
 
     let exif = p.exif_bytes;
     let com = p.comentario;
-    let (r_crop, r_orig) = rayon::join(
-        || match (&crop, p.salida_crop) {
-            (Some((c, cw, ch)), Some(ruta)) => {
-                codificar_y_escribir(c, *cw, *ch, p.calidad_crop, exif, com, ruta).map(Some)
-            }
-            _ => Ok(None),
-        },
-        || codificar_y_escribir(orig, wo, ho, p.calidad_original, exif, com, p.salida_original),
-    );
+    let xmp = p.xmp;
+    let enc_crop = || match (&crop, p.salida_crop) {
+        (Some((c, cw, ch)), Some(ruta)) => {
+            codificar_y_escribir(c, *cw, *ch, p.calidad_crop, exif, xmp, com, ruta).map(Some)
+        }
+        _ => Ok(None),
+    };
+    let enc_orig =
+        || codificar_y_escribir(orig, wo, ho, p.calidad_original, exif, xmp, com, p.salida_original);
+    let (r_crop, r_orig) = if paralelo {
+        rayon::join(enc_crop, enc_orig)
+    } else {
+        (enc_crop(), enc_orig())
+    };
     match (r_crop, r_orig) {
         (Ok(ms_crop), Ok(ms_orig)) => {
             let (ancho_crop, alto_crop) = crop.as_ref().map_or((0, 0), |(_, cw, ch)| (*cw as u32, *ch as u32));
@@ -278,7 +309,7 @@ fn transformar_y_escribir(
 /// `OSError` si falla el decode o la E/S. Ante cualquier error no deja ninguno
 /// de los dos `.parcial`.
 #[pyfunction]
-#[pyo3(signature = (datos_origen, exif_bytes, caja, angulo, calidad_original, calidad_crop, salida_original, salida_crop, modo, comentario=None))]
+#[pyo3(signature = (datos_origen, exif_bytes, caja, angulo, calidad_original, calidad_crop, salida_original, salida_crop, modo, comentario=None, xmp=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn rgb_procesar(
     py: Python<'_>,
@@ -292,6 +323,7 @@ pub fn rgb_procesar(
     salida_crop: Option<&str>,
     modo: &str,
     comentario: Option<&[u8]>,
+    xmp: Option<&[u8]>,
 ) -> PyResult<RgbStats> {
     let p = Parametros {
         datos_origen,
@@ -304,6 +336,7 @@ pub fn rgb_procesar(
         salida_crop,
         modo,
         comentario,
+        xmp,
     };
     Ok(py.allow_threads(|| procesar(&p))?)
 }
@@ -359,13 +392,14 @@ mod tests {
             salida_crop: c,
             modo: "a",
             comentario: None,
+            xmp: None,
         }
     }
 
     #[test]
     fn procesa_con_crop_y_giro_y_dimensiones() {
         let (w, h) = (61usize, 45usize);
-        let origen = crate::jpeg::codificar_rgb(&imagen(w, h), w, h, 95, None, None).unwrap();
+        let origen = crate::jpeg::codificar_rgb(&imagen(w, h), w, h, 95, None, None, None).unwrap();
         let dir = dir_tmp("giro");
         let (o, c) = (dir.join("o.parcial.jpg"), dir.join("c.parcial.jpg"));
         let (os_, cs) = (o.to_str().unwrap(), c.to_str().unwrap());
@@ -379,7 +413,7 @@ mod tests {
 
     #[test]
     fn modo_b_y_angulo_invalido_fallan_sin_dejar_ficheros() {
-        let origen = crate::jpeg::codificar_rgb(&imagen(16, 16), 16, 16, 90, None, None).unwrap();
+        let origen = crate::jpeg::codificar_rgb(&imagen(16, 16), 16, 16, 90, None, None, None).unwrap();
         let dir = dir_tmp("err");
         let o = dir.join("o.jpg");
         let os_ = o.to_str().unwrap();
