@@ -310,14 +310,24 @@ def test_no_deja_ficheros_parciales(tmp_path, make_dji_jpeg, monkeypatch):
     # Rust escribe los `.parcial` y el fallo llega DESPUÉS (disco lleno al
     # publicar): Python debe limpiarlos todos.
     from atom_core import rust_bridge
-    rs_real = rust_bridge.exigir("rgb")
+    exigir_real = rust_bridge.exigir
 
     class _RsQueFallaTrasEscribir:
+        def __init__(self, rs):
+            self._rs = rs
+
+        def __getattr__(self, nombre):
+            return getattr(self._rs, nombre)
+
         def rgb_procesar(self, *args, **kwargs):
-            rs_real.rgb_procesar(*args, **kwargs)
+            self._rs.rgb_procesar(*args, **kwargs)
             raise OSError("disco lleno (simulado)")
 
-    monkeypatch.setattr(rust_bridge, "exigir", lambda *a, **k: _RsQueFallaTrasEscribir())
+    def _exigir(fase, *a, **k):
+        rs = exigir_real(fase, *a, **k)
+        return _RsQueFallaTrasEscribir(rs) if fase == "rgb" else rs
+
+    monkeypatch.setattr(rust_bridge, "exigir", _exigir)
 
     with pytest.raises(OSError):
         apply._escribir_salidas_de_fila(fila, _cfg(), pipeline_real)
