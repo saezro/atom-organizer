@@ -1007,11 +1007,11 @@ def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: "bytes | None",
       ella; TIFF/PNG grandes) se relee el FICHERO ENTERO una vez y se llama de nuevo con
       `completo=True`; la respuesta ya es definitiva. Suma 1 a `contador.corto`.
     - Un campo `None` es dato ausente: se guarda tal cual (p. ej. DJI roto tras 256 KiB:
-      fecha/GPS/dimensiones `None`). Sin XMP, Rust da los valores por defecto "0" de
-      `get_gimbal_yaw_pitch`/`get_xmp_data` (yaw 0.0).
+      fecha/GPS/dimensiones `None`). JPEG/TIFF/PNG válido sin XMP: Rust da los valores
+      por defecto "0" de `get_gimbal_yaw_pitch`/`get_xmp_data` (yaw 0.0).
     - `cab.make_ilegible`: ExifRead lanzaría al leer Make (el `get_make` de Python); se
       refleja tal cual salvo en `gs://` (allí Python no relee por ruta).
-    - Formato "desconocido" NO es error (metadatos vacíos como Python). Error de Rust,
+    - Formato "desconocido" (o fichero vacío) ES error visible de ese fichero. Error de Rust,
       error de lectura o tope de tamaño: sube como excepción; `_leer_lote` la convierte en error visible de ese fichero."""
     completo = buf is None
     if completo:
@@ -1021,11 +1021,14 @@ def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: "bytes | None",
         contador.sumar_corto()
         buf = _leer_fichero_entero(ruta)
         cab = rs.parsear_cabecera(buf, True)
+    if cab.formato == "desconocido":
+        # Vacío o firma que no es JPEG/TIFF/PNG: sin valores inventados (XMP "0", yaw 0.0);
+        # error visible de ESE fichero en el resumen.
+        raise RuntimeError(f"fichero vacío o formato no reconocido ({len(buf)} bytes): "
+                           f"'{ruta}'")
     if cab.necesita_completo or not cab.xmp_presente:
-        raise RuntimeError(f"parsear_cabecera no resolvió '{ruta}' con el fichero entero")
-    # `cab.formato == "desconocido"` (firma que no es JPEG/TIFF/PNG, p. ej. un `.jpg`
-    # cortado a 1 byte) NO es error: Pillow y ExifRead tampoco lo abren y Python deja los
-    # metadatos vacíos (defaults XMP "0"), igual que Rust.
+        raise RuntimeError(f"parsear_cabecera no resolvió '{ruta}' con el fichero entero "
+                           f"(formato {cab.formato}, {len(buf)} bytes)")
     timestamp = None
     if cab.timestamp_iso is not None:
         try:

@@ -1065,6 +1065,11 @@ fn base_png(buf: &[u8], completo: bool) -> Base {
 /// fichero entero (`completo`) el texto completo, que es lo que devuelve
 /// `exif.leer_bloque_xmp` al releer; sin él, `None` (Python debe pasar el fichero).
 fn bloque_para(buf: &[u8], completo: bool) -> Option<Vec<u8>> {
+    // Fichero vacío o de formato desconocido: no se fabrica XMP (ni defaults "0"); sin XMP
+    // Python lanza el error visible por fichero.
+    if buf.is_empty() || matches!(formato_de(buf), Formato::Otro) {
+        return None;
+    }
     let cabecera = buf.get(..xmp::BYTES_CABECERA).unwrap_or(buf);
     if let Some(b) = xmp::bloque_xmp(cabecera) {
         return Some(b);
@@ -1496,6 +1501,20 @@ mod tests {
     fn formato_desconocido_no_panica() {
         let c = analizar(b"BM\0\0\0\0\0\0\0\0");
         assert_eq!(c.formato, "desconocido");
-        assert!(c.ancho.is_none() && c.modelo.is_none() && !c.necesita_completo);
+        assert!(c.ancho.is_none() && c.modelo.is_none());
+        // Sin XMP fabricado: Python lo convierte en error visible del fichero.
+        assert!(!c.xmp_presente && c.gimbal_yaw.is_none());
+    }
+
+    #[test]
+    fn desconocido_o_vacio_menor_de_cabecera_sin_xmp() {
+        for buf in [&b""[..], &b"hola, esto no es una imagen"[..], &[0u8; 1000][..]] {
+            assert!(buf.len() < xmp::BYTES_CABECERA);
+            let c = analizar(buf);
+            assert!(!c.xmp_presente, "len={}", buf.len());
+            assert!(c.gimbal_yaw.is_none());
+            let c = analizar_con(buf, true);
+            assert!(!c.xmp_presente && c.gimbal_yaw.is_none());
+        }
     }
 }

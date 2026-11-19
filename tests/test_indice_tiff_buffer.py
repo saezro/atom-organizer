@@ -205,3 +205,22 @@ def test_tiff_valor_de_ifd0_fuera_del_buffer_no_usa_buffer(tmp_path, tag):
     e = o + 2 + 12 * tags.index(tag)
     struct.pack_into("<HII", data, e + 2, 1, 1000, len(data) - 500)
     assert _exif_entero_en_buffer(bytes(data[:_BYTES_CABECERA])) is False
+
+
+@pytest.mark.parametrize("contenido", [b"", b"esto no es una imagen"])
+def test_jpg_vacio_o_basura_es_error_visible_no_yaw_cero(tmp_path, exif_obj, contenido):
+    """Fichero con extensión de imagen pero vacío/formato desconocido: error visible de
+    ESE fichero (`errores_lectura`), nunca metadatos inventados (yaw 0.0)."""
+    from unittest import mock
+
+    from atom_core.indice import _leer_lote
+    ruta = str(tmp_path / "VACIO.JPG")
+    with open(ruta, "wb") as fd:
+        fd.write(contenido)
+    lote = _leer_lote([ruta], exif_obj, _Callback(), mock.MagicMock(), 1,
+                      30.0, 30.0, 60.0)
+    assert lote.metadatos == []
+    assert [r for r, _ in lote.errores_lectura] == [ruta]
+    motivo = lote.errores_lectura[0][1]
+    assert "fichero vacío o formato no reconocido" in motivo
+    assert f"({len(contenido)} bytes)" in motivo
