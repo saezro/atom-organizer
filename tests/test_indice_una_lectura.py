@@ -222,28 +222,38 @@ def test_xmp_mas_alla_del_limite_de_cabecera_cae_al_fallback(tmp_path, exif_obj)
     assert rapido.yaw == pytest.approx(-45.5)
 
 
-def test_fichero_vacio_cae_al_mismo_camino_de_error_que_antes(tmp_path, exif_obj):
+def _leer_lote_de(ruta, exif_obj):
+    from unittest import mock
+
+    from atom_core.indice import _leer_lote
+    return _leer_lote([ruta], exif_obj, _Callback(), mock.MagicMock(), 1, 30.0, 30.0, 60.0)
+
+
+def test_fichero_vacio_es_error_visible_no_metadatos_vacios(tmp_path, exif_obj):
+    """Sin fallback silencioso: un fichero vacío NO da metadatos inventados (yaw 0.0),
+    sube como error visible de ESE fichero (`errores_lectura`)."""
     ruta = str(tmp_path / "vacio.jpg")
     with open(ruta, "wb") as fh:
         fh.write(b"")
-    rapido = _comparar(ruta, exif_obj)
-    assert rapido.timestamp is None
-    assert rapido.modelo is None
-    # Sin XMP, `get_gimbal_yaw_pitch` no inventa nada: devuelve el "0" de
-    # siempre, no `None` (no hay excepción que atrapar en ese campo).
-    assert rapido.yaw == 0.0
-    assert rapido.gps is None
+    lote = _leer_lote_de(ruta, exif_obj)
+    assert lote.metadatos == []
+    assert [r for r, _ in lote.errores_lectura] == [ruta]
+    motivo = lote.errores_lectura[0][1]
+    assert "fichero vacío o formato no reconocido" in motivo
+    assert "(0 bytes)" in motivo
 
 
-def test_fichero_corrupto_cae_al_mismo_camino_de_error_que_antes(tmp_path, exif_obj):
+def test_fichero_corrupto_es_error_visible_no_metadatos_vacios(tmp_path, exif_obj):
+    contenido = b"esto no es un jpeg de verdad, solo basura binaria \x00\x01\x02" * 50
     ruta = str(tmp_path / "corrupto.jpg")
     with open(ruta, "wb") as fh:
-        fh.write(b"esto no es un jpeg de verdad, solo basura binaria \x00\x01\x02" * 50)
-    rapido = _comparar(ruta, exif_obj)
-    assert rapido.timestamp is None
-    assert rapido.modelo is None
-    assert rapido.yaw == 0.0
-    assert rapido.gps is None
+        fh.write(contenido)
+    lote = _leer_lote_de(ruta, exif_obj)
+    assert lote.metadatos == []
+    assert [r for r, _ in lote.errores_lectura] == [ruta]
+    motivo = lote.errores_lectura[0][1]
+    assert "fichero vacío o formato no reconocido" in motivo
+    assert f"({len(contenido)} bytes)" in motivo
 
 
 def test_ruta_inexistente_no_revienta(tmp_path, exif_obj):
