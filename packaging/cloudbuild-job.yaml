@@ -46,6 +46,12 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args: ['run', '--rm', '${_IMAGEN}:${_VERSION}', '--help']
 
+  # Smoke Rust: atom_rs importable, ABI == ABI_ESPERADA y todos los simbolos de
+  # todas las fases (rust_bridge.modulo()). Falla el build antes del push.
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['run', '--rm', '--entrypoint', 'python', '${_IMAGEN}:${_VERSION}',
+           '-c', 'import sys; sys.path.insert(0, "src"); import atom_rs; from atom_core import rust_bridge; assert atom_rs.version_abi() == rust_bridge.ABI_ESPERADA, (atom_rs.version_abi(), rust_bridge.ABI_ESPERADA); rust_bridge.modulo(); print("smoke atom_rs ABI", atom_rs.version_abi(), "OK")']
+
 images:
   - '${_IMAGEN}:${_VERSION}'
 

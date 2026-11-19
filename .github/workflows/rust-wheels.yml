@@ -166,6 +166,11 @@ jobs:
           python -m pip install Pillow==12.3.0 numpy==2.4.6 pytest
           python -m pip install --no-index --find-links wheel-dist atom_rs
           python -c "import atom_rs, PIL, PIL.features, platform; print(platform.machine(), PIL.__version__, PIL.features.version('libjpeg_turbo'), atom_rs.version_abi(), atom_rs.libjpeg_turbo_version())"
+      - name: Validar atom_rs contra rust_bridge (ABI + simbolos de todas las fases)
+        shell: bash
+        env:
+          PYTHONPATH: src
+        run: python -c "import atom_rs; from atom_core import rust_bridge; assert atom_rs.version_abi() == rust_bridge.ABI_ESPERADA, (atom_rs.version_abi(), rust_bridge.ABI_ESPERADA); rust_bridge.modulo(); print('rust_bridge OK, ABI', atom_rs.version_abi())"
       - name: Instalar dependencias de la equivalencia indice (pins del proyecto)
         shell: bash
         run: |
