@@ -74,8 +74,9 @@ def test_pequeno_valido_y_tiff_no_se_excluyen(tmp_path, exif_obj):
     with open(rjpeg, "wb") as fh:
         fh.write(b"\xff\xd8abc\xff\xd9" + bytes(range(1, 40)))
     tiff = str(tmp_path / "x.tif")
-    with open(tiff, "wb") as fh:
-        fh.write(b"abc" + bytes(16))
+    from PIL import Image
+    with Image.new("RGB", (4, 4), color=(120, 130, 140)) as im:  # TIFF real y pequeño
+        im.save(tiff, format="TIFF")
     assert _leer_metadatos(rjpeg, exif_obj, _Callback()).a_medias is False
     assert _leer_metadatos(tiff, exif_obj, _Callback()).a_medias is False
 
@@ -116,8 +117,11 @@ def test_windows_apertura_compartida_ok_es_la_unica_apertura(tmp_path, exif_obj,
 
 def test_filtro_desactivado_no_excluye(tmp_path, exif_obj, monkeypatch):
     monkeypatch.setattr(indice, "_FILTRO_ARCHIVO_A_MEDIAS", False)
-    ruta = str(tmp_path / "v.JPG")
-    open(ruta, "wb").close()
+    # JPEG real con cola de ceros: con el filtro activo se excluiría (ver
+    # `test_jpg_pequeno_cola_de_ceros_excluido`); desactivado, no.
+    ruta = _crear_jpeg(str(tmp_path / "v.JPG"))
+    with open(ruta, "ab") as fh:
+        fh.write(bytes(16))
     assert _leer_metadatos(ruta, exif_obj, _Callback()).a_medias is False
 
 
