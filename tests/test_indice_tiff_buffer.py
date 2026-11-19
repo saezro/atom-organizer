@@ -1,8 +1,9 @@
-"""TIFF (térmicos): si IFD0 + sub-IFD EXIF/GPS caben en la cabecera de
-`_BYTES_CABECERA`, `_leer_metadatos` NO relee el fichero entero para GPS
-(antes `_exif_entero_en_buffer` devolvía False para todo TIFF > 256 KB y el
-GPS hacía `open().read()` completo: caro con origen en Google Drive).
-Si algún IFD/valor cae fuera del buffer, se lee entero como siempre."""
+"""TIFF (térmicos) por la ruta Rust de `_leer_metadatos`: `parsear_cabecera` marca
+`necesita_completo` para todo TIFF mayor que la cabecera (`_BYTES_CABECERA`), así que
+se relee el fichero ENTERO exactamente una vez (la rama Python que se ahorraba esa
+lectura con IFDs en cabecera ya no existe) y la respuesta es la definitiva. Los
+helpers puros `_exif_entero_en_buffer`/`_gps_desde_buffer`/`_modelo_desde_buffer` se
+siguen cubriendo aparte."""
 import builtins
 import os
 import struct
@@ -135,12 +136,12 @@ def test_tiff_datos_iguales_buffer_vs_fichero_entero(tmp_path):
     assert _modelo_desde_buffer(parcial) == _modelo_desde_buffer(completo) == "M3T"
 
 
-def test_tiff_leer_metadatos_sin_lectura_completa(tmp_path, exif_obj, monkeypatch):
+def test_tiff_leer_metadatos_una_sola_lectura_completa(tmp_path, exif_obj, monkeypatch):
     ruta = _crear_tiff(str(tmp_path / "t.tif"))
     ref = _leer_metadatos(ruta, exif_obj, _Callback())  # referencia (sin espía)
     reg = _espiar_open(monkeypatch, ruta)
     r = _leer_metadatos(ruta, exif_obj, _Callback())
-    assert reg["reads_completos"] == 0, reg
+    assert reg["reads_completos"] == 1, reg  # Rust: TIFF > cabecera -> una relectura entera
     assert r.gps == pytest.approx(GPS_ESPERADO)
     assert (r.timestamp, r.modelo, r.make, r.gps) == (ref.timestamp, ref.modelo, ref.make, ref.gps)
     assert r.modelo == "M3T" and r.make == "DJI"
@@ -154,7 +155,7 @@ def test_tiff_gps_ifd_fuera_del_buffer_lee_completo(tmp_path, exif_obj, monkeypa
     assert _exif_entero_en_buffer(buf) is False
     reg = _espiar_open(monkeypatch, ruta)
     r = _leer_metadatos(ruta, exif_obj, _Callback())
-    assert reg["reads_completos"] >= 1  # comportamiento actual: lectura completa
+    assert reg["reads_completos"] == 1  # lectura completa única
     assert r.gps == pytest.approx(GPS_ESPERADO)
     assert r.modelo == "M3T"
 
@@ -168,11 +169,11 @@ def test_tiff_corrupto_o_bigtiff_no_se_fia():
 
 
 @pytest.mark.parametrize("relleno", [None, 0])
-def test_tiff_xmp_ausente_o_dentro_sin_lectura_completa(tmp_path, exif_obj, monkeypatch, relleno):
+def test_tiff_xmp_ausente_o_dentro_una_sola_lectura_completa(tmp_path, exif_obj, monkeypatch, relleno):
     ruta = _crear_tiff(str(tmp_path / "t.tif"), xmp_relleno=relleno)
     reg = _espiar_open(monkeypatch, ruta)
     r = _leer_metadatos(ruta, exif_obj, _Callback())
-    assert reg["reads_completos"] == 0, reg
+    assert reg["reads_completos"] == 1, reg
     assert r.gps == pytest.approx(GPS_ESPERADO)
     if relleno is not None:
         assert r.yaw == pytest.approx(-45.5)
@@ -184,7 +185,7 @@ def test_tiff_xmp_fuera_del_buffer_lee_completo(tmp_path, exif_obj, monkeypatch)
     assert _exif_entero_en_buffer(buf) is False  # valor del 700 fuera -> no se fía
     reg = _espiar_open(monkeypatch, ruta)
     r = _leer_metadatos(ruta, exif_obj, _Callback())
-    assert reg["reads_completos"] >= 1
+    assert reg["reads_completos"] == 1
     assert r.yaw == pytest.approx(-45.5)
     assert r.gps == pytest.approx(GPS_ESPERADO)
 

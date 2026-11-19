@@ -76,7 +76,9 @@ class _PipelineDePrueba:
             return None
         os.makedirs(output_folder, exist_ok=True)
         tiff_path = os.path.join(output_folder, os.path.splitext(image_name)[0] + ".tiff")
-        PILImage.new("F", (4, 2)).save(tiff_path, format="TIFF")
+        # Como el conversor Rust: gira en el mismo paso en que escribe.
+        giro = kwargs.get("rotate_90") or kwargs.get("rotate_minus_90")
+        PILImage.new("F", (2, 4) if giro else (4, 2)).save(tiff_path, format="TIFF")
         return (ruta_origen, tiff_path)
 
     def copiar_exif(self, src, dst):
@@ -186,24 +188,19 @@ def test_el_tiff_usa_el_angulo_del_manifiesto_igual_que_su_jpg(tmp_path, make_dj
         tmp_path, [_fila_termica(origen, salida_jpg, salida_tiff, angulo_giro=90)]
     )
 
-    transposes_aplicados = []
-    transpose_real = PILImage.Image.transpose
-
-    def _transpose_que_apunta(self, method):
-        transposes_aplicados.append(method)
-        return transpose_real(self, method)
-
-    monkeypatch.setattr(PILImage.Image, "transpose", _transpose_que_apunta)
-
     doble = _PipelineDePrueba()
     resultado = apply.aplicar_termicas(
         manifiesto, _cfg(), doble, _SignalFalsa(), _SignalFalsa(), _SignalFalsa(),
     )
 
     assert resultado == {"hecho": 1, "fallido": 0}
-    esperado = apply._transpose_para_angulo(90, pipeline_real)
-    # Solo el TIFF se gira (3.4.123): el JPG térmico se copia byte a byte.
-    assert transposes_aplicados == [esperado]
+    # El giro lo hace el conversor (Rust): `aplicar_termicas` solo traduce el
+    # ángulo del manifiesto a los flags, sin auto-rotación; el JPG se copia tal cual.
+    assert len(doble.llamadas_convert) == 1
+    llamada = doble.llamadas_convert[0]
+    assert llamada["rotate_90"] is True
+    assert llamada["rotate_minus_90"] is False
+    assert llamada["auto_rotate"] is False
     assert salida_tiff.exists()
     assert salida_jpg.exists()
     manifiesto.cerrar()
@@ -493,8 +490,9 @@ def test_jpg_termico_no_se_gira_con_sin_rotacion(tmp_path):
     assert resultado == {"hecho": 1, "fallido": 0}
     assert filecmp.cmp(str(origen), str(salida_jpg), shallow=False)
 
-    # El TIFF, en cambio, sí sale girado: el staging del doble es 4x2 (F, 2px),
-    # así que tras rotar 90 queda 2x4.
+    # El TIFF, en cambio, sí sale girado: el doble (como Rust) entrega 2x4 al
+    # recibir rotate_90, y `_publicar_tiff_girado(ya_girado=True)` no lo toca.
+    assert doble.llamadas_convert[0]["rotate_90"] is True
     with PILImage.open(salida_tiff) as img_tiff:
         assert img_tiff.size == (2, 4)
     manifiesto.cerrar()
