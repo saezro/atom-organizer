@@ -229,12 +229,12 @@ def test_reintento_de_lentas_a_medias_cuenta_una_vez_en_omitidas(tmp_path, monke
     original = indice._leer_metadatos
     llamadas = {"n": 0}
 
-    def falsa(r, exif_, cb):
+    def falsa(r, exif_, cb, **kw):
         if r == ruta:
             llamadas["n"] += 1
             if llamadas["n"] == 1:
                 threading.Event().wait(1.0)  # vence en la 1ª pasada
-        return original(r, exif_, cb)
+        return original(r, exif_, cb, **kw)
 
     monkeypatch.setattr(indice, "_leer_metadatos", falsa)
     log = _Grabador()

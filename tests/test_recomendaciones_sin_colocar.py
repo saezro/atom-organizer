@@ -102,8 +102,12 @@ def test_motivos_reales_sin_vecinos_no_recomiendan_alta(tanda):
 def _indexar_par(tanda, estadillo=ESTADILLO, z=_t(10, 10, 3), t=_t(10, 9, 59), extra=()):
     """La T se indexa en una tanda y la Z (misma toma, <= 5 s, misma carpeta) en otra
     posterior: el índice no las junta (cada tanda hereda solo dentro de sí misma), así que
-    la Z queda fuera de ventana con su pareja ya colocada por el índice."""
+    la Z queda fuera de ventana con su pareja ya colocada por el índice. El índice lee ahora
+    los metadatos reales del fichero (Rust): la T de la tanda anterior ya no está en el origen
+    (como en una tanda real, ya procesada), si no la Z la heredaría dentro de la misma tanda.
+    La fila de la T persiste en el manifiesto."""
     _indexar(tanda, [("DJI_20240601100959_0001_T.JPG", t)], estadillo)
+    os.remove(tanda.rutas["DJI_20240601100959_0001_T.JPG"])
     _indexar(tanda, [("DJI_20240601101003_0001_Z.JPG", z), *extra], estadillo)
 
 

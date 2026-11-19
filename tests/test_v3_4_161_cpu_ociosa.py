@@ -67,7 +67,8 @@ def test_bytes_origen_evita_metadatos(monkeypatch):
 
     monkeypatch.setattr(apply_mod, "_tamano_ruta", _no)
     monkeypatch.setattr(apply_mod.lectura_segura, "leer_completo", _leer)
-    fila = {"ruta_origen": "gs://b/a.jpg", "bytes_origen": 1234, "angulo_giro": 0}
+    fila = {"ruta_origen": "gs://b/a.jpg", "bytes_origen": 1234, "angulo_giro": 0,
+            "ruta_salida_crop": None, "ruta_salida_original": "gs://b/o.jpg", "pct_recorte": None}
     with pytest.raises(_Stop):
         apply_mod._escribir_salidas_de_fila(fila, type("C", (), {"compress_level": 5})(), type("P", (), {"_ROTATION_JPEG_QUALITY": 90})())
 
@@ -85,7 +86,8 @@ def test_sin_bytes_cae_a_metadatos(monkeypatch):
         raise _Stop
 
     monkeypatch.setattr(apply_mod.lectura_segura, "leer_completo", _leer)
-    fila = {"ruta_origen": "gs://b/a.jpg", "angulo_giro": 0}
+    fila = {"ruta_origen": "gs://b/a.jpg", "angulo_giro": 0,
+            "ruta_salida_crop": None, "ruta_salida_original": "gs://b/o.jpg", "pct_recorte": None}
     with pytest.raises(_Stop):
         apply_mod._escribir_salidas_de_fila(fila, type("C", (), {"compress_level": 5})(), type("P", (), {"_ROTATION_JPEG_QUALITY": 90})())
     assert llamadas == ["gs://b/a.jpg"]

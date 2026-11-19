@@ -69,6 +69,9 @@ def test_flag_apagado_resumen_y_propuesta_identicos(tmp_path, monkeypatch, valor
     otro, _m = _indexar(tmp_path, FOTOS, valor, monkeypatch, nombre="b")
     resumen_a, propuesta_a = _salida(base)
     resumen_b, propuesta_b = _salida(otro)
+    # Los ficheros de `_indexar` son JPEG DJI reales (ExifDePrueba): `bytes` = su tamaño real.
+    bytes_origen = sum(os.path.getsize(tmp_path / "origen" / n) for n, _ts in FOTOS)
+    assert bytes_origen > 0
     assert "revision_indice" not in propuesta_a and "revision_indice" not in propuesta_b
     assert resumen_a["n_sin_ordenar"] == resumen_b["n_sin_ordenar"] == 2
     # Valores fijos (no solo A == B): el flag apagado no cambia el contrato de siempre.
@@ -80,7 +83,7 @@ def test_flag_apagado_resumen_y_propuesta_identicos(tmp_path, monkeypatch, valor
     for resumen, propuesta in ((resumen_a, propuesta_a), (resumen_b, propuesta_b)):
         assert set(resumen) == claves_resumen and set(propuesta) == claves_propuesta
         assert resumen["n_imagenes"] == 2 and resumen["n_sin_ordenar"] == 2
-        assert propuesta["totales"] == {"n_imagenes": 2, "bytes": 0, "n_pb": 0,
+        assert propuesta["totales"] == {"n_imagenes": 2, "bytes": bytes_origen, "n_pb": 0,
                                         "n_vuelos": 0, "n_sin_ordenar": 2}
 
     def _norm(d, destino):

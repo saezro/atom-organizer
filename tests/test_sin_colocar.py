@@ -221,12 +221,12 @@ def test_camara_rgb_se_respeta_al_asignar(tanda):
                for f in despues.values())
 
 
-def test_el_apply_coloca_las_fotos_en_la_carpeta_de_la_fila(tanda, make_dji_jpeg):
+def test_el_apply_coloca_las_fotos_en_la_carpeta_de_la_fila(tanda):
     tanda.indexar([("DJI_0001_D.JPG", _t(10, 20, 0))])
     g = grupos_sin_colocar(tanda.destino)[0]
     asignar_grupo(tanda.destino, g["grupo_id"], 0, quien="x")
-    origen = tanda.rutas["DJI_0001_D.JPG"]
-    make_dji_jpeg(origen)       # el índice usó un fichero vacío: ahora la imagen real
+    # El fichero que indexó `ExifDePrueba` ya es un JPEG DJI real (bytes_origen del manifiesto
+    # = su tamaño): no se reescribe, el apply verifica el tamaño contra el índice.
     m = tanda.manifiesto()
     try:
         r = apply.aplicar_rgb(m, _cfg_apply(output_folder=tanda.destino), pipeline_real,
@@ -288,11 +288,10 @@ def test_la_asignacion_sobrevive_a_un_reindice_y_a_otra_tanda(tanda):
     assert tanda.filas()["DJI_0001_D.JPG"]["vuelo"] == "2"
 
 
-def test_la_asignacion_sobrevive_aunque_el_apply_ya_corriera(tanda, make_dji_jpeg):
+def test_la_asignacion_sobrevive_aunque_el_apply_ya_corriera(tanda):
     tanda.indexar([("DJI_0001_D.JPG", _t(10, 20, 0))])
     g = grupos_sin_colocar(tanda.destino)[0]
     asignar_grupo(tanda.destino, g["grupo_id"], 0, quien="x")
-    make_dji_jpeg(tanda.rutas["DJI_0001_D.JPG"])
     m = tanda.manifiesto()
     try:
         apply.aplicar_rgb(m, _cfg_apply(output_folder=tanda.destino), pipeline_real,
