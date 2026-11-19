@@ -26,10 +26,10 @@ def _preparar(tmp_path, n=20):
 def _bloqueando(monkeypatch, bloqueada, liberar):
     original = indice._leer_metadatos
 
-    def falsa(ruta, exif, cb):
+    def falsa(ruta, exif, cb, **kw):
         if ruta == bloqueada:
             liberar.wait(30)
-        return original(ruta, exif, cb)
+        return original(ruta, exif, cb, **kw)
 
     monkeypatch.setattr(indice, "_leer_metadatos", falsa)
 
@@ -64,12 +64,12 @@ def test_el_fichero_lento_que_responde_en_el_reintento_se_procesa(tmp_path, monk
     original = indice._leer_metadatos
     llamadas = {"n": 0}
 
-    def falsa(ruta, exif_, cb):
+    def falsa(ruta, exif_, cb, **kw):
         if ruta == rutas[3]:
             llamadas["n"] += 1
             if llamadas["n"] == 1:
                 threading.Event().wait(1.0)     # vence en la 1ª pasada
-        return original(ruta, exif_, cb)
+        return original(ruta, exif_, cb, **kw)
 
     monkeypatch.setattr(indice, "_leer_metadatos", falsa)
     m = _manifiesto(tmp_path)
@@ -86,9 +86,9 @@ def test_el_progreso_se_emite_por_subpaso_con_n_de_total_y_velocidad(tmp_path, m
     cfg, rutas, exif = _preparar(tmp_path)
     original = indice._leer_metadatos
 
-    def lenta(ruta, exif_, cb):
+    def lenta(ruta, exif_, cb, **kw):
         threading.Event().wait(0.02)
-        return original(ruta, exif_, cb)
+        return original(ruta, exif_, cb, **kw)
 
     monkeypatch.setattr(indice, "_leer_metadatos", lenta)
     m = _manifiesto(tmp_path)

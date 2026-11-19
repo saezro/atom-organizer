@@ -64,10 +64,10 @@ def test_indice_con_lector_bloqueado_cancela_rapido(tmp_path, monkeypatch):
     liberar = threading.Event()
     original = indice._leer_metadatos
 
-    def falsa(ruta, exif_, cb):
+    def falsa(ruta, exif_, cb, **kw):
         if ruta == rutas[5]:
             liberar.wait(30)  # atascado "para siempre"
-        return original(ruta, exif_, cb)
+        return original(ruta, exif_, cb, **kw)
 
     monkeypatch.setattr(indice, "_leer_metadatos", falsa)
     m = _manifiesto(tmp_path)

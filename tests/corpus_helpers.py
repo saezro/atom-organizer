@@ -80,6 +80,79 @@ def _jpeg_dji(exif: bytes | None = None, xmp: bytes | None = None, ancho=64, alt
     return b"\xff\xd8" + seg_exif + seg_xmp + relleno + resto
 
 
+def _gps_exif_bytes_dms(valor: float) -> tuple:
+    """Grados decimales (>=0) -> ((g,1),(m,1),(s*100,100)) racionales EXIF."""
+    valor = abs(valor)
+    g = int(valor)
+    m = int((valor - g) * 60)
+    s = round(((valor - g) * 60 - m) * 60 * 100)
+    return ((g, 1), (m, 1), (s, 100))
+
+
+def jpeg_dji_sintetico(timestamp=None, modelo="M3T", make="DJI", yaw=0.0, pitch="0",
+                       gps=None, ancho=64, alto=48, cola: bytes = b"") -> bytes:
+    """JPEG DJI válido para `atom_rs.parsear_cabecera`: EXIF (Make/Model/DateTimeOriginal/GPS)
+    + XMP con GimbalYaw/PitchDegree. `timestamp` datetime|None, `gps` (lat, lon) decimales|None,
+    `modelo`/`make` None = sin ese tag. `cola` = bytes tras el EOI (distinguir ficheros por tamaño)."""
+    cero = {}
+    if make is not None:
+        cero[piexif.ImageIFD.Make] = make
+    if modelo is not None:
+        cero[piexif.ImageIFD.Model] = modelo
+    exif_ifd = ({piexif.ExifIFD.DateTimeOriginal: timestamp.strftime("%Y:%m:%d %H:%M:%S")}
+                if timestamp is not None else {})
+    gps_ifd = {}
+    if gps is not None:
+        lat, lon = gps
+        gps_ifd = {piexif.GPSIFD.GPSLatitudeRef: "N" if lat >= 0 else "S",
+                   piexif.GPSIFD.GPSLatitude: _gps_exif_bytes_dms(lat),
+                   piexif.GPSIFD.GPSLongitudeRef: "E" if lon >= 0 else "W",
+                   piexif.GPSIFD.GPSLongitude: _gps_exif_bytes_dms(lon)}
+    exif = piexif.dump({"0th": cero, "Exif": exif_ifd, "GPS": gps_ifd})
+    xmp = _xmp_atributos({"GimbalYawDegree": str(yaw), "GimbalPitchDegree": str(pitch)})
+    return _jpeg_dji(exif, xmp, ancho=ancho, alto=alto) + cola
+
+
+class ExifDePrueba:
+    """«Receta» de metadatos por ruta. Antes era un doble del `Exif` runtime (ya sin efecto
+    desde que el índice siempre lee con Rust): ahora el CONSTRUCTOR escribe en cada ruta un
+    JPEG DJI real con esos metadatos, conservando las dimensiones y los bytes de cola que
+    el fichero tuviera (p. ej. el de `_crear_imagen(..., contenido=b"A")`). Una ruta sin
+    entrada en `timestamps` queda SIN DateTimeOriginal; las de `fallar_en`, igual.
+    El objeto sigue pasándose como `exif` (parámetro ignorado por el índice)."""
+
+    def __init__(self, timestamps=None, modelos=None, yaws=None, gps=None, fallar_en=None):
+        self._timestamps = timestamps or {}
+        self._modelos = modelos or {}
+        self._yaws = yaws or {}
+        self._gps = gps or {}
+        self._fallar_en = fallar_en or set()
+        rutas = (set(self._timestamps) | set(self._modelos) | set(self._yaws)
+                 | set(self._gps) | set(self._fallar_en))
+        for ruta in rutas:
+            self._materializar(str(ruta))
+
+    def _materializar(self, ruta: str) -> None:
+        ancho, alto, cola = 64, 48, b""
+        if os.path.exists(ruta):
+            previo = Path(ruta).read_bytes()
+            if previo[:2] == b"\xff\xd8":
+                try:
+                    with Image.open(io.BytesIO(previo)) as im:
+                        ancho, alto = im.size
+                except Exception:  # noqa: BLE001 — JPEG previo ilegible: dimensiones por defecto
+                    pass
+                cola = previo[previo.rfind(b"\xff\xd9") + 2:] if b"\xff\xd9" in previo else b""
+            else:
+                cola = previo
+        os.makedirs(os.path.dirname(ruta) or ".", exist_ok=True)
+        malo = ruta in self._fallar_en
+        Path(ruta).write_bytes(jpeg_dji_sintetico(
+            timestamp=None if malo else self._timestamps.get(ruta),
+            modelo=self._modelos.get(ruta, "M3T"), yaw=self._yaws.get(ruta, 0.0),
+            gps=None if malo else self._gps.get(ruta), ancho=ancho, alto=alto, cola=cola))
+
+
 def _jpeg_roto_tras_256k() -> bytes:
     """Térmica-like: Exif + XMP al principio, APP3 de relleno que lleva el SOS más allá
     de 256 KiB y, ahí, un marcador inválido (0xFF01: «no marker found» en Pillow) antes
