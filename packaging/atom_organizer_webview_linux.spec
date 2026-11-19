@@ -83,7 +83,7 @@ a = Analysis(
     ] + pyexiv2_datas + numpy_datas + pandas_datas + mpl_datas + openpyxl_datas + gpu_datas,
     hiddenimports=[
         'pyexiv2', 'ipaddress',
-        'atom_rs',                             # wheel Rust (puente atom_core.rust_bridge, import perezoso)
+        'atom_rs',                             # wheel Rust obligatoria (atom_core.rust_bridge)
         'version', 'atom_core.updater',        # updater: import perezoso desde app_webview
         'gui', 'atom_core.organize',           # import perezoso en el worker → forzarlo
         'psutil',                              # utils.workers_para_lote: import perezoso; sin él
