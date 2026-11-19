@@ -63,6 +63,8 @@ class _Tanda:
         rutas = {nombre: _crear_imagen(carpeta, nombre) for nombre, _ts in fotos}
         exif = _ExifDePrueba(
             timestamps={rutas[n]: ts for n, ts in fotos if ts is not None},
+            # JPEG DJI real SIN DateTimeOriginal para las de ts None (vacío = error de lectura).
+            modelos={rutas[n]: "M3T" for n, ts in fotos if ts is None},
             yaws={rutas[n]: y for n, y in (yaws or {}).items()})
         manifiesto = Manifiesto(os.path.join(self.destino, ".organizado", "manifiesto.db"))
         manifiesto.crear_esquema()
