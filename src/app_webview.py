@@ -5574,6 +5574,11 @@ if __name__ == "__main__":
     # llamaba en su propio __main__, pero el entry point del build webview es ESTE
     # fichero y gui.py sólo se importa como módulo, así que aquel nunca corría.
     multiprocessing.freeze_support()
+    # `--check-rust`: smoke de CI del binario empaquetado (atom_rs + ABI + símbolos).
+    # Antes de instalacion_guard/Qt/webview/servidor; el exit code es lo que cuenta.
+    if "--check-rust" in sys.argv:
+        from atom_core import rust_bridge as _rb
+        sys.exit(_rb.check_cli())
     # Segundo paso más temprano: antes de tocar Qt/pywebview. Solo Windows y modo
     # ventana (no --server); los hijos multiprocessing ya salieron en freeze_support.
     if platform.system() == "Windows" and "--server" not in sys.argv:

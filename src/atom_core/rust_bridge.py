@@ -78,6 +78,21 @@ def modulo(fases: Optional[tuple[str, ...]] = None) -> types.ModuleType:
     return m
 
 
+def check_cli() -> int:
+    """Validación completa (módulo + ABI + símbolos de TODAS las fases) para el
+    flag ``--check-rust`` del ejecutable. Devuelve el exit code (0 OK, 1 fallo).
+    En builds windowed ``sys.stdout`` puede ser None: el exit code es lo que cuenta."""
+    try:
+        m = modulo()
+        msg, rc = f"atom_rs ABI {m.version_abi()} OK", 0
+    except Exception as e:
+        msg, rc = f"ERROR check-rust: {type(e).__name__}: {e}", 1
+    destino = sys.stdout if rc == 0 else sys.stderr
+    if destino is not None:
+        print(msg, file=destino)
+    return rc
+
+
 def exigir(fase: str) -> types.ModuleType:
     """Devuelve ``atom_rs`` validado (ABI + símbolos de ``fase``) o lanza
     ``RustNoDisponible``. Nunca devuelve None."""

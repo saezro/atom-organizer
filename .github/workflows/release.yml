@@ -259,6 +259,8 @@ jobs:
         run: pyinstaller --clean --noconfirm packaging/atom_organizer_webview_linux.spec
       - name: Inject ipaddress en base_library.zip
         run: python packaging/inject_ipaddress.py
+      - name: Smoke Rust del binario (--check-rust)
+        run: dist/atom_organizer/ATOM-Organizer --check-rust
       - name: Montar AppImage
         env:
           VERSION: ${{ needs.meta.outputs.version }}
@@ -391,6 +393,11 @@ jobs:
         env:
           ATOM_BUILD_GPU: ${{ inputs.build_gpu && '1' || '0' }}
         run: .venv\Scripts\pyinstaller.exe --clean --noconfirm packaging\atom_organizer_webview.spec
+      - name: Smoke Rust del exe (--check-rust)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\ATOM-Organizer\ATOM-Organizer.exe" -ArgumentList "--check-rust" -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "--check-rust fallo (ExitCode=$($p.ExitCode))" }
       # Solo para builds de validación (publicar=false): Inno Setup 6.7.0 no lo
       # abre ningún extractor, así que sin esto no hay forma de probar el .exe
       # sin instalar. Se sube el onedir crudo (upload-artifact ya lo comprime;
@@ -543,7 +550,7 @@ jobs:
     # `publicar=false` (solo posible por workflow_dispatch manual, ver `meta`):
     # se saltan la publicación y el tag — los artifacts (AppImage/.exe) quedan
     # subidos igualmente por build-linux/build-windows para descargarlos a mano.
-    needs: [meta, checks, build-linux, build-windows]
+    needs: [meta, checks, rust-wheels, build-linux, build-windows]
     if: needs.meta.outputs.publicar == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -554,10 +561,13 @@ jobs:
           path: dist-assets
       # Formato `<hex>  <nombre>` que parsea atom_core/updater.py (_parse_sums):
       # el nombre va sin ruta, igual que el asset publicado.
+      # La wheel aarch64 (Raspberry Pi) viaja con la release para que la Pi la
+      # baje; el download-all de arriba la deja en dist-assets/wheel-linux-aarch64/.
       - name: Generar SHA256SUMS.txt
         run: |
           sha256sum dist-assets/linux-appimage/ATOM_Organizer-*-x86_64.AppImage \
                     dist-assets/windows-installer/ATOM-Organizer-Setup-*.exe \
+                    dist-assets/wheel-linux-aarch64/atom_rs-*.whl \
             | sed 's#  .*/#  #' > SHA256SUMS.txt
           cat SHA256SUMS.txt
       - name: Publicar release con ambos binarios
@@ -570,4 +580,5 @@ jobs:
           files: |
             dist-assets/linux-appimage/ATOM_Organizer-*-x86_64.AppImage
             dist-assets/windows-installer/ATOM-Organizer-Setup-*.exe
+            dist-assets/wheel-linux-aarch64/atom_rs-*.whl
             SHA256SUMS.txt
