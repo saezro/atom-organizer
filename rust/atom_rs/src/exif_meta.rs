@@ -1110,7 +1110,9 @@ pub fn analizar_con(buf: &[u8], completo: bool) -> CabeceraParseada {
         Formato::Otro => Base::vacia("incierto"),
     };
     let x = bloque_para(buf, completo).map(|b| datos_xmp(&b));
-    if x.is_none() {
+    // Formato desconocido con el fichero entero: respuesta definitiva (sin XMP), no
+    // pedir otra lectura; Python lo convierte en error visible.
+    if x.is_none() && !(completo && matches!(formato, Formato::Otro)) {
         base.necesita_completo = true;
     }
     CabeceraParseada {
@@ -1512,7 +1514,7 @@ mod tests {
             assert!(buf.len() < xmp::BYTES_CABECERA);
             let c = analizar(buf);
             assert!(!c.xmp_presente, "len={}", buf.len());
-            assert!(c.gimbal_yaw.is_none());
+            assert!(c.gimbal_yaw.is_none() && !c.necesita_completo);
             let c = analizar_con(buf, true);
             assert!(!c.xmp_presente && c.gimbal_yaw.is_none());
         }
