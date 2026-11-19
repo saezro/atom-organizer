@@ -183,7 +183,8 @@ jobs:
           echo "lib.rs ABI=$esperada, wheel instalada ABI=$real"
           test "$esperada" = "$real"
       - name: Tests
-        run: python -m pytest tests/ -q --ignore=tests/test_dark_theme.py
+        timeout-minutes: 40
+        run: python -m pytest tests/ -v -rfE --durations=15 -o faulthandler_timeout=300 --ignore=tests/test_dark_theme.py
 
   build-linux:
     needs: [meta, rust-wheels]
