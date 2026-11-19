@@ -238,7 +238,11 @@ def test_reintento_de_lentas_a_medias_cuenta_una_vez_en_omitidas(tmp_path, monke
 
     monkeypatch.setattr(indice, "_leer_metadatos", falsa)
     log = _Grabador()
-    resumen = _indice(cfg, tmp_path, ruta, log, max_hilos=2, timeout_s=0.2,
+    # `_indice` crea `ExifDePrueba(timestamps={ruta_ts: ...})`, que ESCRIBE un JPEG real en
+    # `ruta_ts`: pasar `ruta` la dejaría con bytes (ya no "tamaño 0"/a medias). Se usa una
+    # ruta ajena al origen para que `ruta` siga vacía.
+    ajena = str(tmp_path / "ajena" / "ajena.jpg")
+    resumen = _indice(cfg, tmp_path, ajena, log, max_hilos=2, timeout_s=0.2,
                       timeout_reintento_s=5, watchdog_s=5, intervalo_progreso_s=0.05)
     assert llamadas["n"] == 2
     assert resumen["no_disponibles"] == []
