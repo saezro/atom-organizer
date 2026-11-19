@@ -47,6 +47,22 @@ def _http_error(code: int, headers: dict | None = None) -> urllib.error.HTTPErro
                                   _headers(headers), io.BytesIO(b""))
 
 
+class _Resp(io.BytesIO):
+    """Lo mínimo que `urlopen` devuelve y el módulo consume."""
+
+    def __init__(self, status: int, headers: dict | None = None, body: bytes = b""):
+        super().__init__(body)
+        self.status = status
+        self.headers = _headers(headers)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
 class FakeGCS:
     """`atom_rs` falso con el contrato de `subir_lote`, con un bucket en memoria.
 

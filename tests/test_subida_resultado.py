@@ -558,7 +558,7 @@ def test_cancelado_sin_should_stop_es_incompleta(tmp_path):
     assert "5 objetos sin subir" in r.motivo_incompleto()
 
 
-def test_faltante_en_bucket_es_incompleta(tmp_path):
+def test_faltante_en_bucket_es_incompleta(tmp_path, gcs):
     _arbol(tmp_path, SALIDA_PEQUENA)
     prov = ProveedorFalso()
     prov.refleja_subidas = False   # el bucket no refleja lo «subido»: falta todo

@@ -783,6 +783,8 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
             cont.pendientes = len(part.pendientes)
             resumen.conflictos += part.conflictos
             bytes_ya[0] += sum(it.size for it in part.hechos)
+            for it in part.hechos:
+                por_pb.marcar(it, True)
             resumen.metricas[nombre] = {
                 "omitidos": len(part.hechos), "pendientes": len(part.pendientes),
                 "bytes_omitidos": sum(it.size for it in part.hechos),
@@ -832,12 +834,18 @@ def subir_resultado(destino, inspeccion_id: int, modo: str, auth, *, proveedor=N
         for nombre, lst in pend_por_grupo.items():
             cont = getattr(resumen, nombre)
             ok_items = [it for it in lst if it.remote not in fall]
+            for it in ok_items:
+                por_pb.marcar(it, True)
             cont.hechos = base[nombre] + len(ok_items)
             resumen.metricas[nombre]["subidos"] = len(ok_items)
             resumen.metricas[nombre]["bytes_subidos"] = sum(it.size for it in ok_items)
             tipos, vuelos = _desglose(ok_items, prefijo)
             resumen.metricas[nombre]["subidos_por_tipo"] = tipos
             resumen.metricas[nombre]["subidos_por_vuelo"] = vuelos
+        por_remote = {it.remote: it for lst in pend_por_grupo.values() for it in lst}
+        for ruta_f, motivo in res.failed:
+            if motivo != "cancelado" and ruta_f in por_remote:
+                por_pb.marcar(por_remote[ruta_f], False)
         resumen.fallidas += [f for f in res.failed if f[1] != "cancelado"]
         if should_stop is not None and should_stop():
             resumen.cancelado = True
