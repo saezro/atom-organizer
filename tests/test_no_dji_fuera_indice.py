@@ -8,7 +8,7 @@ import exif as exif_mod
 from atom_core.indice import construir_indice
 from tests.test_dias_sin_estadillo import _Rec
 from tests.test_indice_organizado import (
-    _PipelineDePrueba, _cfg, _crear_imagen, _escribir_estadillo, _manifiesto,
+    _PipelineDePrueba, _cfg, _escribir_estadillo, _manifiesto,
 )
 
 VENTANAS = {("2024:06:01", "10:00:00", "10:10:00"):
@@ -23,7 +23,10 @@ def _correr(tmp_path, make_dji_jpeg, make_canon=False):
     make_dji_jpeg(os.path.join(cfg.input_folder, "DJI_0001_D.JPG"), make="DJI", model="M3T")
     if make_canon:
         make_dji_jpeg(os.path.join(cfg.input_folder, "IMG_0001.JPG"), make="Canon", model="EOS")
-    _crear_imagen(cfg.input_folder, "Conteo_Data_Propiedades_1.png")
+    # PNG real sin EXIF/Make (un fichero vacío ahora es error visible, no «sin Make»).
+    from PIL import Image
+    with Image.new("RGB", (8, 8), color=(10, 20, 30)) as im:
+        im.save(os.path.join(cfg.input_folder, "Conteo_Data_Propiedades_1.png"), format="PNG")
     log = _Rec()
     m = _manifiesto(tmp_path)
     res = construir_indice(cfg, _PipelineDePrueba(VENTANAS), exif_mod.GeneralInformationFromImage(logging.getLogger('t')), m, log, _Rec(), _Rec())
