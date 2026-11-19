@@ -19,6 +19,7 @@ import pytest
 from atom_core.indice import STATS_INDICE_PREFIX, ErrorColisionEstadillo, construir_indice
 from atom_core.manifiesto import Manifiesto
 from utils import SplitImagesConfig
+from tests.corpus_helpers import ExifDePrueba as _ExifDePrueba  # noqa: E402
 
 
 class _Signal:
@@ -75,35 +76,6 @@ class _PipelineDePrueba:
         return self._degree_desde_csv if self._degree_desde_csv is not None else 0
 
 
-class _ExifDePrueba:
-    """Doble de `Exif`: cada método devuelve lo que el test le haya
-    precargado para esa ruta, o simula un fallo si la ruta está en
-    `fallar_en`. Nunca toca disco de verdad."""
-
-    def __init__(self, timestamps=None, modelos=None, yaws=None, gps=None,
-                fallar_en=None):
-        self._timestamps = timestamps or {}
-        self._modelos = modelos or {}
-        self._yaws = yaws or {}
-        self._gps = gps or {}
-        self._fallar_en = fallar_en or set()
-
-    def get_timestamp_from_image(self, pathImagen):
-        if pathImagen in self._fallar_en:
-            raise RuntimeError("EXIF corrupto (simulado)")
-        return self._timestamps.get(pathImagen)
-
-    def get_make(self, filename):
-        return "DJI"
-
-    def get_model(self, filename, progress_callback):
-        return self._modelos.get(filename, "M3T")
-
-    def get_gimbal_yaw_pitch(self, filename, bloque_xmp=None):
-        return [str(self._yaws.get(filename, 0.0)), "0"]
-
-    def leerLatitudLongitudAltitud_exif_DJI(self, pathImagen, progress_callback):
-        return self._gps.get(pathImagen)
 
 
 def _escribir_estadillo(ruta, filas):
@@ -150,8 +122,8 @@ def _cfg(tmp_path, **overrides):
 
 
 def _crear_imagen(carpeta, nombre):
-    """Un fichero vacío basta: `_leer_metadatos` nunca abre disco de verdad
-    en estos tests, todo lo resuelve `_ExifDePrueba`."""
+    """Fichero vacío; `_ExifDePrueba(...)` lo reescribe como JPEG DJI real con los
+    metadatos de su receta (el índice los lee con Rust de los bytes)."""
     os.makedirs(carpeta, exist_ok=True)
     ruta = os.path.join(carpeta, nombre)
     with open(ruta, "wb") as fh:

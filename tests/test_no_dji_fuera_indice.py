@@ -48,21 +48,46 @@ def test_make_canon_ignorado_con_motivo(tmp_path, make_dji_jpeg):
     assert res["total"] == 1
 
 
-def test_jpg_dji_con_exif_fuera_del_buffer_se_indexa(tmp_path, make_dji_jpeg, monkeypatch):
-    from atom_core import indice
-    monkeypatch.setattr(indice, "_exif_entero_en_buffer", lambda buf: False)
-    _cfg_, res, _log = _correr(tmp_path, make_dji_jpeg)
+def test_jpg_dji_con_xmp_fuera_de_la_cabecera_se_indexa(tmp_path, make_dji_jpeg):
+    """XMP tras >256 KiB de relleno: Rust pide el fichero entero (`necesita_completo`) y el JPEG DJI se indexa."""
+    from tests import corpus_helpers as ch
+    _escribir_estadillo(tmp_path / "estadillo.csv", [
+        ("1", "1", "2024:06:01", "10:00:00", "10:10:00")])
+    cfg = _cfg(tmp_path)
+    os.makedirs(cfg.input_folder, exist_ok=True)
+    exif = ch._exif_bytes(fecha="2024:06:01 10:05:00")
+    with open(os.path.join(cfg.input_folder, "DJI_0001_D.JPG"), "wb") as fh:
+        fh.write(ch._jpeg_dji(exif, ch._xmp_atributos(ch._XMP_DJI), relleno_app3=300_000,
+                              xmp_tras_relleno=True))
+    m = _manifiesto(tmp_path)
+    res = construir_indice(cfg, _PipelineDePrueba(VENTANAS), exif_mod.GeneralInformationFromImage(logging.getLogger('t')), m, _Rec(), _Rec(), _Rec())
+    m.cerrar()
     assert res["total"] == 1
-    assert all(not r.endswith(".JPG") for r, _m in res["no_dji"])
+    assert res["no_dji"] == []
 
 
 def test_make_ilegible_se_indexa_con_aviso(tmp_path, make_dji_jpeg, monkeypatch):
-    from atom_core import indice
+    """Rust marca `make_ilegible` (ExifRead lanzaría al leer Make): se indexa, con aviso, no se descarta."""
+    import types
+    from atom_core import rust_bridge
+    exigir_real = rust_bridge.exigir
 
-    def _falla(*a, **k):
-        raise OSError("lectura rota")
-    monkeypatch.setattr(indice, "_make_desde_buffer", _falla)
-    monkeypatch.setattr(exif_mod.GeneralInformationFromImage, "get_make", _falla)
+    class _RsMakeIlegible:
+        def __init__(self, rs):
+            self._rs = rs
+
+        def __getattr__(self, nombre):
+            return getattr(self._rs, nombre)
+
+        def parsear_cabecera(self, *args, **kwargs):
+            cab = self._rs.parsear_cabecera(*args, **kwargs)
+            campos = {k: getattr(cab, k) for k in dir(cab) if not k.startswith("_")}
+            campos["make_ilegible"] = True
+            return types.SimpleNamespace(**campos)
+
+    monkeypatch.setattr(rust_bridge, "exigir",
+                        lambda fase, *a, **k: _RsMakeIlegible(exigir_real(fase, *a, **k))
+                        if fase == "indice" else exigir_real(fase, *a, **k))
     _cfg_, res, log = _correr(tmp_path, make_dji_jpeg)
     assert res["no_dji"] == []  # ilegible != descartado
     assert res["total"] >= 1

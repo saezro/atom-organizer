@@ -20,6 +20,7 @@ from atom_core import estadillo as estadillo_mod
 from atom_core.indice import ErrorColisionEstadillo, ErrorEstadillosMismaCarpeta, construir_indice
 from atom_core.manifiesto import Manifiesto
 from utils import SplitImagesConfig
+from tests.corpus_helpers import ExifDePrueba as _ExifDePrueba  # noqa: E402
 
 
 class _Signal:
@@ -51,30 +52,6 @@ class _PipelineDePrueba:
         return 0
 
 
-class _ExifDePrueba:
-    def __init__(self, timestamps=None, modelos=None, yaws=None, gps=None, fallar_en=None):
-        self._timestamps = timestamps or {}
-        self._modelos = modelos or {}
-        self._yaws = yaws or {}
-        self._gps = gps or {}
-        self._fallar_en = fallar_en or set()
-
-    def get_timestamp_from_image(self, pathImagen):
-        if pathImagen in self._fallar_en:
-            raise RuntimeError("EXIF corrupto (simulado)")
-        return self._timestamps.get(pathImagen)
-
-    def get_make(self, filename):
-        return "DJI"
-
-    def get_model(self, filename, progress_callback):
-        return self._modelos.get(filename, "M3T")
-
-    def get_gimbal_yaw_pitch(self, filename, bloque_xmp=None):
-        return [str(self._yaws.get(filename, 0.0)), "0"]
-
-    def leerLatitudLongitudAltitud_exif_DJI(self, pathImagen, progress_callback):
-        return self._gps.get(pathImagen)
 
 
 def _escribir_estadillo(ruta, filas):
