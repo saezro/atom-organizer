@@ -3,8 +3,8 @@ import pytest
 
 from atom_core import calendario_revision as cr
 from atom_core.sin_colocar import ErrorSinColocar
-from tests.test_recomendaciones_sin_colocar import _indexar
-from tests.test_sin_colocar import _t, tanda  # noqa: F401 (fixture)
+from tests.test_recomendaciones_sin_colocar import _indexar, _ventanas
+from tests.test_sin_colocar import ESTADILLO, _t, tanda  # noqa: F401 (fixture)
 
 FOTOS = [
     ("DJI_0001_D.JPG", _t(10, 10, 45)),      # fuera de ventana, vecino fila 0 (alta)
@@ -41,9 +41,13 @@ def test_calendario_sin_manifiesto_es_error_visible(tmp_path):
 
 
 def test_dos_tandas_no_se_cuelan_en_las_horas(tanda):
-    _indexar(tanda, [("DJI_0001_D.JPG", _t(10, 10, 45)), ("DJI_0003_D.JPG", _t(10, 2, 0))])
-    _indexar(tanda, [("DJI_0011_D.JPG", _t(10, 11, 30)), ("DJI_0012_D.JPG", _t(10, 3, 0)),
-                     ("DJI_0013_D.JPG", _t(10, 4, 0))])
+    # Cada tanda con su carpeta de origen: el índice lee TODO el origen y, con el lector
+    # Rust, los ficheros de la 1ª tanda (JPEG reales con fecha) entrarían en la 2ª.
+    tanda.indexar([("DJI_0001_D.JPG", _t(10, 10, 45)), ("DJI_0003_D.JPG", _t(10, 2, 0))],
+                  ventanas=_ventanas(ESTADILLO), origen=str(tanda.tmp / "origen1"))
+    tanda.indexar([("DJI_0011_D.JPG", _t(10, 11, 30)), ("DJI_0012_D.JPG", _t(10, 3, 0)),
+                   ("DJI_0013_D.JPG", _t(10, 4, 0))],
+                  ventanas=_ventanas(ESTADILLO), origen=str(tanda.tmp / "origen2"))
     cal = cr.calendario(tanda.destino)
     v0 = cal["vuelos"][0]
     assert cal["ejecucion"] == 2

@@ -486,13 +486,16 @@ def test_bytes_origen_es_el_tamano_real_del_fichero(tmp_path):
     # columna.
     with open(ruta, "wb") as fh:
         fh.write(b"contenido de prueba, no vacio" * 100)
-    tamano_real = os.path.getsize(ruta)
 
     inicio = dt.datetime(2024, 6, 1, 10, 0, 0)
     fin = dt.datetime(2024, 6, 1, 10, 10, 0)
     ventanas = {("2024:06:01", "10:00:00", "10:10:00"): (inicio, fin)}
     pipeline = _PipelineDePrueba(ventanas)
     exif = _ExifDePrueba(timestamps={ruta: dt.datetime(2024, 6, 1, 10, 5, 0)})
+    # `ExifDePrueba` reescribe el fichero como JPEG DJI real: el tamaño de referencia
+    # se toma DESPUÉS, justo antes de indexar.
+    tamano_real = os.path.getsize(ruta)
+    assert tamano_real > 0
     manifiesto = _manifiesto(tmp_path)
 
     construir_indice(cfg, pipeline, exif, manifiesto, _Signal(), _Signal(), _Signal())
