@@ -90,3 +90,17 @@ def test_excepcion_en_primer_intento_no_propaga_y_reintenta_hasta_ok():
     assert len(eventos) == 2
     assert eventos[0]["estado"] == ESTADO_SIN_CONEXION
     assert eventos[1]["estado"] == ESTADO_OK
+
+
+def test_tras_drenar_con_red_caida_otra_vez_espera_reconexion_y_retoma():
+    class Api(ApiFalsa):
+        def __init__(self, estados):
+            super().__init__(estados)
+            self.sin_red = [True, False]
+
+        def _sin_conexion(self):
+            return self.sin_red.pop(0)
+
+    api = Api([ESTADO_OK, ESTADO_OK])
+    _ciclo_comprobacion_arranque(api, dormir=DormirFalso(), push=_pusher()[1])
+    assert api.drenados == 2

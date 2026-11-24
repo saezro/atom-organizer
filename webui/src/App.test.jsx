@@ -14,7 +14,8 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const progreso = vi.hoisted(() => ({ cb: null }))
+// Varios suscriptores (App y ColaOrganizar): `cb` reparte cada evento a todos.
+const progreso = vi.hoisted(() => ({ cb: null, cbs: new Set() }))
 
 const api = {
   revisionIndiceCalendario: vi.fn(),
@@ -27,6 +28,7 @@ const api = {
   revisionIndiceContinuar: vi.fn(async () => ({ ok: true })),
   sinColocarListar: vi.fn(async () => ({ ok: true, grupos: [{ grupo_id: 'g1' }], filas: [] })),
   runCancelar: vi.fn(async () => ({})),
+  colaListar: vi.fn(async () => ({ ok: true, jobs: [], pausada: false })),
   appVersion: vi.fn(async () => ({ version: '3.4.24' })),
   cloudStatus: vi.fn(async () => ({
     configured: true,
@@ -59,7 +61,11 @@ vi.mock('./bridge', () => ({
   // La pestaña «Subir resultado» (PanelResultado) está siempre montada en Trabajo.
   onResultado: () => () => {},
   whenBridgeReady: () => Promise.resolve(),
-  onProgress: (cb) => { progreso.cb = cb; return () => {} },
+  onProgress: (cb) => {
+    progreso.cbs.add(cb)
+    progreso.cb = (d) => progreso.cbs.forEach((f) => f(d))
+    return () => { progreso.cbs.delete(cb) }
+  },
   onCloud: () => () => {},
   onAnalisis: () => () => {},
   onControlCarpeta: () => () => {},

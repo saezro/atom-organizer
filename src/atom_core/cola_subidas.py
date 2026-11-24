@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import threading
 import time
@@ -29,6 +30,8 @@ try:
     import fcntl
 except ImportError:  # pragma: no cover - Windows
     fcntl = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
 
 NOMBRE_COLA = "cola_subidas.json"
 
@@ -57,19 +60,79 @@ def _id_job(folder: str, prefix: str, tipo: str = TIPO_CRUDO) -> str:
     return hashlib.sha256(clave.encode("utf-8")).hexdigest()[:16]
 
 
-def _leer(ruta: Path) -> list[dict]:
-    try:
-        crudo = ruta.read_text(encoding="utf-8")
-    except OSError:
-        return []
+class ColaIlegible(OSError):
+    """El fichero de cola existe pero no se pudo leer tras reintentar.
+
+    Se propaga (no se devuelve `[]`): la siguiente escritura habría pisado una
+    cola buena con una vacía."""
+
+
+_LECTURA_REINTENTOS = 4
+_LECTURA_ESPERA_S = 0.15
+
+# Avisos para la UI (cola corrupta apartada). `tomar_avisos()` los vacía.
+_AVISOS: list[str] = []
+
+
+def _fecha_madrid() -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("Europe/Madrid")).strftime("%Y-%m-%d_%H%M%S")
+
+
+def tomar_avisos() -> list[str]:
+    """Devuelve y vacía los avisos pendientes (p. ej. cola corrupta apartada)."""
+    with _LOCK_AVISOS:
+        out = list(_AVISOS)
+        _AVISOS.clear()
+        return out
+
+
+_LOCK_AVISOS = threading.Lock()
+
+
+def _leer_lista_json(ruta: Path, *, dormir=time.sleep) -> list:
+    """Lee una lista JSON de cola con política segura.
+
+    - Ausente: `[]` (cola vacía legítima).
+    - OSError: reintenta unas veces; si persiste lanza `ColaIlegible` (NO se escribe).
+    - JSON corrupto: lo renombra a `<nombre>.corrupto-<fecha Madrid>`, avisa en log
+      y UI, y empieza vacía.
+    """
+    ultimo: OSError | None = None
+    crudo = None
+    for i in range(_LECTURA_REINTENTOS):
+        try:
+            crudo = ruta.read_text(encoding="utf-8")
+            break
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            ultimo = exc
+            if i < _LECTURA_REINTENTOS - 1:
+                dormir(_LECTURA_ESPERA_S)
+    if crudo is None:
+        raise ColaIlegible(f"No se pudo leer la cola {ruta.name}: {ultimo}")
     try:
         datos = json.loads(crudo)
     except ValueError:
-        # Escritura a medias o disco lleno: se trata como cola vacía en vez de
-        # impedir que arranque la app. Se reescribirá limpia al siguiente encolar.
+        apartado = ruta.with_name(f"{ruta.name}.corrupto-{_fecha_madrid()}")
+        try:
+            os.replace(ruta, apartado)
+            msg = (f"La cola {ruta.name} estaba corrupta: se guardó aparte como "
+                   f"{apartado.name} y se empieza vacía.")
+        except OSError as exc:
+            raise ColaIlegible(
+                f"La cola {ruta.name} está corrupta y no se pudo apartar: {exc}") from exc
+        logger.error(msg)
+        with _LOCK_AVISOS:
+            _AVISOS.append(msg)
         return []
-    if not isinstance(datos, list):
-        return []
+    return datos if isinstance(datos, list) else []
+
+
+def _leer(ruta: Path) -> list[dict]:
+    datos = _leer_lista_json(ruta)
     jobs = [j for j in datos if isinstance(j, dict) and "id" in j]
     for j in jobs:
         j.setdefault("tipo", TIPO_CRUDO)
@@ -133,10 +196,13 @@ class _SeccionCritica:
 
 
 def _escribir(ruta: Path, jobs: list[dict]) -> None:
-    """Escritura atómica: un corte no debe dejar la cola truncada."""
+    """Escritura atómica: un corte no debe dejar la cola truncada (fsync antes del replace)."""
     ruta.parent.mkdir(parents=True, exist_ok=True)
     tmp = ruta.with_suffix(ruta.suffix + ".tmp")
-    tmp.write_text(json.dumps(jobs, ensure_ascii=False, indent=2), encoding="utf-8")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(json.dumps(jobs, ensure_ascii=False, indent=2))
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, ruta)
 
 
@@ -191,3 +257,34 @@ def marcar_intento(job_id: str, error: str = "", *, ruta: Path | None = None) ->
                 _escribir(ruta, jobs)
                 return int(j["intentos"])
     return 0
+
+
+BACKOFF_RED_BASE_S = 30
+BACKOFF_RED_TOPE_S = 1800
+
+
+def aplazar_red(job_id: str, error: str = "", *, ahora: float | None = None,
+                ruta: Path | None = None) -> float:
+    """Fallo por red: backoff exponencial con tope, SIN consumir `intentos`.
+
+    Anota `intentos_red` y `no_antes` (epoch); `listo()` deja el job fuera de los
+    drenados hasta entonces, así un fallo persistente mal clasificado como red no
+    relanza en bucle caliente. Devuelve los segundos de espera (0 si no existe)."""
+    ruta = ruta or _ruta_cola()
+    with _SeccionCritica(ruta):
+        jobs = _leer(ruta)
+        for j in jobs:
+            if j["id"] == job_id:
+                n = int(j.get("intentos_red", 0)) + 1
+                espera = min(BACKOFF_RED_BASE_S * 2 ** (n - 1), BACKOFF_RED_TOPE_S)
+                j["intentos_red"] = n
+                j["no_antes"] = (time.time() if ahora is None else ahora) + espera
+                j["ultimo_error"] = error
+                _escribir(ruta, jobs)
+                return float(espera)
+    return 0.0
+
+
+def listo(job: dict, *, ahora: float | None = None) -> bool:
+    """True si el job no está aplazado por backoff de red."""
+    return float(job.get("no_antes", 0) or 0) <= (time.time() if ahora is None else ahora)

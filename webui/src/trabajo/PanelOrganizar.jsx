@@ -4,6 +4,7 @@ import { SPLIT_ADVANCED } from '../schema'
 import { Field, initialState, buildParams } from '../TaskBlock'
 import PasoCarpeta from './PasoCarpeta'
 import { avisoSufijoRgb } from './avisoSufijoRgb'
+import { empaquetarRutas } from './empaquetarRutas'
 
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
 const ADV_FIELDS = SPLIT_ADVANCED.flatMap((s) => s.fields)
@@ -22,6 +23,8 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
   const [detected, setDetected] = useState(null)
   const [escaneados, setEscaneados] = useState(0)
   const [camaraRgb, setCamaraRgb] = useState('Z') // 'Z' (por defecto) | 'W'; solo se envía si la tanda trae _Z
+  // Resultado de «Añadir a la cola»: {ok, texto, avisos[]} (el error es visible, nunca mudo).
+  const [colaMsg, setColaMsg] = useState(null)
 
   // Recorte de la Z (vista simple): 'auto' (tabla) | 'ninguno' (copia íntegra) | 'pct'.
   const [recorteZ, setRecorteZ] = useState('auto')
@@ -89,7 +92,9 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
     && (String(recorteZPct).trim() === '' || !Number.isFinite(pctNum) || pctNum < 0 || pctNum > 100)
 
   // El backend exige estadillo para organizar (`estadillo.py`): sin él, no se lanza.
-  const canRun = ready && !running && origen && destino && !destinoFull && estadillos.length > 0 && !pctInvalido
+  // «Añadir a la cola» NO espera a que termine el run en curso: se encola y se procesa después.
+  const canEnqueue = ready && origen && destino && !destinoFull && estadillos.length > 0 && !pctInvalido
+  const canRun = canEnqueue && !running
   // Por qué «Ejecutar» está deshabilitado: mismas condiciones que `canRun`.
   const falta = []
   if (!ready) falta.push('conexión con ATOM')
@@ -110,7 +115,8 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
     return () => { vivo = false }
   }, [destino, origen])
 
-  function handleRun(soloFallidas = false) {
+  // Params + avanzado del trabajo con lo que hay en pantalla (los usan Ejecutar y «Añadir a la cola»).
+  function armarTrabajo(soloFallidas = false) {
     const advanced = buildParams(ADV_FIELDS, adv)
     // Quién manda: la vista simple SOBRESCRIBE cropping_mode_auto/crop_percentage de
     // Avanzado solo cuando cámara=Z y la tanda trae _Z; en cualquier otro caso
@@ -128,13 +134,38 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
     // Orientación de la planta ("Horizontal" nunca gira, ver
     // atom_core.indice._consenso_de_angulo_por_vuelo): vacía mientras el
     // catálogo de la Suite no mande el campo (lib/organizer-catalogo.js).
-    onRun('split_images', {
+    const params = {
       origen, destino, estadillo: estadillos, rename,
       ...(soloFallidas ? { solo_fallidas: true } : {}),
       inspeccion: nombreInspeccion, orientacion: inspeccion?.orientacion || '',
       inspeccion_id: inspeccion?.id ?? null,
       ...(hayZoom ? { camara_rgb: camaraRgb } : {}),
-    }, advanced)
+    }
+    return { params, advanced }
+  }
+
+  function handleRun(soloFallidas = false) {
+    setColaMsg(null)
+    const { params, advanced } = armarTrabajo(soloFallidas)
+    onRun('split_images', params, advanced)
+  }
+
+  // Encola el trabajo actual: el backend lo procesa tras el que esté en marcha. El estadillo
+  // viaja empaquetado (un string), como hace App al arrancar un run.
+  async function handleEncolar() {
+    const { params, advanced } = armarTrabajo(false)
+    try {
+      const r = await api.colaEncolar({ ...params, estadillo: empaquetarRutas(params.estadillo) }, advanced)
+      if (r && r.ok) {
+        setColaMsg({ ok: true, texto: r.pausada
+          ? 'Añadido a la cola. La cola está en pausa: pulsa «Reanudar cola» para procesarla.'
+          : 'Añadido a la cola.', avisos: r.avisos || [] })
+      } else {
+        setColaMsg({ ok: false, texto: r?.error || 'No se pudo añadir a la cola.', avisos: [] })
+      }
+    } catch (e) {
+      setColaMsg({ ok: false, texto: String(e?.message || e || 'No se pudo añadir a la cola.'), avisos: [] })
+    }
   }
 
   return (
@@ -303,10 +334,22 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
         </div>
       )}
 
-      <button className="btn-run" disabled={!canRun} onClick={() => handleRun(false)}>
-        {running ? 'Procesando…' : 'Ejecutar'}
-      </button>
-      {!canRun && !running && falta.length > 0 && (
+      <div className="field-row">
+        <button className="btn-run" disabled={!canRun} onClick={() => handleRun(false)}>
+          {running ? 'Procesando…' : 'Ejecutar'}
+        </button>
+        <button type="button" className="btn-ghost" disabled={!canEnqueue} onClick={handleEncolar}>
+          Añadir a la cola
+        </button>
+      </div>
+      {colaMsg && (
+        <span className={`field-hint ${colaMsg.ok ? 'hint-ok' : 'hint-error'}`}
+          role={colaMsg.ok ? 'status' : 'alert'} data-testid="cola-msg">{colaMsg.texto}</span>
+      )}
+      {colaMsg?.avisos?.map((a) => (
+        <span key={a} className="field-hint hint-warn" data-testid="cola-aviso">{a}</span>
+      ))}
+      {!canEnqueue && falta.length > 0 && (
         <span className="field-hint" data-testid="falta-ejecutar">Falta: {falta.join(' / ')}</span>
       )}
       {fallidasError && (

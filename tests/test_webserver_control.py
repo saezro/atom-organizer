@@ -37,6 +37,8 @@ class _ApiControl:
         self.espera_carpeta_llamadas = []
         self.run_organize_llamadas = []
         self.run_organize_resultado = {"started": True}
+        self.cola_encolar_llamadas = []
+        self.cola_encolar_resultado = {"ok": True, "job": {"id": "j1"}, "avisos": []}
         self.analisis_cancel_llamadas = 0
         self.estadillo_en_carpeta_resultado = {"encontrado": True, "nombre": "estadillo.csv", "buscando": False}
         # Estado unico de "carpeta de trabajo" (ver `Api.carpeta_trabajo_fijar`
@@ -95,6 +97,10 @@ class _ApiControl:
         self.run_organize_llamadas.append((params, advanced))
         return self.run_organize_resultado
 
+    def cola_encolar(self, params, advanced):
+        self.cola_encolar_llamadas.append((params, advanced))
+        return self.cola_encolar_resultado
+
     def analisis_cancel(self):
         self.analisis_cancel_llamadas += 1
         return {"ok": True}
@@ -114,6 +120,28 @@ def servidor(tmp_path):
     hilo.start()
     yield srv, api, f"http://127.0.0.1:{srv.server_address[1]}"
     srv.shutdown()
+
+
+@pytest.fixture(autouse=True)
+def _estadillo_sin_exif(monkeypatch):
+    """`/api/control/organizar` importa `atom_core.estadillo` solo por
+    `empaquetar_rutas`; sin exifread/geopy (CI ligero) se sustituye por un
+    doble con la MISMA función (mismo patrón que `atom_core.organize` en
+    test_app_webview_cola_worker). Con las deps instaladas se usa el real."""
+    import importlib
+    import sys
+    import types
+    try:
+        importlib.import_module("atom_core.estadillo")
+    except ImportError:
+        mod = types.ModuleType("atom_core.estadillo")
+        mod.ESTADILLO_PATH_SEP = "\x1f"
+
+        def empaquetar_rutas(paths):
+            limpias = [str(p).strip() for p in (paths or []) if str(p).strip()]
+            return mod.ESTADILLO_PATH_SEP.join(limpias)
+        mod.empaquetar_rutas = empaquetar_rutas
+        monkeypatch.setitem(sys.modules, "atom_core.estadillo", mod)
 
 
 @pytest.fixture(autouse=True)
@@ -338,14 +366,68 @@ def test_organizar_ignora_estadillo_lan_pendiente_de_otra_carpeta(servidor):
     assert params["estadillo"] == ""
 
 
-def test_organizar_en_curso_da_409(servidor):
+def test_organizar_en_curso_se_encola(servidor):
+    """Con un run en marcha ya no se rechaza: se encola (modo cola)."""
     _, api, base = servidor
     _fijar_pin(api)
     api.run_organize_resultado = {"started": False, "reason": "Ya hay un proceso en curso."}
     _post_json(base, "/api/control/carpeta", {"path": "/media/usb1/vuelo"}, {PIN_CABECERA: "1234"})
     status, body, _ = _post_json(base, "/api/control/organizar", {}, {PIN_CABECERA: "1234"})
+    assert status == 200
+    assert body == {"ok": True, "started": False, "encolado": True, "job_id": "j1",
+                    "pausada": False, "mensaje": "encolado", "avisos": []}
+    assert api.cola_encolar_llamadas[0][0]["origen"] == "/media/usb1/vuelo"
+
+
+def test_organizar_con_cola_en_pausa_lo_dice_explicito(servidor):
+    _, api, base = servidor
+    _fijar_pin(api)
+    api.run_organize_resultado = {"started": False, "reason": "Ya hay un proceso en curso."}
+    api.cola_encolar_resultado = {"ok": True, "job": {"id": "j2"}, "avisos": [], "pausada": True}
+    _post_json(base, "/api/control/carpeta", {"path": "/media/usb1/vuelo"}, {PIN_CABECERA: "1234"})
+    status, body, _ = _post_json(base, "/api/control/organizar", {}, {PIN_CABECERA: "1234"})
+    assert status == 200
+    assert body["encolado"] is True and body["pausada"] is True
+    assert body["mensaje"] == "encolado (cola en pausa)"
+
+
+def test_organizar_en_curso_origen_ya_en_cola_da_409(servidor):
+    _, api, base = servidor
+    _fijar_pin(api)
+    api.run_organize_resultado = {"started": False, "reason": "Ya hay un proceso en curso."}
+    api.cola_encolar_resultado = {"ok": False, "codigo": "ya_en_cola",
+                                  "error": "Esa carpeta ya está en la cola"}
+    _post_json(base, "/api/control/carpeta", {"path": "/media/usb1/vuelo"}, {PIN_CABECERA: "1234"})
+    status, body, _ = _post_json(base, "/api/control/organizar", {}, {PIN_CABECERA: "1234"})
     assert status == 409
-    assert body == {"ok": False, "codigo": "en_curso"}
+    assert body["codigo"] == "ya_en_cola"
+
+
+@pytest.mark.parametrize("resultado,esperado,codigo", [
+    ({"ok": False, "codigo": "cola_error", "error": "ColaIlegible: x"}, 500, "cola_error"),
+    ({"ok": False, "error": "Falta la carpeta final (destino)."}, 400, "cola_invalida"),
+])
+def test_organizar_fallo_de_cola_no_es_409(servidor, resultado, esperado, codigo):
+    _, api, base = servidor
+    _fijar_pin(api)
+    api.run_organize_resultado = {"started": False, "reason": "Ya hay un proceso en curso."}
+    api.cola_encolar_resultado = resultado
+    _post_json(base, "/api/control/carpeta", {"path": "/media/usb1/vuelo"}, {PIN_CABECERA: "1234"})
+    status, body, _ = _post_json(base, "/api/control/organizar", {}, {PIN_CABECERA: "1234"})
+    assert status == esperado
+    assert body["codigo"] == codigo
+
+
+def test_organizar_encolado_sin_arrancar_es_200_con_aviso(servidor):
+    _, api, base = servidor
+    _fijar_pin(api)
+    api.run_organize_resultado = {"started": False, "reason": "Ya hay un proceso en curso."}
+    api.cola_encolar_resultado = {"ok": True, "job": {"id": "j3"},
+                                  "avisos": ["Trabajo encolado, pero la cola no arrancó (X)."]}
+    _post_json(base, "/api/control/carpeta", {"path": "/media/usb1/vuelo"}, {PIN_CABECERA: "1234"})
+    status, body, _ = _post_json(base, "/api/control/organizar", {}, {PIN_CABECERA: "1234"})
+    assert status == 200
+    assert body["encolado"] is True and body["avisos"]
 
 
 # ---- GET /api/control/estado -----------------------------------------------

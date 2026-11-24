@@ -110,6 +110,14 @@ class _Auth:
         return "idtok"
 
 
+class _AuthUsuario(_Auth):
+    def __init__(self, email):
+        class _I:
+            pass
+        self.identity = _I()
+        self.identity.email = email
+
+
 def _falsa_descarga(payload, capturado: dict):
     def urlopen(req, timeout=None):
         capturado["url"] = req.full_url
@@ -183,26 +191,92 @@ def test_un_fallo_de_descarga_no_pasa_por_lista_vacia(monkeypatch):
         ins.descargar_catalogo_api(_Auth())
 
 
-def test_si_la_api_falla_no_se_sirve_una_lista_de_otro_sitio(monkeypatch):
-    """Antes se caía al bucket y luego a la caché. Una lista vieja con el mismo
-    aspecto que la buena lleva a subir a un destino que ya no existe, y no se
-    nota hasta que los ficheros están arriba. Mejor decir que no se pudo."""
+_FILA = {"id": 9, "empresa": "E", "planta": "P", "anio": "2026", "tipo": "T_Modulos"}
+
+
+@pytest.fixture
+def cache_tmp(tmp_path, monkeypatch):
+    ruta = tmp_path / "catalogo_inspecciones.json"
+    monkeypatch.setattr(ins, "_ruta_cache", lambda: ruta)
+    return ruta
+
+
+def _api_ok(monkeypatch, filas):
+    monkeypatch.setattr(ins.urllib.request, "urlopen", lambda req, timeout=None:
+                        _Resp(json.dumps({"inspecciones": filas}).encode()))
+
+
+def _api_falla(monkeypatch, exc):
     def revienta(req, timeout=None):
-        raise urllib.error.HTTPError("u", 502, "Bad Gateway",
-                                     email.message.Message(), None)
-
+        raise exc
     monkeypatch.setattr(ins.urllib.request, "urlopen", revienta)
+
+
+def _http(code):
+    return urllib.error.HTTPError("u", code, "x", email.message.Message(), None)
+
+
+def test_ok_con_lista_guarda_la_cache(monkeypatch, cache_tmp):
+    _api_ok(monkeypatch, [_FILA])
     out = ins.cargar_catalogo("b", _Auth())
-    assert out["ok"] is False
-    assert out["inspecciones"] == []
     assert out["origen"] == "api"
-    assert "502" in out["error"]
+    datos = json.loads(cache_tmp.read_text(encoding="utf-8"))
+    assert [i["id"] for i in datos["inspecciones"]] == [9]
+    assert datos["bajado_en"].endswith(("+01:00", "+02:00"))  # Europe/Madrid
+    assert "\n  " in cache_tmp.read_text(encoding="utf-8")  # indent=2
+    assert not list(cache_tmp.parent.glob("*.tmp"))
 
 
-def test_ya_no_existe_ninguna_via_alternativa_al_catalogo():
-    """Que las funciones sigan ahí es que alguien puede volver a llamarlas."""
-    for muerta in ("descargar_catalogo", "leer_cache", "guardar_cache", "_ruta_cache"):
-        assert not hasattr(ins, muerta), f"{muerta} deberia haber desaparecido"
+@pytest.mark.parametrize("exc", [
+    urllib.error.URLError("sin red"), TimeoutError("t"), ConnectionResetError("r"), None])
+def test_fallo_de_red_sirve_la_cache(monkeypatch, cache_tmp, exc):
+    _api_ok(monkeypatch, [_FILA])
+    primera = ins.cargar_catalogo("b", _AuthUsuario("a@x.com"))
+    _api_falla(monkeypatch, exc or _http(502))
+    out = ins.cargar_catalogo("b", _AuthUsuario("a@x.com"))
+    assert out["ok"] is True and out["origen"] == "cache"
+    assert out["inspecciones"] == primera["inspecciones"]
+    assert out["bajado_en"] and out["aviso"]
+
+
+def test_401_no_usa_la_cache_y_marca_auth_invalida(monkeypatch, cache_tmp):
+    _api_ok(monkeypatch, [_FILA])
+    ins.cargar_catalogo("b", _Auth())
+    _api_falla(monkeypatch, _http(401))
+    out = ins.cargar_catalogo("b", _Auth())
+    assert out["ok"] is False and out["inspecciones"] == []
+    assert out["auth_invalida"] is True
+
+
+def test_403_no_usa_la_cache(monkeypatch, cache_tmp):
+    _api_ok(monkeypatch, [_FILA])
+    ins.cargar_catalogo("b", _Auth())
+    _api_falla(monkeypatch, _http(403))
+    out = ins.cargar_catalogo("b", _Auth())
+    assert out["ok"] is False and out["inspecciones"] == []
+
+
+def test_ok_con_lista_vacia_no_pisa_la_cache(monkeypatch, cache_tmp):
+    _api_ok(monkeypatch, [_FILA])
+    ins.cargar_catalogo("b", _Auth())
+    _api_ok(monkeypatch, [])
+    out = ins.cargar_catalogo("b", _Auth())
+    assert out["ok"] is True and out["inspecciones"] == []
+    assert [i["id"] for i in json.loads(cache_tmp.read_text("utf-8"))["inspecciones"]] == [9]
+
+
+def test_sin_cache_y_offline_es_error(monkeypatch, cache_tmp):
+    _api_falla(monkeypatch, urllib.error.URLError("sin red"))
+    out = ins.cargar_catalogo("b", _Auth())
+    assert out["ok"] is False and out["inspecciones"] == []
+    assert out["origen"] == "api" and "sin red" in out["error"]
+    assert not cache_tmp.exists()
+
+
+def test_un_fallo_no_escribe_la_cache(monkeypatch, cache_tmp):
+    _api_falla(monkeypatch, _http(502))
+    ins.cargar_catalogo("b", _Auth())
+    assert not cache_tmp.exists()
 
 
 def test_la_ui_recibe_prefijo_y_etiqueta_ya_hechos():
@@ -238,3 +312,40 @@ def test_la_app_no_lleva_credenciales_de_la_base_de_datos():
         src = _fuente(fichero)
         assert "PGPASSWORD" not in src
         assert "psql" not in src
+
+
+def test_cache_de_otro_usuario_no_se_sirve(monkeypatch, cache_tmp):
+    _api_ok(monkeypatch, [_FILA])
+    ins.cargar_catalogo("b", _AuthUsuario("A@x.com"))
+    _api_falla(monkeypatch, urllib.error.URLError("sin red"))
+    assert ins.cargar_catalogo("b", _AuthUsuario("b@x.com"))["ok"] is False
+    out = ins.cargar_catalogo("b", _AuthUsuario("a@x.com"))
+    assert out["ok"] is True and out["origen"] == "cache"
+
+
+def test_borrar_cache_al_cerrar_sesion(monkeypatch, cache_tmp):
+    _api_ok(monkeypatch, [_FILA])
+    ins.cargar_catalogo("b", _AuthUsuario("a@x.com"))
+    assert cache_tmp.exists()
+    ins.borrar_cache()
+    assert not cache_tmp.exists() and ins.leer_cache("a@x.com") is None
+    ins.borrar_cache()  # idempotente
+
+
+@pytest.mark.parametrize("code,esperado", [(408, True), (429, True), (503, True), (401, False), (404, False)])
+def test_es_fallo_de_red_incluye_408_429(code, esperado):
+    assert ins.es_fallo_de_red(_http(code)) is esperado
+    assert not ins.es_fallo_de_red(PermissionError("disco"))
+
+
+def test_app_y_catalogo_comparten_criterio_de_red():
+    import app_webview as aw
+    assert aw._es_error_de_red(_http(429)) and aw._es_error_de_red(_http(408))
+
+
+def test_cache_con_usuario_vacio_no_se_sirve(monkeypatch, cache_tmp):
+    ins.guardar_cache([_FILA], "")
+    assert ins.leer_cache("") is None
+    _api_falla(monkeypatch, urllib.error.URLError("sin red"))
+    out = ins.cargar_catalogo("b", _Auth())  # identidad desconocida
+    assert out["ok"] is False and out["inspecciones"] == []

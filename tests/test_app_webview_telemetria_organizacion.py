@@ -215,3 +215,80 @@ def test_fin_de_telemetria_se_manda_aunque_el_flush_lance(monkeypatch):
     except RuntimeError:
         pass
     assert [c for c in rep.llamadas if c[0] == "fin"] == [("fin", {"ok": True, "error": None})]
+
+
+def test_telemetria_se_salta_sin_conexion(monkeypatch):
+    from atom_core.credencial import ESTADO_SIN_CONEXION
+    rep = _Rep()
+    api = _api(monkeypatch, rep, lambda t, p, e, a: None)
+    api._credencial.registrar(ESTADO_SIN_CONEXION, "sin red")
+    monkeypatch.setattr(api, "_reporter_actual",
+                        lambda **k: pytest.fail("no debe construir el reporter offline"))
+    assert api._telemetria_org_iniciar("split_images", {"origen": "/x/P"}) is None
+    assert rep.llamadas == []
+
+
+def test_reporter_actual_es_none_sin_conexion(monkeypatch):
+    from atom_core.credencial import ESTADO_SIN_CONEXION
+    api = aw.Api(broker=True)
+    monkeypatch.setattr(api, "_get_auth", lambda **k: pytest.fail("no debe tocar auth"))
+    api._credencial.registrar(ESTADO_SIN_CONEXION, "sin red")
+    assert api._reporter_actual(tipo="organizacion") is None
+
+
+def test_alta_tardia_cierra_el_run_con_el_fin_pedido(monkeypatch):
+    import threading
+    soltar = threading.Event()
+    log = []
+
+    class _FakeApi:
+        def _telemetria_org_iniciar(self, task, params):
+            soltar.wait(5)
+            return {"reporter": "r"}
+
+        def _telemetria_org_evento(self, tele, kind, payload):
+            log.append(("evento", kind))
+
+        def _telemetria_org_fin(self, tele):
+            log.append(("fin", tele))
+
+    monkeypatch.setattr(aw._TelemetriaOrgDiferida, "_ESPERA_ALTA_S", 0.05)
+    t = aw._TelemetriaOrgDiferida(_FakeApi(), "split_images", {})
+    t.evento("done", {"status": "ok"})
+    t.fin()                      # vence el join: el alta aún no terminó
+    assert log == []
+    soltar.set()
+    t._hilo.join(5)
+    assert log == [("evento", "done"), ("fin", {"reporter": "r"})]  # cerrado una sola vez
+
+
+def test_alta_reenvia_pendientes_sin_el_lock_tomado(monkeypatch):
+    """Los eventos diferidos se reenvían FUERA de `_lock`: un evento que llega
+    mientras tanto no se bloquea y sale después, en orden."""
+    import threading
+    api = aw.Api(broker=True)
+    alta_lista, emitiendo, soltar = threading.Event(), threading.Event(), threading.Event()
+    emitidos = []
+
+    def iniciar(task, params):
+        alta_lista.wait(5)
+        return "tele"
+
+    def evento(tele, kind, payload):
+        emitidos.append(kind)
+        if kind == "phase" and not emitiendo.is_set():
+            emitiendo.set()
+            soltar.wait(5)
+    monkeypatch.setattr(api, "_telemetria_org_iniciar", iniciar)
+    monkeypatch.setattr(api, "_telemetria_org_evento", evento)
+    monkeypatch.setattr(api, "_telemetria_org_fin", lambda tele: emitidos.append("fin"))
+    t = aw._TelemetriaOrgDiferida(api, "split_images", {})
+    t.evento("phase", {"i": 1})
+    alta_lista.set()
+    assert emitiendo.wait(5)
+    hecho = threading.Event()
+    threading.Thread(target=lambda: (t.evento("stats", {"d": 1}), hecho.set()), daemon=True).start()
+    assert hecho.wait(2)                 # no se bloquea con el reenvío en marcha
+    soltar.set()
+    t.fin()
+    assert emitidos == ["phase", "stats", "fin"]

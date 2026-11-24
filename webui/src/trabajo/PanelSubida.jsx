@@ -391,6 +391,9 @@ export default function PanelSubida({
             ) : null}
           </>
         )}
+        {status?.aviso_cola ? (
+          <span className="field-hint hint-warn" role="alert">{status.aviso_cola}</span>
+        ) : null}
         <span className="field-hint">
           Se abre el navegador para identificarte con tu cuenta de Aerotools. Los datos van
           al bucket «{status?.bucket || 'datos_para_organizar'}»; quién puede subir lo decide

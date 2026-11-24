@@ -29,8 +29,21 @@ function IconoNubeTachada() {
 // pasos de organizar/subir el alto es oro (la lista de inspecciones vive de
 // él), pero un "Sin conexión" a secas se lee como el wifi tachado de la barra
 // y volvería a perderse el matiz de que se está reintentando solo.
-export default function BannerConexion({ estado, pendientes = 0, compacto = false }) {
-  if (estado !== 'sin-conexion') return null
+export default function BannerConexion({ estado, pendientes = 0, compacto = false, avisoCola = '' }) {
+  // Cola de subidas ilegible: se avisa SIEMPRE (haya red o no): el contador de
+  // pendientes que se ve es 0 por degradado, no porque no quede nada.
+  if (estado !== 'sin-conexion') {
+    if (!avisoCola) return null
+    return (
+      <div
+        className={`kiosk-banner-conexion${compacto ? ' kiosk-banner-conexion-compacto' : ''}`}
+        role="alert"
+        data-testid="kiosk-banner-cola-ilegible"
+      >
+        <span className="kiosk-banner-conexion-texto">{avisoCola}</span>
+      </div>
+    )
+  }
 
   return (
     <div
@@ -44,6 +57,11 @@ export default function BannerConexion({ estado, pendientes = 0, compacto = fals
       {pendientes > 0 && (
         <span className="kiosk-banner-conexion-cola">
           {pendientes} en cola
+        </span>
+      )}
+      {avisoCola && (
+        <span className="kiosk-banner-conexion-cola" data-testid="kiosk-banner-cola-ilegible">
+          {avisoCola}
         </span>
       )}
     </div>

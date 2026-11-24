@@ -4,6 +4,17 @@ import InspeccionSelector from '../InspeccionSelector'
 
 const NUEVA = '__nueva__'
 
+// `bajado_en` llega en ISO con zona (Europe/Madrid); se pinta siempre en hora de Madrid.
+function fechaCacheMadrid(iso) {
+  const d = new Date(iso)
+  if (!iso || Number.isNaN(d.getTime())) return 'fecha desconocida'
+  const p = Object.fromEntries(new Intl.DateTimeFormat('es-ES', {
+    timeZone: 'Europe/Madrid', day: '2-digit', month: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(d).map((x) => [x.type, x.value]))
+  return `${p.day}/${p.month} ${p.hour}:${p.minute}`
+}
+
 export default function PasoInspeccion({ ready, prefijo, carpeta, estadilloRutas, onChange, disabled, reloadToken }) {
   const [catalogo, setCatalogo] = useState(null) // {ok, inspecciones[], origen, error}
   const [eleccion, setEleccion] = useState(prefijo || '') // prefijo elegido | NUEVA | ''
@@ -182,13 +193,8 @@ export default function PasoInspeccion({ ready, prefijo, carpeta, estadilloRutas
         {catalogo?.error
           ? null
           : catalogo?.origen === 'cache'
-            ? `${inspecciones.length} inspecciones de la última descarga (no se pudo consultar ahora).`
-            : catalogo?.origen === 'bucket'
-              // Respaldo: la Suite no respondió y esta lista se genera a mano,
-              // así que puede no traer las inspecciones creadas hoy. Decirlo
-              // evita que el operador busque una que existe y no aparece.
-              ? `${inspecciones.length} inspecciones de la lista de respaldo (puede estar desactualizada).`
-              : `${inspecciones.length} inspecciones. Los datos se guardarán en «${prefijo || '…'}/».`}
+            ? `Lista guardada el ${fechaCacheMadrid(catalogo.bajado_en)}, sin conexión.`
+            : `${inspecciones.length} inspecciones. Los datos se guardarán en «${prefijo || '…'}/».`}
       </span>
     </div>
   )

@@ -14,6 +14,7 @@ vi.mock('../bridge', () => ({
     resultadoCredencial: vi.fn().mockResolvedValue({ ok: true }),
     resultadoPrechequeo: vi.fn().mockResolvedValue({ ok: true, checks: [] }),
     resultadoInspeccionarDestino: vi.fn().mockResolvedValue({ existe: false }),
+    colaEncolar: vi.fn().mockResolvedValue({ ok: true, job: { id: 'j1' }, avisos: [] }),
   },
   onResultado: () => () => {},
   onAnalisis: (h) => {
@@ -174,5 +175,52 @@ describe('PanelOrganizar rgb_tokens', () => {
     render(<PanelOrganizar origen="/datos/vuelo" estadillos={[]} ready running={false} onRun={() => {}} />)
     emitirAnalisis({ kind: 'done', scope: 'suffixes', data: { ok: true, thermal: '_T', rgb: '', rgb_tokens: [], total: 10 } })
     await waitFor(() => expect(screen.getByTestId('rgb-detectado').textContent).toContain('No se detectaron fotos RGB'))
+  })
+
+  describe('modo cola', () => {
+    async function conDestino(props = {}) {
+      api.pickFolder.mockResolvedValue('/datos/final')
+      const onRun = vi.fn()
+      render(<PanelOrganizar origen="/datos/vuelo" estadillos={['/e.xlsx', '/f.xlsx']} ready running={false}
+        onRun={onRun} {...props} />)
+      fireEvent.click(screen.getAllByText(/Elegir/i)[0])
+      await waitFor(() => expect(screen.getByDisplayValue('/datos/final')).toBeTruthy())
+      return onRun
+    }
+
+    it('«Añadir a la cola» está desactivado sin carpeta final', () => {
+      render(<PanelOrganizar origen="/datos/vuelo" estadillos={['/e.xlsx']} ready running={false} onRun={() => {}} />)
+      expect(screen.getByText(/Añadir a la cola/i).disabled).toBe(true)
+    })
+
+    it('con un run en marcha Ejecutar se bloquea pero «Añadir a la cola» sigue activo', async () => {
+      await conDestino({ running: true })
+      expect(screen.getByText(/Procesando/i).disabled).toBe(true)
+      expect(screen.getByText(/Añadir a la cola/i).disabled).toBe(false)
+    })
+
+    it('encola con el estadillo empaquetado y sin pasar por onRun', async () => {
+      const onRun = await conDestino({ running: true })
+      fireEvent.click(screen.getByText(/Añadir a la cola/i))
+      await waitFor(() => expect(api.colaEncolar).toHaveBeenCalledTimes(1))
+      const [params, advanced] = api.colaEncolar.mock.calls[0]
+      expect(params).toEqual(expect.objectContaining({
+        origen: '/datos/vuelo', destino: '/datos/final', estadillo: '/e.xlsx\x1f/f.xlsx',
+      }))
+      expect(advanced).toBeTruthy()
+      expect(onRun).not.toHaveBeenCalled()
+      expect(await screen.findByTestId('cola-msg')).toBeTruthy()
+    })
+
+    it('enseña los avisos (mismo destino) y los errores (origen ya en cola)', async () => {
+      await conDestino()
+      api.colaEncolar.mockResolvedValueOnce({ ok: true, job: { id: 'j2' }, avisos: ['El destino ya lo usa otro trabajo'] })
+      fireEvent.click(screen.getByText(/Añadir a la cola/i))
+      expect(await screen.findByTestId('cola-aviso')).toBeTruthy()
+      api.colaEncolar.mockResolvedValueOnce({ ok: false, error: 'Esa carpeta ya está en la cola' })
+      fireEvent.click(screen.getByText(/Añadir a la cola/i))
+      await waitFor(() => expect(screen.getByTestId('cola-msg').textContent).toMatch(/ya está en la cola/))
+      expect(screen.queryByTestId('cola-aviso')).toBeNull()
+    })
   })
 })

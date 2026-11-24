@@ -35,6 +35,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from atom_core import cancelacion
+from atom_core import cola_organizar
 from atom_core import cola_subidas
 from atom_core.credencial import (
     ESTADO_OK, ESTADO_SIN_CREDENCIAL, ESTADO_SIN_CONEXION,
@@ -478,16 +479,128 @@ def precalentar_dialogo_carpeta() -> None:
 
 
 def _es_error_de_red(exc: BaseException) -> bool:
-    """Fallo de transporte (reintentable). Un OSError de disco local NO lo es."""
-    import socket
-    import urllib.error
-    if isinstance(exc, urllib.error.HTTPError):
-        return exc.code >= 500 or exc.code in (408, 429)
-    return isinstance(exc, (ConnectionError, TimeoutError, socket.timeout, socket.gaierror,
-                            urllib.error.URLError))
+    """Fallo de transporte (reintentable). Criterio único: `inspecciones.es_fallo_de_red`."""
+    from atom_core.inspecciones import es_fallo_de_red
+    return es_fallo_de_red(exc)
 
 
 MAX_INTENTOS_RESULTADO = 3
+
+MSG_SUBIDA_EN_COLA = "Sin conexión: subida en cola, se enviará al volver la red."
+
+# Texto de un fallo de transporte que Rust/urllib devuelve como `motivo` de un
+# objeto fallido (no llega como excepción: la subida termina con `fallidas`).
+_RE_MOTIVO_RED = re.compile(
+    r"timed out|timeout|connection (?:refused|reset|aborted)|"
+    r"name resolution|getaddrinfo|no such host is known|failed to lookup address|\bdns\b|"
+    r"network is unreachable|os error (?:10060|10061|10065|11001)|urlerror|"
+    r"\b(?:5\d\d|408|429)\b", re.IGNORECASE)
+
+# Motivo de rechazo de credencial que llega como texto de `fallidas` (no como excepción).
+_RE_MOTIVO_AUTH = re.compile(
+    r"\b(?:401|403)\b|unauthori[sz]ed|forbidden|invalid[_ ]grant|"
+    r"token (?:has )?expired|expired token|invalid[_ ]token|invalid credentials", re.IGNORECASE)
+
+
+def _clasificar_fallo_subida(exc: BaseException) -> str:
+    """`"red"` (se encola), `"auth"` (401/403/sesión: NO se encola) u `"otro"`.
+
+    Recorre la cadena `__cause__`: `GoogleAuth` envuelve en `AuthError` tanto el
+    «Sin conexión con la Suite» (URLError) como los 401/403 (HTTPError)."""
+    import urllib.error
+    cadena, e = [], exc
+    while e is not None and len(cadena) < 6:
+        cadena.append(e)
+        e = e.__cause__
+    for e in cadena:
+        if isinstance(e, urllib.error.HTTPError):
+            if e.code in (401, 403):
+                return "auth"
+            if e.code >= 500 or e.code in (408, 429):
+                return "red"
+    if any(_es_error_de_red(e) for e in cadena):
+        return "red"
+    from atom_core.google_auth import AuthError
+    if isinstance(exc, AuthError):
+        return "auth"
+    return "otro"
+
+
+class _TelemetriaOrgDiferida:
+    """Telemetría de la organización con el alta en segundo plano.
+
+    `Api._telemetria_org_iniciar` hace un POST síncrono (hasta 5 s); antes retrasaba
+    el arranque de cada run. Ahora el alta corre en su hilo y los eventos que llegan
+    antes de que termine se guardan (último `phase`/`stats` + resultado) y se
+    reenvían al acabar. `fin()` espera al alta (acotado) y cierra el run SIEMPRE."""
+
+    _ESPERA_ALTA_S = 6.0
+
+    def __init__(self, api: "Api", task: str, params: dict) -> None:
+        self._api = api
+        self._lock = threading.Lock()
+        self._tele: dict | None = None
+        self._listo = False
+        self._fin_pedido = False
+        self._fin_hecho = False
+        self._ultimos: dict[str, object] = {}
+        self._terminales: list[tuple[str, object]] = []
+        self._hilo = threading.Thread(
+            target=self._alta, args=(task, params), name="telemetria-org-alta", daemon=True)
+        self._hilo.start()
+
+    def _alta(self, task: str, params: dict) -> None:
+        tele = None
+        try:
+            tele = self._api._telemetria_org_iniciar(task, params)
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            logger.warning("telemetria organizacion (alta) falló: %s", exc)
+        # Los pendientes se reenvían FUERA del lock (cada uno es un POST: con el
+        # lock tomado bloqueaban `evento()` en el hilo del run). `_listo` sigue
+        # False mientras se vacía, así lo que llegue entretanto se guarda y sale
+        # en la vuelta siguiente, en orden.
+        with self._lock:
+            self._tele = tele
+        while True:
+            with self._lock:
+                pend = [(k, p) for k, p in self._ultimos.items()] + self._terminales
+                self._ultimos, self._terminales = {}, []
+                if not pend:
+                    self._listo = True
+                    # `fin()` venció su espera antes de que el alta terminara: el
+                    # run quedaría abierto. Lo cierra el alta.
+                    cerrar = self._fin_pedido and not self._fin_hecho
+                    if cerrar:
+                        self._fin_hecho = True
+                    break
+            for kind, payload in pend:
+                try:
+                    self._api._telemetria_org_evento(tele, kind, payload)
+                except Exception as exc:  # noqa: BLE001 - fail-open
+                    logger.warning("telemetria organizacion (evento diferido) falló: %s", exc)
+        if cerrar:
+            self._api._telemetria_org_fin(tele)
+
+    def evento(self, kind: str, payload) -> None:
+        with self._lock:
+            if not self._listo:
+                if kind in ("phase", "stats"):
+                    self._ultimos[kind] = payload
+                elif kind in ("done", "error"):
+                    self._terminales.append((kind, payload))
+                return
+            tele = self._tele
+        self._api._telemetria_org_evento(tele, kind, payload)
+
+    def fin(self) -> None:
+        self._hilo.join(self._ESPERA_ALTA_S)
+        with self._lock:
+            self._fin_pedido = True
+            if not self._listo or self._fin_hecho:
+                return  # el alta tardía cerrará el run al terminar
+            self._fin_hecho = True
+            tele = self._tele
+        self._api._telemetria_org_fin(tele)
 
 
 class Api:
@@ -627,6 +740,17 @@ class Api:
         self._control_fase: dict | None = None
         self._control_progreso: int | None = None
         self._control_ultimo_error: str | None = None
+        # Modo cola («Añadir a la cola»): ver `cola_*` y `_cola_worker`. El run
+        # sigue siendo UNO a la vez (`_running`); `_run_lock` hace atómico el
+        # «comprobar y tomar» entre el run directo y el hilo de la cola.
+        self._run_lock = threading.Lock()
+        self._cola_lock = threading.Lock()
+        self._cola_hilo: threading.Thread | None = None
+        self._cola_iniciada = False
+        # Tras reabrir con trabajos pendientes/interrumpidos, la cola espera a
+        # «Reanudar cola»: nada se reanuda solo.
+        self._cola_pausada = False
+        self._job_actual: str | None = None
 
     def bind_window(self, window) -> None:
         self._window = window
@@ -1562,7 +1686,7 @@ class Api:
                     "pairing": False,
                     "estado": ESTADO_SIN_CREDENCIAL,
                     "estado_mensaje": self._credencial.actual()["mensaje"],
-                    "pendientes": len(cola_subidas.pendientes())}
+                    **self._estado_cola_subidas()}
         ident = auth.identity
         return {"ok": True, "configured": True,
                 "logged_in": auth.is_logged_in(),
@@ -1585,7 +1709,18 @@ class Api:
                 "acceso_modulos": getattr(auth, "acceso_modulos", None),
                 "estado": self._credencial.actual()["estado"],
                 "estado_mensaje": self._credencial.actual()["mensaje"],
-                "pendientes": len(cola_subidas.pendientes())}
+                **self._estado_cola_subidas()}
+
+    @staticmethod
+    def _estado_cola_subidas() -> dict:
+        """`{pendientes: n}` o, con la cola ilegible, estado degradado VISIBLE:
+        `{pendientes: 0, aviso_cola: "Cola de subidas ilegible: ..."}`. Nunca lanza:
+        `cloud_status` se llama al arrancar y no puede tumbar la UI."""
+        try:
+            return {"pendientes": len(cola_subidas.pendientes())}
+        except cola_subidas.ColaIlegible as exc:
+            logger.error("cola de subidas ilegible: %s", exc)
+            return {"pendientes": 0, "aviso_cola": f"Cola de subidas ilegible: {exc}"}
 
     def cloud_comprobar(self, profunda: bool = False) -> dict:
         """Comprueba de verdad si la credencial sirve, y cachea el resultado.
@@ -1782,6 +1917,11 @@ class Api:
             return {"ok": False, "error": str(exc)}
         # El catálogo es de la sesión que se cierra: no reutilizarlo con otro usuario.
         self._catalogo_cache = None
+        try:
+            from atom_core import inspecciones
+            inspecciones.borrar_cache()
+        except Exception:  # noqa: BLE001
+            logger.warning("logout: no se pudo borrar la caché del catálogo", exc_info=True)
         # Sin esto el estado cacheado se queda en `ok` hasta el siguiente
         # latido (6 h): la UI seguiria sin avisar de que ya no hay sesion.
         self._credencial.invalidar("Se cerro la sesion en este equipo.")
@@ -2122,9 +2262,11 @@ class Api:
 
         Sale de la BD de Aerotools, vía la API de ATOM Suite y con la sesión
         del operador — la app no habla con la BD directamente (ver
-        `atom_core/inspecciones.py`). Esa es la única fuente: sin sesión o sin
-        API no hay lista, y se dice. No se sirve una copia local vieja, porque
-        de esta lista sale el destino de la subida.
+        `atom_core/inspecciones.py`). Si la red falla se sirve la última lista
+        bajada (`origen: "cache"` + `bajado_en`) para poder organizar sin
+        conexión. `is_logged_in()` es local (comprueba que hay refresh token
+        guardado, sin red), así que la sesión guardada basta offline; un 401 de
+        la Suite sigue invalidando la sesión y no usa la caché.
         """
         from atom_core import cloud_config, inspecciones
 
@@ -2440,7 +2582,35 @@ class Api:
     def cloud_upload(self, folder: str, force: bool = False,
                      prefix: str | None = None,
                      inspeccion_id: int | None = None,
-                     confirmar_subida_extra: bool = False) -> dict:
+                     confirmar_subida_extra: bool = False,
+                     job_cola: str | None = None) -> dict:
+        """Reclama la subida de forma atómica y delega en `_cloud_upload_impl`.
+
+        Antes el `if self._uploading` y el `self._uploading = True` estaban
+        separados por segundos de trabajo (estadillos, lotes): la UI y el drenado
+        de la cola podían arrancar dos subidas a la vez. `job_cola`: id del job de
+        `cola_subidas` que se drena; se descarta solo si la subida acaba bien (o
+        se cancela), así un fallo a mitad no lo pierde de la cola."""
+        lock = self.__dict__.setdefault("_upload_reclamo_lock", threading.Lock())
+        with lock:
+            if self._uploading:
+                return {"started": False, "busy": True, "reason": "Ya hay una subida en curso."}
+            self._uploading = True
+        arrancada = False
+        try:
+            r = self._cloud_upload_impl(folder, force, prefix, inspeccion_id,
+                                        confirmar_subida_extra, job_cola)
+            arrancada = bool(r.get("started"))
+            return r
+        finally:
+            if not arrancada:
+                self._uploading = False
+
+    def _cloud_upload_impl(self, folder: str, force: bool = False,
+                           prefix: str | None = None,
+                           inspeccion_id: int | None = None,
+                           confirmar_subida_extra: bool = False,
+                           job_cola: str | None = None) -> dict:
         """Sube la carpeta entera al bucket. El progreso va por `atom:cloud`.
 
         `force` se mantiene por compatibilidad con llamadas antiguas y se
@@ -2465,12 +2635,11 @@ class Api:
         "reintentar", no "subir otra vez" (ver `atom_core/lotes.py`).
         """
         self.cloud_asegurar_estado()
-        if self._uploading:
-            return {"started": False, "reason": "Ya hay una subida en curso."}
+        # `self._uploading` ya está reclamado por `cloud_upload`.
 
         from datetime import datetime, timezone
 
-        from atom_core import cloud_config, cloud_upload, estadillo as estadillo_mod, lotes, upload_log
+        from atom_core import cloud_config, cloud_upload, lotes, upload_log
 
         auth = self._get_auth()
         if auth is None:
@@ -2482,7 +2651,14 @@ class Api:
             destino, prefijo_norm, error = self._destino(folder, prefix)
             if error:
                 return {"started": False, "reason": error}
-            job = cola_subidas.encolar(str(folder), prefijo_norm, inspeccion_id)
+            try:
+                job = cola_subidas.encolar(str(folder), prefijo_norm, inspeccion_id)
+            except cola_subidas.ColaIlegible as exc:
+                # Nunca perder el encargo en silencio: error visible, no «en cola».
+                logger.error("cloud_upload: no se pudo encolar %s: %s", folder, exc)
+                return {"started": False, "encolado": False,
+                        "reason": (f"Cola de subidas ilegible: {exc}. La subida NO ha "
+                                   "quedado guardada; vuelve a intentarlo.")}
             self._credencial.registrar(ESTADO_SIN_CREDENCIAL, "No hay dispositivo emparejado.")
             return {
                 "started": False,
@@ -2494,6 +2670,9 @@ class Api:
         root, prefix, error = self._destino(folder, prefix)
         if error:
             return {"started": False, "reason": error}
+
+        # Import tardío: el camino sin sesión (encolar) no necesita exif/estadillo.
+        from atom_core import estadillo as estadillo_mod
 
         # Un lote sin estadillo no se puede organizar: se aborta ANTES de
         # subir nada, no a mitad (ver atom_core/lotes.py).
@@ -2771,8 +2950,16 @@ class Api:
                 except Exception as exc_rep:  # noqa: BLE001 - fail-open
                     self._log_subida(
                         "cloud_upload: fallo reportando a la Suite (%s)", exc_rep)
+                if job_cola is not None:
+                    if res.ok or self._cancel_upload:
+                        self._cola_subidas_cerrar(job_cola, None)
+                    else:
+                        self._cola_subidas_cerrar(
+                            job_cola, f"{len(res.failed)} objetos fallaron")
             except Exception as exc:  # noqa: BLE001 - llega a la UI como error
                 self._push_cloud({"kind": "error", "text": str(exc)})
+                if job_cola is not None:
+                    self._cola_subidas_cerrar(job_cola, str(exc))
                 try:
                     self._reportar_subida(inspeccion_id, plan, estado="error",
                                           error=str(exc))
@@ -2785,6 +2972,20 @@ class Api:
 
         threading.Thread(target=worker, daemon=True).start()
         return {"started": True}
+
+    def _cola_subidas_cerrar(self, job_id: str, error: str | None) -> None:
+        """Cierra un job de `cola_subidas` lanzado por el drenado: `error=None` lo
+        descarta (subida completa o cancelada a mano); con error suma un intento y
+        lo DEJA en cola para el siguiente drenado. Nunca lanza."""
+        try:
+            if error is None:
+                cola_subidas.descartar(job_id)
+            else:
+                cola_subidas.marcar_intento(job_id, error)
+        except Exception as exc:  # noqa: BLE001 - cola ilegible: visible, no tumba el hilo
+            logger.error("cola de subidas: no se pudo cerrar el job %s: %s", job_id, exc)
+            self._push_cloud({"kind": "log",
+                              "text": f"Cola de subidas ilegible: {exc}"})
 
     # ---- estadillo: ubicación canónica en el bucket ------------------------
     # Acciones propias: no cuelgan de organizar ni de subir la jornada, así
@@ -3568,6 +3769,8 @@ class Api:
         """
         from atom_core.run_reporter import RunReporter
 
+        if self._sin_conexion():
+            return None
         auth = self._get_auth()
         if auth is None or not getattr(auth, "is_logged_in", lambda: False)():
             return None
@@ -3727,45 +3930,209 @@ class Api:
                 os.unlink(tmp_path)
 
     def cloud_pendientes(self) -> dict:
-        return {"pendientes": cola_subidas.pendientes()}
+        try:
+            return {"pendientes": cola_subidas.pendientes()}
+        except cola_subidas.ColaIlegible as exc:
+            logger.error("cola de subidas ilegible: %s", exc)
+            return {"pendientes": [], "aviso_cola": f"Cola de subidas ilegible: {exc}"}
 
-    def cloud_drenar(self) -> dict:
-        """Lanza las subidas encoladas. Solo tiene sentido con estado `ok`.
+    # Tope de espera a que termine una subida lanzada por el drenado, y reintento
+    # tras vencer. Sin tope, un hilo de drenado podía quedar colgado para siempre.
+    _DRENAR_ESPERA_MAX_S = 6 * 3600
+    _VIGIA_REINTENTO_TIMEOUT_S = 30.0
+    _VIGIA_ESPERA_MAX_S = 3600.0
 
-        Va de una en una: `cloud_upload` ya rechaza si hay otra subida en curso,
-        y el resto de la cola sigue ahí para el siguiente intento.
+    def cloud_drenar(self, dormir=time.sleep) -> dict:
+        """Vacía la cola de subidas, de forma secuencial. Solo con estado `ok`.
 
-        Contrato: lanza COMO MUCHO 1 job por llamada (se corta en el primer
-        `started`), aunque haya varios pendientes. Quien quiera vaciar la cola
-        entera tiene que volver a llamar cuando esa subida termine; no
-        encadena drenajes automáticos, porque eso tocaría el camino crítico
-        de subida al bucket.
+        Lanza un job, espera a que termine (`cloud_upload`/`resultado_subir` no
+        admiten dos a la vez) y lanza el siguiente hasta que no quede ninguno.
+        Para si la red vuelve a caer (estado `sin-conexion`) o la credencial deja
+        de ser válida: la siguiente reconexión retoma. Un job se lanza como mucho
+        una vez por drenado, y los aplazados por backoff de red se saltan: el
+        vigía (`_vigia_aplazados`) los relanza cuando vence su `no_antes`.
+        La espera a una subida en curso tiene tope; si vence, sale y deja el
+        reintento al vigía. Un solo drenado a la vez: si ya hay uno, se le pide
+        otra pasada al terminar y se vuelve sin hacer nada. Nunca lanza por la
+        cola ilegible: el vigía queda armado igualmente. Devuelve `{"lanzados": n}`.
         """
         if self._credencial.actual()["estado"] != ESTADO_OK:
             return {"lanzados": 0, "reason": "Sin credencial válida."}
+        lock = self.__dict__.setdefault("_drenar_lock", threading.Lock())
+        if not lock.acquire(blocking=False):
+            self._drenar_otra_vez = True
+            return {"lanzados": 0, "en_curso": True}
         lanzados = 0
+        incompleto = False
+        try:
+            while True:
+                self._drenar_otra_vez = False
+                n, incompleto = self._drenar_pasada(dormir)
+                lanzados += n
+                if (incompleto or not self.__dict__.get("_drenar_otra_vez")
+                        or self._credencial.actual()["estado"] != ESTADO_OK):
+                    break
+        except cola_subidas.ColaIlegible as exc:
+            logger.error("cloud_drenar: cola de subidas ilegible: %s", exc)
+            self._push_cloud({"kind": "log", "text": f"Cola de subidas ilegible: {exc}"})
+            incompleto = True
+        finally:
+            lock.release()
+            self._armar_vigia_aplazados(incompleto)
+        return {"lanzados": lanzados}
+
+    def _drenar_pasada(self, dormir) -> tuple[int, bool]:
+        lanzados = 0
+        vistos: set[str] = set()
+        self._drenar_bloqueados = set()
+        incompleto = False
+        while True:
+            job_id = self._drenar_uno(vistos)
+            if job_id is None:
+                break
+            vistos.add(job_id)
+            lanzados += 1
+            esperado = 0
+            while self._uploading or self._subiendo_resultado:
+                if esperado >= self._DRENAR_ESPERA_MAX_S:
+                    logger.warning("cloud_drenar: la subida sigue en curso tras %d s; "
+                                   "se reintenta luego", esperado)
+                    incompleto = True
+                    break
+                dormir(1)
+                esperado += 1
+            if incompleto or self._credencial.actual()["estado"] != ESTADO_OK:
+                break
+        return lanzados, incompleto
+
+    def _lanzar_drenado(self) -> None:
+        """`cloud_drenar` en un hilo aparte (la reconexión no se bloquea hasta 6 h
+        esperando una subida). Idempotente: si ya hay drenado, `cloud_drenar` le
+        pide otra pasada en vez de arrancar un segundo."""
+        def cuerpo() -> None:
+            try:
+                self.cloud_drenar()
+            except Exception:  # noqa: BLE001
+                logger.warning("drenado en segundo plano falló", exc_info=True)
+                try:
+                    self._armar_vigia_aplazados(True)
+                except Exception:  # noqa: BLE001
+                    pass
+        threading.Thread(target=cuerpo, name="drenado-cola", daemon=True).start()
+
+    def _armar_vigia_aplazados(self, incompleto: bool = False) -> None:
+        """Garantiza UN hilo que relance el drenado cuando venza el primer `no_antes`
+        (o pasado un rato si el drenado se cortó por timeout, por la cola ilegible o
+        porque un job vencido no pudo salir por otra subida en curso). Idempotente."""
+        lock = self.__dict__.setdefault("_vigia_lock", threading.Lock())
+        with lock:
+            if incompleto:
+                self._vigia_incompleto = True
+            if self.__dict__.get("_vigia_activo"):
+                return
+            try:
+                if not self._vigia_proxima_espera():
+                    return
+            except Exception:  # noqa: BLE001 - cola ilegible: reintento acotado
+                logger.warning("vigía: no se pudo leer la cola de subidas", exc_info=True)
+                self._vigia_incompleto = True
+            self._vigia_activo = True
+        threading.Thread(target=self._vigia_aplazados, name="drenado-aplazados",
+                         daemon=True).start()
+
+    def _vigia_proxima_espera(self) -> float | None:
+        """Segundos hasta el próximo reintento, o None si no hay nada que reintentar.
+
+        Cuenta: el primer `no_antes` futuro; los jobs que el último drenado no pudo
+        lanzar por otra subida en curso (`busy`, p. ej. un aplazado ya vencido) y
+        el drenado cortado (`_vigia_incompleto`): estos dos, con reintento corto."""
+        ahora = time.time()
+        incompleto = bool(self.__dict__.get("_vigia_incompleto"))
+        bloqueados = set(self.__dict__.get("_drenar_bloqueados") or ())
+        try:
+            jobs = cola_subidas.pendientes()
+        except cola_subidas.ColaIlegible:
+            if incompleto:
+                return self._VIGIA_REINTENTO_TIMEOUT_S
+            raise
+        futuros = [float(j.get("no_antes", 0) or 0) for j in jobs
+                   if float(j.get("no_antes", 0) or 0) > ahora]
+        espera = None
+        if futuros:
+            espera = min(futuros) - ahora
+        if incompleto or any(j["id"] in bloqueados and cola_subidas.listo(j, ahora=ahora)
+                             for j in jobs):
+            e = self._VIGIA_REINTENTO_TIMEOUT_S
+            espera = e if espera is None else min(espera, e)
+        return espera
+
+    def _vigia_aplazados(self, esperar=None) -> None:
+        """Duerme hasta el primer job aplazado y relanza `cloud_drenar`. Sin red o
+        sin credencial sale: la reconexión (`_ciclo_comprobacion_arranque`) drena y
+        vuelve a armar el vigía. Nunca bucle caliente: cada vuelta espera >= 1 s."""
+        esperar = esperar or self.__dict__.get("_vigia_esperar") or time.sleep
+        lock = self.__dict__.setdefault("_vigia_lock", threading.Lock())
+        try:
+            while True:
+                with lock:
+                    try:
+                        espera = self._vigia_proxima_espera()
+                    except cola_subidas.ColaIlegible:
+                        logger.warning("vigía: cola de subidas ilegible", exc_info=True)
+                        self._vigia_incompleto = True
+                        espera = self._VIGIA_REINTENTO_TIMEOUT_S
+                    if espera is None or self._credencial.actual()["estado"] != ESTADO_OK:
+                        self._vigia_activo = False
+                        return
+                esperar(min(max(espera, 1.0), self._VIGIA_ESPERA_MAX_S))
+                if self._credencial.actual()["estado"] != ESTADO_OK:
+                    with lock:
+                        self._vigia_activo = False
+                    return
+                self._vigia_incompleto = False
+                self.cloud_drenar()
+        except Exception:  # noqa: BLE001
+            logger.warning("vigía de subidas aplazadas falló", exc_info=True)
+            with lock:
+                self._vigia_activo = False
+
+    def _drenar_uno(self, vistos: set) -> str | None:
+        """Lanza el primer job elegible. Devuelve su id, o None si no hay ninguno.
+        Los que no salen porque ya hay otra subida en curso (`busy`) quedan en
+        `_drenar_bloqueados` para que el vigía los reintente al quedar libre."""
+        bloqueados = self.__dict__.setdefault("_drenar_bloqueados", set())
         for job in cola_subidas.pendientes():
+            if job["id"] in vistos or job["id"] in bloqueados or not cola_subidas.listo(job):
+                continue
             if job.get("tipo") == cola_subidas.TIPO_RESULTADO:
                 r = self.resultado_subir(job["folder"], job.get("inspeccion_id"), "urgencia", True)
                 if r.get("started"):
-                    lanzados += 1
-                    break
+                    return job["id"]
                 # «Ya hay una subida en curso» (busy) no es un intento fallido:
                 # el job queda en cola, sin sumar, para el siguiente drenado.
                 # Sin credencial (sin login / Pi) tampoco: no es culpa del job.
-                if not (r.get("busy") or r.get("sin_credencial")):
+                # `encolado` = sin conexión: tampoco (y se para el drenado).
+                if r.get("encolado"):
+                    return None
+                if r.get("busy"):
+                    bloqueados.add(job["id"])
+                elif not r.get("sin_credencial"):
                     n = cola_subidas.marcar_intento(job["id"], str(r.get("reason", "")))
                     if n >= MAX_INTENTOS_RESULTADO:
                         cola_subidas.descartar(job["id"])
                 continue
             r = self.cloud_upload(job["folder"], prefix=job["prefix"],
-                                  inspeccion_id=job.get("inspeccion_id"))
+                                  inspeccion_id=job.get("inspeccion_id"),
+                                  job_cola=job["id"])
             if r.get("started"):
-                cola_subidas.descartar(job["id"])
-                lanzados += 1
-                break
+                # Se descarta al TERMINAR bien (`_cola_subidas_cerrar`), no aquí:
+                # un fallo a mitad de subida no puede perder el job.
+                return job["id"]
+            if r.get("busy"):
+                bloqueados.add(job["id"])
+                continue
             cola_subidas.marcar_intento(job["id"], str(r.get("reason", "")))
-        return {"lanzados": lanzados}
+        return None
 
     def cloud_cancel(self) -> dict:
         """Pide parar. Los ficheros ya subidos quedan; el manifiesto local deja
@@ -3777,6 +4144,54 @@ class Api:
         if not self._sink:
             return
         self._sink.dispatch("atom:cloud", detail)
+
+    def _sin_conexion(self) -> bool:
+        """Estado local `sin-conexion` (sin red). No hace red; nunca lanza."""
+        try:
+            return self._credencial.actual()["estado"] == ESTADO_SIN_CONEXION
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _marcar_sin_conexion(self, motivo: str) -> None:
+        """Una operación real detectó que no hay red: activa el estado (banner de la
+        UI, telemetría saltada) y relanza el ciclo de comprobación, que al volver la
+        red empuja `session` ok y drena la cola. Un solo ciclo a la vez."""
+        self._credencial.registrar(ESTADO_SIN_CONEXION, motivo)
+        try:
+            self._push_cloud({"kind": "session", "ok": False,
+                              "estado": ESTADO_SIN_CONEXION, "text": motivo})
+        except Exception:  # noqa: BLE001
+            logger.debug("no se pudo empujar el estado sin-conexion", exc_info=True)
+        lock = self.__dict__.setdefault("_ciclo_conexion_lock", threading.Lock())
+        with lock:
+            if getattr(self, "_ciclo_conexion_activo", False):
+                # El ciclo vivo puede estar ya saliendo (vio red antes de esta
+                # caída): se le pide otra vuelta para no perder la reconexión.
+                self._ciclo_conexion_otra_vez = True
+                return
+            self._ciclo_conexion_activo = True
+            self._ciclo_conexion_otra_vez = False
+
+        def ciclo() -> None:
+            try:
+                while True:
+                    try:
+                        _ciclo_comprobacion_arranque(self)
+                    except Exception:  # noqa: BLE001
+                        logger.warning("ciclo de reconexión falló", exc_info=True)
+                    with lock:
+                        if not (self.__dict__.get("_ciclo_conexion_otra_vez")
+                                and self._sin_conexion()):
+                            self._ciclo_conexion_activo = False
+                            self._ciclo_conexion_otra_vez = False
+                            return
+                        self._ciclo_conexion_otra_vez = False
+            except BaseException:
+                with lock:
+                    self._ciclo_conexion_activo = False
+                raise
+
+        threading.Thread(target=ciclo, daemon=True).start()
 
     def _push_resultado(self, detail: dict) -> None:
         if not self._sink:
@@ -3935,6 +4350,17 @@ class Api:
             cred = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
         if not cred["ok"]:
             return {"started": False, "sin_credencial": True, "reason": cred["reason"]}
+        if self._sin_conexion():
+            # Sin red: ni se intenta (evita esperar timeouts); queda en la cola persistente.
+            try:
+                cola.encolar(str(folder), "@resultado", inspeccion_id, tipo=cola.TIPO_RESULTADO)
+            except cola.ColaIlegible as exc:
+                logger.error("resultado_subir: sin conexión y cola ilegible: %s", exc)
+                return {"started": False, "encolado": False,
+                        "reason": (f"Sin conexión y cola de subidas ilegible: {exc}. "
+                                   "El resultado NO ha quedado en cola.")}
+            logger.info("resultado_subir: sin conexión, encolado (%s)", folder)
+            return {"started": False, "encolado": True, "reason": MSG_SUBIDA_EN_COLA}
         with self._resultado_lock:
             if self._subiendo_resultado:
                 return {"started": False, "busy": True,
@@ -3995,8 +4421,29 @@ class Api:
                     # completa lo que falte, con tope de intentos.
                     msg = resumen.motivo_incompleto()
                     job = cola.encolar(str(folder), "@resultado", inspeccion_id, tipo=cola.TIPO_RESULTADO)
-                    intentos = cola.marcar_intento(job["id"], msg) or 1
-                    if intentos >= MAX_INTENTOS_RESULTADO:
+                    motivos = [str(f[1]) for f in resumen.fallidas]
+                    por_auth = any(_RE_MOTIVO_AUTH.search(m) for m in motivos)
+                    por_red = (not por_auth) and any(_RE_MOTIVO_RED.search(m) for m in motivos)
+                    if por_auth:
+                        # 401/403 como `motivo` (no excepción): igual que el camino de
+                        # excepción, no se encola y se pide sesión.
+                        cola.descartar(job["id"])
+                        error_final = f"credencial rechazada: {msg}"
+                        logger.warning("resultado_subir: %s; no se encola", error_final)
+                        self._credencial.invalidar(error_final)
+                        self._push_cloud({"kind": "session", "ok": False,
+                                          "estado": ESTADO_SIN_CREDENCIAL, "text": error_final})
+                        self._push_resultado({"kind": "error", "text": (
+                            f"{error_final} Inicia sesión de nuevo para subir el resultado.")})
+                    elif por_red:
+                        # Falta de red: no consume intentos, pero con backoff exponencial
+                        # con tope (un fallo persistente no relanza sin fin).
+                        espera = cola.aplazar_red(job["id"], msg)
+                        logger.warning("resultado_subir: sin red (%s); queda en cola, "
+                                       "reintento tras %ds", msg, espera)
+                        self._marcar_sin_conexion("Sin conexión con la Suite")
+                        self._push_resultado({"kind": "error", "text": MSG_SUBIDA_EN_COLA})
+                    elif (intentos := cola.marcar_intento(job["id"], msg) or 1) >= MAX_INTENTOS_RESULTADO:
                         cola.descartar(job["id"])
                         error_final = (f"subida incompleta tras {intentos} intentos: {msg}")
                         logger.error("resultado_subir: %s", error_final)
@@ -4013,17 +4460,49 @@ class Api:
                             cola.descartar(j["id"])
                 self._telemetria_resultado_fin(reporter, resumen, error=error_final)
                 reporter = None
+            except cola.ColaIlegible as exc:
+                # Antes caía al `except` genérico, se clasificaba como red (es un
+                # OSError), el `encolar` de ese camino volvía a lanzar y el hilo
+                # moría sin avisar: el resultado no quedaba en cola y nadie lo sabía.
+                logger.error("resultado_subir: cola de subidas ilegible: %s", exc)
+                try:
+                    self._telemetria_resultado_fin(reporter, resumen, error=f"cola ilegible: {exc}")
+                except Exception:  # noqa: BLE001 - fail-open
+                    pass
+                self._push_resultado({"kind": "error", "text": (
+                    f"Cola de subidas ilegible: {exc}. El estado del resultado en la cola "
+                    "no se pudo guardar; revisa y vuelve a subir si hace falta.")})
             except sr.SubidaResultadoError as exc:
                 self._telemetria_resultado_fin(reporter, None, error=str(exc))
                 self._push_resultado({"kind": "error", "text": str(exc)})
             except Exception as exc:  # noqa: BLE001 - se reclasifica: solo auth/red se reintenta
                 self._telemetria_resultado_fin(reporter, None, error=f"{type(exc).__name__}: {exc}")
-                if not (isinstance(exc, AuthError) or _es_error_de_red(exc)):
+                clase = _clasificar_fallo_subida(exc)
+                if clase == "red":
+                    # Sin red / 5xx: a la cola persistente; se sube sola al volver la red.
+                    try:
+                        cola.encolar(str(folder), "@resultado", inspeccion_id, tipo=cola.TIPO_RESULTADO)
+                    except cola.ColaIlegible as exc_cola:
+                        logger.error("resultado_subir: sin red y cola ilegible: %s", exc_cola)
+                        self._marcar_sin_conexion("Sin conexión con la Suite")
+                        self._push_resultado({"kind": "error", "text": (
+                            f"Sin conexión y cola de subidas ilegible: {exc_cola}. "
+                            "El resultado NO ha quedado en cola.")})
+                        return
+                    logger.warning("resultado_subir: sin red (%s: %s); encolado", type(exc).__name__, exc)
+                    self._marcar_sin_conexion("Sin conexión con la Suite")
+                    self._push_resultado({"kind": "error", "text": MSG_SUBIDA_EN_COLA})
+                elif clase == "auth":
+                    # 401/403/sesión: reintentar no lo arregla. No se encola: se pide sesión.
+                    logger.warning("resultado_subir: credencial rechazada (%s); no se encola", exc)
+                    self._credencial.invalidar(str(exc))
+                    self._push_cloud({"kind": "session", "ok": False,
+                                      "estado": ESTADO_SIN_CREDENCIAL, "text": str(exc)})
+                    self._push_resultado({"kind": "error", "text": (
+                        f"{exc} Inicia sesión de nuevo para subir el resultado.")})
+                else:
                     logger.exception("resultado_subir falló")
                     self._push_resultado({"kind": "error", "text": f"{type(exc).__name__}: {exc}"})
-                    return
-                cola.encolar(str(folder), "@resultado", inspeccion_id, tipo=cola.TIPO_RESULTADO)
-                self._push_resultado({"kind": "error", "text": f"{exc} La subida queda pendiente y se reintentará."})
             finally:
                 self._subiendo_resultado = False
 
@@ -4089,7 +4568,9 @@ class Api:
             return
         destino = (params.get("destino") or params.get("output_folder") or "").strip()
         r = self.resultado_subir(destino, params.get("inspeccion_id"), sr.MODO_URGENCIA, True)
-        if not r.get("started") and not r.get("busy"):
+        if r.get("encolado"):
+            self._push_resultado({"kind": "aviso", "text": MSG_SUBIDA_EN_COLA})
+        elif not r.get("started") and not r.get("busy"):
             self._push_resultado({"kind": "aviso", "text": f"No se sube el resultado al bucket: {r.get('reason')}"})
 
     def _push_analisis(self, detail: dict) -> None:
@@ -4166,11 +4647,9 @@ class Api:
             raise ValueError(f"{origen} inválido: {bruto!r} (minutos, > 0).")
         return minutos * 60.0
 
-    def _armar_revision_indice(self, task: str, params: dict) -> bool:
-        """Arma la pausa de revisión del índice si el run la admite: `split_images`, fase
-        `completo`, un solo shard y flag activo. Devuelve si quedó armada (quien arma desarma
-        en su `finally`). Compartido por todos los orígenes del run (escritorio, Pi, control
-        remoto): todos pasan por `_run_task_worker`."""
+    def _revision_aplica(self, task: str, params: dict) -> bool:
+        """¿Este run admitiría la pausa de revisión del índice? (`split_images`, fase
+        `completo`, un solo shard y flag activo). Sin efectos: no arma nada."""
         if task != "split_images":
             return False
         from atom_core import revision_indice
@@ -4179,8 +4658,16 @@ class Api:
             return False
         _indice, shard_count = normalizar_shard(
             params.get("shard_index", 0), params.get("shard_count", 1))
-        if shard_count != 1 or not revision_indice.activa(params=params):
+        return shard_count == 1 and revision_indice.activa(params=params)
+
+    def _armar_revision_indice(self, task: str, params: dict) -> bool:
+        """Arma la pausa de revisión del índice si el run la admite: `split_images`, fase
+        `completo`, un solo shard y flag activo. Devuelve si quedó armada (quien arma desarma
+        en su `finally`). Compartido por todos los orígenes del run (escritorio, Pi, control
+        remoto): todos pasan por `_run_task_worker`."""
+        if not self._revision_aplica(task, params):
             return False
+        from atom_core import revision_indice
         revision_indice.armar(
             self._revision_espera_s(params),
             lambda evento: self._push({"kind": "revision", "data": evento}))
@@ -4322,23 +4809,33 @@ class Api:
         # y el modal se quedaba en "Preparando…" para siempre, sin un solo evento.
         # Organizar es 100 % local y no depende de esta respuesta para nada.
         threading.Thread(target=self._cloud_estado_en_segundo_plano, daemon=True).start()
-        if self._running:
+        if not self._lanzar_run(params):
             return {"started": False, "reason": "Ya hay un proceso en curso."}
-        _dest = str((params or {}).get("destino") or (params or {}).get("output_folder") or "").strip()
-        if _dest:
-            self._ultimo_destino = _dest
-        self._running = True
-        cancelacion.limpiar()  # un run nuevo no hereda la cancelación del anterior
+        threading.Thread(
+            target=self._run_task_worker, args=(task, params, advanced), daemon=True
+        ).start()
+        return {"started": True}
+
+    def _lanzar_run(self, params: dict, fijar_destino: bool = True) -> bool:
+        """Toma el «un solo run a la vez» y deja el estado limpio para el run
+        nuevo. False si ya hay uno en marcha. Común a `run_task` y a la cola."""
+        with self._run_lock:
+            if self._running:
+                return False
+            _dest = str((params or {}).get("destino") or (params or {}).get("output_folder") or "").strip()
+            if _dest and fijar_destino:
+                self._ultimo_destino = _dest
+            self._running = True
+            # Dentro del lock: un cancelar entre el `finally` del run anterior y
+            # este arranque ni se pierde ni se propaga al run nuevo.
+            cancelacion.limpiar()  # un run nuevo no hereda la cancelación del anterior
         # Estado del panel de control remoto (`GET /api/control/estado`): un
         # run nuevo empieza limpio, sin arrastrar la fase/progreso/error del
         # anterior (`_push` los va actualizando mientras corre).
         self._control_fase = None
         self._control_progreso = None
         self._control_ultimo_error = None
-        threading.Thread(
-            target=self._run_task_worker, args=(task, params, advanced), daemon=True
-        ).start()
-        return {"started": True}
+        return True
 
     def run_cancelar(self) -> dict:
         """Pide parar el run en curso (botón «Cancelar» del modal de progreso).
@@ -4347,11 +4844,234 @@ class Api:
         ficheros/filas/fases), termina el fichero en curso y emite `done` con
         status `cancelled`. Lo ya organizado se conserva (manifiesto) y se
         retoma al relanzar. No toca el origen."""
-        if not self._running:
-            return {"ok": False, "reason": "No hay ningún proceso en curso."}
-        logger.info("run_cancelar: solicitud de cancelación recibida; se para en el próximo punto seguro")
-        cancelacion.solicitar()
+        with self._run_lock:
+            if not self._running:
+                return {"ok": False, "reason": "No hay ningún proceso en curso."}
+            logger.info("run_cancelar: solicitud de cancelación recibida; se para en el próximo punto seguro")
+            cancelacion.solicitar()
         return {"ok": True}
+
+    # ---- modo cola: varios «Organizar» uno tras otro -----------------------
+    _COLA_ESPERA_S = 0.5
+
+    def _cola_asegurar_iniciada(self) -> None:
+        """Primera vez que se toca la cola en esta sesión: lo que quedó `en_curso`
+        (la app se cerró a mitad) pasa a `interrumpido` y, si hay pendientes de la
+        sesión anterior, la cola arranca PAUSADA hasta «Reanudar cola»."""
+        with self._cola_lock:
+            if self._cola_iniciada:
+                return
+            if self._cola_hilo is not None or self._job_actual is not None:
+                # Ya hay trabajo de ESTA sesión: marcar `en_curso` como
+                # interrumpido pisaría el que está corriendo.
+                self._cola_iniciada = True
+                return
+            try:
+                n = cola_organizar.marcar_interrumpidos()
+                if n:
+                    logger.warning("cola organizar: %d trabajo(s) interrumpidos por el cierre de la app", n)
+                self._cola_pausada = any(
+                    j.get("estado") == cola_organizar.PENDIENTE for j in cola_organizar.listar())
+                self._cola_iniciada = True
+            except Exception:  # noqa: BLE001 - una cola ilegible no tumba la app
+                # Sin recuperar no se sabe si hay pendientes de la sesión anterior:
+                # pausada (no arranca sola) y se reintenta en la próxima llamada.
+                self._cola_pausada = True
+                logger.exception("cola organizar: no se pudo recuperar el estado previo")
+
+    def _cola_avisar(self) -> None:
+        """Dice al front que la lista cambió (evento `atom:progress` kind `cola`)."""
+        self._push({"kind": "cola"})
+
+    def cola_listar(self) -> dict:
+        try:
+            self._cola_asegurar_iniciada()
+            return {"ok": True, "jobs": cola_organizar.listar(),
+                    "pausada": self._cola_pausada,
+                    "corriendo": self._cola_hilo is not None,
+                    "job_actual": self._job_actual,
+                    "avisos": cola_organizar.tomar_avisos()}
+        except Exception as exc:  # noqa: BLE001 - se reenvía al front
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "jobs": []}
+
+    def cola_encolar(self, params: dict, advanced: dict | None = None) -> dict:
+        """Añade un «Organizar» a la cola. Si no hay nada corriendo (y no está en
+        pausa) arranca solo. Devuelve `{ok, job, avisos}` o `{ok: False, error}`."""
+        try:
+            self._cola_asegurar_iniciada()
+            if not isinstance(params, dict):
+                return {"ok": False, "error": "Parámetros del trabajo inválidos."}
+            # El estadillo recibido por LAN se resuelve AHORA (al encolar), no al
+            # ejecutar: para entonces la espera puede haber cambiado de carpeta.
+            params = self._mover_estadillo_espera_si_toca(dict(params))
+            r = cola_organizar.encolar(params, advanced)
+        except Exception as exc:  # noqa: BLE001 - se reenvía al front
+            logger.exception("cola_encolar")
+            return {"ok": False, "codigo": "cola_error", "error": f"{type(exc).__name__}: {exc}"}
+        if r.get("ok"):
+            # El trabajo YA está guardado: un fallo al avisar/arrancar no lo
+            # convierte en error (ni en 409 «ya en cola» en el webserver).
+            try:
+                self._cola_avisar()
+            except Exception:  # noqa: BLE001
+                logger.exception("cola_encolar: no se pudo avisar al front")
+            try:
+                self._cola_arrancar()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("cola_encolar: encolado pero la cola no arrancó")
+                r.setdefault("avisos", []).append(
+                    f"Trabajo encolado, pero la cola no arrancó ({type(exc).__name__}: {exc}). "
+                    "Pulsa «Reanudar cola» para lanzarlo.")
+        r["pausada"] = self._cola_pausada
+        return r
+
+    def cola_quitar(self, job_id: str) -> dict:
+        try:
+            self._cola_asegurar_iniciada()
+            r = cola_organizar.quitar(str(job_id))
+            if r.get("ok"):
+                self._cola_avisar()
+            return r
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def cola_reintentar(self, job_id: str) -> dict:
+        try:
+            self._cola_asegurar_iniciada()
+            r = cola_organizar.reintentar(str(job_id))
+            if r.get("ok"):
+                self._cola_avisar()
+                self._cola_arrancar()
+            return r
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def cola_reanudar(self) -> dict:
+        """«Reanudar cola»: levanta la pausa de arranque y procesa los pendientes."""
+        try:
+            self._cola_asegurar_iniciada()
+            self._cola_pausada = False
+            self._cola_avisar()
+            self._cola_arrancar()
+            return {"ok": True}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _cola_arrancar(self) -> None:
+        """Levanta el hilo de la cola si hay pendientes y no está en pausa."""
+        with self._cola_lock:
+            if self._cola_hilo is not None or self._cola_pausada:
+                return
+            if cola_organizar.siguiente() is None:
+                return
+            hilo = threading.Thread(target=self._cola_worker, name="cola-organizar", daemon=True)
+            self._cola_hilo = hilo
+            hilo.start()
+
+    def _cola_worker(self) -> None:
+        """Toma el siguiente `pendiente` y lo ejecuta EN LÍNEA (un solo run a la vez).
+        Un trabajo que falla queda en `error` y la cola sigue."""
+        try:
+            while True:
+                with self._cola_lock:
+                    try:
+                        job = None if self._cola_pausada else cola_organizar.siguiente()
+                    except OSError as exc:  # cola ilegible: parar visible, sin escribir
+                        logger.error("cola organizar: cola ilegible, el worker se detiene: %s", exc)
+                        self._push({"kind": "error", "text": str(exc)})
+                        job = None
+                    if job is None:
+                        self._cola_hilo = None
+                        return
+                try:
+                    self._cola_ejecutar(job)
+                except Exception as exc:  # noqa: BLE001 - la cola sigue con el siguiente
+                    logger.exception("cola organizar: el trabajo %s falló", job.get("id"))
+                    self._running = False
+                    self._job_actual = None
+                    cola_organizar.marcar(job["id"], cola_organizar.ERROR,
+                                          error=f"{type(exc).__name__}: {exc}")
+                    self._push({"kind": "error", "text": f"{type(exc).__name__}: {exc}"})
+                    self._cola_avisar()
+        except BaseException:
+            with self._cola_lock:
+                self._cola_hilo = None
+            raise
+
+    def _cola_ejecutar(self, job: dict) -> None:
+        job_id = job["id"]
+        params = dict(job.get("params") or {})
+        advanced = job.get("advanced") or None
+        # Un run directo (`run_task`) puede estar en marcha: se espera su turno.
+        # `_ultimo_destino` no se toca aquí: solo si el trabajo llega a correr.
+        while not self._lanzar_run(params, fijar_destino=False):
+            time.sleep(self._COLA_ESPERA_S)
+        if cola_organizar.marcar(job_id, cola_organizar.EN_CURSO,
+                                 solo_si=cola_organizar.PENDIENTE) is None:
+            # Lo quitaron/cancelaron/reintentaron mientras esperaba su turno.
+            with self._run_lock:
+                self._running = False
+            return
+        self._job_actual = job_id
+        cerrado = False
+        try:
+            self._cola_avisar()
+            origen = str(params.get("origen") or params.get("input_folder") or "")
+            destino = str(params.get("destino") or params.get("output_folder") or "")
+            hay, motivo = cola_organizar.espacio_suficiente(origen, destino)
+            if not hay:
+                with self._run_lock:
+                    self._running = False
+                cola_organizar.marcar(job_id, cola_organizar.ERROR, error=motivo)
+                cerrado = True
+                self._push({"kind": "error", "text": motivo})  # el modal lo enseña y suelta `running`
+                return
+            if destino.strip():
+                self._ultimo_destino = destino.strip()
+            notas: list[str] = []
+            done = self._run_task_worker("split_images", params, advanced, notas)
+            self._cola_cerrar_trabajo(job_id, done, notas)
+            cerrado = True
+        finally:
+            if not cerrado:
+                # Nunca dejar el trabajo `en_curso`: Exception -> error; BaseException
+                # (SystemExit, KeyboardInterrupt, GeneratorExit...) -> interrumpido.
+                exc = sys.exc_info()[1]
+                try:
+                    if isinstance(exc, Exception):
+                        cola_organizar.marcar(job_id, cola_organizar.ERROR,
+                                              error=f"{type(exc).__name__}: {exc}")
+                    else:
+                        cola_organizar.marcar(job_id, cola_organizar.INTERRUMPIDO,
+                                              error="El proceso se interrumpió antes de terminar.")
+                except Exception:  # noqa: BLE001
+                    logger.exception("cola organizar: no se pudo cerrar el trabajo %s", job_id)
+            self._job_actual = None
+            self._cola_avisar()
+
+    def _cola_cerrar_trabajo(self, job_id: str, done: dict, notas: list[str]) -> None:
+        """Marca el trabajo según cómo acabó el run: cancelado / error / hecho."""
+        E = cola_organizar
+        extra = (" " + " ".join(notas)) if notas else ""
+        if done.get("status") == "cancelled" or done.get("cancelled"):
+            E.marcar(job_id, E.CANCELADO, resumen=(done.get("mensaje") or "Cancelado por el usuario.") + extra)
+        elif done.get("error") and not done.get("status"):
+            E.marcar(job_id, E.ERROR, error=str(done["error"]), resumen=extra.strip())
+        elif not done.get("status"):
+            E.marcar(job_id, E.ERROR, error="El proceso terminó sin resultado.", resumen=extra.strip())
+        else:
+            errores = int(done.get("errors") or 0)
+            avisos = int(done.get("warnings") or 0)
+            partes = [f"{done.get('n_procesadas')} de {done.get('n_total')} imágenes"
+                      if done.get("n_total") is not None else "Terminado"]
+            if errores:
+                partes.append(f"{errores} con error")
+            if avisos:
+                partes.append(f"{avisos} avisos")
+            if done.get("elapsed") is not None:
+                partes.append(f"{done['elapsed']} s")
+            E.marcar(job_id, E.HECHO, resumen=(" · ".join(partes) + "." + extra),
+                     error=(f"{errores} imágenes con error" if errores else ""))
 
     def _cloud_estado_en_segundo_plano(self) -> None:
         """Refresca el indicador de credencial sin bloquear a quien lo pidió."""
@@ -4360,12 +5080,22 @@ class Api:
         except Exception as exc:  # noqa: BLE001 — el indicador es cortesía, no requisito
             logger.warning("cloud_asegurar_estado en segundo plano falló: %s", exc)
 
-    def _run_task_worker(self, task: str, params: dict, advanced: dict | None) -> None:
+    def _run_task_worker(self, task: str, params: dict, advanced: dict | None,
+                         notas_cola: list | None = None) -> dict:
+        """Cuerpo del run. Devuelve el último `done` (dict) y, si el run emitió un
+        `error`, ese texto en la clave `error`: la cola lo usa para marcar el trabajo.
+
+        `notas_cola` != None = el run viene de la cola («modo cola»): ahí NO se arma la
+        pausa de revisión del índice (esperaría hasta 30 min con la cola parada) y se
+        deja anotado en la lista para el resumen del trabajo."""
         ultimo_done: dict = {}
+        error_run: list[str] = []
 
         def emit(kind: str, payload) -> None:
             if kind == "done" and isinstance(payload, dict):
                 ultimo_done.update(payload)
+            elif kind == "error":
+                error_run.append(str(payload))
             detail = {"kind": kind}
             if kind == "progress":
                 detail["value"] = int(payload)
@@ -4374,10 +5104,12 @@ class Api:
             elif payload is not None:
                 detail["text"] = str(payload)
             self._push(detail)
-            self._telemetria_org_evento(tele, kind, payload)
+            tele.evento(kind, payload)
 
         # Telemetría hacia `/organizer` (etapa="organizacion"). Fail-open total.
-        tele = self._telemetria_org_iniciar(task, params)
+        # El alta (POST síncrono, hasta 5 s con la Suite lenta) va en segundo plano:
+        # no retrasa el arranque del run.
+        tele = _TelemetriaOrgDiferida(self, task, params)
         revision_armada = False
 
         try:
@@ -4392,9 +5124,17 @@ class Api:
             precarga.precargar_pandas()
             from atom_core.organize import run_task
 
-            if task == "split_images":
+            if task == "split_images" and notas_cola is None:
+                # En la cola el estadillo por LAN ya se resolvió al ENCOLAR (`cola_encolar`).
                 params = self._mover_estadillo_espera_si_toca(params)
-            revision_armada = self._armar_revision_indice(task, params)
+            if notas_cola is not None:
+                if self._revision_aplica(task, params):
+                    nota = ("Pausa de revisión del índice omitida (modo cola): "
+                            "no se esperó respuesta del operario.")
+                    notas_cola.append(nota)
+                    emit("log", nota)
+            else:
+                revision_armada = self._armar_revision_indice(task, params)
             run_task(task, params, emit, advanced or None)
             if task == "split_images":
                 try:
@@ -4413,8 +5153,9 @@ class Api:
             if revision_armada:
                 from atom_core import revision_indice
                 revision_indice.desarmar()
-            self._running = False
-            cancelacion.limpiar()  # no dejar la bandera armada tras cancelar
+            with self._run_lock:
+                self._running = False
+                cancelacion.limpiar()  # no dejar la bandera armada tras cancelar
             # Sin esto, lo que quedara en el buffer cuando el pipeline deja de
             # emitir no llegaria nunca: el vaciado lo dispara el evento
             # SIGUIENTE, y despues del ultimo no hay ninguno.
@@ -4424,7 +5165,11 @@ class Api:
                 # AL FINAL: el POST de cierre es síncrono (hasta 5 s con la Suite
                 # lenta) y no puede retener `_running` ni la UI del operario.
                 # En `finally` para que un fallo del volcado a la UI no lo evite.
-                self._telemetria_org_fin(tele)
+                tele.fin()
+        resultado = dict(ultimo_done)
+        if error_run:
+            resultado["error"] = error_run[-1]
+        return resultado
 
     # ---- telemetría de la organización LOCAL hacia /organizer ---------------
     def _telemetria_org_iniciar(self, task: str, params: dict) -> dict | None:
@@ -4433,6 +5178,10 @@ class Api:
         Fail-open: nunca lanza ni frena la organización."""
         try:
             if task != "split_images":
+                return None
+            if self._sin_conexion():
+                # Offline: ni alta ni timeouts; organizar es 100 % local.
+                logger.info("organizacion: sin conexión, sin telemetría en /organizer")
                 return None
             reporter = self._reporter_actual(tipo="organizacion")
             if reporter is None:
@@ -4593,6 +5342,9 @@ class Api:
         # guarda pase o no `self._sink` (el panel de control puede consultar
         # `/estado` aunque nadie este escuchando el SSE ahora mismo).
         kind = detail.get("kind")
+        _job = getattr(self, "_job_actual", None)
+        if _job and "job_id" not in detail:
+            detail["job_id"] = _job  # trabajo de la cola al que pertenece
         if kind == "progress":
             self._control_progreso = detail.get("value")
         elif kind in ("phase", "plan"):
@@ -4603,7 +5355,7 @@ class Api:
             return
         with self._push_lock:
             self._push_buf.append(detail)
-            urgente = detail.get("kind") in ("plan", "phase", "stats", "done", "revision")
+            urgente = detail.get("kind") in ("plan", "phase", "stats", "done", "revision", "cola")
             ahora = time.monotonic()
             if not urgente and len(self._push_buf) < self._PUSH_MAX_BUFER \
                     and (ahora - self._push_last) < self._PUSH_INTERVALO:
@@ -5258,34 +6010,44 @@ def _ciclo_comprobacion_arranque(api: Api, dormir=time.sleep, push=None) -> None
             # credencial se queda colgado para siempre en el arranque.
             return {"estado": ESTADO_SIN_CONEXION, "mensaje": str(exc)}
 
-    estado = comprobar()
-    push({"kind": "session",
-          "ok": estado["estado"] == ESTADO_OK,
-          "estado": estado["estado"],
-          "text": estado["mensaje"]})
-
-    reintentos = 0
-    estado_anterior = estado["estado"]
-    while estado_anterior == ESTADO_SIN_CONEXION:
-        if reintentos < len(_BACKOFF_ARRANQUE_SEGUNDOS):
-            espera = _BACKOFF_ARRANQUE_SEGUNDOS[reintentos]
-        else:
-            espera = _BACKOFF_ARRANQUE_ESTABLE_SEGUNDOS
-        dormir(espera)
-        reintentos += 1
-
+    while True:
         estado = comprobar()
-        if estado["estado"] != estado_anterior:
-            push({"kind": "session",
-                  "ok": estado["estado"] == ESTADO_OK,
-                  "estado": estado["estado"],
-                  "text": estado["mensaje"]})
-            logger.info("comprobacion arranque: estado %s -> %s tras %d reintentos",
-                        estado_anterior, estado["estado"], reintentos)
-        estado_anterior = estado["estado"]
+        push({"kind": "session",
+              "ok": estado["estado"] == ESTADO_OK,
+              "estado": estado["estado"],
+              "text": estado["mensaje"]})
 
-    if estado_anterior == ESTADO_OK:
-        api.cloud_drenar()
+        reintentos = 0
+        estado_anterior = estado["estado"]
+        while estado_anterior == ESTADO_SIN_CONEXION:
+            if reintentos < len(_BACKOFF_ARRANQUE_SEGUNDOS):
+                espera = _BACKOFF_ARRANQUE_SEGUNDOS[reintentos]
+            else:
+                espera = _BACKOFF_ARRANQUE_ESTABLE_SEGUNDOS
+            dormir(espera)
+            reintentos += 1
+
+            estado = comprobar()
+            if estado["estado"] != estado_anterior:
+                push({"kind": "session",
+                      "ok": estado["estado"] == ESTADO_OK,
+                      "estado": estado["estado"],
+                      "text": estado["mensaje"]})
+                logger.info("comprobacion arranque: estado %s -> %s tras %d reintentos",
+                            estado_anterior, estado["estado"], reintentos)
+            estado_anterior = estado["estado"]
+
+        if estado_anterior == ESTADO_OK:
+            # En hilo aparte: el drenado espera a cada subida (hasta 6 h) y este
+            # ciclo no puede quedarse colgado de él. `_lanzar_drenado` es
+            # idempotente; los dobles de test sin él drenan en línea.
+            lanzar = getattr(api, "_lanzar_drenado", None)
+            (lanzar if callable(lanzar) else api.cloud_drenar)()
+        # Si un job de la cola volvió a fallar por red, `cloud_drenar` paró y el
+        # estado es `sin-conexion`: se espera otra reconexión y se retoma la cola.
+        sin_red = getattr(api, "_sin_conexion", None)
+        if not (callable(sin_red) and sin_red()):
+            break
 
 
 def _comprobar_al_arrancar(api: Api) -> None:

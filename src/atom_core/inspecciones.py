@@ -19,17 +19,14 @@ Atom-suite), autenticándose con el `id_token` de la misma sesión de Google que
 ya usa la subida — ningún secreto nuevo en el binario, y el backend aplica el
 filtro de visibilidad por rol, así que un externo no ve el catálogo entero.
 
-**Esa es la única fuente.** Hasta 3.4.22 había dos respaldos por debajo —el
-`_inspecciones.json` del bucket y una caché local del último catálogo bajado— y
-se han quitado (decisión de Cas, 2026-08-06): la lista que decide **a qué
-inspección se sube** no puede venir de una copia vieja sin que nadie se entere.
-Ambos respaldos servían datos de fecha desconocida con el mismo aspecto que los
-buenos, y elegir un destino que ya no existe —o que ha cambiado de nombre— no
-se nota hasta que los ficheros están arriba, en el sitio equivocado.
-
-Un fallo de la API se dice tal cual. El operador siempre puede teclear la
-inspección a mano: eso es una decisión suya y consciente, que es justo lo que
-no era fiarse de una lista presentada como si estuviera al día.
+**Fuente y caché.** La fuente es la API. Desde 3.5.3 (decisión de Cas,
+revoca la del 2026-08-06 / 3.4.22) se vuelve a guardar en local el último
+catálogo bajado con éxito (`catalogo_inspecciones.json`, con `bajado_en`), para
+que sin conexión se pueda **organizar**. La caché solo se usa si la red falla
+(URLError, timeout, OSError, 5xx) y siempre se dice: `origen: "cache"` más el
+momento en que se bajó, para que la UI no la presente como lista al día. Un
+401/403 NO usa la caché (la sesión no vale). No se guarda nunca una lista
+vacía ni un fallo. El bucket (`_inspecciones.json`) sigue sin ser fuente.
 
 **El prefijo se monta y se desmonta.** Regla de Cas (2026-08-06): «con el
 nombre se debería poder sacar igual que montamos el nombre lo podemos
@@ -49,6 +46,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time
 import unicodedata
 import urllib.error
@@ -66,6 +64,10 @@ __all__ = [
     "parse_prefijo",
     "descargar_catalogo_api",
     "cargar_catalogo",
+    "guardar_cache",
+    "leer_cache",
+    "borrar_cache",
+    "es_fallo_de_red",
     "sugerir_inspeccion",
 ]
 
@@ -240,32 +242,117 @@ def descargar_catalogo_api(auth, *,
     return _desde_json(data)
 
 
+NOMBRE_CACHE = "catalogo_inspecciones.json"
+
+
+def _ruta_cache():
+    from atom_core.google_auth import user_data_dir
+    return user_data_dir() / NOMBRE_CACHE
+
+
+def _ahora_madrid_iso() -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("Europe/Madrid")).isoformat(timespec="seconds")
+
+
+def _usuario_de(auth) -> str:
+    """Email de la sesión (minúsculas) o "" si no se puede saber. No hace red."""
+    try:
+        ident = getattr(auth, "identity", None)
+        return str(getattr(ident, "email", "") or "").strip().lower()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def borrar_cache() -> None:
+    """Borra la caché del catálogo (al cerrar sesión). No lanza."""
+    try:
+        _ruta_cache().unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("No se pudo borrar la caché del catálogo", exc_info=True)
+
+
+def guardar_cache(inspecciones: list[dict], usuario: str = "") -> None:
+    """Guarda el catálogo (atómico), ligado a `usuario`. Lista vacía: no se toca."""
+    if not inspecciones:
+        return
+    ruta = _ruta_cache()
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    datos = {"usuario": usuario, "bajado_en": _ahora_madrid_iso(),
+             "inspecciones": inspecciones}
+    fd, tmp = tempfile.mkstemp(dir=str(ruta.parent), prefix=NOMBRE_CACHE + ".",
+                               suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(datos, fh, indent=2, ensure_ascii=False)
+        os.replace(tmp, ruta)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def leer_cache(usuario: str = "") -> dict | None:
+    """`{bajado_en, inspecciones}` o None si no hay caché válida o es de otro usuario.
+    Con `usuario` vacío (identidad desconocida) NUNCA se sirve: podría ser de otro."""
+    if not usuario:
+        return None
+    try:
+        datos = json.loads(_ruta_cache().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(datos, dict) or str(datos.get("usuario") or "") != usuario:
+        return None
+    lista = datos.get("inspecciones")
+    if not isinstance(lista, list) or not lista:
+        return None
+    return {"bajado_en": str(datos.get("bajado_en") or ""), "inspecciones": lista}
+
+
+def es_fallo_de_red(exc: BaseException) -> bool:
+    """Fallo de transporte (reintentable): URLError, timeout, DNS, 5xx/408/429.
+    Un OSError de disco local NO lo es. Criterio único de la app y del catálogo."""
+    import socket
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code >= 500 or exc.code in (408, 429)
+    return isinstance(exc, (ConnectionError, TimeoutError, socket.timeout, socket.gaierror,
+                            urllib.error.URLError))
+
+
+_es_fallo_de_red = es_fallo_de_red
+
+
 def cargar_catalogo(bucket: str, auth) -> dict:
-    """Catálogo para la UI. **Una sola fuente: la API de ATOM Suite.**
+    """Catálogo para la UI: la API de ATOM Suite, con la caché local de respaldo.
 
-    Devuelve `{"ok", "inspecciones": [...], "origen": "api", "error": str|None}`.
-    No lanza: la pantalla de subida tiene que poder dibujarse aunque el catálogo
-    falle.
+    Devuelve `{"ok", "inspecciones", "origen": "api"|"cache", "bajado_en",
+    "error"}`. No lanza: la pantalla tiene que poder dibujarse aunque falle.
 
-    Antes había dos escalones más —el `_inspecciones.json` del bucket y una
-    caché en disco— y por eso se han quitado (decisión de Cas, 2026-08-06): la
-    lista que decide **a qué inspección se sube** no puede venir de una copia
-    vieja sin que nadie se entere. Los dos respaldos servían datos de fecha
-    desconocida con el mismo aspecto que los buenos, y el error de elegir un
-    destino que ya no existe —o que ha cambiado de nombre— no se ve hasta que
-    los ficheros están arriba, en el sitio equivocado.
+    Con la API ok y lista no vacía se guarda la caché. Si la red falla
+    (URLError, timeout, OSError, 5xx) y hay caché, se sirve con
+    `origen: "cache"`, `bajado_en` (ISO Madrid) y `aviso`: así se puede
+    organizar sin conexión, y la UI dice de cuándo es la lista. Un 401/403
+    nunca usa la caché (`auth_invalida` en el 401). Sin caché, el error se dice
+    tal cual y el operador puede teclear la inspección a mano.
 
-    Si la API no responde, se dice y punto. El operador puede teclear la
-    inspección a mano, que es una decisión suya y consciente, en vez de fiarse
-    de una lista que la app le presenta como si estuviera al día.
-
-    `bucket` se mantiene en la firma por compatibilidad con las llamadas
-    existentes; ya no se usa.
+    `bucket` se mantiene en la firma por compatibilidad; no se usa.
     """
     try:
         inspecciones = descargar_catalogo_api(auth)
     except Exception as exc:  # noqa: BLE001 - se enseña, no se traga
         logger.warning("No se pudo descargar el catálogo de la API: %r", exc)
+        if es_fallo_de_red(exc):
+            cache = leer_cache(_usuario_de(auth))
+            if cache:
+                return {"ok": True, "inspecciones": cache["inspecciones"],
+                        "origen": "cache", "bajado_en": cache["bajado_en"],
+                        "aviso": "Sin conexión con la Suite: lista guardada.",
+                        "error": None}
         res = {"ok": False, "inspecciones": [], "origen": "api",
                "bajado_en": 0.0, "error": f"api: {exc}"}
         # 401 = la sesión local no vale contra la Suite: quien llama debe
@@ -273,7 +360,12 @@ def cargar_catalogo(bucket: str, auth) -> dict:
         if isinstance(exc, urllib.error.HTTPError) and exc.code == 401:
             res["auth_invalida"] = True
         return res
-    return {"ok": True, "inspecciones": [i.to_dict() for i in inspecciones],
+    lista = [i.to_dict() for i in inspecciones]
+    try:
+        guardar_cache(lista, _usuario_de(auth))
+    except Exception:  # noqa: BLE001 - la caché es un extra, no rompe la carga
+        logger.exception("No se pudo guardar la caché del catálogo")
+    return {"ok": True, "inspecciones": lista,
             "origen": "api", "bajado_en": time.time(), "error": None}
 
 

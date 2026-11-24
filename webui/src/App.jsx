@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, isServerMode, onAnalisis, onCloud, onControlCarpeta, onControlUi, onProgress, registerPicker, whenBridgeReady } from './bridge'
 import ProgressModal from './ProgressModal'
+import { empaquetarRutas } from './trabajo/empaquetarRutas'
 import PreflightModal from './PreflightModal'
 import SinColocarModal from './SinColocarModal'
 import RevisionIndiceModal from './RevisionIndiceModal'
@@ -58,17 +59,6 @@ export const NAV = [
 
 function basename(path) {
   return (path || '').split(/[\\/]/).pop()
-}
-
-// El backend (`GenStructFolderConfig.estad` / `atom_core.organize.run_task`)
-// sigue esperando el estadillo como UN string: para colar varios por el mismo
-// hueco, `atom_core.estadillo.empaquetar_rutas` los junta con el carácter de
-// control Unit Separator (\x1f, no puede aparecer en un path real). Aquí se
-// replica esa misma codificación en JS. Con 0 o 1 rutas el resultado es
-// idéntico a lo que se mandaba antes (string vacío o el path suelto).
-const ESTADILLO_PATH_SEP = '\x1f'
-function empaquetarRutas(paths) {
-  return (paths || []).map((p) => String(p).trim()).filter(Boolean).join(ESTADILLO_PATH_SEP)
 }
 
 // Combina la info de N estadillos (cada uno leído por separado con
@@ -242,6 +232,10 @@ function AppInterna() {
   // Sonda inicial de la máquina (evento `maquina`): disco origen/destino,
   // núcleos, RAM y si la máquina ya está ocupada antes de arrancar el run.
   const [maquina, setMaquina] = useState(null)
+  // Modo cola: trabajo de la cola que pinta el modal (eventos con `job_id`) y cuántos quedan
+  // pendientes detrás de él.
+  const jobIdRef = useRef(null)
+  const [colaPendientes, setColaPendientes] = useState(0)
 
   // Modal PREVIO (info del estadillo). null | {loading, info, task, params, advanced}
   const [preflight, setPreflight] = useState(null)
@@ -546,6 +540,28 @@ function AppInterna() {
   useEffect(() => {
     whenBridgeReady().then(() => setReady(true))
     return onProgress((d) => {
+      // Cambios de la cola («modo cola»). `job_id` = trabajo en marcha; sin él, la cola quedó
+      // libre. Al empezar un trabajo NUEVO el modal arranca limpio (como `startRun` con un run
+      // directo) y se abre, aunque el operario lo hubiera cerrado.
+      if (d.kind === 'cola') {
+        if (d.job_id && d.job_id !== jobIdRef.current) {
+          setPlant('')
+          setPhases([])
+          setProgress(0)
+          setStats(null)
+          setDetail([])
+          setFinished(null)
+          setRecursosTotales(null)
+          setMaquina(null)
+          setModalOpen(true)
+          setRunning(true)
+        }
+        jobIdRef.current = d.job_id || null
+        Promise.resolve(api.colaListar())
+          .then((r) => setColaPendientes((r?.jobs || []).filter((j) => j.estado === 'pendiente').length))
+          .catch(() => {})
+        return
+      }
       switch (d.kind) {
         case 'plant':
           setPlant(d.text || '')
@@ -1279,6 +1295,7 @@ function AppInterna() {
           recursosTotales={recursosTotales}
           maquina={maquina}
           sinColocarN={sinColocarN}
+          colaPendientes={colaPendientes}
           onSinColocar={() => setSinColocarAbierto(true)}
           onClose={() => setModalOpen(false)}
           onCancel={() => api.runCancelar()}

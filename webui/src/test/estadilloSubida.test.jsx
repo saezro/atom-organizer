@@ -23,6 +23,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 vi.setConfig({ testTimeout: 15000 })
 
 const api = {
+  colaListar: vi.fn(async () => ({ ok: true, jobs: [], pausada: false })),
   renderConfirmar: vi.fn(async () => ({ ok: true })),
   appVersion: vi.fn(async () => ({ version: '3.4.24' })),
   cloudStatus: vi.fn(async () => ({

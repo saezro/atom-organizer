@@ -204,6 +204,7 @@ export default function ProgressModal({
   recursosTotales,
   maquina,
   sinColocarN = 0,
+  colaPendientes = 0,
   onSinColocar,
   onClose,
   onCancel,
@@ -241,6 +242,11 @@ export default function ProgressModal({
         <h2 className="pm-title">
           Procesando planta: <span className="pm-plant">{plant || '—'}</span>
         </h2>
+        {colaPendientes > 0 && (
+          <p className="pm-maquina" data-testid="pm-cola">
+            {colaPendientes === 1 ? 'Queda 1 trabajo más en la cola.' : `Quedan ${colaPendientes} trabajos más en la cola.`}
+          </p>
+        )}
 
         {/* Sonda inicial de la máquina (disco/CPU/RAM), antes de arrancar. */}
         {maquina && maquina.texto && (

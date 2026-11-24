@@ -17,7 +17,10 @@ vi.mock('../bridge', () => ({
     resultadoCredencial: vi.fn().mockResolvedValue({ ok: true }),
     resultadoPrechequeo: vi.fn().mockResolvedValue({ ok: true, checks: [] }),
     resultadoInspeccionarDestino: vi.fn().mockResolvedValue({ existe: false }),
+    colaListar: vi.fn().mockResolvedValue({ ok: true, jobs: [], pausada: false }),
+    colaEncolar: vi.fn().mockResolvedValue({ ok: true, job: { id: 'j1' }, avisos: [] }),
   },
+  onProgress: () => () => {},
   onCloud: (h) => {
     const w = (e) => h(e.detail)
     window.addEventListener('atom:cloud', w)
@@ -323,6 +326,41 @@ describe('TrabajoScreen', () => {
         bytes_done: 4e6, bytes_total: 10e6, urgentes: { hechos: 2, total: 5 }, resto: { hechos: 0, total: 0 } })
       const tab = screen.getByRole('tab', { name: /Subir resultado/ })
       expect(await within(tab).findByText('40 %')).toBeTruthy()
+    })
+  })
+
+  describe('modo cola: mientras corre un run', () => {
+    it('carpeta, destinos y «Añadir a la cola» siguen activos con running=true', async () => {
+      const { api } = await import('../bridge')
+      api.estadillosDetectar.mockResolvedValue({ rutas: ['/o/e.csv'] })
+      api.pickFolder.mockResolvedValue('/datos/vuelo')
+      render(<TrabajoScreen ready running onRun={() => {}} acceso={{ organizer: true, estadillos: false }} />)
+      const elegir = screen.getAllByText(/Elegir/i)[0]
+      expect(elegir.disabled).toBeFalsy()
+      fireEvent.click(elegir)
+      await screen.findByDisplayValue('/datos/vuelo')
+      const local = screen.getByText(/Organizar en este ordenador/i).closest('button')
+      expect(local.disabled).toBe(false)
+      fireEvent.click(local)
+      api.pickFolder.mockResolvedValue('/datos/final')
+      await waitFor(() => expect(screen.getAllByText(/Elegir/i).length).toBeGreaterThan(1))
+      fireEvent.click(screen.getAllByText(/Elegir/i)[1])
+      await screen.findByDisplayValue('/datos/final')
+      expect(screen.getByText(/Procesando/i).disabled).toBe(true)
+      const anadir = screen.getByText(/Añadir a la cola/i)
+      await waitFor(() => expect(anadir.disabled).toBe(false))
+      fireEvent.click(anadir)
+      await waitFor(() => expect(api.colaEncolar).toHaveBeenCalled())
+    })
+
+    it('muestra la cola con sus trabajos', async () => {
+      const { api } = await import('../bridge')
+      api.colaListar.mockResolvedValue({
+        ok: true, pausada: false,
+        jobs: [{ id: 'a', estado: 'en_curso', params: { origen: '/x/v1', destino: '/y/o1' }, resumen: '', error: '' }],
+      })
+      render(<TrabajoScreen ready running onRun={() => {}} />)
+      expect(await screen.findByTestId('cola-job-a')).toBeTruthy()
     })
   })
 })

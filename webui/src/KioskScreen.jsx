@@ -417,7 +417,7 @@ function KioskScreenInterna({
   // importa igual (o más) al elegir inspección o al confirmar una subida que en
   // el launcher. `compacto` en los pasos, que van justos de alto.
   const bannerConexion = (
-    <BannerConexion estado={status?.estado} pendientes={status?.pendientes || 0} compacto />
+    <BannerConexion estado={status?.estado} pendientes={status?.pendientes || 0} avisoCola={status?.aviso_cola || ''} compacto />
   )
 
   const barraProgreso = progreso && (
@@ -808,7 +808,7 @@ function KioskScreenInterna({
     return (
       <div className="kiosk">
         <div className="kiosk-header"><BarraEstado />{avatar}</div>
-        <BannerConexion estado={status?.estado} pendientes={status?.pendientes || 0} />
+        <BannerConexion estado={status?.estado} pendientes={status?.pendientes || 0} avisoCola={status?.aviso_cola || ''} />
         {barraProgreso}
         <MenuApps
           apps={APPS}

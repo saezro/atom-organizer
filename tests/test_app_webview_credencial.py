@@ -127,7 +127,7 @@ def test_asegurar_estado_recomprueba_tras_el_latido(monkeypatch):
     assert llamadas["n"] == 2
 
 
-def test_drenar_lanza_solo_uno_por_llamada_con_varios_pendientes(monkeypatch, tmp_path):
+def test_drenar_vacia_todos_los_pendientes_en_secuencia(monkeypatch, tmp_path):
     from atom_core import cola_subidas
     ruta = tmp_path / "cola.json"
     monkeypatch.setattr(cola_subidas, "_ruta_cola", lambda: ruta)
@@ -136,12 +136,15 @@ def test_drenar_lanza_solo_uno_por_llamada_con_varios_pendientes(monkeypatch, tm
 
     api = _api(monkeypatch, AuthFalso(resultado=(True, "ok")))
     api.cloud_comprobar()
-    monkeypatch.setattr(api, "cloud_upload", lambda *a, **k: {"started": True})
+    def sube(*a, **k):
+        api._cola_subidas_cerrar(k["job_cola"], None)   # la subida acabó bien
+        return {"started": True}
+    monkeypatch.setattr(api, "cloud_upload", sube)
 
     r = api.cloud_drenar()
 
-    assert r["lanzados"] == 1
-    assert len(cola_subidas.pendientes(ruta=ruta)) == 1
+    assert r["lanzados"] == 2
+    assert cola_subidas.pendientes(ruta=ruta) == []
 
 
 def test_cerrar_sesion_invalida_el_estado_cacheado(monkeypatch):
@@ -153,3 +156,57 @@ def test_cerrar_sesion_invalida_el_estado_cacheado(monkeypatch):
     assert api.cloud_logout()["ok"] is True
 
     assert api.cloud_status()["estado"] == ESTADO_SIN_CREDENCIAL
+
+
+# ---- cola de subidas ilegible: estado degradado visible, nunca excepción ------
+
+def _cola_ilegible(monkeypatch):
+    from atom_core import cola_subidas
+
+    def ilegible(*a, **k):
+        raise cola_subidas.ColaIlegible("No se pudo leer la cola cola_subidas.json: EIO")
+    monkeypatch.setattr(cola_subidas, "pendientes", ilegible)
+    monkeypatch.setattr(cola_subidas, "encolar", ilegible)
+
+
+def test_status_con_cola_ilegible_degrada_con_aviso(monkeypatch):
+    _cola_ilegible(monkeypatch)
+    for auth in (AuthFalso(resultado=(True, "ok")), None):
+        api = _api(monkeypatch, auth)
+        st = api.cloud_status()
+        assert st["ok"] is True and st["pendientes"] == 0
+        assert st["aviso_cola"].startswith("Cola de subidas ilegible:")
+
+
+def test_pendientes_con_cola_ilegible_degrada_con_aviso(monkeypatch):
+    _cola_ilegible(monkeypatch)
+    r = _api(monkeypatch, AuthFalso(resultado=(True, "ok"))).cloud_pendientes()
+    assert r["pendientes"] == [] and "ilegible" in r["aviso_cola"]
+
+
+def test_upload_sin_sesion_con_cola_ilegible_da_error_visible(monkeypatch, tmp_path):
+    _cola_ilegible(monkeypatch)
+    api = _api(monkeypatch, AuthFalso(logueado=False))
+    carpeta = tmp_path / "vuelo1"
+    carpeta.mkdir()
+    r = api.cloud_upload(str(carpeta), prefix="PLANTA/2026")
+    assert r["started"] is False and r["encolado"] is False
+    assert "ilegible" in r["reason"] and "NO ha quedado guardada" in r["reason"]
+    assert api._uploading is False        # el reclamo se suelta
+
+
+def test_drenar_con_cola_ilegible_no_lanza_y_arma_vigia(monkeypatch):
+    _cola_ilegible(monkeypatch)
+    api = _api(monkeypatch, AuthFalso(resultado=(True, "ok")))
+    api.cloud_comprobar()
+    armados = []
+    monkeypatch.setattr(api, "_armar_vigia_aplazados", lambda inc=False: armados.append(inc))
+    assert api.cloud_drenar() == {"lanzados": 0}
+    assert armados == [True]
+
+
+def test_upload_reclamo_atomico_busy(monkeypatch):
+    api = _api(monkeypatch, AuthFalso(resultado=(True, "ok")))
+    api._uploading = True
+    r = api.cloud_upload("/x", prefix="P")
+    assert r["started"] is False and r["busy"] is True

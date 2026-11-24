@@ -49,6 +49,7 @@ METODOS_EXPUESTOS = frozenset({
     "estadillo_validar", "estadillo_subir", "estadillo_existente", "estadillo_bajar_nube",
     "inspeccion_sugerir",
     "run_organize", "run_task", "run_cancelar",
+    "cola_listar", "cola_encolar", "cola_quitar", "cola_reintentar", "cola_reanudar",
     "sistema_apagar",
     "red_listar", "red_conectar", "red_conexion",
     "red_ap_estado", "red_ap_activar", "red_ap_desactivar",
@@ -847,13 +848,35 @@ def _handler_factory(api, dist_dir: str, sink):
             }
             try:
                 resultado = api.run_organize(params, None)
+                if resultado.get("started"):
+                    sink.dispatch("atom:control_ui", {"accion": "organizar"})
+                    return self._json_cors(200, {"ok": True, "started": True})
+                # Ya hay un run en marcha: NO se rechaza, se encola («modo cola») y se
+                # procesa a continuación. Un origen ya en la cola sí es un error claro.
+                encolado = api.cola_encolar(params, None)
             except Exception:  # noqa: BLE001 — no filtrar detalles internos
                 traceback.print_exc()
                 return self._json_cors(500, {"ok": False, "error": "error interno"})
-            if not resultado.get("started"):
-                return self._json_cors(409, {"ok": False, "codigo": "en_curso"})
+            if not encolado.get("ok"):
+                # 409 SOLO para el origen ya en cola de verdad. Una cola ilegible
+                # es un 500 y una petición inválida un 400: no «ya en cola».
+                codigo = encolado.get("codigo")
+                if codigo == "ya_en_cola":
+                    return self._json_cors(409, {"ok": False, "codigo": "ya_en_cola",
+                                                 "error": encolado.get("error")})
+                if codigo == "cola_error":
+                    return self._json_cors(500, {"ok": False, "codigo": "cola_error",
+                                                 "error": "no se pudo guardar en la cola"})
+                return self._json_cors(400, {"ok": False, "codigo": "cola_invalida",
+                                             "error": encolado.get("error")})
             sink.dispatch("atom:control_ui", {"accion": "organizar"})
-            return self._json_cors(200, {"ok": True, "started": True})
+            pausada = bool(encolado.get("pausada"))
+            return self._json_cors(200, {
+                "ok": True, "started": False, "encolado": True,
+                "job_id": encolado["job"]["id"],
+                "pausada": pausada,
+                "mensaje": "encolado (cola en pausa)" if pausada else "encolado",
+                "avisos": encolado.get("avisos") or []})
 
         def _control_cancelar_post(self) -> None:
             try:

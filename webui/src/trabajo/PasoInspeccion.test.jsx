@@ -23,6 +23,15 @@ describe('PasoInspeccion', () => {
     expect(await screen.findByText(/sin conexión/)).toBeTruthy()
   })
 
+  it('origen cache: dice cuándo se guardó la lista, en hora de Madrid', async () => {
+    api.cloudInspecciones.mockResolvedValue({
+      ok: true, origen: 'cache', bajado_en: '2026-11-24T09:05:00+01:00',
+      inspecciones: [{ prefijo: 'ACME--PLANTA--2026--TERMO', etiqueta: 'ACME planta' }],
+    })
+    render(<PasoInspeccion ready prefijo="" onChange={() => {}} />)
+    expect(await screen.findByText(/Lista guardada el 24\/11 09:05, sin conexión/)).toBeTruthy()
+  })
+
   it('una vez elegida muestra el prefijo y deja cambiarlo', async () => {
     api.cloudInspecciones.mockResolvedValue({ ok: true, inspecciones: [], origen: 'bucket' })
     const onChange = vi.fn()

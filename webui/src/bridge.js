@@ -319,6 +319,14 @@ export const api = {
   runTask: (task, params, advanced) => call('run_task', task, params, advanced ?? null),
   // Pide parar el run en curso (cooperativo: termina el fichero en curso).
   runCancelar: () => call('run_cancelar'),
+  // Modo cola: varios «Organizar» uno tras otro (`Api.cola_*`). colaListar ->
+  // {ok, jobs[], pausada, corriendo, job_actual}; colaEncolar -> {ok, job, avisos[]} |
+  // {ok:false, error}. `estadillo` va empaquetado (string), como en runTask.
+  colaListar: () => call('cola_listar'),
+  colaEncolar: (params, advanced) => call('cola_encolar', params, advanced ?? null),
+  colaQuitar: (id) => call('cola_quitar', id),
+  colaReintentar: (id) => call('cola_reintentar', id),
+  colaReanudar: () => call('cola_reanudar'),
   // Lectura sincrónica del estadillo para el modal previo (pilotos, dron,
   // nº de vuelos, franjas horarias). Devuelve el dict de info o {error}.
   readEstadilloInfo: (path) => call('read_estadillo_info', path),

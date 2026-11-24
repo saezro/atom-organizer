@@ -3,6 +3,7 @@ import PasoCarpeta from './PasoCarpeta'
 import PasoInspeccion from './PasoInspeccion'
 import PasoEstadillo from './PasoEstadillo'
 import PanelOrganizar from './PanelOrganizar'
+import ColaOrganizar from './ColaOrganizar'
 import PanelSubida from './PanelSubida'
 import PanelResultado from './PanelResultado'
 import useEstadilloAuto from './useEstadilloAuto'
@@ -58,6 +59,9 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
   const irASubir = () => setPestana('subir')
 
   const ocupado = running || subidaOcupada
+  // Modo cola: mientras corre un run se puede preparar OTRO trabajo (carpeta, inspección,
+  // estadillo, destino) y añadirlo a la cola; solo la subida en curso bloquea el formulario.
+  const ocupadoForm = subidaOcupada
   // Sin módulo estadillos no hay paso de estadillo: se trata como «subir sin
   // estadillo» (listo, sin ficheros).
   // Para organizar el backend SÍ exige estadillo: sin `PasoEstadillo` se
@@ -94,7 +98,7 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
       )}
 
       <div role="tabpanel" id="panel-organizar" aria-labelledby="tab-organizar" hidden={verOrganizer && pestana !== 'organizar'} className="trabajo-panel">
-      <PasoCarpeta label="Carpeta del vuelo" value={carpeta} onChange={setCarpeta} disabled={ocupado} />
+      <PasoCarpeta label="Carpeta del vuelo" value={carpeta} onChange={setCarpeta} disabled={ocupadoForm} />
       <PasoInspeccion
         ready={ready}
         prefijo={prefijo}
@@ -104,7 +108,7 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
           setPrefijo(p)
           setElegida(e)
         }}
-        disabled={ocupado || est.subiendo}
+        disabled={ocupadoForm || est.subiendo}
         reloadToken={inspeccionReloadToken}
       />
       {verEstadillos && (
@@ -112,7 +116,7 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
           prefijo={prefijo}
           carpeta={carpeta}
           inspeccion={elegida}
-          disabled={ocupado}
+          disabled={ocupadoForm}
           onEstado={setEstadillo}
         />
       )}
@@ -146,7 +150,7 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
               type="button"
               className={`destino${destino === d.id ? ' destino-activo' : ''}`}
               aria-pressed={destino === d.id}
-              disabled={!carpeta || ocupado}
+              disabled={!carpeta || ocupadoForm}
               onClick={() => setDestino(d.id)}
             >
               <span className="destino-titulo">{d.titulo}</span>
@@ -163,12 +167,14 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
         />
       )}
 
+      <ColaOrganizar />
+
       {carpeta && destino === 'bucket' && (
         <label className="check">
           <input
             type="checkbox"
             checked={organizarNube}
-            disabled={ocupado}
+            disabled={ocupadoForm}
             onChange={(e) => setOrganizarNube(e.target.checked)}
           />
           <span>Organizar después en la nube</span>

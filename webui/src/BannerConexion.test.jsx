@@ -42,3 +42,16 @@ describe('BannerConexion', () => {
     expect(screen.getByTestId('kiosk-banner-conexion')).not.toHaveClass('kiosk-banner-conexion-compacto')
   })
 })
+
+describe('BannerConexion — cola de subidas ilegible', () => {
+  it('avisa aunque haya conexión', () => {
+    render(<BannerConexion estado="ok" pendientes={0} avisoCola="Cola de subidas ilegible: EIO" />)
+    expect(screen.getByTestId('kiosk-banner-cola-ilegible').textContent).toContain('Cola de subidas ilegible')
+  })
+
+  it('avisa también sin conexión, junto al banner', () => {
+    render(<BannerConexion estado="sin-conexion" avisoCola="Cola de subidas ilegible: EIO" />)
+    expect(screen.getByTestId('kiosk-banner-conexion')).toBeTruthy()
+    expect(screen.getByTestId('kiosk-banner-cola-ilegible')).toBeTruthy()
+  })
+})

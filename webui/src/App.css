@@ -4909,3 +4909,55 @@ html.kiosk-modo body * {
 .ri-dia-cuerpo.clic { cursor: zoom-in; }
 .ri-vuelo, .ri-tramo { cursor: default; }
 .ri-tramo { cursor: pointer; }
+
+/* --- Cola de «Organizar» (trabajo/ColaOrganizar.jsx) ----------------------- */
+.cola-lista {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.cola-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.625rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 0.0625rem solid rgba(255, 255, 255, 0.12);
+}
+.cola-item.cola-en_curso {
+  border-color: var(--orange);
+}
+.cola-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.cola-titulo {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cola-estado {
+  font-size: 0.78rem;
+  color: var(--muted, #8b93a1);
+}
+.cola-estado-hecho {
+  color: #7ee2a8;
+}
+.cola-estado-error,
+.cola-estado-interrumpido {
+  color: var(--peligro, #e5484d);
+}
+.cola-estado-cancelado {
+  color: #f0b866;
+}
+.cola-acciones {
+  display: flex;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}

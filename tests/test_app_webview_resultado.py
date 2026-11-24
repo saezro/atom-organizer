@@ -40,7 +40,12 @@ def api(monkeypatch, tmp_path):
     monkeypatch.setattr(aw.threading, "Thread", _HiloInmediato)
     monkeypatch.setattr(a, "_get_auth", lambda **k: _AuthPwd())
     monkeypatch.setattr(a, "cloud_asegurar_estado", lambda: {})
+    # Con hilos síncronos el vigía de aplazados dormiría de verdad: se prueba aparte.
+    monkeypatch.setattr(a, "_armar_vigia_aplazados", lambda incompleto=False: None)
     monkeypatch.setattr(cola_subidas, "_ruta_cola", lambda: tmp_path / "cola.json")
+    # El ciclo de reconexión real duerme y reintenta: aquí no corre (ver `sin_ciclo`).
+    a.ciclos = []
+    monkeypatch.setattr(aw, "_ciclo_comprobacion_arranque", lambda x: a.ciclos.append(x))
     a.eventos = []
     monkeypatch.setattr(a, "_push_resultado", a.eventos.append)
     _marcar_organizado(tmp_path)  # contrato: resultado_subir resuelve la raíz (con manifiesto)
@@ -142,16 +147,97 @@ def test_no_arranca_dos_a_la_vez(api, monkeypatch, tmp_path):
     assert r["started"] is False and "en curso" in r["reason"]
 
 
-def test_error_de_credencial_se_encola_y_se_avisa(api, monkeypatch, tmp_path):
+@pytest.fixture
+def sin_ciclo(api):
+    return api.ciclos
+
+
+def _http(code):
+    import urllib.error
+    return urllib.error.HTTPError("http://x", code, "x", {}, None)
+
+
+def test_fallo_de_red_se_encola_y_avisa_en_cola(api, monkeypatch, tmp_path, sin_ciclo):
+    import urllib.error
+
     def falla(*a, **k):
-        raise AuthError("Sesión caducada, vuelve a entrar con tu usuario")
+        raise urllib.error.URLError("sin red")
     monkeypatch.setattr(sr, "subir_resultado", falla)
     api.resultado_subir(str(tmp_path), 7, "urgencia", True)
     err = [e for e in api.eventos if e["kind"] == "error"]
-    assert err and "Sesión caducada" in err[0]["text"]
+    assert err and err[0]["text"] == aw.MSG_SUBIDA_EN_COLA
     jobs = cola_subidas.pendientes()
     assert len(jobs) == 1 and jobs[0]["tipo"] == "resultado" and jobs[0]["inspeccion_id"] == 7
     assert api._subiendo_resultado is False
+    assert api._sin_conexion() is True and len(sin_ciclo) == 1  # banner + reconexión
+
+
+@pytest.mark.parametrize("exc_factory", [
+    lambda: TimeoutError("t"),
+    lambda: AuthError("Sin conexión con la Suite"),  # se construye con causa abajo
+    lambda: _http(503),
+])
+def test_timeout_5xx_y_authError_por_red_se_encolan(api, monkeypatch, tmp_path, sin_ciclo, exc_factory):
+    import urllib.error
+
+    def falla(*a, **k):
+        exc = exc_factory()
+        if isinstance(exc, AuthError):
+            raise exc from urllib.error.URLError("dns")
+        raise exc
+    monkeypatch.setattr(sr, "subir_resultado", falla)
+    api.resultado_subir(str(tmp_path), 7, "urgencia", True)
+    assert len(cola_subidas.pendientes()) == 1
+
+
+@pytest.mark.parametrize("code", [401, 403])
+def test_401_403_no_se_encolan_y_piden_sesion(api, monkeypatch, tmp_path, sin_ciclo, code):
+    def falla(*a, **k):
+        raise AuthError("Sesión caducada, vuelve a entrar con tu usuario") from _http(code)
+    monkeypatch.setattr(sr, "subir_resultado", falla)
+    api.resultado_subir(str(tmp_path), 7, "urgencia", True)
+    err = [e for e in api.eventos if e["kind"] == "error"]
+    assert err and "Sesión caducada" in err[0]["text"] and "Inicia sesión" in err[0]["text"]
+    assert cola_subidas.pendientes() == []
+    assert api._sin_conexion() is False and sin_ciclo == []
+    assert api._credencial.actual()["estado"] == "sin-credencial"
+
+
+def test_estado_sin_conexion_encola_sin_intentar_la_red(api, monkeypatch, tmp_path):
+    from atom_core.credencial import ESTADO_SIN_CONEXION
+    api._credencial.registrar(ESTADO_SIN_CONEXION, "sin red")
+    monkeypatch.setattr(sr, "subir_resultado", lambda *a, **k: pytest.fail("no debe tocar la red"))
+    r = api.resultado_subir(str(tmp_path), 7, "urgencia", True)
+    assert r["started"] is False and r["encolado"] is True and r["reason"] == aw.MSG_SUBIDA_EN_COLA
+    assert len(cola_subidas.pendientes()) == 1
+
+
+def test_auto_subir_offline_avisa_en_cola(api, tmp_path):
+    from atom_core.credencial import ESTADO_SIN_CONEXION
+    api._credencial.registrar(ESTADO_SIN_CONEXION, "sin red")
+    api._auto_subir_resultado({"destino": str(tmp_path), "inspeccion_id": 7}, {"status": "ok"})
+    assert {"kind": "aviso", "text": aw.MSG_SUBIDA_EN_COLA} in api.eventos
+
+
+def test_fallidas_por_red_no_consumen_intentos_ni_se_descartan(api, monkeypatch, tmp_path, sin_ciclo):
+    def sube(d, i, modo, a, **kw):
+        r = sr.ResumenResultado(modo=modo, prefijo="P/")
+        r.fallidas = [("P/x", "error sending request: connection timed out")]
+        return r
+    monkeypatch.setattr(sr, "subir_resultado", sube)
+    for _ in range(aw.MAX_INTENTOS_RESULTADO + 1):
+        api._credencial.registrar("ok")
+        api.resultado_subir(str(tmp_path), 7, "urgencia", False)
+    jobs = cola_subidas.pendientes()
+    assert len(jobs) == 1 and jobs[0].get("intentos", 0) == 0
+
+
+def test_error_de_auth_sin_red_ni_codigo_tampoco_se_encola(api, monkeypatch, tmp_path, sin_ciclo):
+    def falla(*a, **k):
+        raise AuthError("Planta no encontrada")
+    monkeypatch.setattr(sr, "subir_resultado", falla)
+    api.resultado_subir(str(tmp_path), 7, "urgencia", True)
+    assert cola_subidas.pendientes() == []
 
 
 def test_subida_ok_descarta_el_job_encolado(api, monkeypatch, tmp_path):
@@ -229,7 +315,7 @@ def test_error_de_red_se_encola_para_reintento(api, monkeypatch, tmp_path):
         raise ConnectionError("sin red")
     monkeypatch.setattr(sr, "subir_resultado", falla)
     api.resultado_subir(str(tmp_path), 7)
-    assert any(e["kind"] == "error" and "reintentará" in e["text"] for e in api.eventos)
+    assert any(e["kind"] == "error" and e["text"] == aw.MSG_SUBIDA_EN_COLA for e in api.eventos)
     assert len(cola_subidas.pendientes()) == 1
 
 
@@ -490,3 +576,115 @@ def test_raiz_resuelta_se_propaga_a_subir_y_cola(api, monkeypatch, tmp_path):
     monkeypatch.setattr(sr, "subir_resultado", lambda destino, *a, **k: vistos.append(str(destino)) or _resumen("urgencia"))
     api.resultado_subir(str(sub), 7, "urgencia", False)
     assert vistos == [str(tmp_path.resolve())]
+
+
+# --- cola: drenado completo, motivos de red/auth acotados, backoff -------------
+
+def _fallo(motivo):
+    def sube(d, i, modo, a, **kw):
+        r = sr.ResumenResultado(modo=modo, prefijo="P/")
+        r.fallidas = [("P/x", motivo)]
+        return r
+    return sube
+
+
+def test_drenar_vacia_toda_la_cola_en_secuencia(api, monkeypatch, tmp_path):
+    from atom_core.credencial import ESTADO_OK
+    monkeypatch.setattr(api._credencial, "actual", lambda: {"estado": ESTADO_OK})
+    carpetas = []
+    for n in range(3):
+        c = tmp_path / f"c{n}"
+        c.mkdir()
+        carpetas.append(str(c))
+        cola_subidas.encolar(str(c), f"p{n}", 7)
+    lanzadas = []
+
+    def sube(folder, prefix=None, inspeccion_id=None, **k):
+        assert not api._uploading            # nunca dos a la vez
+        lanzadas.append(folder)
+        api._uploading = True                # la subida «corre» y termina en el dormir
+        api._cola_subidas_cerrar(k["job_cola"], None)   # el worker acabó bien
+        return {"started": True}
+    monkeypatch.setattr(api, "cloud_upload", sube)
+    dormidas = []
+    monkeypatch.setattr(aw.time, "sleep", lambda s: (dormidas.append(s), setattr(api, "_uploading", False)))
+    assert api.cloud_drenar(dormir=aw.time.sleep) == {"lanzados": 3}
+    assert lanzadas == carpetas and cola_subidas.pendientes() == []
+    assert len(dormidas) == 3
+
+
+def test_drenar_para_si_un_job_vuelve_a_fallar_por_red(api, monkeypatch, tmp_path):
+    from atom_core.credencial import ESTADO_OK, ESTADO_SIN_CONEXION
+    estado = {"e": ESTADO_OK}
+    monkeypatch.setattr(api._credencial, "actual", lambda: {"estado": estado["e"]})
+    for n in range(3):
+        c = tmp_path / f"c{n}"
+        c.mkdir()
+        cola_subidas.encolar(str(c), f"p{n}", 7)
+    lanzadas = []
+
+    def sube(folder, **k):
+        lanzadas.append(folder)
+        estado["e"] = ESTADO_SIN_CONEXION    # el worker marca sin conexión al fallar
+        api._cola_subidas_cerrar(k["job_cola"], "sin red")   # falla a mitad
+        return {"started": True}
+    monkeypatch.setattr(api, "cloud_upload", sube)
+    assert api.cloud_drenar(dormir=lambda s: None) == {"lanzados": 1}
+    # El job que falló a mitad NO se pierde: sigue en cola con su intento.
+    pend = cola_subidas.pendientes()
+    assert len(lanzadas) == 1 and len(pend) == 3
+    assert [j for j in pend if j["folder"] == lanzadas[0]][0]["intentos"] == 1
+
+
+@pytest.mark.parametrize("motivo", ["boom", "connection pool exhausted in parser", "disk full"])
+def test_motivo_no_red_marca_intento_y_no_sin_conexion(api, monkeypatch, tmp_path, sin_ciclo, motivo):
+    monkeypatch.setattr(sr, "subir_resultado", _fallo(motivo))
+    api.resultado_subir(str(tmp_path), 7, "urgencia", False)
+    jobs = cola_subidas.pendientes()
+    assert jobs[0]["intentos"] == 1 and not jobs[0].get("no_antes")
+    assert api._sin_conexion() is False and sin_ciclo == []
+
+
+@pytest.mark.parametrize("motivo", [
+    "operation timed out", "Connection refused", "connection reset by peer",
+    "failed to lookup address information", "No such host is known. (os error 11001)",
+    "os error 10060", "HTTP 503 Service Unavailable", "HTTP 429"])
+def test_motivos_de_red_concretos_se_reconocen(motivo):
+    assert aw._RE_MOTIVO_RED.search(motivo)
+
+
+def test_motivo_de_red_repetido_aplica_backoff_exponencial_con_tope(api, monkeypatch, tmp_path, sin_ciclo):
+    monkeypatch.setattr(sr, "subir_resultado", _fallo("error sending request: connection refused"))
+    esperas = []
+    for _ in range(12):
+        api._credencial.registrar("ok")
+        api.resultado_subir(str(tmp_path), 7, "urgencia", False)
+        j = cola_subidas.pendientes()[0]
+        esperas.append(j["no_antes"])
+        assert j["intentos"] == 0
+    assert j["intentos_red"] == 12
+    ahora = aw.time.time()
+    assert not cola_subidas.listo(j)
+    assert j["no_antes"] - ahora <= cola_subidas.BACKOFF_RED_TOPE_S + 5
+    # Aplazado: el drenado no lo relanza.
+    monkeypatch.setattr(api._credencial, "actual", lambda: {"estado": "ok"})
+    monkeypatch.setattr(api, "resultado_subir", lambda *a, **k: pytest.fail("en backoff"))
+    assert api.cloud_drenar(dormir=lambda s: None) == {"lanzados": 0}
+
+
+def test_backoff_crece(tmp_path):
+    ruta = tmp_path / "c.json"
+    j = cola_subidas.encolar(str(tmp_path), "@resultado", 7, tipo="resultado", ruta=ruta)
+    s = [cola_subidas.aplazar_red(j["id"], "x", ahora=0, ruta=ruta) for _ in range(4)]
+    assert s == [30, 60, 120, 240]
+
+
+@pytest.mark.parametrize("motivo", ["HTTP 401 Unauthorized", "403 Forbidden", "invalid_grant", "token expired"])
+def test_401_403_como_motivo_no_se_encola_y_pide_sesion(api, monkeypatch, tmp_path, sin_ciclo, motivo):
+    monkeypatch.setattr(sr, "subir_resultado", _fallo(motivo))
+    api.resultado_subir(str(tmp_path), 7, "urgencia", False)
+    err = [e for e in api.eventos if e["kind"] == "error"]
+    assert err and "Inicia sesión" in err[0]["text"]
+    assert cola_subidas.pendientes() == []
+    assert api._sin_conexion() is False and sin_ciclo == []
+    assert api._credencial.actual()["estado"] == "sin-credencial"
