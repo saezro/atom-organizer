@@ -46,6 +46,7 @@ const api = {
   estadillosDetectar: vi.fn(async () => ({ rutas: [] })),
   cloudPrepareStart: vi.fn(async () => ({ started: true })),
   analisisReset: vi.fn(async () => ({ ok: true })),
+  detectSuffixesStart: vi.fn(async () => ({ started: true })),
   analisisCancel: vi.fn(async () => ({ ok: true })),
   cloudUpload: vi.fn(async () => ({ ok: true })),
   cloudCancel: vi.fn(async () => ({ ok: true })),

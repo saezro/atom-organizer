@@ -46,6 +46,7 @@ const api = {
   folderIsEmpty: vi.fn(async () => ({ empty: true })),
   cloudPrepareStart: vi.fn(async () => ({ started: true })),
   analisisReset: vi.fn(async () => ({ ok: true })),
+  detectSuffixesStart: vi.fn(async () => ({ started: true })),
   analisisCancel: vi.fn(async () => ({ ok: true })),
   estadilloExistente: vi.fn(async () => ({ existe: false })),
   cloudUpload: vi.fn(async () => ({ ok: true })),

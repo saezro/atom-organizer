@@ -23,6 +23,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const api = {
   appVersion: vi.fn(async () => ({ version: '3.4.24' })),
+  analisisReset: vi.fn(async () => ({ ok: true })),
+  analisisCancel: vi.fn(async () => ({ ok: true })),
+  detectSuffixesStart: vi.fn(async () => ({ started: true })),
   cloudStatus: vi.fn(),
   cloudVerify: vi.fn(async () => ({ ok: true })),
   cloudInspecciones: vi.fn(async () => ({ ok: true, origen: 'api', inspecciones: [] })),
