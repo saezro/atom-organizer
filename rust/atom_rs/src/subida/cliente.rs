@@ -61,6 +61,13 @@ pub fn clasificar(estado: Option<u16>, es_timeout_o_conexion: bool) -> Clase {
 }
 
 
+/// 403 de GCS por falta de `storage.objects.delete`: el objeto ya existe y la
+/// credencial (solo crear) no puede reemplazarlo. Equivale a un 412.
+pub fn es_403_por_sobrescribir(cuerpo: &str) -> bool {
+    cuerpo.contains("storage.objects.delete")
+}
+
+
 // ---------------------------------------------------------------------------
 // Parte de red (6f): reqwest + tokio.
 // ---------------------------------------------------------------------------
@@ -399,6 +406,14 @@ async fn ejecutar(ctx: &Ctx, ctl: &mut Ctl, sp: &Spec<'_>) -> Result<Resp, Corte
             Ok(resp) => resp,
         };
         let e = resp.estado;
+        if e == 403 && es_403_por_sobrescribir(&resp.cuerpo) {
+            // Credencial solo-crear (sin `storage.objects.delete`) contra un
+            // objeto que YA existe: GCS comprueba el permiso de sobrescribir
+            // antes que `ifGenerationMatch=0` y da 403 en vez de 412. Pasa al
+            // reintentar un PUT cuya respuesta se perdió pero que sí llegó.
+            // No es credencial caducada: refrescar no lo arregla.
+            return Err(Corte::YaExiste);
+        }
         if matches!(e, 200 | 201) || (sp.acepta_308 && e == 308) {
             ctl.intento = 0;
             ctl.auth_seguidos = 0;
@@ -774,10 +789,10 @@ async fn subir_inner(ctx: &Ctx, ctl: &mut Ctl, item: &Item) -> Result<Resultado,
                 if tras_mismatch {
                     return Err(Corte::Fin(
                         "hash",
-                        format!("objeto corrupto en el bucket ({ultimo}) y no se pudo sobrescribir (412)"),
+                        format!("objeto corrupto en el bucket ({ultimo}) y no se pudo sobrescribir (412/403 sin permiso de borrado)"),
                     ));
                 }
-                // 412: el objeto ya existe. Solo vale como verificado si su hash
+                // 412 (o 403 sin permiso de borrado): el objeto ya existe. Solo vale como verificado si su hash
                 // coincide con el local (regla de hash); si no, fallo del fichero.
                 let (srv, _) = hashes_por_head(ctx, ctl, &url).await?;
                 return match hash::coincide(&loc.hashes, &srv) {
@@ -1022,6 +1037,40 @@ mod tests_red {
         let r = rt().block_on(subir_fichero(&ctx, &item(&ruta, "x", 2)));
         assert_eq!(r, Resultado::YaExiste);
         assert!(srv.peticiones().iter().any(|p| p.metodo == "HEAD"));
+    }
+
+    const XML_403_DELETE: &str = "<?xml version='1.0' encoding='UTF-8'?><Error><Code>AccessDenied</Code><Message>Access denied.</Message><Details>sa@p.iam.gserviceaccount.com does not have storage.objects.delete access to the Google Cloud Storage object.</Details></Error>";
+
+    #[test]
+    fn http_403_sin_delete_con_hash_igual_es_ya_existe_sin_refrescar() {
+        let ruta = fichero_tmp(b"zz");
+        let srv = Servidor::nuevo(|p, _| {
+            if p.metodo == "HEAD" {
+                Accion::Responder(200, cab_hash(b"zz"))
+            } else {
+                Accion::ResponderCuerpo(403, XML_403_DELETE.into())
+            }
+        });
+        let env = EntornoFalso::nuevo(&srv.base);
+        let ctx = ctx_con(env.clone(), cfg_simple());
+        let r = rt().block_on(subir_fichero(&ctx, &item(&ruta, "x", 2)));
+        assert_eq!(r, Resultado::YaExiste);
+        assert_eq!(env.recovers.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn http_403_sin_delete_con_hash_distinto_es_fallo_hash() {
+        let ruta = fichero_tmp(b"zz");
+        let srv = Servidor::nuevo(|p, _| {
+            if p.metodo == "HEAD" {
+                Accion::Responder(200, cab_hash(b"otro"))
+            } else {
+                Accion::ResponderCuerpo(403, XML_403_DELETE.into())
+            }
+        });
+        let ctx = ctx_con(EntornoFalso::nuevo(&srv.base), cfg_simple());
+        let r = rt().block_on(subir_fichero(&ctx, &item(&ruta, "x", 2)));
+        assert!(matches!(r, Resultado::Fallo { tipo: "hash", .. }), "{r:?}");
     }
 
     #[test]

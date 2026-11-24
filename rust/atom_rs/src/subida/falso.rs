@@ -29,6 +29,8 @@ impl Peticion {
 
 pub enum Accion {
     Responder(u16, Vec<(String, String)>),
+    /// Responde con un cuerpo de texto (p. ej. el XML de error de GCS).
+    ResponderCuerpo(u16, String),
     /// Cierra la conexión sin responder.
     Cortar,
 }
@@ -148,6 +150,14 @@ fn atender(mut s: TcpStream, f: &Manejador, log: &Mutex<Vec<Peticion>>, n: &Atom
                 out.push_str(&format!("{k}: {v}\r\n"));
             }
             out.push_str("Content-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = s.write_all(out.as_bytes());
+            let _ = s.flush();
+        }
+        Accion::ResponderCuerpo(estado, cuerpo) => {
+            let out = format!(
+                "HTTP/1.1 {estado} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{cuerpo}",
+                cuerpo.len()
+            );
             let _ = s.write_all(out.as_bytes());
             let _ = s.flush();
         }
