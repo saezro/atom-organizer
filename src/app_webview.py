@@ -5030,7 +5030,7 @@ class Api:
                 self._ultimo_destino = destino.strip()
             notas: list[str] = []
             done = self._run_task_worker("split_images", params, advanced, notas)
-            self._cola_cerrar_trabajo(job_id, done, notas)
+            self._cola_cerrar_trabajo(job_id, done, notas, params)
             cerrado = True
         finally:
             if not cerrado:
@@ -5049,8 +5049,10 @@ class Api:
             self._job_actual = None
             self._cola_avisar()
 
-    def _cola_cerrar_trabajo(self, job_id: str, done: dict, notas: list[str]) -> None:
-        """Marca el trabajo según cómo acabó el run: cancelado / error / hecho."""
+    def _cola_cerrar_trabajo(self, job_id: str, done: dict, notas: list[str],
+                             params: dict | None = None) -> None:
+        """Marca el trabajo según cómo acabó el run: cancelado / error / hecho.
+        Si acaba HECHO y el trabajo lleva `subir_al_terminar`, encola la subida."""
         E = cola_organizar
         extra = (" " + " ".join(notas)) if notas else ""
         if done.get("status") == "cancelled" or done.get("cancelled"):
@@ -5072,6 +5074,50 @@ class Api:
                 partes.append(f"{done['elapsed']} s")
             E.marcar(job_id, E.HECHO, resumen=(" · ".join(partes) + "." + extra),
                      error=(f"{errores} imágenes con error" if errores else ""))
+            job = E.obtener(job_id)
+            if job is not None and E.subir_al_terminar(job):
+                self._cola_subir_resultado(job_id, params or job.get("params") or {}, done)
+
+    def _cola_subir_resultado(self, job_id: str, params: dict, done: dict) -> None:
+        """Subida del resultado de un trabajo de la cola ya HECHO: se encola en
+        `cola_subidas` (tipo resultado, igual que «Subir resultado» sin red) y se
+        lanza el drenado, que sube si hay sesión y red o espera a tenerlas. Sin
+        inspección/carpeta o con run no limpio: aviso visible, nunca se adivina."""
+        from atom_core import subida_resultado as sr
+        E = cola_organizar
+        try:
+            sube, motivo = sr.decidir_automatica("split_images", {**params, "subir_resultado": True}, done)
+            if not sube and not motivo:
+                motivo = ("No se sube el resultado al bucket: la organización terminó con "
+                          f"estado «{done.get('status')}».")
+            if not sube:
+                E.marcar_subida(job_id, "omitida", motivo)
+                self._push_resultado({"kind": "aviso", "text": motivo})
+                return
+            destino = (params.get("destino") or params.get("output_folder") or "").strip()
+            cola_subidas.encolar(destino, "@resultado", params.get("inspeccion_id"),
+                                 tipo=cola_subidas.TIPO_RESULTADO)
+            E.marcar_subida(job_id, "encolada", "Subida del resultado en cola.")
+        except Exception as exc:  # noqa: BLE001 - visible, no tumba la cola
+            logger.exception("cola organizar: no se pudo encolar la subida de %s", job_id)
+            texto = f"No se pudo encolar la subida del resultado: {type(exc).__name__}: {exc}"
+            try:
+                E.marcar_subida(job_id, "error", texto)
+            except Exception:  # noqa: BLE001
+                logger.exception("cola organizar: no se pudo anotar el fallo de subida de %s", job_id)
+            self._push_resultado({"kind": "aviso", "text": texto})
+            return
+        self._cola_avisar()
+        threading.Thread(target=self._cola_drenar_subidas, name="cola-subida-resultado",
+                         daemon=True).start()
+
+    def _cola_drenar_subidas(self) -> None:
+        try:
+            self.cloud_drenar()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("cola organizar: el drenado de subidas falló")
+            self._push_resultado({"kind": "aviso", "text": (
+                f"La subida del resultado queda en cola; el drenado falló: {type(exc).__name__}: {exc}")})
 
     def _cloud_estado_en_segundo_plano(self) -> None:
         """Refresca el indicador de credencial sin bloquear a quien lo pidió."""
@@ -5136,7 +5182,9 @@ class Api:
             else:
                 revision_armada = self._armar_revision_indice(task, params)
             run_task(task, params, emit, advanced or None)
-            if task == "split_images":
+            # En la cola la subida la decide el flag `subir_al_terminar` del trabajo
+            # (`_cola_cerrar_trabajo`); aquí solo el run directo.
+            if task == "split_images" and notas_cola is None:
                 try:
                     self._auto_subir_resultado(params, ultimo_done or None)
                 except Exception:  # noqa: BLE001 - subir no puede tumbar el cierre del run

@@ -10,14 +10,9 @@ import useEstadilloAuto from './useEstadilloAuto'
 
 const ESTADILLO_OMITIDO = { rutas: [], listo: true, subiendo: false, subir: async () => {} }
 
-const DESTINOS = [
-  { id: 'local', titulo: 'Organizar en este ordenador', detalle: 'Se organiza aquí, en la carpeta que elijas.' },
-  { id: 'bucket', titulo: 'Subir sin organizar', detalle: 'Las imágenes van a la nube tal cual.' },
-]
-
-// `destinoInicial` ('local' | 'bucket' | 'nube') solo preselecciona el destino.
-// 'nube' (subir y organizar en la nube) ya no es un destino propio: equivale a
-// «Subir sin organizar» con la casilla «Organizar después en la nube» marcada.
+// `destinoInicial` ('local' | 'bucket' | 'nube') solo preselecciona la pestaña:
+// 'bucket' abre «Subir sin organizar»; 'nube' (subir y organizar en la nube) abre esa
+// misma pestaña con la casilla «Organizar después en la nube» marcada.
 export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChange, destinoInicial = null, acceso = null }) {
   // `acceso` = `{organizer, estadillos}` (login usuario+contraseña); null = todo.
   const verOrganizer = acceso?.organizer !== false
@@ -26,7 +21,6 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
   const [prefijo, setPrefijo] = useState('')
   const [elegida, setElegida] = useState(null)
   const [estadillo, setEstadillo] = useState({ rutas: [], listo: false, subiendo: false, subir: async () => {} })
-  const [destino, setDestino] = useState(destinoInicial === 'nube' ? 'bucket' : destinoInicial)
   // Casilla de «Subir sin organizar»: encadena la organización en la nube al
   // terminar la subida (antes era el tercer destino, 'nube').
   const [organizarNube, setOrganizarNube] = useState(destinoInicial === 'nube')
@@ -41,9 +35,10 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
   // elegida (cambiar de valor basta, no importa a qué).
   const [inspeccionReloadToken, setInspeccionReloadToken] = useState(0)
 
-  // Pestañas: «Organizar» (carpeta → inspección → estadillo → destino) y «Subir resultado»
+  // Pestañas: «Organizar» (carpeta → inspección → estadillo → organizar aquí), «Subir sin
+  // organizar» (mismo formulario, las imágenes van a la nube tal cual) y «Subir resultado»
   // (subir al bucket la carpeta ya organizada, venga de organizar aquí o de antes).
-  const [pestana, setPestana] = useState('organizar')
+  const [pestana, setPestana] = useState(destinoInicial === 'bucket' || destinoInicial === 'nube' ? 'sinorg' : 'organizar')
   // Carpeta organizada que ofrece la pestaña Organizar (su «Carpeta final») y la que el
   // usuario fije a mano en Subir resultado (manda sobre la anterior).
   const [destinoOrganizado, setDestinoOrganizado] = useState('')
@@ -55,8 +50,6 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
   const nuevoDestino = useCallback((d) => { setDestinoOrganizado(d); setCarpetaSalida('') }, [])
   // Actividad de la subida del resultado, para el punto/porcentaje de la pestaña.
   const [actividad, setActividad] = useState({ subiendo: false, pct: 0, error: false })
-
-  const irASubir = () => setPestana('subir')
 
   const ocupado = running || subidaOcupada
   // Modo cola: mientras corre un run se puede preparar OTRO trabajo (carpeta, inspección,
@@ -77,14 +70,19 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
     <div className="card">
       {verOrganizer && (
         <nav className="seg seg-sub" role="tablist" aria-label="Trabajo">
-          <button type="button" role="tab" id="tab-organizar" aria-controls="panel-organizar"
+          <button type="button" role="tab" id="tab-organizar" aria-controls="panel-trabajo"
             aria-selected={pestana === 'organizar'} className={'seg-btn' + (pestana === 'organizar' ? ' active' : '')}
             onClick={() => setPestana('organizar')}>
             Organizar
           </button>
+          <button type="button" role="tab" id="tab-sinorg" aria-controls="panel-trabajo"
+            aria-selected={pestana === 'sinorg'} className={'seg-btn' + (pestana === 'sinorg' ? ' active' : '')}
+            onClick={() => setPestana('sinorg')}>
+            Subir sin organizar
+          </button>
           <button type="button" role="tab" id="tab-subir" aria-controls="panel-subir"
             aria-selected={pestana === 'subir'} className={'seg-btn' + (pestana === 'subir' ? ' active' : '')}
-            onClick={irASubir}>
+            onClick={() => setPestana('subir')}>
             Subir resultado
             {subiendoResultado && (
               <>
@@ -97,7 +95,8 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
         </nav>
       )}
 
-      <div role="tabpanel" id="panel-organizar" aria-labelledby="tab-organizar" hidden={verOrganizer && pestana !== 'organizar'} className="trabajo-panel">
+      {/* Un solo formulario (carpeta, inspección, estadillo) para «Organizar» y «Subir sin organizar». */}
+      <div role="tabpanel" id="panel-trabajo" aria-labelledby={pestana === 'sinorg' ? 'tab-sinorg' : 'tab-organizar'} hidden={verOrganizer && pestana === 'subir'} className="trabajo-panel">
       <PasoCarpeta label="Carpeta del vuelo" value={carpeta} onChange={setCarpeta} disabled={ocupadoForm} />
       <PasoInspeccion
         ready={ready}
@@ -134,42 +133,21 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
         <span className="field-hint hint-warn">{auto.mensaje}</span>
       )}
 
-      {/* Los destinos se ven SIEMPRE, deshabilitados hasta que haya carpeta:
-          si solo aparecían al elegirla, no se entendía que organizar fuese
-          una opción (feedback de Rodrigo, 2026-08-28). */}
       {verOrganizer && (<>
-      <div className="field">
-        <span className="field-label">¿Qué hacemos con este trabajo?</span>
-        {!carpeta && (
-          <span className="field-hint">Elige antes la carpeta del vuelo.</span>
-        )}
-        <div className="destinos">
-          {DESTINOS.map((d) => (
-            <button
-              key={d.id}
-              type="button"
-              className={`destino${destino === d.id ? ' destino-activo' : ''}`}
-              aria-pressed={destino === d.id}
-              disabled={!carpeta || ocupadoForm}
-              onClick={() => setDestino(d.id)}
-            >
-              <span className="destino-titulo">{d.titulo}</span>
-              <span className="destino-detalle">{d.detalle}</span>
-            </button>
-          ))}
-        </div>
-      </div>
+      {pestana === 'organizar' && !carpeta && (
+        <span className="field-hint">Elige antes la carpeta del vuelo.</span>
+      )}
 
-      {carpeta && destino === 'local' && (
+      {carpeta && pestana === 'organizar' && (
         <PanelOrganizar
           origen={carpeta} estadillos={est.rutas} inspeccion={elegida} ready={ready} running={running} onRun={onRun}
-          onDestino={nuevoDestino} onVerSubida={irASubir}
+          onDestino={nuevoDestino}
         />
       )}
 
-      <ColaOrganizar />
+      {pestana === 'organizar' && <ColaOrganizar />}
 
-      {carpeta && destino === 'bucket' && (
+      {carpeta && pestana === 'sinorg' && (
         <label className="check">
           <input
             type="checkbox"
@@ -181,7 +159,7 @@ export default function TrabajoScreen({ ready, running, onRun, onCloudStatusChan
         </label>
       )}
 
-      {carpeta && destino === 'bucket' && (
+      {carpeta && pestana === 'sinorg' && (
         <PanelSubida
           carpeta={carpeta}
           prefijo={prefijo}

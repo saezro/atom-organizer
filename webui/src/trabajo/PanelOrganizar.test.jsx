@@ -212,6 +212,22 @@ describe('PanelOrganizar rgb_tokens', () => {
       expect(await screen.findByTestId('cola-msg')).toBeTruthy()
     })
 
+    it('«Subir a la nube al terminar» va marcada y se encola con subir_al_terminar', async () => {
+      await conDestino({ running: true, inspeccion: { id: 7, prefijo: 'KL19' } })
+      expect(screen.getByLabelText(/Subir a la nube al terminar/i).checked).toBe(true)
+      fireEvent.click(screen.getByText(/Añadir a la cola/i))
+      await waitFor(() => expect(api.colaEncolar).toHaveBeenCalledTimes(1))
+      expect(api.colaEncolar.mock.calls[0][0].subir_al_terminar).toBe(true)
+    })
+
+    it('desmarcada, la cola manda subir_al_terminar=false', async () => {
+      await conDestino({ running: true, inspeccion: { id: 7, prefijo: 'KL19' } })
+      fireEvent.click(screen.getByLabelText(/Subir a la nube al terminar/i))
+      fireEvent.click(screen.getByText(/Añadir a la cola/i))
+      await waitFor(() => expect(api.colaEncolar).toHaveBeenCalledTimes(1))
+      expect(api.colaEncolar.mock.calls[0][0].subir_al_terminar).toBe(false)
+    })
+
     it('enseña los avisos (mismo destino) y los errores (origen ya en cola)', async () => {
       await conDestino()
       api.colaEncolar.mockResolvedValueOnce({ ok: true, job: { id: 'j2' }, avisos: ['El destino ya lo usa otro trabajo'] })
@@ -222,5 +238,45 @@ describe('PanelOrganizar rgb_tokens', () => {
       await waitFor(() => expect(screen.getByTestId('cola-msg').textContent).toMatch(/ya está en la cola/))
       expect(screen.queryByTestId('cola-aviso')).toBeNull()
     })
+  })
+})
+
+describe('PanelOrganizar subir a la nube al terminar', () => {
+  async function conDestino(props = {}) {
+    api.pickFolder.mockResolvedValue('/datos/final')
+    const onRun = vi.fn()
+    render(<PanelOrganizar origen="/datos/vuelo" estadillos={['/e.xlsx']} ready running={false} onRun={onRun} {...props} />)
+    fireEvent.click(screen.getAllByText(/Elegir/i)[0])
+    await waitFor(() => expect(screen.getByDisplayValue('/datos/final')).toBeTruthy())
+    return onRun
+  }
+
+  it('la casilla está encima de Ejecutar, marcada por defecto, y Ejecutar manda subir_resultado=true', async () => {
+    const onRun = await conDestino({ inspeccion: { id: 7, prefijo: 'KL19' } })
+    const casilla = screen.getByLabelText(/Subir a la nube al terminar/i)
+    expect(casilla.checked).toBe(true)
+    const boton = screen.getByText(/Ejecutar/i)
+    expect(casilla.compareDocumentPosition(boton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    fireEvent.click(boton)
+    expect(onRun.mock.calls[0][1].subir_resultado).toBe(true)
+  })
+
+  it('desmarcada, Ejecutar manda subir_resultado=false', async () => {
+    const onRun = await conDestino({ inspeccion: { id: 7, prefijo: 'KL19' } })
+    fireEvent.click(screen.getByLabelText(/Subir a la nube al terminar/i))
+    fireEvent.click(screen.getByText(/Ejecutar/i))
+    expect(onRun.mock.calls[0][1].subir_resultado).toBe(false)
+  })
+
+  it('sin inspección y con la casilla marcada avisa visiblemente', async () => {
+    await conDestino()
+    expect(screen.getByTestId('aviso-sin-inspeccion')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText(/Subir a la nube al terminar/i))
+    expect(screen.queryByTestId('aviso-sin-inspeccion')).toBeNull()
+  })
+
+  it('ya no hay enlace «Ir a Subir resultado»', async () => {
+    await conDestino()
+    expect(screen.queryByText(/Ir a «Subir resultado»/)).toBeNull()
   })
 })

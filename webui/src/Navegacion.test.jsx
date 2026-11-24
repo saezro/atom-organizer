@@ -39,7 +39,7 @@ describe('Navegación', () => {
 
   it('arranca en Trabajo', async () => {
     render(<App />)
-    expect(await screen.findByText('¿Qué hacemos con este trabajo?')).toBeTruthy()
+    expect(await screen.findByRole('tab', { name: 'Subir sin organizar' })).toBeTruthy()
     expect(screen.getByRole('tab', { name: 'Trabajo' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.queryByRole('tab', { name: 'Inicio' })).toBeNull()
   })

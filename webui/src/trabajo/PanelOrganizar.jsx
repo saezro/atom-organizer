@@ -9,15 +9,17 @@ import { empaquetarRutas } from './empaquetarRutas'
 // Campos avanzados aplanados (todas las secciones) para el estado del panel.
 const ADV_FIELDS = SPLIT_ADVANCED.flatMap((s) => s.fields)
 
-// `onDestino(carpeta)` publica la «Carpeta final» (la ofrece la pestaña «Subir resultado»);
-// `onVerSubida()` lleva a esa pestaña. La subida del resultado ya no vive aquí.
-export default function PanelOrganizar({ origen, estadillos = [], inspeccion, ready, running, onRun, onDestino, onVerSubida }) {
+// `onDestino(carpeta)` publica la «Carpeta final» (la ofrece la pestaña «Subir resultado»).
+// La casilla «Subir a la nube al terminar» viaja con el trabajo: `subir_resultado` en el run
+// directo (lo lee `decidir_automatica`) y `subir_al_terminar` en la cola (lo lee el worker).
+export default function PanelOrganizar({ origen, estadillos = [], inspeccion, ready, running, onRun, onDestino }) {
   const [destino, setDestino] = useState('')
   const [destinoFull, setDestinoFull] = useState(null) // {count} si la salida no está vacía NI es un destino organizado
   const [destinoOrganizado, setDestinoOrganizado] = useState(false) // destino con manifiesto válido: se añade otra tanda
   const [fallidasError, setFallidasError] = useState('') // manifiesto ilegible: se muestra, no se oculta el botón
   const [fallidas, setFallidas] = useState(0) // filas 'fallido' del manifiesto del destino (mismo origen): "Reorganizar fallidas"
   const [rename, setRename] = useState(true)
+  const [subirAlTerminar, setSubirAlTerminar] = useState(true)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [adv, setAdv] = useState(() => initialState(ADV_FIELDS))
   const [detected, setDetected] = useState(null)
@@ -147,7 +149,7 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
   function handleRun(soloFallidas = false) {
     setColaMsg(null)
     const { params, advanced } = armarTrabajo(soloFallidas)
-    onRun('split_images', params, advanced)
+    onRun('split_images', { ...params, subir_resultado: subirAlTerminar }, advanced)
   }
 
   // Encola el trabajo actual: el backend lo procesa tras el que esté en marcha. El estadillo
@@ -155,7 +157,7 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
   async function handleEncolar() {
     const { params, advanced } = armarTrabajo(false)
     try {
-      const r = await api.colaEncolar({ ...params, estadillo: empaquetarRutas(params.estadillo) }, advanced)
+      const r = await api.colaEncolar({ ...params, estadillo: empaquetarRutas(params.estadillo), subir_al_terminar: subirAlTerminar }, advanced)
       if (r && r.ok) {
         setColaMsg({ ok: true, texto: r.pausada
           ? 'Añadido a la cola. La cola está en pausa: pulsa «Reanudar cola» para procesarla.'
@@ -334,6 +336,16 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
         </div>
       )}
 
+      <label className="check">
+        <input type="checkbox" checked={subirAlTerminar} onChange={(e) => setSubirAlTerminar(e.target.checked)} />
+        <span>Subir a la nube al terminar</span>
+      </label>
+      {subirAlTerminar && !inspeccion?.id && (
+        <span className="field-hint hint-warn" data-testid="aviso-sin-inspeccion">
+          No hay inspección elegida: al terminar NO se subirá el resultado. Elige una inspección o desmarca la casilla.
+        </span>
+      )}
+
       <div className="field-row">
         <button className="btn-run" disabled={!canRun} onClick={() => handleRun(false)}>
           {running ? 'Procesando…' : 'Ejecutar'}
@@ -368,12 +380,6 @@ export default function PanelOrganizar({ origen, estadillos = [], inspeccion, re
             Reorganizar {fallidas} fallidas
           </button>
         </>
-      )}
-      {destino && onVerSubida && (
-        <div className="field-row">
-          <button type="button" className="btn-ghost" onClick={onVerSubida}>Ir a «Subir resultado»</button>
-          <span className="field-hint">Al terminar de organizar, el resultado se sube desde esa pestaña.</span>
-        </div>
       )}
     </div>
   )

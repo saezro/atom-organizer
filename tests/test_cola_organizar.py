@@ -224,3 +224,34 @@ def test_marcar_en_curso_solo_si_sigue_pendiente(tmp_path, ruta):
     co.marcar(j["id"], co.CANCELADO, ruta=ruta)
     assert co.marcar(j["id"], co.EN_CURSO, solo_si=co.PENDIENTE, ruta=ruta) is None
     assert co.obtener(j["id"], ruta=ruta)["estado"] == co.CANCELADO
+
+
+def test_subir_al_terminar_se_persiste_y_sale_de_params(tmp_path, ruta):
+    r = co.encolar({**_p(tmp_path), "subir_al_terminar": True}, ruta=ruta)
+    job = json.loads(ruta.read_text(encoding="utf-8"))[0]
+    assert r["job"]["subir_al_terminar"] is True and job["subir_al_terminar"] is True
+    assert "subir_al_terminar" not in job["params"]  # es del trabajo, no del pipeline
+    assert job["subida"] is None
+    assert co.subir_al_terminar(co.obtener(job["id"], ruta=ruta)) is True
+
+
+def test_subir_al_terminar_ausente_o_no_true_es_false_explicito(tmp_path, ruta):
+    co.encolar(_p(tmp_path, "a", "sa"), ruta=ruta)
+    co.encolar({**_p(tmp_path, "b", "sb"), "subir_al_terminar": "si"}, ruta=ruta)
+    assert [j["subir_al_terminar"] for j in co.listar(ruta=ruta)] == [False, False]
+
+
+def test_trabajo_viejo_sin_el_campo_no_sube(tmp_path, ruta):
+    ruta.parent.mkdir(parents=True)
+    ruta.write_text(json.dumps([{"id": "v1", "params": _p(tmp_path), "estado": "hecho"}]), encoding="utf-8")
+    assert co.subir_al_terminar(co.obtener("v1", ruta=ruta)) is False
+
+
+def test_marcar_subida_y_reintentar_la_limpia(tmp_path, ruta):
+    jid = co.encolar({**_p(tmp_path), "subir_al_terminar": True}, ruta=ruta)["job"]["id"]
+    co.marcar(jid, co.HECHO, ruta=ruta)
+    assert co.marcar_subida(jid, "encolada", "ok", ruta=ruta)["subida"] == {"estado": "encolada", "detalle": "ok"}
+    with pytest.raises(ValueError):
+        co.marcar_subida(jid, "rara", ruta=ruta)
+    co.marcar(jid, co.ERROR, error="x", ruta=ruta)
+    assert co.reintentar(jid, ruta=ruta)["job"]["subida"] is None

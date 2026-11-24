@@ -61,8 +61,13 @@ def esc(monkeypatch, tmp_path):
 
 
 @pytest.fixture
-def api(monkeypatch, esc):
+def api(monkeypatch, esc, tmp_path):
+    from atom_core import cola_subidas
+    monkeypatch.setattr(cola_subidas, "_ruta_cola", lambda: tmp_path / "cola_subidas.json")
     a = aw.Api(broker=True)
+    a.eventos_resultado = []
+    monkeypatch.setattr(a, "_push_resultado", lambda d: a.eventos_resultado.append(d))
+    monkeypatch.setattr(a, "_cola_drenar_subidas", lambda: None)
     monkeypatch.setattr(a, "_telemetria_org_iniciar", lambda task, params: None)
     monkeypatch.setattr(a, "_auto_subir_resultado", lambda params, done: None)
     monkeypatch.setattr(a, "_revision_aplica", lambda task, params: False)
@@ -334,3 +339,52 @@ def test_cola_ilegible_al_encolar_es_cola_error(api, esc, tmp_path, monkeypatch)
     monkeypatch.setattr(co, "encolar", ilegible)
     r = api.cola_encolar(_p(tmp_path, "a"))
     assert r["ok"] is False and r["codigo"] == "cola_error"
+
+
+def _con_subida(tmp_path, n, insp=7, subir=True):
+    p = _p(tmp_path, n)
+    p["subir_al_terminar"] = subir
+    if insp is not None:
+        p["inspeccion_id"] = insp
+    return p
+
+
+def test_hecho_con_subir_al_terminar_encola_la_subida_del_resultado(api, esc, tmp_path):
+    from atom_core import cola_subidas
+    assert api.cola_encolar(_con_subida(tmp_path, "a"))["ok"]
+    assert _quieta(api)
+    j = api.cola_listar()["jobs"][0]
+    assert j["estado"] == "hecho" and j["subir_al_terminar"] is True
+    assert j["subida"]["estado"] == "encolada"
+    pend = cola_subidas.pendientes()
+    assert len(pend) == 1
+    assert pend[0]["tipo"] == cola_subidas.TIPO_RESULTADO
+    assert pend[0]["folder"] == str(tmp_path / "out_a") and pend[0]["inspeccion_id"] == 7
+
+
+def test_sin_flag_no_se_encola_ninguna_subida(api, esc, tmp_path):
+    from atom_core import cola_subidas
+    assert api.cola_encolar(_con_subida(tmp_path, "a", subir=False))["ok"]
+    assert _quieta(api)
+    assert api.cola_listar()["jobs"][0]["subida"] is None
+    assert cola_subidas.pendientes() == []
+
+
+def test_error_o_cancelado_no_sube(api, esc, tmp_path):
+    from atom_core import cola_subidas
+    esc.guiones["a"] = lambda emit: emit("error", "boom")
+    assert api.cola_encolar(_con_subida(tmp_path, "a"))["ok"]
+    assert _quieta(api)
+    assert _estados(api) == {"a": "error"}
+    assert cola_subidas.pendientes() == []
+
+
+def test_sin_inspeccion_no_sube_y_avisa(api, esc, tmp_path):
+    from atom_core import cola_subidas
+    assert api.cola_encolar(_con_subida(tmp_path, "a", insp=None))["ok"]
+    assert _quieta(api)
+    j = api.cola_listar()["jobs"][0]
+    assert j["estado"] == "hecho" and j["subida"]["estado"] == "omitida"
+    assert "inspección" in j["subida"]["detalle"]
+    assert cola_subidas.pendientes() == []
+    assert any(e["kind"] == "aviso" and "inspección" in e["text"] for e in api.eventos_resultado)

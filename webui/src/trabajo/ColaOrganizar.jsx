@@ -15,6 +15,23 @@ const ETIQUETA = {
   interrumpido: 'Interrumpido',
 }
 
+const ETIQUETA_SUBIDA = {
+  encolada: 'Subida del resultado en cola',
+  omitida: 'No se sube el resultado',
+  error: 'Fallo al encolar la subida',
+}
+
+// Línea de subida de un trabajo: solo si lleva `subir_al_terminar` (los viejos sin el campo no suben).
+function textoSubida(j) {
+  if (j.subir_al_terminar !== true) return null
+  if (j.subida?.estado) {
+    const t = ETIQUETA_SUBIDA[j.subida.estado] || j.subida.estado
+    return { texto: j.subida.detalle && j.subida.estado !== 'encolada' ? `${t}: ${j.subida.detalle}` : t, aviso: j.subida.estado !== 'encolada' }
+  }
+  if (['cancelado', 'error', 'interrumpido'].includes(j.estado)) return { texto: 'No se subirá (no terminó bien)', aviso: false }
+  return { texto: 'Se subirá a la nube al terminar', aviso: false }
+}
+
 const nombre = (ruta) => String(ruta || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || String(ruta || '')
 
 export default function ColaOrganizar() {
@@ -82,6 +99,7 @@ export default function ColaOrganizar() {
         {jobs.map((j) => {
           const p = j.params || {}
           const aviso = j.estado === 'hecho' && j.error
+          const subida = textoSubida(j)
           return (
             <li key={j.id} className={`cola-item cola-${j.estado}`} data-testid={`cola-job-${j.id}`}>
               <div className="cola-info">
@@ -90,6 +108,9 @@ export default function ColaOrganizar() {
                 </span>
                 <span className={`cola-estado cola-estado-${j.estado}`}>{ETIQUETA[j.estado] || j.estado}</span>
                 {j.resumen && <span className="field-hint">{j.resumen}</span>}
+                {subida && (
+                  <span className={`field-hint ${subida.aviso ? 'hint-warn' : ''}`} data-testid={`cola-subida-${j.id}`}>{subida.texto}</span>
+                )}
                 {j.error && (
                   <span className={`field-hint ${aviso ? 'hint-warn' : 'hint-error'}`}>{j.error}</span>
                 )}

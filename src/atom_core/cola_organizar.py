@@ -116,9 +116,12 @@ def encolar(params: dict, advanced: dict | None = None, *, ruta: Path | None = N
             avisos.append(
                 f"El destino {destino} ya lo usa otro trabajo de la cola: las imágenes se "
                 "acumulan en él (tandas del mismo destino).")
+        # `subir_al_terminar` es del TRABAJO, no del pipeline: se saca de `params`.
+        params = dict(params)
+        subir = params.pop("subir_al_terminar", False) is True
         job = {
             "id": uuid.uuid4().hex[:12],
-            "params": dict(params),
+            "params": params,
             "advanced": dict(advanced) if advanced else None,
             "estado": PENDIENTE,
             "creado": _ahora(),
@@ -126,6 +129,10 @@ def encolar(params: dict, advanced: dict | None = None, *, ruta: Path | None = N
             "fin": None,
             "resumen": "",
             "error": "",
+            # Subir el resultado a la nube al acabar bien (cola_subidas, tipo resultado).
+            "subir_al_terminar": subir,
+            # Estado de esa subida: None | {"estado": "encolada"|"omitida"|"error", "detalle": str}
+            "subida": None,
         }
         jobs.append(job)
         _escribir(ruta, jobs)
@@ -185,12 +192,37 @@ def marcar(job_id: str, estado: str, *, resumen: str | None = None,
                     j["fin"] = None
                     j["error"] = ""
                     j["resumen"] = ""
+                    j["subida"] = None
                 elif estado in (HECHO, ERROR, CANCELADO, INTERRUMPIDO):
                     j["fin"] = _ahora()
                 if resumen is not None:
                     j["resumen"] = resumen
                 if error is not None:
                     j["error"] = error
+                _escribir(ruta, jobs)
+                return j
+    return None
+
+
+def subir_al_terminar(job: dict) -> bool:
+    """Flag explícito: un trabajo viejo (sin el campo) NO sube, nunca se adivina."""
+    return (job or {}).get("subir_al_terminar") is True
+
+
+ESTADOS_SUBIDA = ("encolada", "omitida", "error")
+
+
+def marcar_subida(job_id: str, estado: str, detalle: str = "", *,
+                  ruta: Path | None = None) -> dict | None:
+    """Anota qué pasó con la subida del resultado de este trabajo (la ve la UI)."""
+    if estado not in ESTADOS_SUBIDA:
+        raise ValueError(f"estado de subida desconocido: {estado!r}")
+    ruta = ruta or _ruta_cola()
+    with _SeccionCritica(ruta):
+        jobs = _leer(ruta)
+        for j in jobs:
+            if j["id"] == job_id:
+                j["subida"] = {"estado": estado, "detalle": detalle}
                 _escribir(ruta, jobs)
                 return j
     return None
@@ -211,7 +243,7 @@ def reintentar(job_id: str, *, ruta: Path | None = None) -> dict:
                     if (o is not j and o.get("estado") in (PENDIENTE, EN_CURSO)
                             and _clave_ruta(_origen(o.get("params") or {})) == k):
                         return {"ok": False, "error": "Esa carpeta ya está pendiente o en curso en la cola."}
-                j.update(estado=PENDIENTE, iniciado=None, fin=None, resumen="", error="")
+                j.update(estado=PENDIENTE, iniciado=None, fin=None, resumen="", error="", subida=None)
                 _escribir(ruta, jobs)
                 return {"ok": True, "job": j}
     return {"ok": False, "error": "El trabajo ya no está en la cola."}

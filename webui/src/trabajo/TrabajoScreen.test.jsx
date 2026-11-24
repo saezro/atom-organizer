@@ -43,35 +43,49 @@ const emitir = (canal, detail) =>
 beforeEach(() => vi.clearAllMocks())
 
 describe('TrabajoScreen', () => {
-  it('muestra los destinos pero deshabilitados hasta que hay carpeta', async () => {
+  it('Organizar ya no ofrece selector de destino: Subir sin organizar es pestaña propia', async () => {
     render(<TrabajoScreen ready running={false} onRun={() => {}} />)
-    const destino = screen.getByText(/Organizar en este ordenador/i).closest('button')
-    expect(destino).toBeTruthy()
-    expect(destino.disabled).toBe(true)
-    expect(screen.getByText(/Subir sin organizar/i).closest('button').disabled).toBe(true)
+    expect(screen.getByRole('tab', { name: 'Organizar' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Subir sin organizar' })).toHaveAttribute('aria-selected', 'false')
+    expect(screen.queryByText(/Organizar en este ordenador/i)).toBeNull()
+    expect(screen.queryByText(/¿Qué hacemos con este trabajo\?/i)).toBeNull()
+    expect(screen.getByText(/Elige antes la carpeta del vuelo/i)).toBeTruthy()
   })
 
-  it('ofrece los dos destinos al elegir carpeta y la casilla de nube solo al subir', async () => {
+  it('la casilla de nube solo aparece en la pestaña Subir sin organizar', async () => {
     render(<TrabajoScreen ready running={false} onRun={() => {}} />)
     fireEvent.click(screen.getAllByText(/Elegir/i)[0])
-    expect(await screen.findByText(/Organizar en este ordenador/i)).toBeTruthy()
-    expect(screen.getByText(/Subir sin organizar/i)).toBeTruthy()
-    expect(screen.queryByText(/Subir y organizar en la nube/i)).toBeNull()
+    await screen.findByDisplayValue('/datos/vuelo')
     expect(screen.queryByLabelText(/Organizar después en la nube/i)).toBeNull()
-    fireEvent.click(screen.getByText(/Subir sin organizar/i))
+    fireEvent.click(screen.getByRole('tab', { name: 'Subir sin organizar' }))
     const casilla = screen.getByLabelText(/Organizar después en la nube/i)
     expect(casilla.checked).toBe(false)
     fireEvent.click(casilla)
     expect(casilla.checked).toBe(true)
   })
 
-  it('la carpeta elegida sobrevive al cambio de destino', async () => {
+  it('destinoInicial bucket/nube abre Subir sin organizar (nube con la casilla marcada)', async () => {
+    const { unmount } = render(<TrabajoScreen ready running={false} onRun={() => {}} destinoInicial="bucket" />)
+    expect(screen.getByRole('tab', { name: 'Subir sin organizar' })).toHaveAttribute('aria-selected', 'true')
+    unmount()
+    render(<TrabajoScreen ready running={false} onRun={() => {}} destinoInicial="nube" />)
+    fireEvent.click(screen.getAllByText(/Elegir/i)[0])
+    await screen.findByDisplayValue('/datos/vuelo')
+    expect(screen.getByLabelText(/Organizar después en la nube/i).checked).toBe(true)
+  })
+
+  it('destinoInicial local abre Organizar', () => {
+    render(<TrabajoScreen ready running={false} onRun={() => {}} destinoInicial="local" />)
+    expect(screen.getByRole('tab', { name: 'Organizar' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('la carpeta elegida sobrevive al cambio de pestaña', async () => {
     render(<TrabajoScreen ready running={false} onRun={() => {}} />)
     fireEvent.click(screen.getAllByText(/Elegir/i)[0])
     await screen.findByDisplayValue('/datos/vuelo')
-    fireEvent.click(screen.getByText(/Subir sin organizar/i))
+    fireEvent.click(screen.getByRole('tab', { name: 'Subir sin organizar' }))
     expect(screen.getByDisplayValue('/datos/vuelo')).toBeTruthy()
-    fireEvent.click(screen.getByText(/Organizar en este ordenador/i))
+    fireEvent.click(screen.getByRole('tab', { name: 'Organizar' }))
     expect(screen.getByDisplayValue('/datos/vuelo')).toBeTruthy()
   })
 
@@ -80,7 +94,7 @@ describe('TrabajoScreen', () => {
     render(<TrabajoScreen ready running={false} onRun={() => {}} />)
     fireEvent.click(screen.getAllByText(/Elegir/i)[0])
     await screen.findByDisplayValue('/datos/vuelo')
-    fireEvent.click(screen.getByText(/Subir sin organizar/i))
+    fireEvent.click(screen.getByRole('tab', { name: 'Subir sin organizar' }))
     await waitFor(() => expect(api.cloudPrepareStart).not.toHaveBeenCalled()) // aún sin inspección
     expect(api.pickFolder).toHaveBeenCalledTimes(1)
   })
@@ -94,7 +108,7 @@ describe('TrabajoScreen', () => {
     render(<TrabajoScreen ready running={false} onRun={() => {}} />)
     fireEvent.click(screen.getAllByText(/Elegir/i)[0])
     await screen.findByDisplayValue('/datos/vuelo')
-    fireEvent.click(screen.getByText(/Subir sin organizar/i))
+    fireEvent.click(screen.getByRole('tab', { name: 'Subir sin organizar' }))
     await waitFor(() => expect(api.cloudStatus).toHaveBeenCalled())
 
     const checkbox = () => screen.getByRole('checkbox', { name: /Subir sin estadillo/i })
@@ -120,7 +134,7 @@ describe('TrabajoScreen', () => {
     render(<TrabajoScreen ready running={false} onRun={() => {}} />)
     fireEvent.click(screen.getAllByText(/Elegir/i)[0])
     await screen.findByDisplayValue('/datos/vuelo')
-    fireEvent.click(screen.getByText(/Subir sin organizar/i))
+    fireEvent.click(screen.getByRole('tab', { name: 'Subir sin organizar' }))
     await waitFor(() => expect(api.cloudInspecciones).toHaveBeenCalledTimes(1))
 
     emitir('atom:cloud', { kind: 'login', ok: true })
@@ -135,7 +149,7 @@ describe('TrabajoScreen', () => {
     )
     fireEvent.click(screen.getAllByText(/Elegir/i)[0])
     await screen.findByDisplayValue('/datos/vuelo')
-    fireEvent.click(screen.getByText(/Subir sin organizar/i))
+    fireEvent.click(screen.getByRole('tab', { name: 'Subir sin organizar' }))
     await waitFor(() => expect(api.cloudStatus).toHaveBeenCalled())
     await waitFor(() =>
       expect(onCloudStatusChange).toHaveBeenCalledWith(
@@ -144,16 +158,16 @@ describe('TrabajoScreen', () => {
     )
   })
 
-  it('sin módulo organizer no ofrece destinos', () => {
+  it('sin módulo organizer no ofrece pestañas de organizar ni subir', () => {
     render(<TrabajoScreen ready running={false} onRun={() => {}} acceso={{ organizer: false, estadillos: true }} />)
-    expect(screen.queryByText(/Organizar en este ordenador/i)).toBeNull()
+    expect(screen.queryByRole('tab')).toBeNull()
     expect(screen.queryByText(/Subir sin organizar/i)).toBeNull()
   })
 
   it('sin módulo estadillos no pinta el paso de estadillo pero mantiene los destinos', () => {
     render(<TrabajoScreen ready running={false} onRun={() => {}} acceso={{ organizer: true, estadillos: false }} />)
     expect(screen.queryByText(/Subir sin estadillo/i)).toBeNull()
-    expect(screen.getByText(/Organizar en este ordenador/i)).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Subir sin organizar' })).toBeTruthy()
   })
 
   describe('sin módulo estadillos (acceso.estadillos === false)', () => {
@@ -165,7 +179,6 @@ describe('TrabajoScreen', () => {
       render(<TrabajoScreen ready running={false} onRun={onRun} acceso={acceso} />)
       fireEvent.click(screen.getAllByText(/Elegir/i)[0])
       await screen.findByDisplayValue('/datos/vuelo')
-      fireEvent.click(screen.getByText(/Organizar en este ordenador/i))
       api.pickFolder.mockResolvedValue('/datos/final')
       await waitFor(() => expect(screen.getAllByText(/Elegir/i).length).toBeGreaterThan(1))
       fireEvent.click(screen.getAllByText(/Elegir/i)[1])
@@ -296,7 +309,7 @@ describe('TrabajoScreen', () => {
     })
   })
 
-  describe('pestañas Organizar | Subir resultado', () => {
+  describe('pestañas Organizar | Subir sin organizar | Subir resultado', () => {
     it('arranca en Organizar y «Subir resultado» muestra su propia pestaña con carpeta, inspección y CTAs', async () => {
       render(<TrabajoScreen ready running={false} onRun={() => {}} />)
       expect(screen.getByRole('tab', { name: 'Organizar' })).toHaveAttribute('aria-selected', 'true')
@@ -309,7 +322,7 @@ describe('TrabajoScreen', () => {
       expect(screen.getByRole('button', { name: 'Subir el resto' })).toBeTruthy()
       expect(screen.getByRole('button', { name: 'Subir todo' })).toBeTruthy()
       fireEvent.click(screen.getByRole('tab', { name: 'Organizar' }))
-      expect(await screen.findByText(/Organizar en este ordenador/i)).toBeTruthy()
+      expect(await screen.findByText(/Elige antes la carpeta del vuelo/i)).toBeTruthy()
       expect(screen.queryByRole('button', { name: 'Publicar urgentes' })).toBeNull()
     })
 
@@ -330,7 +343,7 @@ describe('TrabajoScreen', () => {
   })
 
   describe('modo cola: mientras corre un run', () => {
-    it('carpeta, destinos y «Añadir a la cola» siguen activos con running=true', async () => {
+    it('carpeta, carpeta final y «Añadir a la cola» siguen activos con running=true', async () => {
       const { api } = await import('../bridge')
       api.estadillosDetectar.mockResolvedValue({ rutas: ['/o/e.csv'] })
       api.pickFolder.mockResolvedValue('/datos/vuelo')
@@ -339,9 +352,6 @@ describe('TrabajoScreen', () => {
       expect(elegir.disabled).toBeFalsy()
       fireEvent.click(elegir)
       await screen.findByDisplayValue('/datos/vuelo')
-      const local = screen.getByText(/Organizar en este ordenador/i).closest('button')
-      expect(local.disabled).toBe(false)
-      fireEvent.click(local)
       api.pickFolder.mockResolvedValue('/datos/final')
       await waitFor(() => expect(screen.getAllByText(/Elegir/i).length).toBeGreaterThan(1))
       fireEvent.click(screen.getAllByText(/Elegir/i)[1])
@@ -351,6 +361,8 @@ describe('TrabajoScreen', () => {
       await waitFor(() => expect(anadir.disabled).toBe(false))
       fireEvent.click(anadir)
       await waitFor(() => expect(api.colaEncolar).toHaveBeenCalled())
+      // «Subir a la nube al terminar» viene marcada por defecto y viaja con el trabajo.
+      expect(api.colaEncolar.mock.calls[0][0].subir_al_terminar).toBe(true)
     })
 
     it('muestra la cola con sus trabajos', async () => {

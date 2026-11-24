@@ -102,4 +102,23 @@ describe('ColaOrganizar', () => {
     fireEvent.click(await screen.findByText('Reintentar'))
     expect((await screen.findByRole('alert')).textContent).toMatch(/ya está pendiente/)
   })
+
+  it('muestra por trabajo si se subirá y el estado de esa subida', async () => {
+    api.colaListar.mockResolvedValue({
+      ok: true, pausada: false,
+      jobs: [
+        job('a', 'pendiente', { subir_al_terminar: true, subida: null }),
+        job('b', 'hecho', { subir_al_terminar: true, subida: { estado: 'encolada', detalle: '' } }),
+        job('c', 'hecho', { subir_al_terminar: true, subida: { estado: 'omitida', detalle: 'no hay inspección elegida.' } }),
+        job('d', 'error', { subir_al_terminar: true, subida: null }),
+        job('e', 'hecho'), // trabajo viejo sin el campo: no sube, no se muestra nada
+      ],
+    })
+    render(<ColaOrganizar />)
+    expect(await screen.findByTestId('cola-subida-a')).toHaveTextContent('Se subirá a la nube al terminar')
+    expect(screen.getByTestId('cola-subida-b')).toHaveTextContent('Subida del resultado en cola')
+    expect(screen.getByTestId('cola-subida-c')).toHaveTextContent(/No se sube el resultado: no hay inspección/)
+    expect(screen.getByTestId('cola-subida-d')).toHaveTextContent('No se subirá')
+    expect(screen.queryByTestId('cola-subida-e')).toBeNull()
+  })
 })
