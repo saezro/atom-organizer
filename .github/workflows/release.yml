@@ -574,6 +574,7 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ needs.meta.outputs.version }}
+          target_commitish: ${{ github.sha }}
           name: ATOM Organizer ${{ needs.meta.outputs.version }}
           prerelease: ${{ needs.meta.outputs.prerelease }}
           fail_on_unmatched_files: true
