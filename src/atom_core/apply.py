@@ -108,6 +108,12 @@ class _EmisorProgreso:
 _VENTANA_VELOCIDAD = 20
 
 
+def _ahora_velocidad() -> float:
+    """Reloj del medidor de img/s, aparte para que un test lo falsee sin contar las
+    llamadas a `time.monotonic` de la lectura con plazo (`_ejecutar_con_limite`)."""
+    return time.monotonic()
+
+
 class _MedidorVelocidad:
     """Imágenes/segundo sobre una VENTANA MÓVIL de las últimas completadas.
 
@@ -120,7 +126,7 @@ class _MedidorVelocidad:
         self._marcas: deque[float] = deque(maxlen=ventana)
 
     def registrar(self, ahora: float | None = None) -> None:
-        self._marcas.append(ahora if ahora is not None else time.monotonic())
+        self._marcas.append(ahora if ahora is not None else _ahora_velocidad())
 
     def img_por_segundo(self) -> float | None:
         if len(self._marcas) < 2:

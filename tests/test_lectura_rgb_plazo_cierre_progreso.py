@@ -299,6 +299,7 @@ def _fichero(tmp_path, nombre, tam=400_000):
 
 
 def test_termica_se_lee_entera_en_la_primera_apertura(tmp_path, monkeypatch):
+    monkeypatch.setattr(indice, "_FILTRO_ARCHIVO_A_MEDIAS", True)  # conftest lo apaga
     p = _fichero(tmp_path, "DJI_0001_T.JPG")
     rs = _Rs()
     monkeypatch.setattr(indice.rust_bridge, "exigir", lambda fase: rs)
@@ -311,6 +312,7 @@ def test_termica_se_lee_entera_en_la_primera_apertura(tmp_path, monkeypatch):
 
 
 def test_rgb_y_solo_timestamp_no_leen_entero_de_mas(tmp_path, monkeypatch):
+    monkeypatch.setattr(indice, "_FILTRO_ARCHIVO_A_MEDIAS", True)  # conftest lo apaga
     rgb = _fichero(tmp_path, "DJI_0002_W.JPG")
     rs = _Rs()
     monkeypatch.setattr(indice.rust_bridge, "exigir", lambda fase: rs)
@@ -327,7 +329,8 @@ def test_rgb_y_solo_timestamp_no_leen_entero_de_mas(tmp_path, monkeypatch):
     assert pedido[-1] is None  # calendario previo: sin lectura entera adelantada (v3.5.5)
 
 
-def test_entero_leido_con_la_cabecera_es_identico_a_reabrir(tmp_path):
+def test_entero_leido_con_la_cabecera_es_identico_a_reabrir(tmp_path, monkeypatch):
+    monkeypatch.setattr(indice, "_FILTRO_ARCHIVO_A_MEDIAS", True)  # conftest lo apaga
     p = _fichero(tmp_path, "DJI_0004_T.JPG")
     out = []
     cab, a_medias, sin_eoi = indice._leer_cabecera_cola_entero(str(p), out)

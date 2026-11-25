@@ -144,7 +144,7 @@ def test_aplicar_rgb_emite_el_marcador_de_velocidad_solo_al_final_si_hay_pocas_f
         reloj["t"] += 1.0
         return reloj["t"]
 
-    monkeypatch.setattr(apply.time, "monotonic", _reloj_falso)
+    monkeypatch.setattr(apply, "_ahora_velocidad", _reloj_falso)
 
     origen_dir = tmp_path / "origen"
     origen_dir.mkdir()
