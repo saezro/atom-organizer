@@ -607,9 +607,10 @@ def run_task(
                         _cuello = (f" · cuello: {_veredicto} ({_recursos.get('mb_por_segundo', '?')} MB/s)"
                                    if _veredicto else "")
                         _run_log.write(
-                            "[stats] {fase}: {done}/{total} · {ips} img/s · ETA {eta}s{cuello}\n"
+                            "[stats] {fase}: {done}/{total} · {fallidas} fallidas · {ips} img/s · ETA {eta}s{cuello}\n"
                             .format(fase=payload.get("fase", "?"),
                                     done=payload.get("done", "?"), total=payload.get("total", "?"),
+                                    fallidas=payload.get("fallidas", 0),
                                     ips=payload.get("img_por_segundo", "?"),
                                     eta=payload.get("eta_segundos", "?"),
                                     cuello=_cuello))

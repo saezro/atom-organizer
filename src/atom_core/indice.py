@@ -222,6 +222,16 @@ def _termina_en_sufijo(base: str, sufijos: str) -> bool:
     return False
 
 
+_RE_NOMBRE_TERMICA = re.compile(r"_T(_point\d+)?$", re.IGNORECASE)
+
+
+def _es_nombre_termica(nombre: str) -> bool:
+    """Heurística SOLO para decidir leer el fichero entero en la 1ª apertura (`*_T`,
+    el sufijo DJI por defecto, con `_pointN` de la H30T). No clasifica nada: si no
+    acierta (otro sufijo en la config), el entero se pide después como siempre."""
+    return bool(_RE_NOMBRE_TERMICA.search(os.path.splitext(nombre)[0]))
+
+
 def _es_pb_generales(pb: str | None) -> bool:
     """¿Es `pb` alguna variante de "GENERALES" (fotos de contexto, sin vuelo
     real)? Normaliza `strip().upper()` antes de comparar contra
@@ -348,6 +358,12 @@ _BYTES_COLA_CORTA = 16
 
 
 def _leer_cabecera_y_cola(ruta: str) -> "tuple[bytes | None, bool, bool]":
+    """API de 3 valores de `_leer_cabecera_cola_entero` sin pedir el fichero entero."""
+    return _leer_cabecera_cola_entero(ruta, None)
+
+
+def _leer_cabecera_cola_entero(ruta: str, entero_out: "list | None"
+                               ) -> "tuple[bytes | None, bool, bool]":
     """UNA sola apertura de `ruta` (local): devuelve `(cabecera, a_medias, sin_eoi)` (`sin_eoi` None = no comprobada).
 
     `sin_eoi` (solo .jpg/.jpeg): la cola de 64 KiB no trae EOI (FFD9) útil, posible
@@ -361,7 +377,14 @@ def _leer_cabecera_y_cola(ruta: str) -> "tuple[bytes | None, bool, bool]":
     (apertura con share=FILE_SHARE_READ: error 32 = en uso) y, en
     .jpg/.jpeg, últimos 16 bytes a cero (del buffer ya leído si el fichero
     cabe en él; si no, `seek` + `read(16)` en el mismo handle). Con el filtro
-    desactivado (`_FILTRO_ARCHIVO_A_MEDIAS`) solo lee la cabecera."""
+    desactivado (`_FILTRO_ARCHIVO_A_MEDIAS`) solo lee la cabecera.
+
+    `entero_out` (lista, o `None` = no pedido): si el fichero NO sale a medias y cabe
+    en `_MAX_BYTES_FICHERO_ENTERO`, se lee COMPLETO en esta misma apertura
+    (`read` del resto tras la cabecera) y el buffer se añade a la lista; así el
+    llamador que ya sabe que lo necesitará (una `_T`) no lo reabre. Si esa lectura
+    falla se deja un WARNING y la lista queda vacía: el llamador cae a
+    `_leer_fichero_entero`, que lanza el error visible de ese fichero."""
     filtro = _FILTRO_ARCHIVO_A_MEDIAS
     fichero = None
     try:
@@ -388,6 +411,16 @@ def _leer_cabecera_y_cola(ruta: str) -> "tuple[bytes | None, bool, bool]":
             # menos bytes de los esperados = incompleto, se excluye y se avisa.
             if len(cabecera) < min(_BYTES_CABECERA, tamano):
                 return cabecera, True, None
+            if entero_out is not None and tamano <= _MAX_BYTES_FICHERO_ENTERO:
+                try:
+                    if tamano <= len(cabecera):
+                        entero_out.append(cabecera)
+                    else:
+                        fichero.seek(len(cabecera))
+                        entero_out.append(cabecera + fichero.read())
+                except OSError as exc:
+                    _LOG.warning("Lectura completa en la 1ª apertura falló en '%s' (%s: %s); "
+                                 "se reabrirá para leerla entera", ruta, type(exc).__name__, exc)
             if os.path.splitext(ruta)[1].lower() in (".jpg", ".jpeg"):
                 ventana = lectura_segura.VENTANA_COLA_JPEG
                 try:
@@ -1018,7 +1051,8 @@ def _basta_cabecera_para_timestamp(cab) -> bool:
 def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: "bytes | None",
                          jpeg_sin_eoi: "bool | None",
                          contador: _ContadorRust,
-                         solo_timestamp: bool = False) -> "_MetadatosImagen":
+                         solo_timestamp: bool = False,
+                         entero: "bytes | None" = None) -> "_MetadatosImagen":
     """`_leer_metadatos` vía la fase Rust `indice`: TODOS los campos salen de
     `atom_rs.parsear_cabecera` (sin GIL), sin caer nunca al camino Python.
 
@@ -1034,6 +1068,8 @@ def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: "bytes | None",
       y el XMP cerrado, NO se relee: se usa la fecha de la cabecera y ancho/alto/GPS quedan
       `None` (el calendario no los usa). Si falta cualquiera de esos datos, se relee entero
       como siempre. El run normal nunca lo activa.
+    - `entero` (opcional): el fichero completo ya leído en la 1ª apertura (`_leer_cabecera_cola_entero`);
+      si se pasa, se usa en vez de reabrir con `_leer_fichero_entero` (mismo contenido, mismo parse).
     - Un campo `None` es dato ausente: se guarda tal cual (p. ej. DJI roto tras 256 KiB:
       fecha/GPS/dimensiones `None`). JPEG/TIFF/PNG válido sin XMP: Rust da los valores
       por defecto "0" de `get_gimbal_yaw_pitch`/`get_xmp_data` (yaw 0.0).
@@ -1043,7 +1079,7 @@ def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: "bytes | None",
       error de lectura o tope de tamaño: sube como excepción; `_leer_lote` la convierte en error visible de ese fichero."""
     completo = buf is None
     if completo:
-        buf = _leer_fichero_entero(ruta)
+        buf = entero if entero is not None else _leer_fichero_entero(ruta)
     cab = rs.parsear_cabecera(buf, True) if completo else rs.parsear_cabecera(buf)
     parcial = False
     if not completo and cab.necesita_completo:
@@ -1051,7 +1087,7 @@ def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: "bytes | None",
             parcial = True
         else:
             contador.sumar_corto()
-            buf = _leer_fichero_entero(ruta)
+            buf = entero if entero is not None else _leer_fichero_entero(ruta)
             cab = rs.parsear_cabecera(buf, True)
     if cab.formato == "desconocido":
         # Vacío o firma que no es JPEG/TIFF/PNG: sin valores inventados (XMP "0", yaw 0.0);
@@ -1135,8 +1171,15 @@ def _leer_metadatos(ruta: str, exif, progress_callback,
 
     buf = None
     jpeg_sin_eoi = None
+    entero = None
     if not almacen.es_uri_gcs(ruta):
-        buf, a_medias, jpeg_sin_eoi = _leer_cabecera_y_cola(ruta)
+        # Una `_T` fuera del modo `solo_timestamp` acaba pidiendo el fichero entero
+        # (SOS tras la cabecera): se lee ya en la primera apertura. En `solo_timestamp`
+        # NO (la fecha suele salir de la cabecera y no se relee: v3.5.5).
+        pedir_entero = [] if (not solo_timestamp and _es_nombre_termica(nombre)) else None
+        buf, a_medias, jpeg_sin_eoi = _leer_cabecera_cola_entero(ruta, pedir_entero)
+        if pedir_entero:
+            entero = pedir_entero[0]
         if a_medias:
             return _MetadatosImagen(ruta=ruta, nombre=nombre, timestamp=None,
                                     modelo=None, yaw=None, gps=None, a_medias=True)
@@ -1150,7 +1193,8 @@ def _leer_metadatos(ruta: str, exif, progress_callback,
             buf = None
     rs = rust_bridge.exigir("indice")
     propio = contador_rust if contador_rust is not None else _ContadorRust()
-    return _leer_metadatos_rust(rs, ruta, nombre, buf, jpeg_sin_eoi, propio, solo_timestamp)
+    return _leer_metadatos_rust(rs, ruta, nombre, buf, jpeg_sin_eoi, propio, solo_timestamp,
+                                entero=entero)
 
 
 def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,

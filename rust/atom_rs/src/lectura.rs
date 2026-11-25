@@ -191,10 +191,16 @@ fn hidratar(ruta: &str) {
     }
 }
 
-/// `lectura_segura._esperados`: tamaño por `stat`; `bytes_origen` (distinto de 0)
-/// que difiera = `Cambiado` al momento.
-fn esperados(ruta: &str, bytes_origen: Option<u64>, esperas: &[f64]) -> Result<u64, ErrorLectura> {
-    let real = std::fs::metadata(ruta).map_err(|e| io_err(ruta, &e, esperas))?.len();
+/// `lectura_segura._esperados`: tamaño por `metadata` del MISMO handle ya abierto
+/// (sin `stat` por ruta aparte: en DriveFS cada acceso por ruta es otra ida al
+/// montaje); `bytes_origen` (distinto de 0) que difiera = `Cambiado` al momento.
+fn esperados(
+    ruta: &str,
+    f: &std::fs::File,
+    bytes_origen: Option<u64>,
+    esperas: &[f64],
+) -> Result<u64, ErrorLectura> {
+    let real = f.metadata().map_err(|e| io_err(ruta, &e, esperas))?.len();
     let real = tam_stat(ruta, real);
     if let Some(ind) = bytes_origen {
         if ind != 0 && ind != real {
@@ -224,12 +230,24 @@ pub fn leer_core(
     let mut previo: Option<u64> = None;
     let total = std::cmp::max(1, intentos);
     for n in 1..=total {
-        esp = esperados(ruta, bytes_origen, &esperas)?;
-        let mut datos = Vec::new();
-        {
-            let mut f = std::fs::File::open(ruta).map_err(|e| io_err(ruta, &e, &esperas))?;
-            f.read_to_end(&mut datos).map_err(|e| io_err(ruta, &e, &esperas))?;
-        }
+        // Un solo `open` por intento: tamaño por el handle y buffer reservado con
+        // ese tamaño. `read_to_end` (no `read_exact`) para que un fichero más corto
+        // siga siendo `Incompleta` y no un error de EOF. `io_err` conserva el código
+        // OS (`errno`/`winerror`, p. ej. 1450) para clasificarlo desde Python.
+        let mut f = std::fs::File::open(ruta).map_err(|e| io_err(ruta, &e, &esperas))?;
+        esp = esperados(ruta, &f, bytes_origen, &esperas)?;
+        let mut datos: Vec<u8> = Vec::new();
+        datos
+            .try_reserve_exact((esp as usize).saturating_add(1))
+            .map_err(|e| ErrorLectura::Io {
+                ruta: ruta.to_string(),
+                errno: None,
+                winerror: None,
+                mensaje: format!("sin memoria para {esp} bytes: {e}"),
+                esperas: esperas.clone(),
+            })?;
+        f.read_to_end(&mut datos).map_err(|e| io_err(ruta, &e, &esperas))?;
+        drop(f);
         tras_lectura(ruta, &mut datos);
         leidos = datos.len() as u64;
         if leidos >= esp {
@@ -483,6 +501,24 @@ mod tests {
             leer_core("/no/existe/atom_rs", 5, 0.5, 8.0, None),
             Err(ErrorLectura::Io { .. })
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn error_io_conserva_codigo_os() {
+        match leer_core("/no/existe/atom_rs", 5, 0.5, 8.0, None) {
+            Err(ErrorLectura::Io { errno: Some(2), .. }) => {}
+            o => panic!("{o:?}"),
+        }
+    }
+
+    #[test]
+    fn un_solo_open_lee_exacto_y_vacio() {
+        let r = tmp("exacto", &[3u8; 4096]);
+        let d = leer_core(&r, 1, 0.5, 8.0, Some(4096)).unwrap();
+        assert_eq!(d.len(), 4096);
+        assert!(d.iter().all(|&b| b == 3));
+        let _ = std::fs::remove_file(&r);
     }
 
     #[test]

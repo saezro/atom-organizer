@@ -33,7 +33,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, wait as _esperar_futuros
+from concurrent.futures import CancelledError, ProcessPoolExecutor, ThreadPoolExecutor, wait as _esperar_futuros
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any, Mapping
 
@@ -178,9 +178,10 @@ class _ContadorRotacion:
 
 def _emitir_stats_apply(progress_callback, fase: str, done: int, total: int,
                         rgb: int, termica: int, medidor: "_MedidorVelocidad",
-                        contador_rotacion: "_ContadorRotacion") -> None:
+                        contador_rotacion: "_ContadorRotacion", fallidas: int = 0) -> None:
     """Empaqueta y emite la métrica de velocidad de una fase del apply.
-    Formato ver `STATS_APPLY_PREFIX`."""
+    Formato ver `STATS_APPLY_PREFIX`. `fallidas` = contador aparte de filas
+    fallidas (ya incluidas en `done`); no entra en img/s ni en la ETA."""
     velocidad = medidor.img_por_segundo()
     payload = {
         "fase": fase,
@@ -188,6 +189,7 @@ def _emitir_stats_apply(progress_callback, fase: str, done: int, total: int,
         "total": total,
         "rgb": rgb,
         "termica": termica,
+        "fallidas": fallidas,
         "img_por_segundo": round(velocidad, 2) if velocidad is not None else None,
         "eta_segundos": medidor.eta_segundos(total - done),
     }
@@ -200,6 +202,17 @@ def _tamano_mb(ruta: str) -> float:
         return os.path.getsize(ruta) / (1024 * 1024)
     except OSError:
         return _MB_POR_DEFECTO_SI_FALLA_STAT
+
+
+def _mb_de_fila(fila: Mapping[str, Any]) -> float:
+    """MB del origen para el controlador. Usa `bytes_origen` del índice/manifiesto
+    (ya conocido, y verificado contra el tamaño real en la lectura) y solo hace
+    `stat` por ruta si la fila no lo trae: en DriveFS cada `stat` es otra ida al montaje."""
+    try:
+        conocido = int(fila["bytes_origen"] or 0)
+    except (KeyError, TypeError, ValueError):
+        conocido = 0
+    return conocido / (1024 * 1024) if conocido > 0 else _tamano_mb(fila["ruta_origen"])
 
 
 def _es_gcs(ruta) -> bool:
@@ -486,12 +499,96 @@ def _bloque_xmp_de_bytes(datos: bytes) -> bytes | None:
     return texto[inicio:fin + 12].encode("latin-1")
 
 
+#: Plazo por intento de la lectura del origen RGB (s). Configurable con
+#: `ORGANIZER_TIMEOUT_LECTURA_RGB_S`. Caso 2026-11-25 (DriveFS `G:\`): 7 workers
+#: bloqueados 545-577 s en el `read` y fallo conjunto con os error 1450.
+TIMEOUT_LECTURA_RGB_S = 60.0
+#: Esperas entre intentos (s): 3 intentos usan las 2 primeras; la tercera queda
+#: por si se sube `INTENTOS_LECTURA_RGB`.
+BACKOFF_LECTURA_RGB_S = (2.0, 5.0, 10.0)
+INTENTOS_LECTURA_RGB = 3
+_WINERROR_NO_SYSTEM_RESOURCES = 1450
+
+
+class LecturaRgbTimeout(OSError):
+    """La lectura del origen RGB no respondió dentro del plazo."""
+
+
+def _plazo_lectura_rgb() -> float:
+    bruto = os.environ.get("ORGANIZER_TIMEOUT_LECTURA_RGB_S")
+    if bruto:
+        try:
+            valor = float(bruto)
+        except ValueError:
+            valor = 0.0
+        if valor > 0:
+            return valor
+        logging.getLogger(__name__).warning(
+            "ORGANIZER_TIMEOUT_LECTURA_RGB_S=%r no es válido; se usa %s s",
+            bruto, TIMEOUT_LECTURA_RGB_S)
+    return TIMEOUT_LECTURA_RGB_S
+
+
+def _es_error_transitorio_lectura(exc: BaseException) -> bool:
+    """Timeout propio o `ERROR_NO_SYSTEM_RESOURCES` (1450) del SO, venga como
+    `winerror`, como `[Errno 22]` + 1450 o solo en el texto (`os error 1450`)."""
+    if isinstance(exc, LecturaRgbTimeout):
+        return True
+    if not isinstance(exc, OSError):
+        return False
+    if getattr(exc, "winerror", None) == _WINERROR_NO_SYSTEM_RESOURCES:
+        return True
+    texto = str(exc)
+    return "os error 1450" in texto or (exc.errno == 22 and "1450" in texto)
+
+
+def _dormir_reintento(segundos: float) -> None:
+    time.sleep(segundos)
+
+
+def _leer_con_plazo(ruta: str, bytes_origen: int) -> bytes:
+    """Una lectura bajo plazo: va en un hilo daemon vigilado por
+    `indice._ejecutar_con_limite` (mismo mecanismo que índice/validación). Un
+    `open/read` colgado no se puede cancelar: el hilo se abandona."""
+    plazo = _plazo_lectura_rgb()
+    resultado = indice_mod._ejecutar_con_limite(
+        [ruta], lambda r: lectura_segura.leer_completo(r, bytes_origen=bytes_origen),
+        1, plazo, None, plazo)[0]
+    if resultado is indice_mod._VENCIDO:
+        raise LecturaRgbTimeout(f"timeout lectura RGB: sin respuesta tras {plazo:g} s ({ruta})")
+    return resultado
+
+
+def _leer_rgb_con_reintento(ruta: str, bytes_origen: int) -> bytes:
+    """Lectura RGB con plazo y hasta `INTENTOS_LECTURA_RGB` intentos en errores
+    transitorios (timeout, os error 1450), con backoff y WARNING en cada
+    reintento. Agotados los intentos (o error no transitorio) se relanza el error
+    REAL: la fila queda `fallido` con su motivo."""
+    log = logging.getLogger(__name__)
+    for intento in range(1, INTENTOS_LECTURA_RGB + 1):
+        try:
+            return _leer_con_plazo(ruta, bytes_origen)
+        except Exception as exc:  # noqa: BLE001
+            if not _es_error_transitorio_lectura(exc):
+                raise
+            if intento >= INTENTOS_LECTURA_RGB:
+                log.warning("lectura RGB %s: intento %d/%d fallido (%s: %s); sin más reintentos",
+                            ruta, intento, INTENTOS_LECTURA_RGB, type(exc).__name__, exc)
+                raise
+            espera = BACKOFF_LECTURA_RGB_S[min(intento - 1, len(BACKOFF_LECTURA_RGB_S) - 1)]
+            log.warning("lectura RGB %s: intento %d/%d fallido (%s: %s); reintento en %g s",
+                        ruta, intento, INTENTOS_LECTURA_RGB, type(exc).__name__, exc, espera)
+            _dormir_reintento(espera)
+    raise AssertionError("inalcanzable")  # pragma: no cover
+
+
 def _leer_origen_verificado(fila: Mapping[str, Any], bytes_origen: int) -> bytes:
     """Lectura verificada del origen RGB (DriveFS puede dar lecturas cortas sin
     error del SO): PIL/Rust decodifican desde bytes completos, nunca desde el
-    fichero a medias. Un JPEG sin cola válida se rechaza con `OSError`."""
-    datos_origen = lectura_segura.leer_completo(
-        fila["ruta_origen"], bytes_origen=fila.get("bytes_origen") or bytes_origen)
+    fichero a medias. Un JPEG sin cola válida se rechaza con `OSError`. Con plazo
+    y reintento en errores transitorios (`_leer_rgb_con_reintento`)."""
+    datos_origen = _leer_rgb_con_reintento(
+        fila["ruta_origen"], fila.get("bytes_origen") or bytes_origen)
     if (os.path.splitext(fila["ruta_origen"])[1].lower() in (".jpg", ".jpeg")
             and not lectura_segura.jpeg_integro_por_cola(datos_origen)):
         # Sin decode extra: si hay EOI en la cola útil, el `img.load()` de
@@ -644,6 +741,12 @@ def _trabajo_fila_local(fila: dict, cfg, entrada_local: str, carpeta_salida: str
     return salidas
 
 
+def _es_error_por_cierre(exc: BaseException) -> bool:
+    """`executor.submit` tras `shutdown` (cierre de la app): la fila no se envió."""
+    return isinstance(exc, (RuntimeError, CancelledError)) and (
+        isinstance(exc, CancelledError) or "cannot schedule new futures" in str(exc))
+
+
 class _AforoDinamico:
     """Envoltorio sobre un `threading.Semaphore` cuyo número de permisos
     puede crecer o encogerse en caliente, siguiendo a
@@ -748,16 +851,20 @@ def _formatear_duracion(segundos: float) -> str:
 
 
 def _emitir_resumen_fase(progress_callback, fase: str, unidad: str, total: int,
-                         resumen: dict) -> None:
+                         resumen: dict, hechas: int | None = None) -> None:
     """Línea de cierre de una fase paralela: cuánto tardó y cuánto del
     paralelismo disponible se llegó a usar de verdad. Es el diagnóstico de
     campo que faltaba en la 3.4.81: con `1,0 de 14 = 7 % del potencial` la
     regresión se ve de un vistazo en el log del usuario, sin instrumentar
     nada ni pedirle el PC."""
     segundos = resumen["segundos"]
-    velocidad = total / segundos if segundos > 0 else 0.0
+    # img/s solo con las filas `hecho` (si el llamador las da); los fallos van aparte.
+    procesadas = total if hechas is None else hechas
+    velocidad = procesadas / segundos if segundos > 0 else 0.0
+    detalle = (f"{total} imagen(es)" if hechas is None else
+               f"{hechas} hecha(s) de {total} ({total - hechas} fallida(s)/sin hacer)")
     progress_callback.emit(
-        f"\n[paralelismo] {fase}: {total} imagen(es) en "
+        f"\n[paralelismo] {fase}: {detalle} en "
         f"{_formatear_duracion(segundos)} — {velocidad:.1f} img/s — "
         f"media {resumen['media']:.1f} {unidad} en vuelo "
         f"(pico {resumen['pico']}, máximo {resumen['maximo']}) = "
@@ -879,15 +986,18 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
                 fila["id"], None if verificacion is None else str(verificacion))
             with lock_resultado:
                 resultado["hecho"] += 1
-        medidor_velocidad.registrar()
+            # img/s y ETA SOLO con filas `hecho`: un fallo instantáneo (o tras
+            # 500 s de espera) no es avance (caso 2026-11-25: «404 img/s»).
+            medidor_velocidad.registrar()
         with lock_resultado:
             completadas = resultado["hecho"] + resultado["fallido"] - (antes_del_veto - total)
+            fallidas_fase = resultado["fallido"] - (antes_del_veto - total)
         if completadas % _EMITIR_STATS_CADA == 0 or completadas == total:
             _emitir_stats_apply(progress_callback, "Imágenes RGB", completadas, total,
                                rgb=completadas, termica=0, medidor=medidor_velocidad,
-                               contador_rotacion=contador_rotacion)
+                               contador_rotacion=contador_rotacion, fallidas=fallidas_fase)
         if controlador is not None:
-            controlador.registrar(mb=_tamano_mb(fila["ruta_origen"]))
+            controlador.registrar(mb=_mb_de_fila(fila))
             controlador.revisar()
 
     if rgb_gpu.activo():
@@ -953,6 +1063,10 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
                 cerrada = False
                 with lock_rotas:
                     rotas["culpables"].append(fila)
+            except CancelledError:
+                # Futuro cancelado por el cierre del pool: no es un fallo de la
+                # imagen; sin marcar nada, la fila sigue 'pendiente'.
+                cerrada = False
             except Exception as exc:
                 _cerrar_fila(fila, error=exc)
             else:
@@ -991,10 +1105,18 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
                         rotas["sin_enviar"].append(fila)
                     continue
                 except Exception as exc:
-                    # Sin futuro no habrá callback: hay que cerrar la fila y
-                    # devolver el permiso aquí mismo.
-                    _cerrar_fila(fila, error=exc)
                     aforo.liberar()
+                    if _es_error_por_cierre(exc):
+                        # El pool se cerró (cierre de la app): la fila NO falló,
+                        # no llegó a enviarse. Queda 'pendiente' para el próximo
+                        # run y se corta la ronda (las demás darían lo mismo).
+                        progress_callback.emit(
+                            "\n[AVISO] Imágenes RGB: el pool se cerró; las filas no "
+                            "enviadas quedan pendientes (no fallidas).\n")
+                        return _cerrar_ronda(executor, futuros, True)
+                    # Sin futuro no habrá callback: hay que cerrar la fila (el
+                    # permiso ya está devuelto).
+                    _cerrar_fila(fila, error=exc)
                     continue
                 futuro.add_done_callback(
                     lambda futuro, fila=fila: _al_terminar(fila, futuro))
@@ -1062,7 +1184,7 @@ def _aplicar_rgb_impl(manifiesto, cfg, pipeline_mod, progress_callback, progress
     if cancelado:
         raise cancelacion.RunCancelado()
     _emitir_resumen_fase(progress_callback, "Imágenes RGB", "proceso(s)", total,
-                         aforo.resumen(controlador.maximo))
+                         aforo.resumen(controlador.maximo), hechas=resultado["hecho"])
     _emitir_resumen_perfil_rgb(progress_callback)
     return resultado
 
@@ -1759,17 +1881,19 @@ def _aplicar_termicas_impl(manifiesto, cfg, pipeline, progress_callback, progres
             else:
                 with lock_contadores:
                     resultado["hecho"] += 1
-            medidor_velocidad.registrar()
+                medidor_velocidad.registrar()  # img/s y ETA solo con filas `hecho`
             with lock_contadores:
                 completadas["n"] += 1
                 hechas = completadas["n"]
+                fallidas_fase = resultado["fallido"]
             if hechas % _EMITIR_STATS_CADA == 0 or hechas == total:
                 _emitir_stats_apply(progress_callback, "Conversión térmica",
                                    hechas, total, rgb=0,
                                    termica=hechas, medidor=medidor_velocidad,
-                                   contador_rotacion=contador_rotacion)
+                                   contador_rotacion=contador_rotacion,
+                                   fallidas=fallidas_fase)
             if controlador is not None:
-                controlador.registrar(mb=_tamano_mb(fila["ruta_origen"]))
+                controlador.registrar(mb=_mb_de_fila(fila))
                 controlador.revisar()
 
         if controlador is None:
@@ -1827,7 +1951,8 @@ def _aplicar_termicas_impl(manifiesto, cfg, pipeline, progress_callback, progres
             # La conversión es el grueso de la fase; el EXIF (pool exiftool) no
             # pasa por el aforo, así que este resumen mide la parte paralelizada.
             _emitir_resumen_fase(progress_callback, "Conversión térmica", "hilo(s)",
-                                 total, aforo.resumen(controlador.maximo))
+                                 total, aforo.resumen(controlador.maximo),
+                                 hechas=resultado["hecho"])
 
         cancelacion.comprobar()  # tras terminar las filas en vuelo
         if pool_exif.fatal:

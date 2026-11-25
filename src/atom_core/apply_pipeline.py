@@ -241,11 +241,14 @@ class PipelineApply:
                 self._completadas += 1
                 hechas = self._completadas
                 rgb, term = self._hechas_rgb, self._hechas_term
-            self._medidor.registrar()
+                fallidas = self.resultado["fallido"]
+            if error is None:
+                self._medidor.registrar()  # img/s y ETA solo con filas `hecho`
             if hechas % apply_mod._EMITIR_STATS_CADA == 0 or hechas == self._total:
                 apply_mod._emitir_stats_apply(
                     self.cb, "Apply (RGB + térmica)", hechas, self._total, rgb=rgb,
-                    termica=term, medidor=self._medidor, contador_rotacion=self.contador)
+                    termica=term, medidor=self._medidor, contador_rotacion=self.contador,
+                    fallidas=fallidas)
             self._emisor.emit(int(hechas / self._total * 100))
         finally:
             self._terminar(t)
