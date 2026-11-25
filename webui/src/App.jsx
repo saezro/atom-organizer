@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, isServerMode, onAnalisis, onCloud, onControlCarpeta, onControlUi, onProgress, registerPicker, whenBridgeReady } from './bridge'
+import { api, isServerMode, onAnalisis, onCalendarioPrevio, onCloud, onControlCarpeta, onControlUi, onProgress, registerPicker, whenBridgeReady } from './bridge'
 import ProgressModal from './ProgressModal'
 import { empaquetarRutas } from './trabajo/empaquetarRutas'
 import PreflightModal from './PreflightModal'
@@ -42,8 +42,6 @@ const KIOSK_ADV_FIELDS = SPLIT_ADVANCED.flatMap((s) => s.fields)
 // vale decirlo que dejar al operador mirando un modal mudo.
 const ESPERA_ARRANQUE_MS = 25000
 const ESPERA_ESTADILLO_MS = 60000
-// Leer la hora EXIF de miles de fotos del origen (disco lento / red) puede tardar minutos.
-const ESPERA_CALENDARIO_MS = 600000
 
 // De cinco pestañas a tres: «Organizar»/«SUBIR AL BUCKET» se funden en
 // «Trabajo» (TrabajoScreen elige el destino) y «AEROTOOLS»/«OTROS EQUIPOS» en
@@ -266,6 +264,7 @@ function AppInterna() {
   }, [pausaSesionRemota])
   // Id de la petición del modal previo: un resultado con id viejo (cancelado/reabierto) se descarta.
   const preflightIdRef = useRef(0)
+  const calPrevioBajaRef = useRef(null)   // baja de la suscripción al calendario previo en streaming
 
   // Versión REAL, la que dice version.py (vía updater.current_version()). Antes era
   // un literal en el header y quedó congelado en "v3.9" tras el reseteo de versionado.
@@ -714,7 +713,7 @@ function AppInterna() {
     if (task === 'split_images' && estadillos.length) {
       cerrarPreflight()   // descarta y cancela un calendario previo anterior aún en curso
       const id = preflightIdRef.current
-      setPreflight({ loading: true, info: null, calendario: null, calCargando: false, task, params, advanced })
+      setPreflight({ loading: true, info: null, calendario: null, calCargando: false, calParcial: false, task, params, advanced })
       try {
         // `read_estadillo_info` lee el CSV en el hilo del bridge: si el fichero
         // está bloqueado (abierto en Excel) o es enorme, no vuelve y el modal se
@@ -730,17 +729,28 @@ function AppInterna() {
         // origen, puede tardar minutos) carga aparte y no bloquea Comenzar/Cancelar. Un fallo es
         // visible en el modal, nunca un calendario vacío.
         setPreflight((p) => (p ? { ...p, loading: false, info, calCargando: true } : p))
-        conPlazo(
-          api.calendarioPrevio(params.origen, estadillos, advanced),
-          ESPERA_CALENDARIO_MS,
-          'El calendario previo tardó demasiado leyendo las fotos del origen.'
-        )
-          .catch((e) => ({ ok: false, error: e?.message ? e.message : String(e) }))
-          .then((calendario) => {
-            // Resultado obsoleto (modal cancelado, empezado o reabierto): se descarta.
-            if (id !== preflightIdRef.current) return
-            setPreflight((p) => (p ? { ...p, calCargando: false, calendario } : p))
-          })
+        // Streaming: el esqueleto de vuelos (del estadillo) llega al instante y las fotos se van
+        // sumando (`parcial`); `done` trae el modelo definitivo. Sin plazo: leer miles de fotos
+        // puede tardar más de 10 min. Suscripción ANTES de iniciar (el esqueleto sale ya en la
+        // llamada); eventos con otro `req_id` (peticiones viejas) se descartan.
+        const fallo = (error) => {
+          if (id !== preflightIdRef.current) return
+          bajaCalendarioPrevio()
+          setPreflight((p) => (p ? { ...p, calCargando: false, calParcial: false,
+            calendario: { ok: false, error } } : p))
+        }
+        bajaCalendarioPrevio()
+        calPrevioBajaRef.current = onCalendarioPrevio((d) => {
+          if (d.req_id !== id || id !== preflightIdRef.current) return
+          if (d.kind === 'error') return fallo(d.text || 'No se pudo leer el calendario.')
+          if (d.kind !== 'esqueleto' && d.kind !== 'parcial' && d.kind !== 'done') return
+          const fin = d.kind === 'done'
+          setPreflight((p) => (p ? { ...p, calendario: d.data, calCargando: !fin, calParcial: !fin } : p))
+          if (fin) bajaCalendarioPrevio()
+        })
+        api.calendarioPrevioIniciar(params.origen, estadillos, advanced, id)
+          .then((r) => { if (r && r.started === false) fallo(r.error || r.reason || 'No se pudo leer el calendario.') })
+          .catch((e) => fallo(e?.message ? e.message : String(e)))
       } catch (e) {
         if (id !== preflightIdRef.current) return
         setPreflight((p) => (p ? { ...p, loading: false, info: { error: String(e) } } : p))
@@ -796,13 +806,21 @@ function AppInterna() {
     })()
   }
 
+  const bajaCalendarioPrevio = useCallback(() => {
+    if (calPrevioBajaRef.current) {
+      calPrevioBajaRef.current()
+      calPrevioBajaRef.current = null
+    }
+  }, [])
+
   // Cierra el modal previo: invalida la petición en curso (su resultado se descarta) y le
   // pide al backend que corte la lectura de fotos.
   const cerrarPreflight = useCallback(() => {
     preflightIdRef.current += 1
+    bajaCalendarioPrevio()
     api.calendarioPrevioCancelar().catch(() => {})
     setPreflight(null)
-  }, [])
+  }, [bajaCalendarioPrevio])
 
   const confirmPreflight = useCallback(() => {
     if (!preflight) return
@@ -1278,6 +1296,7 @@ function AppInterna() {
           info={preflight.info}
           calendario={preflight.calendario}
           calCargando={preflight.calCargando}
+          calParcial={preflight.calParcial}
           loading={preflight.loading}
           onStart={confirmPreflight}
           onCancel={cerrarPreflight}

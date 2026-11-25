@@ -4820,6 +4820,7 @@ html.kiosk-modo body * {
 .ri-g-generales { --gc: #94a3b8; --gc-borde: #94a3b8b3; --gc-fondo: #94a3b82e; }
 .ri-vuelo { border-color: var(--gc-borde); background-color: var(--gc-fondo); }
 .ri-giro { position: absolute; top: 0.25rem; right: 0.25rem; color: var(--gc, #fdba74); }
+.ri-giro.prov { opacity: 0.5; }
 .ri-giro.falta { top: 0.1rem; font-size: 1.1rem; font-weight: 800; line-height: 1; }
 .ri-vuelo-tit { padding-right: 1.5rem; }
 .ri-leyenda { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.25rem 0.9rem; font-size: 0.6875rem; color: #cbd5e1; }

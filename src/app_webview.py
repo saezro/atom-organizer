@@ -54,6 +54,8 @@ from atom_core import sesion_remota
 # que se enseña al operario). Solo para el modo "esperando estadillo"
 # (`Api.estadillo_espera_*`): `caduca_en` viaja como ISO en esta zona.
 _TZ_ESTADILLO = ZoneInfo("Europe/Madrid")
+# Calendario previo en streaming: separación mínima entre eventos `parcial` (s).
+_CALPREV_PARCIAL_S = 0.3
 
 # Fichero de telemetria de intentos de PIN (ver `Api.pin_telemetria`), dentro
 # de la misma carpeta que ya usa el historial de procesos (`user_log_dir()`).
@@ -1205,6 +1207,93 @@ class Api:
                     self._calprev_job = None
         return resultado
 
+    def calendario_previo_iniciar(self, origen: str, estadillo, advanced=None, req_id=None) -> dict:
+        """Calendario previo EN STREAMING (modal «Calendario de vuelos»). Valida el estadillo y emite AL
+        INSTANTE el esqueleto de vuelos (sin fotos) por `atom:analisis` (scope `calendario_previo`,
+        kind `esqueleto`, `req_id`); luego un hilo lee las fotos y emite `parcial` (modelo ACUMULADO
+        completo, como mucho cada `_CALPREV_PARCIAL_S`) y al final `done` (avisos y ángulo definitivos)
+        o `error`. Cancelado o ya no vigente: no emite nada. Misma clave en curso: no se relee, se
+        reenvía el último modelo con el `req_id` nuevo. Devuelve `{started: True}` al instante, o
+        `{started: False, error}` si el estadillo/origen no valen. `calendario_previo` sigue síncrono."""
+        try:
+            from atom_core import estadillo as estadillo_mod
+            rutas = list(estadillo) if isinstance(estadillo, (list, tuple)) \
+                else estadillo_mod.desempaquetar_rutas(estadillo or "")
+            rutas = [r for r in rutas if r]
+            if not rutas:
+                return {"started": False, "error": "No hay estadillo."}
+            if not origen:
+                return {"started": False, "error": "No hay carpeta de origen."}
+            clave = (origen, tuple(rutas), json.dumps(advanced or {}, sort_keys=True, default=str))
+            with self._calprev_lock:
+                job = self._calprev_job
+                if job is not None and job.get("async") and job["clave"] == clave \
+                        and not job["cancelar"].is_set():
+                    job["req_id"] = req_id
+                    ultimo = job.get("ultimo")
+                    if ultimo is not None:
+                        self._calprev_dispatch(job, ultimo[0], ultimo[1])
+                    return {"started": True}
+            precarga.precargar_pandas()
+            from atom_core import indice, organize
+            from atom_core.calendario_revision import construir_previo
+            cfg = organize.cfg_split_para_previo({"origen": origen}, advanced)
+            # El estadillo se valida ANTES de leer las fotos: un CSV roto no debe costar minutos de EXIF.
+            esqueleto = construir_previo(indice.ventanas_de_estadillos(rutas, cfg, []), [], cfg)
+        except Exception as exc:  # noqa: BLE001 — se reenvía al front
+            from atom_core.calendario_revision import ErrorCalendarioPrevio
+            return {"started": False, "error": str(exc) if isinstance(exc, ErrorCalendarioPrevio)
+                    else f"{type(exc).__name__}: {exc}"}
+        with self._calprev_lock:
+            previo = self._calprev_job
+            if previo is not None:
+                previo["cancelar"].set()
+            job = {"clave": clave, "cancelar": threading.Event(), "listo": threading.Event(),
+                   "resultado": None, "async": True, "req_id": req_id, "ultimo": None}
+            self._calprev_job = job
+        self._calprev_emitir(job, "esqueleto", esqueleto)
+
+        def worker() -> None:
+            try:
+                if previo is not None:
+                    previo["listo"].wait(5.0)   # no dos lecturas en paralelo
+                resultado = self._calendario_previo_calcular(
+                    origen, rutas, advanced, job["cancelar"],
+                    on_parcial=lambda modelo: self._calprev_emitir(job, "parcial", modelo))
+                self._calprev_emitir(job, "done", resultado)
+            except cancelacion.RunCancelado:
+                pass
+            except Exception as exc:  # noqa: BLE001 — llega a la UI como error
+                from atom_core.calendario_revision import ErrorCalendarioPrevio
+                self._calprev_emitir(job, "error", None, str(exc) if isinstance(exc, ErrorCalendarioPrevio)
+                                     else f"{type(exc).__name__}: {exc}")
+            finally:
+                job["listo"].set()
+                with self._calprev_lock:
+                    if self._calprev_job is job:
+                        self._calprev_job = None
+
+        threading.Thread(target=worker, daemon=True, name="calprev-stream").start()
+        return {"started": True}
+
+    def _calprev_emitir(self, job: dict, kind: str, data=None, text: str | None = None) -> None:
+        """Emite un evento del calendario previo SOLO si `job` sigue vigente y sin cancelar (bajo el
+        mismo cerrojo que la cancelación: tras `calendario_previo_cancelar` no sale nada más)."""
+        with self._calprev_lock:
+            if self._calprev_job is not job or job["cancelar"].is_set():
+                return
+            if kind != "error":
+                job["ultimo"] = (kind, data)
+            self._calprev_dispatch(job, kind, data, text)
+
+    def _calprev_dispatch(self, job: dict, kind: str, data=None, text: str | None = None) -> None:
+        detail = {"kind": kind, "scope": "calendario_previo", "req_id": job["req_id"]}
+        if text is not None:
+            detail["text"] = text
+        else:
+            detail["data"] = data
+        self._push_analisis(detail)
+
     def calendario_previo_cancelar(self) -> dict:
         """Corta la lectura del calendario previo en curso (Cancelar/Comenzar del modal)."""
         with self._calprev_lock:
@@ -1212,7 +1301,11 @@ class Api:
                 self._calprev_job["cancelar"].set()
         return {"ok": True}
 
-    def _calendario_previo_calcular(self, origen: str, rutas: list, advanced, cancelar) -> dict:
+    def _calendario_previo_calcular(self, origen: str, rutas: list, advanced, cancelar,
+                                    on_parcial=None) -> dict:
+        """`on_parcial(modelo)` (opcional, streaming): tras el listado y luego como mucho cada
+        `_CALPREV_PARCIAL_S`, el modelo ACUMULADO de las fotos leídas hasta ese momento (el pool
+        `sin_carpeta` se calcula con la lista COMPLETA de imágenes listadas). Sin él, como siempre."""
         precarga.precargar_pandas()
         from atom_core import indice, organize
         from atom_core.calendario_revision import construir_previo
@@ -1220,7 +1313,24 @@ class Api:
         cfg = organize.cfg_split_para_previo({"origen": origen}, advanced)
         # El estadillo se valida ANTES de leer las fotos: un CSV roto no debe costar minutos de EXIF.
         indice.ventanas_de_estadillos(rutas, cfg, [])
-        lectura = indice.leer_timestamps(origen, cfg, cancelar=cancelar)
+        on_fotos = None
+        if on_parcial is not None:
+            acumuladas: list = []
+            estado = {"ventanas": None, "ultimo": None}
+
+            def _al_leer(nuevas, imagenes):
+                if cancelar.is_set():
+                    return
+                acumuladas.extend(nuevas)
+                if estado["ventanas"] is None:
+                    estado["ventanas"] = indice.ventanas_de_estadillos(rutas, cfg, imagenes)
+                ahora = time.monotonic()
+                if estado["ultimo"] is not None and ahora - estado["ultimo"] < _CALPREV_PARCIAL_S:
+                    return
+                estado["ultimo"] = ahora
+                on_parcial(construir_previo(estado["ventanas"], list(acumuladas), cfg))
+            on_fotos = _al_leer
+        lectura = indice.leer_timestamps(origen, cfg, cancelar=cancelar, on_fotos=on_fotos)
         ventanas = indice.ventanas_de_estadillos(rutas, cfg, [f.ruta for f in lectura.fotos])
         resultado = construir_previo(ventanas, lectura.fotos, cfg)
         if lectura.no_leidas:

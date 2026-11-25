@@ -33,16 +33,18 @@ export function infoGiro(angulo, generales = false) {
   return { tipo: 'falta', etiqueta: 'Giro desconocido' }
 }
 
-function IconoGiro({ giro, pequeno }) {
+function IconoGiro({ giro, pequeno, provisional = false }) {
   if (giro.tipo === 'generales') return null
+  // Provisional: el giro sale de las fotos leídas hasta ahora; no es definitivo hasta el final de la lectura.
+  const etiqueta = provisional ? `${giro.etiqueta} (provisional, leyendo fotos)` : giro.etiqueta
   const px = pequeno ? 14 : 18
   if (giro.tipo === 'falta') {
-    return <span className="ri-giro falta" data-testid="ri-giro" aria-label={giro.etiqueta} title={giro.etiqueta}>?</span>
+    return <span className={provisional ? 'ri-giro falta prov' : 'ri-giro falta'} data-testid="ri-giro" aria-label={etiqueta} title={etiqueta}>?</span>
   }
   const svg = { width: px, height: px, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' }
   return (
-    <svg {...svg} className={giro.tipo === 'cero' ? 'ri-giro cero' : 'ri-giro'} data-testid="ri-giro" aria-label={giro.etiqueta} role="img">
-      <title>{giro.etiqueta}</title>
+    <svg {...svg} className={['ri-giro', giro.tipo === 'cero' ? 'cero' : '', provisional ? 'prov' : ''].filter(Boolean).join(' ')} data-testid="ri-giro" aria-label={etiqueta} role="img">
+      <title>{etiqueta}</title>
       {giro.tipo === 'cw' ? <><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></> : null}
       {giro.tipo === 'ccw' ? <><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></> : null}
       {giro.tipo === 'cero' ? <><line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" /></> : null}
@@ -54,7 +56,7 @@ const aVueloExif = (v) => ({ pb: v.pb, vuelo: v.vuelo, sufijo: v.sufijo, inicio_
 
 const altoReal = (seg, altoHora) => Math.max(((seg.finMin - seg.iniMin) / 60) * altoHora, ALTO_MIN_BLOQUE_PX)
 
-const EventoVuelo = memo(function EventoVuelo({ seg, vuelo, desdeMin, altoHora, anchoCol, conSegundos }) {
+const EventoVuelo = memo(function EventoVuelo({ seg, vuelo, desdeMin, altoHora, anchoCol, conSegundos, cargando = false }) {
   const top = ((seg.iniMin - desdeMin) / 60) * altoHora
   const alto = altoReal(seg, altoHora)
   const w = 100 / seg.nCols
@@ -68,7 +70,9 @@ const EventoVuelo = memo(function EventoVuelo({ seg, vuelo, desdeMin, altoHora, 
   const cubetas = cubetasPorHora(vuelo)
   const parcial = seg.parte !== 'unico'
   const hora = parcial ? textoHorasBloque('rango', seg.iniMin, seg.finMin) : textoRangoHora(vuelo.inicio, vuelo.fin, seg.iniMin, seg.finMin, conSegundos)
-  const fotos = textoFotos(vuelo)
+  // Lectura de fotos en curso: sin fotos aún, «cargando fotos…»; con algunas, el conteo parcial + «…».
+  const nFotos = (vuelo.n_rgb ?? 0) + (vuelo.n_t ?? 0)
+  const fotos = cargando ? (nFotos ? `${textoFotos(vuelo)} · cargando…` : 'cargando fotos…') : textoFotos(vuelo)
   const personas = [vuelo.equipo, vuelo.piloto].filter(Boolean).join(' · ')
   const tit = [
     etiquetaCompacta(vuelo), vuelo.equipo ? `Dron: ${vuelo.equipo}` : null, vuelo.piloto ? `Piloto: ${vuelo.piloto}` : null,
@@ -80,9 +84,9 @@ const EventoVuelo = memo(function EventoVuelo({ seg, vuelo, desdeMin, altoHora, 
            top, height: Math.max(alto - 1, 0), left: `calc(${seg.col * w}% + ${GAP_CARRIL_PX / 2}px)`,
            width: `max(${ANCHO_MIN_BLOQUE_PX}px, calc(${w}% - ${GAP_CARRIL_PX}px))`,
          }}>
-      <IconoGiro giro={giro} pequeno={fmt.iconoPequeno || modo !== 'completo'} />
+      <IconoGiro giro={giro} pequeno={fmt.iconoPequeno || modo !== 'completo'} provisional={cargando && !vuelo.generales} />
       {modo === 'minimo' ? null : modo === 'compacto' ? (
-        <div className="ri-vuelo-tit ri-una-linea">{etiquetaCompacta(vuelo)} · {hora}{motivos.length ? ' ⚠' : ''}</div>
+        <div className="ri-vuelo-tit ri-una-linea">{etiquetaCompacta(vuelo)} · {hora}{motivos.length ? ' ⚠' : ''}{cargando ? ' · cargando fotos…' : ''}</div>
       ) : (
         <>
           <div className="ri-vuelo-tit">{etiquetaCompacta(vuelo)}</div>
@@ -101,7 +105,7 @@ const EventoVuelo = memo(function EventoVuelo({ seg, vuelo, desdeMin, altoHora, 
   )
 })
 
-const BloqueTramo = memo(function BloqueTramo({ seg, dentro, seleccion, onSeleccion, desdeMin, altoHora, conSegundos }) {
+const BloqueTramo = memo(function BloqueTramo({ seg, dentro, seleccion, onSeleccion, desdeMin, altoHora, conSegundos, cargando = false }) {
   const t = seg.tramo
   const top = ((seg.iniMin - desdeMin) / 60) * altoHora
   // Los tramos grises nunca bajan de modo «compacto»: siempre llevan texto (qué son y cuántas fotos).
@@ -110,7 +114,7 @@ const BloqueTramo = memo(function BloqueTramo({ seg, dentro, seleccion, onSelecc
   const w = 100 / seg.nCols
   const cls = ['ri-tramo', `ri-${modo}`, t.id === seleccion ? 'act' : '', dentro ? 'aviso' : ''].filter(Boolean).join(' ')
   const txt = textoRangoHora(t.ini, t.fin, t.iniMin, t.finMin, conSegundos)
-  const info = `Tramo sin colocar ${txt} · ${t.n} fotos`
+  const info = `Tramo sin colocar ${txt} · ${t.n} fotos${cargando ? ' (provisional, cargando fotos…)' : ''}`
   return (
     <button type="button" data-testid="ri-tramo-bloque" className={cls}
             style={{
@@ -125,14 +129,14 @@ const BloqueTramo = memo(function BloqueTramo({ seg, dentro, seleccion, onSelecc
       ) : (
         <>
           <span className="ri-tramo-tit">{dentro ? '⚠ ' : ''}Sin colocar</span>
-          <span className="ri-tramo-hora">{txt} · {t.n} fotos</span>
+          <span className="ri-tramo-hora">{txt} · {t.n} fotos{cargando ? ' · provisional' : ''}</span>
         </>
       )}
     </button>
   )
 })
 
-export default memo(function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion }) {
+export default memo(function CalendarioHoras({ vuelos, tramos, seleccion, onSeleccion, cargando = false }) {
   const scrollRef = useRef(null)
   const [ancho, setAncho] = useState(0)
   const [altoDisp, setAltoDisp] = useState(0)
@@ -284,10 +288,10 @@ export default memo(function CalendarioHoras({ vuelos, tramos, seleccion, onSele
                     <div className="ri-vuelos" style={{ left: ANCHO_HORAS_PX, bottom: PAD_ABAJO_DIA_PX }}>
                       {segs.map((s) => (s.tramo ? (
                         <BloqueTramo key={s.clave} seg={s} dentro={dentroDe.get(s.tramo.id) ?? null} seleccion={seleccion} onSeleccion={onSeleccion}
-                                     desdeMin={rango.desdeMin} altoHora={altoHora} conSegundos={zoom !== null} />
+                                     desdeMin={rango.desdeMin} altoHora={altoHora} conSegundos={zoom !== null} cargando={cargando} />
                       ) : (
                         <EventoVuelo key={`${s.clave}|${s.fecha}`} seg={s} vuelo={porClave.get(s.clave)} desdeMin={rango.desdeMin}
-                                     altoHora={altoHora} anchoCol={anchos[i] - ANCHO_HORAS_PX} conSegundos={zoom !== null} />
+                                     altoHora={altoHora} anchoCol={anchos[i] - ANCHO_HORAS_PX} conSegundos={zoom !== null} cargando={cargando} />
                       )))}
                     </div>
                   </div>

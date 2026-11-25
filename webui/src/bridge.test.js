@@ -138,6 +138,21 @@ describe('bridge en modo pywebview (Windows)', () => {
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 
+  it('calendarioPrevioIniciar pasa req_id y onCalendarioPrevio solo recibe su scope y se da de baja', async () => {
+    window.pywebview.api.calendario_previo_iniciar = vi.fn(async () => ({ started: true }))
+    const { api, onCalendarioPrevio } = await import('./bridge.js')
+    expect(await api.calendarioPrevioIniciar('/o', ['/o/e.csv'], undefined, 9)).toEqual({ started: true })
+    expect(window.pywebview.api.calendario_previo_iniciar).toHaveBeenCalledWith('/o', ['/o/e.csv'], null, 9)
+    const recibidos = []
+    const baja = onCalendarioPrevio((d) => recibidos.push(d))
+    const emitir = (d) => window.dispatchEvent(new CustomEvent('atom:analisis', { detail: d }))
+    emitir({ kind: 'done', scope: 'suffixes', data: {} })
+    emitir({ kind: 'esqueleto', scope: 'calendario_previo', req_id: 9, data: { ok: true } })
+    baja()
+    emitir({ kind: 'done', scope: 'calendario_previo', req_id: 9, data: { ok: true } })
+    expect(recibidos).toEqual([{ kind: 'esqueleto', scope: 'calendario_previo', req_id: 9, data: { ok: true } }])
+  })
+
   // El bridge Qt puede quedarse colgado (hilo atascado, backend muerto): sin
   // plazo por defecto la promesa no resuelve nunca y la UI espera en
   // silencio para siempre.

@@ -8,7 +8,7 @@ import { modeloDesdeCalendario, tramosLibres } from './calendarioHoras.js'
 
 const NOOP = () => {}
 
-function PreflightModal({ info, calendario, calCargando = false, loading, onStart, onCancel }) {
+function PreflightModal({ info, calendario, calCargando = false, calParcial = false, loading, onStart, onCancel }) {
   const err = info && info.error
   const vuelos = (info && info.vuelos) || []
   // Calendario de vuelos (dron + piloto) y fotos fuera de toda franja (tramos grises).
@@ -71,7 +71,7 @@ function PreflightModal({ info, calendario, calCargando = false, loading, onStar
               </p>
             )}
 
-            {calCargando && (
+            {calCargando && !modelo && (
               <p className="pf-loading" role="status" data-testid="pf-cal-cargando">
                 <svg className="espera-spinner" viewBox="0 0 24 24" width="18" height="18" fill="none"
                      stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
@@ -80,10 +80,20 @@ function PreflightModal({ info, calendario, calCargando = false, loading, onStar
                 Leyendo las horas de las fotos del origen para pintar el calendario… Puedes comenzar sin esperar.
               </p>
             )}
+            {calCargando && modelo && (
+              <p className="pf-loading" role="status" data-testid="pf-cal-leyendo">
+                <svg className="espera-spinner" viewBox="0 0 24 24" width="18" height="18" fill="none"
+                     stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+                  <path d="M12 3a9 9 0 1 1-9 9" />
+                </svg>
+                Cargando las fotos por hora… Giro, avisos y fotos sin colocar son provisionales hasta terminar. Puedes comenzar sin esperar.
+              </p>
+            )}
             {errCal && <p className="pm-status err">✗ No se pudo preparar el calendario: {errCal}</p>}
-            <AvisosDato avisos={modelo?.avisos ?? []} />
+            <AvisosDato avisos={modelo?.avisos ?? []} provisional={calParcial} />
             {modelo && (
-              <CalendarioHoras vuelos={modelo.vuelos} tramos={tramos} seleccion={null} onSeleccion={NOOP} />
+              <CalendarioHoras vuelos={modelo.vuelos} tramos={tramos} seleccion={null} onSeleccion={NOOP}
+                               cargando={calParcial} />
             )}
           </>
         )}
@@ -124,14 +134,15 @@ function PFItem({ label, value }) {
 }
 
 // Avisos del calendario en UNA línea: uno solo se muestra tal cual; varios, plegados con contador.
-function AvisosDato({ avisos }) {
+function AvisosDato({ avisos, provisional = false }) {
   if (!avisos.length) return null
+  const prov = provisional ? ' (provisional, leyendo fotos…)' : ''
   if (avisos.length === 1) {
-    return <p className="pm-status warn pf-aviso" role="alert" data-testid="pf-aviso-dato">AVISO: {avisos[0]}</p>
+    return <p className="pm-status warn pf-aviso" role="alert" data-testid="pf-aviso-dato">AVISO{prov}: {avisos[0]}</p>
   }
   return (
     <details className="pm-status warn pf-aviso pf-avisos" role="alert">
-      <summary>⚠ {avisos.length} avisos · {avisos[0]}</summary>
+      <summary>⚠ {avisos.length} avisos{prov} · {avisos[0]}</summary>
       <ul>{avisos.map((a, i) => <li key={i} data-testid="pf-aviso-dato">{a}</li>)}</ul>
     </details>
   )

@@ -811,6 +811,12 @@ pub struct CabeceraParseada {
     /// `split(' ')` + `strptime` se hacen en Python. Siempre `None` en TIFF (Pillow
     /// `TiffImageFile` no tiene `_getexif`).
     pub timestamp_iso: Option<String>,
+    /// Tag 36867 del EXIF de la CABECERA, sin exigir que Pillow abriera la imagen con
+    /// este buffer (`timestamp_iso` sí lo exige y sale `None` si el SOS cae más allá de
+    /// la cabecera: térmicas DJI con APP3 radiométricos). Solo JPEG con marcadores bien
+    /// formados (`abre`/`corto`). Es el dato que el calendario previo usa para NO releer
+    /// el fichero entero; con `abre` coincide con `timestamp_iso`. `None` = no hay dato.
+    pub timestamp_cabecera: Option<String>,
     /// `str(tags["Image Model"])` de ExifRead.
     pub modelo: Option<String>,
     /// `str(tags["Image Make"])` de ExifRead, SIN el `strip` (lo hace Python).
@@ -885,6 +891,7 @@ fn formato_de(buf: &[u8]) -> Formato {
 /// Campos que dependen del formato (todo salvo el XMP, que es búsqueda de texto).
 struct Base {
     timestamp_iso: Option<String>,
+    timestamp_cabecera: Option<String>,
     gps: Option<(f64, f64)>,
     dims: Option<(u32, u32)>,
     modelo: Option<String>,
@@ -899,6 +906,7 @@ impl Base {
     fn vacia(estado: &'static str) -> Self {
         Base {
             timestamp_iso: None,
+            timestamp_cabecera: None,
             gps: None,
             dims: None,
             modelo: None,
@@ -918,6 +926,12 @@ fn base_jpeg(buf: &[u8], completo: bool) -> Base {
     let paso = caminar(buf, &mut r);
     let estado = estado_pil(paso, &r);
     let mut b = Base::vacia(estado.nombre());
+    if matches!(estado, EstadoPil::Abre { .. } | EstadoPil::Corto) {
+        b.timestamp_cabecera = r
+            .exif
+            .and_then(|s| Tiff::nuevo(quitar_prefijo_exif(s)))
+            .and_then(|t| timestamp_pil(&t));
+    }
     if let (EstadoPil::Abre { ancho, alto }, Some(t)) =
         (estado, r.exif.and_then(|s| Tiff::nuevo(quitar_prefijo_exif(s))))
     {
@@ -1117,6 +1131,7 @@ pub fn analizar_con(buf: &[u8], completo: bool) -> CabeceraParseada {
     }
     CabeceraParseada {
         timestamp_iso: base.timestamp_iso,
+        timestamp_cabecera: base.timestamp_cabecera,
         modelo: base.modelo,
         make: base.make,
         make_ilegible: base.make_ilegible,
@@ -1212,6 +1227,59 @@ mod tests {
             t.extend_from_slice(&d.to_le_bytes());
         }
         t
+    }
+
+    /// Térmica DJI: EXIF + XMP en la cabecera y APP3 radiométricos hasta pasar los 256 KiB
+    /// antes del DQT/SOF/SOS (SOS real ~745 KB).
+    fn jpeg_termica_sos_lejos() -> Vec<u8> {
+        let base = jpeg_minimo();
+        let p = base.windows(2).position(|w| w == [0xFF, 0xDB]).expect("DQT");
+        let mut j = base[..p].to_vec();
+        let mut xmp = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+        xmp.extend_from_slice(
+            b"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>\
+              <rdf:Description xmlns:drone-dji='http://www.dji.com/drone-dji/1.0/' \
+              drone-dji:GimbalYawDegree='-45.5' drone-dji:GimbalPitchDegree='-88.0'/>\
+              </rdf:RDF></x:xmpmeta>",
+        );
+        j.extend_from_slice(&[0xFF, 0xE1]);
+        j.extend_from_slice(&((xmp.len() + 2) as u16).to_be_bytes());
+        j.extend_from_slice(&xmp);
+        for _ in 0..5 {
+            j.extend_from_slice(&[0xFF, 0xE3, 0xFF, 0xFE]);
+            j.extend_from_slice(&vec![0x55u8; 65_532]);
+        }
+        j.extend_from_slice(&base[p..]);
+        assert!(j.len() > xmp::BYTES_CABECERA + 1024);
+        j
+    }
+
+    #[test]
+    fn termica_con_sos_lejos_da_fecha_de_cabecera_sin_pedir_el_tamano() {
+        let j = jpeg_termica_sos_lejos();
+        let c = analizar_con(&j[..xmp::BYTES_CABECERA], false);
+        // Pillow no abriría ESTE buffer: `timestamp_iso` None y Python relee entero...
+        assert_eq!(c.pil_estado, "corto");
+        assert!(c.necesita_completo && c.timestamp_iso.is_none());
+        // ...pero la fecha EXIF está en la cabecera y el XMP y modelo/make también.
+        assert_eq!(c.timestamp_cabecera.as_deref(), Some("2026:08:20 10:11:12"));
+        assert!(c.xmp_presente);
+        assert_eq!(c.gimbal_yaw.as_deref(), Some("-45.5"));
+        assert_eq!(c.make.as_deref(), Some("DJI"));
+        // Con el fichero entero, ambas fechas coinciden.
+        let c = analizar_con(&j, true);
+        assert_eq!(c.timestamp_iso, c.timestamp_cabecera);
+        assert_eq!(c.timestamp_iso.as_deref(), Some("2026:08:20 10:11:12"));
+    }
+
+    #[test]
+    fn jpeg_sin_exif_en_cabecera_no_da_fecha_de_cabecera() {
+        let j = jpeg_termica_sos_lejos();
+        let p = j.windows(6).position(|w| w == b"Exif\0\0").expect("exif");
+        let mut sin = j.clone();
+        sin[p..p + 4].copy_from_slice(b"Xxif"); // APP1 que ya no es EXIF
+        let c = analizar_con(&sin[..xmp::BYTES_CABECERA], false);
+        assert!(c.timestamp_cabecera.is_none());
     }
 
     #[test]

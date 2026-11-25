@@ -333,6 +333,10 @@ export const api = {
   // Calendario del modal previo a Ejecutar: {ok, vuelos(dron, piloto), libres, ...} o {ok:false, error}.
   // `advanced`: el mismo panel avanzado del run (sufijos T/RGB, desfase) para clasificar como el índice.
   calendarioPrevio: (origen, estadillo, advanced) => call('calendario_previo', origen, estadillo, advanced ?? null),
+  // Variante en streaming: devuelve {started} al instante (o {started:false, error}); el esqueleto,
+  // los parciales y el resultado llegan por `onCalendarioPrevio` (kind esqueleto|parcial|done|error).
+  calendarioPrevioIniciar: (origen, estadillo, advanced, reqId) =>
+    call('calendario_previo_iniciar', origen, estadillo, advanced ?? null, reqId ?? null),
   calendarioPrevioCancelar: () => call('calendario_previo_cancelar'),
   // Autodetección del sufijo de separación desde los nombres de la carpeta
   // origen (DJI: térmicas `_T`). Devuelve {ok, thermal, rgb, tokens, total}.
@@ -749,6 +753,15 @@ export function onAnalisis(handler) {
   const wrapped = (e) => handler(e.detail)
   window.addEventListener('atom:analisis', wrapped)
   return () => window.removeEventListener('atom:analisis', wrapped)
+}
+
+// Calendario previo en streaming (`calendarioPrevioIniciar`): eventos `atom:analisis` con
+// scope 'calendario_previo' y `req_id` (el de la petición). kind 'esqueleto' | 'parcial' | 'done'
+// -> data (modelo del calendario, acumulado); kind 'error' -> text. Devuelve la baja.
+export function onCalendarioPrevio(handler) {
+  return onAnalisis((d) => {
+    if (d && d.scope === 'calendario_previo') handler(d)
+  })
 }
 
 // El portátil fija la carpeta de trabajo del kiosco por `/api/control/carpeta`

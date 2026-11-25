@@ -501,7 +501,8 @@ class _EmisorIndice:
 def _ejecutar_con_limite(items: list, funcion, hilos: int, timeout_s: float,
                          emisor: "_EmisorIndice | None", watchdog_s: float,
                          total_global: int | None = None,
-                         cancelar: "threading.Event | None" = None) -> list:
+                         cancelar: "threading.Event | None" = None,
+                         on_progreso=None) -> list:
     """Aplica `funcion` a cada item con `hilos` hilos DAEMON y devuelve una
     lista alineada con `items`. Un item cuya llamada pasa de `timeout_s`
     queda como `_VENCIDO` (el hilo bloqueado se abandona -un `open()` colgado
@@ -513,7 +514,11 @@ def _ejecutar_con_limite(items: list, funcion, hilos: int, timeout_s: float,
 
     `cancelar` (opcional): `Event` propio de quien llama, además de la cancelación global
     del run (`cancelacion`); lo usa la lectura previa del calendario, que no es un run y no
-    puede tocar la bandera global."""
+    puede tocar la bandera global.
+
+    `on_progreso` (opcional, solo el calendario previo): `on_progreso([(indice, resultado), ...])`
+    con los items recién resueltos (una sola vez cada uno; `_VENCIDO` y `_Fallo` incluidos), desde el
+    hilo que llama y fuera del cerrojo. `None` = comportamiento de siempre."""
     n = len(items)
 
     def _cancelado() -> bool:
@@ -562,6 +567,7 @@ def _ejecutar_con_limite(items: list, funcion, hilos: int, timeout_s: float,
         lanzar()
 
     tope = total_global if total_global is not None else n
+    entregados: set[int] = set()
     while True:
         time.sleep(0.05)
         if _cancelado():
@@ -602,6 +608,13 @@ def _ejecutar_con_limite(items: list, funcion, hilos: int, timeout_s: float,
                     avisos.append(f"\nIndice: esperando a {items[i]} desde hace {int(espera)} s\n")
             hechos = sum(1 for r in resultados if r is not _PENDIENTE)
             pendientes = n - hechos
+            if on_progreso is not None:
+                nuevos = [(i, resultados[i]) for i in range(n)
+                          if i not in entregados and resultados[i] is not _PENDIENTE]
+                entregados.update(i for i, _ in nuevos)
+        if on_progreso is not None and nuevos:
+            on_progreso(nuevos)
+            nuevos = []
         if emisor is not None:
             for aviso in avisos:
                 emisor.aviso(aviso)
@@ -993,9 +1006,19 @@ def _leer_fichero_entero(ruta: str) -> bytes:
         return fd.read()
 
 
+def _basta_cabecera_para_timestamp(cab) -> bool:
+    """Modo `solo_timestamp`: la cabecera ya trae lo que necesita el calendario previo
+    (fecha EXIF y XMP cerrado; make/modelo salen del mismo buffer) aunque Pillow no abriera la imagen con ese buffer
+    (`necesita_completo`: térmica DJI con el SOS tras 256 KiB). Falta cualquiera de ellos:
+    False y se relee el fichero ENTERO, como en el run normal."""
+    return (cab.formato == "jpeg" and cab.xmp_presente
+            and cab.timestamp_cabecera is not None)
+
+
 def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: "bytes | None",
                          jpeg_sin_eoi: "bool | None",
-                         contador: _ContadorRust) -> "_MetadatosImagen":
+                         contador: _ContadorRust,
+                         solo_timestamp: bool = False) -> "_MetadatosImagen":
     """`_leer_metadatos` vía la fase Rust `indice`: TODOS los campos salen de
     `atom_rs.parsear_cabecera` (sin GIL), sin caer nunca al camino Python.
 
@@ -1006,6 +1029,11 @@ def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: "bytes | None",
     - Si `cab.necesita_completo` (JPEG que no abre con la cabecera o sin XMP cerrado en
       ella; TIFF/PNG grandes) se relee el FICHERO ENTERO una vez y se llama de nuevo con
       `completo=True`; la respuesta ya es definitiva. Suma 1 a `contador.corto`.
+    - `solo_timestamp` (SOLO el calendario previo, `leer_timestamps`): si Rust pide el
+      fichero entero pero la cabecera ya trae la fecha EXIF (`timestamp_cabecera`)
+      y el XMP cerrado, NO se relee: se usa la fecha de la cabecera y ancho/alto/GPS quedan
+      `None` (el calendario no los usa). Si falta cualquiera de esos datos, se relee entero
+      como siempre. El run normal nunca lo activa.
     - Un campo `None` es dato ausente: se guarda tal cual (p. ej. DJI roto tras 256 KiB:
       fecha/GPS/dimensiones `None`). JPEG/TIFF/PNG válido sin XMP: Rust da los valores
       por defecto "0" de `get_gimbal_yaw_pitch`/`get_xmp_data` (yaw 0.0).
@@ -1017,22 +1045,27 @@ def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: "bytes | None",
     if completo:
         buf = _leer_fichero_entero(ruta)
     cab = rs.parsear_cabecera(buf, True) if completo else rs.parsear_cabecera(buf)
+    parcial = False
     if not completo and cab.necesita_completo:
-        contador.sumar_corto()
-        buf = _leer_fichero_entero(ruta)
-        cab = rs.parsear_cabecera(buf, True)
+        if solo_timestamp and _basta_cabecera_para_timestamp(cab):
+            parcial = True
+        else:
+            contador.sumar_corto()
+            buf = _leer_fichero_entero(ruta)
+            cab = rs.parsear_cabecera(buf, True)
     if cab.formato == "desconocido":
         # Vacío o firma que no es JPEG/TIFF/PNG: sin valores inventados (XMP "0", yaw 0.0);
         # error visible de ESE fichero en el resumen.
         raise RuntimeError(f"fichero vacío o formato no reconocido ({len(buf)} bytes): "
                            f"'{ruta}'")
-    if cab.necesita_completo or not cab.xmp_presente:
+    if not parcial and (cab.necesita_completo or not cab.xmp_presente):
         raise RuntimeError(f"parsear_cabecera no resolvió '{ruta}' con el fichero entero "
                            f"(formato {cab.formato}, {len(buf)} bytes)")
     timestamp = None
-    if cab.timestamp_iso is not None:
+    timestamp_iso = cab.timestamp_cabecera if parcial else cab.timestamp_iso
+    if timestamp_iso is not None:
         try:
-            fecha_hora = cab.timestamp_iso.split(' ')
+            fecha_hora = timestamp_iso.split(' ')
             timestamp = datetime.datetime.strptime(fecha_hora[0] + '_' + fecha_hora[1],
                                                    '%Y:%m:%d_%H:%M:%S')
         except Exception:  # noqa: BLE001 — fecha mal formada: sin fecha, como la réplica
@@ -1076,7 +1109,8 @@ def _leer_metadatos_rust(rs, ruta: str, nombre: str, buf: "bytes | None",
 
 
 def _leer_metadatos(ruta: str, exif, progress_callback,
-                    contador_rust: "_ContadorRust | None" = None) -> _MetadatosImagen:
+                    contador_rust: "_ContadorRust | None" = None,
+                    solo_timestamp: bool = False) -> _MetadatosImagen:
     """Una imagen -> sus metadatos, o `None` en cada campo que no se pudo
     leer. Cada lectura va en su propio `try/except`: que falle el yaw no
     tiene por qué tirar también el timestamp de la misma imagen.
@@ -1116,7 +1150,7 @@ def _leer_metadatos(ruta: str, exif, progress_callback,
             buf = None
     rs = rust_bridge.exigir("indice")
     propio = contador_rust if contador_rust is not None else _ContadorRust()
-    return _leer_metadatos_rust(rs, ruta, nombre, buf, jpeg_sin_eoi, propio)
+    return _leer_metadatos_rust(rs, ruta, nombre, buf, jpeg_sin_eoi, propio, solo_timestamp)
 
 
 def _ventanas_por_vuelo(estadillo_df, nombres_columnas: dict, pipeline, cfg,
@@ -2117,13 +2151,18 @@ class _LoteLeido:
 
 def _leer_lote(imagenes: list[str], exif, progress_callback, emisor, hilos: int,
                timeout_s: float, timeout_reintento_s: float, watchdog_s: float,
-               cancelar: "threading.Event | None" = None) -> _LoteLeido:
+               cancelar: "threading.Event | None" = None,
+               solo_timestamp: bool = False, on_datos=None) -> _LoteLeido:
     """Lee EXIF/XMP de `imagenes` (HILOS: trabajo I/O-bound, dimensionado por
     `max_io_workers`, hasta 32; no `workers_para_lote`, que calcula PROCESOS que
     decodifican imágenes enteras y topa por RAM). Cada lectura con tiempo máximo
     (`_ejecutar_con_limite`): un fichero de Drive sin descargar ya no cuelga la
     fase; los vencidos se reintentan al final y los que siguen sin responder
     quedan en `no_disponibles`.
+
+    `on_datos` (opcional, solo el calendario previo): `on_datos([dato, ...])` con los metadatos OK
+    (mismo filtro que `metadatos`: ni vencidos, ni error, ni a medias, ni no DJI) a medida que
+    llegan, en la primera pasada. `None` = comportamiento de siempre.
 
     Fase Rust `indice`: las cifras del contador son aproximadas si hay reintento de
     lentas (se vuelven a contar) o hilos vencidos que terminan después del resumen."""
@@ -2138,15 +2177,24 @@ def _leer_lote(imagenes: list[str], exif, progress_callback, emisor, hilos: int,
 
     def _leer_una(ruta: str):
         try:
-            return _leer_metadatos(ruta, exif, progress_callback, contador_rust=contador_rust)
+            return _leer_metadatos(ruta, exif, progress_callback, contador_rust=contador_rust,
+                                   solo_timestamp=solo_timestamp)
         except Exception as exc:  # noqa: BLE001 — error de ESTE fichero, no tumba el lote
             return _ErrorLectura(ruta, exc)
 
     if imagenes:
         emisor.iniciar("Leer EXIF/XMP", len(imagenes), barra=(5, 75))
+        def _al_progresar(nuevos: list) -> None:
+            datos = [lec for _i, lec in nuevos
+                     if lec is not _VENCIDO and not isinstance(lec, (_ErrorLectura, _Fallo))
+                     and not lec.a_medias and not _motivo_no_dji(lec)]
+            if datos:
+                on_datos(datos)
+
         lecturas = _ejecutar_con_limite(
             imagenes, _leer_una,
-            hilos, timeout_s, emisor, watchdog_s, cancelar=cancelar)
+            hilos, timeout_s, emisor, watchdog_s, cancelar=cancelar,
+            on_progreso=_al_progresar if on_datos is not None else None)
         for ruta, lectura in zip(imagenes, lecturas):
             if lectura is _VENCIDO:
                 lentas.append(ruta)
@@ -2589,10 +2637,15 @@ class _Recolector:
 
 
 def leer_timestamps(origen: str, cfg, *, cancelar: "threading.Event | None" = None,
-                    exif=None, max_hilos: int | None = None) -> LecturaTimestamps:
+                    exif=None, max_hilos: int | None = None, on_fotos=None) -> LecturaTimestamps:
     """Hora EXIF y tipo de cada imagen de `origen`, con la MISMA lectura que el índice
     (`_listar_imagenes` + `_leer_lote`), sin manifiesto ni escritura. `cfg` pone los sufijos
     (`_clasificar_tipo`). `cancelar` (Event) corta la lectura: lanza `RunCancelado`.
+    Lee en modo `solo_timestamp`: una térmica con el SOS tras la cabecera NO se relee entera si
+    la fecha EXIF y el XMP ya están en los primeros 256 KiB.
+    `on_fotos` (opcional): `on_fotos(nuevas, imagenes)`; una vez tras el listado con `nuevas=[]` y
+    luego con las `FotoLeida` que van llegando (primera pasada), siendo `imagenes` la lista COMPLETA
+    de rutas listadas. `None` = comportamiento de siempre.
     Origen local inexistente: `ErrorOrigenInexistente` (no un listado vacío)."""
     if not origen:
         raise ErrorOrigenInexistente("No hay carpeta de origen.")
@@ -2603,15 +2656,23 @@ def leer_timestamps(origen: str, cfg, *, cancelar: "threading.Event | None" = No
         exif = exif_mod.GeneralInformationFromImage(
             utils.OrganizerLogger("calendario_previo", create_file_handler=False))
     mudo = _Mudo()
+
+    def _a_foto(d) -> FotoLeida:
+        return FotoLeida(d.ruta, d.nombre, d.timestamp, _clasificar_tipo(d.nombre, cfg),
+                         d.yaw, d.pitch, d.flight_yaw)
+
+    on_datos = None
+    if on_fotos is not None:
+        on_fotos([], imagenes)
+        on_datos = lambda datos: on_fotos([_a_foto(d) for d in datos], imagenes)  # noqa: E731
     lote = _leer_lote(
         imagenes, exif, mudo, _EmisorIndice(mudo, mudo, None, 3600.0),
         max_hilos or utils.max_io_workers(),
         _env_float("ATOM_INDICE_TIMEOUT_S", TIMEOUT_FICHERO_S),
         _env_float("ATOM_INDICE_TIMEOUT_REINTENTO_S", TIMEOUT_REINTENTO_S),
-        _env_float("ATOM_INDICE_WATCHDOG_S", WATCHDOG_S), cancelar=cancelar)
-    fotos = [FotoLeida(d.ruta, d.nombre, d.timestamp, _clasificar_tipo(d.nombre, cfg),
-                       d.yaw, d.pitch, d.flight_yaw)
-             for d in lote.metadatos]
+        _env_float("ATOM_INDICE_WATCHDOG_S", WATCHDOG_S), cancelar=cancelar,
+        solo_timestamp=True, on_datos=on_datos)
+    fotos = [_a_foto(d) for d in lote.metadatos]
     return LecturaTimestamps(
         fotos, len(imagenes), len(lote.no_dji) + len(lote.omitidas) + len(lote.no_disponibles))
 

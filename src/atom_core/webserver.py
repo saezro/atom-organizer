@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 METODOS_EXPUESTOS = frozenset({
     "ping",
     "pick_folder", "pick_file", "list_dir", "default_dir",
-    "folder_is_empty", "read_estadillo_info", "calendario_previo", "calendario_previo_cancelar", "estadillos_detectar", "estadillos_detectar_start",
+    "folder_is_empty", "read_estadillo_info", "calendario_previo", "calendario_previo_iniciar", "calendario_previo_cancelar", "estadillos_detectar", "estadillos_detectar_start",
     "detect_suffixes", "detect_suffixes_start", "analisis_cancel", "analisis_reset",
     "read_config", "write_config",
     "render_estado", "render_confirmar", "render_set_modo",
